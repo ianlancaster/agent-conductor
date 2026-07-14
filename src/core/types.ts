@@ -1,0 +1,56 @@
+/** Two modes only: the operator drives, or the sentinel supervises. */
+export type Autonomy = 'facilitated' | 'autonomous';
+
+export type Placement = 'pane' | 'tab' | 'window';
+
+export type Activity = 'working' | 'idle' | 'stalled' | 'stopped';
+
+/** A handle to a terminal pane, owned by a specific backend. */
+export interface PaneRef {
+  backend: string;
+  id: string;
+}
+
+export interface PauseState {
+  previousAutonomy: Autonomy;
+  pausedBy: 'manual' | 'auto-focus';
+}
+
+/** Persisted + runtime state for one agent. */
+export interface AgentState {
+  autonomy: Autonomy;
+  tag?: string;
+  pause?: PauseState;
+  sessionActive: boolean;
+  paneId?: string;
+  activity: Activity;
+  /** Marker file present in the repo — displayed as an "agent" rather than a plain session. */
+  isAgentProject: boolean;
+}
+
+export type RuntimeEventType = 'stop' | 'notification' | 'compaction' | 'session-start' | 'session-end';
+
+/** A lifecycle event pushed by an agent's runtime hooks (Claude hooks / Codex notify). */
+export interface RuntimeEvent {
+  agent: string;
+  type: RuntimeEventType;
+  reason?: string;
+  transcriptPath?: string;
+  receivedAt: number;
+}
+
+export type StallKind = 'idle' | 'blocked' | 'compaction' | 'silent' | 'session-end';
+
+/** A stall surfaced to the sentinel. Carries everything needed to judge it. */
+export interface StallEvent {
+  id: number;
+  agent: string;
+  kind: StallKind;
+  reason?: string;
+  paneCapture: string;
+  lastAssistantMessage?: string;
+  createdAt: number;
+}
+
+export type StallResolution =
+  { action: 'nudge'; text: string } | { action: 'suppress'; note?: string } | { action: 'escalate'; question: string };
