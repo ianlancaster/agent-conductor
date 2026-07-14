@@ -1,0 +1,148 @@
+import { existsSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { AgentConfig, SupervisorConfig } from '../../config/schema.js';
+import type { RuntimeEvent } from '../../core/types.js';
+import { shellQuote } from '../../core/shell.js';
+import type { AgentRuntime, IdentityEndpoints, LaunchOptions, RuntimeCapabilities } from '../types.js';
+import { parseClaudeInputClear, stripClaudeChrome } from './chrome.js';
+import { readLastAssistantMessage } from './transcript.js';
+
+type ClaudeCodeConfig = SupervisorConfig['runtimes']['claudeCode'];
+
+/** Hook events wired into every agent. All POST their stdin JSON to the events endpoint. */
+const HOOK_EVENTS = ['Stop', 'Notification', 'PreCompact', 'SessionEnd', 'SessionStart'] as const;
+
+const EVENT_MAP: Record<string, RuntimeEvent['type']> = {
+  Stop: 'stop',
+  Notification: 'notification',
+  PreCompact: 'compaction',
+  SessionEnd: 'session-end',
+  SessionStart: 'session-start',
+};
+
+export interface ClaudeCodeRuntimeOptions {
+  config: ClaudeCodeConfig;
+  /** Path to the conductor protocol prompt appended to every agent's system prompt. */
+  protocolPath?: string;
+}
+
+export class ClaudeCodeRuntime implements AgentRuntime {
+  readonly name = 'claude-code';
+  readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: true };
+
+  private readonly config: ClaudeCodeConfig;
+  private readonly protocolPath: string | undefined;
+
+  constructor(opts: ClaudeCodeRuntimeOptions) {
+    this.config = opts.config;
+    this.protocolPath = opts.protocolPath;
+  }
+
+  async prepare(_agent: AgentConfig, identity: IdentityEndpoints): Promise<void> {
+    await mkdir(identity.configDir, { recursive: true });
+    await writeFile(this.mcpConfigPath(identity), `${JSON.stringify(this.buildMcpConfig(identity), null, 2)}\n`);
+    await writeFile(this.hooksSettingsPath(identity), `${JSON.stringify(this.buildHookSettings(identity), null, 2)}\n`);
+  }
+
+  buildLaunchCommand(agent: AgentConfig, identity: IdentityEndpoints, opts: LaunchOptions): string {
+    const parts: string[] = [`cd ${shellQuote(agent.repo)}`];
+
+    for (const [key, value] of Object.entries(this.envVars())) {
+      parts.push(`export ${key}=${shellQuote(value)}`);
+    }
+
+    const flags: string[] = [];
+    if (opts.continueSession) flags.push('-c');
+    if (this.config.skipPermissions) flags.push('--dangerously-skip-permissions');
+    const model = agent.model ?? this.config.defaultModel;
+    if (model !== undefined) flags.push('--model', shellQuote(model));
+    for (const dir of agent.additionalDirs) {
+      flags.push('--add-dir', shellQuote(dir));
+    }
+    flags.push('--mcp-config', shellQuote(this.mcpConfigPath(identity)));
+    flags.push('--settings', shellQuote(this.hooksSettingsPath(identity)));
+    const promptFile = this.systemPromptPath();
+    if (promptFile !== undefined) {
+      flags.push('--append-system-prompt-file', shellQuote(promptFile));
+    }
+
+    const claude = `${this.config.binary} ${flags.join(' ')}`;
+    const launch =
+      opts.prompt !== undefined && !opts.continueSession ? `echo ${shellQuote(opts.prompt)} | ${claude}` : claude;
+    parts.push(launch);
+    return parts.join(' && ');
+  }
+
+  parseInputClear(capture: string): boolean | null {
+    return parseClaudeInputClear(capture);
+  }
+
+  stripChrome(capture: string): string {
+    return stripClaudeChrome(capture);
+  }
+
+  parseEvent(body: unknown): Omit<RuntimeEvent, 'agent' | 'receivedAt'> | null {
+    if (typeof body !== 'object' || body === null) return null;
+    const record = body as Record<string, unknown>;
+    const hookEvent = record.hook_event_name;
+    if (typeof hookEvent !== 'string') return null;
+    const type = EVENT_MAP[hookEvent];
+    if (type === undefined) return null;
+    return {
+      type,
+      reason: typeof record.message === 'string' ? record.message : undefined,
+      transcriptPath: typeof record.transcript_path === 'string' ? record.transcript_path : undefined,
+    };
+  }
+
+  readLastAssistantMessage(transcriptPath: string): Promise<string | null> {
+    return readLastAssistantMessage(transcriptPath);
+  }
+
+  // ── internals ─────────────────────────────────────────────────────────────
+
+  private envVars(): Record<string, string> {
+    return {
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(this.config.autocompactPct),
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1',
+      CLAUDE_CODE_DISABLE_TERMINAL_TITLE: '1',
+      CLAUDE_CODE_RESUME_INTERRUPTED_TURN: '1',
+      CLAUDE_CODE_ENABLE_AWAY_SUMMARY: '0',
+      ...this.config.env,
+    };
+  }
+
+  private systemPromptPath(): string | undefined {
+    const path = this.config.systemPromptFile ?? this.protocolPath;
+    return path !== undefined && existsSync(path) ? path : undefined;
+  }
+
+  private mcpConfigPath(identity: IdentityEndpoints): string {
+    return join(identity.configDir, 'mcp.json');
+  }
+
+  private hooksSettingsPath(identity: IdentityEndpoints): string {
+    return join(identity.configDir, 'settings.json');
+  }
+
+  private buildMcpConfig(identity: IdentityEndpoints): unknown {
+    return {
+      mcpServers: {
+        conductor: { type: 'http', url: identity.mcpUrl },
+      },
+    };
+  }
+
+  private buildHookSettings(identity: IdentityEndpoints): unknown {
+    const command = `curl -s -m 5 -X POST -H 'Content-Type: application/json' --data-binary @- ${shellQuote(
+      identity.eventsUrl,
+    )} >/dev/null 2>&1 || true`;
+    const hooks: Record<string, unknown> = {};
+    for (const event of HOOK_EVENTS) {
+      hooks[event] = [{ hooks: [{ type: 'command', command }] }];
+    }
+    return { hooks };
+  }
+}
