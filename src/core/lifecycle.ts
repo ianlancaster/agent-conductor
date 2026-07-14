@@ -9,6 +9,7 @@ import type { TerminalBackend } from '../terminals/types.js';
 import type { AgentStateManager } from './state.js';
 import { truncate } from './utils.js';
 import type { PaneRef, Placement } from './types.js';
+import { addWorktree, isWorktree, removeWorktree } from './worktree.js';
 
 export interface StartOptions {
   prompt?: string;
@@ -21,6 +22,10 @@ export interface SpawnOptions {
   model?: string;
   prompt?: string;
   placement?: Placement;
+  /** Create the agent's directory as a git worktree of this repository. */
+  worktreeRepo?: string;
+  /** Branch for the worktree (default: the codename). */
+  branch?: string;
 }
 
 export interface LifecycleDeps {
@@ -151,7 +156,12 @@ export class Lifecycle {
 
     const rawDir = opts.path ?? this.deps.config.spawnDirPattern.replace('{codename}', codename);
     const dir = isAbsolute(rawDir) ? rawDir : resolve(this.deps.baseDir, rawDir);
-    mkdirSync(dir, { recursive: true });
+    if (opts.worktreeRepo !== undefined) {
+      const repo = isAbsolute(opts.worktreeRepo) ? opts.worktreeRepo : resolve(this.deps.baseDir, opts.worktreeRepo);
+      await addWorktree(repo, dir, opts.branch ?? codename);
+    } else {
+      mkdirSync(dir, { recursive: true });
+    }
 
     const configLines = [`codename: ${codename}`, `repo: ${dir}`];
     if (opts.model !== undefined) configLines.push(`model: ${opts.model}`);
@@ -176,7 +186,14 @@ export class Lifecycle {
 
     let dirNote = '';
     if (deleteDir) {
-      if (existsSync(join(agent.repo, '.git'))) {
+      if (isWorktree(agent.repo)) {
+        try {
+          await removeWorktree(agent.repo);
+          dirNote = ' Worktree removed.';
+        } catch (err) {
+          dirNote = ` Worktree NOT removed: ${err instanceof Error ? err.message : String(err)} (commit or stash changes, or remove it manually).`;
+        }
+      } else if (existsSync(join(agent.repo, '.git'))) {
         dirNote = ` Directory kept: ${agent.repo} contains a git repository.`;
       } else if (existsSync(join(agent.repo, this.deps.config.markerFile))) {
         dirNote = ` Directory kept: ${agent.repo} is marked as an agent project.`;
