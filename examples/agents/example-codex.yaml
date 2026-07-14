@@ -1,0 +1,6 @@
+# An OpenAI Codex CLI agent — same config shape, different runtime.
+# The conductor injects its protocol via AGENTS.override.md in the repo
+# (add AGENTS.override.md to that repo's .gitignore).
+codename: codex-1
+repo: ../my-other-project
+runtime: codex

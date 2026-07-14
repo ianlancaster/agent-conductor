@@ -246,10 +246,14 @@ export class CommandRouter {
   private async spawnCommand(args: string[]): Promise<string> {
     const { placement, rest } = parsePlacement(args);
     const codename = rest[0];
-    if (codename === undefined) return 'Usage: /spawn <name> [--path p] [--model m] [--prompt "…"] [placement]';
+    if (codename === undefined) {
+      return 'Usage: /spawn <name> [--path p] [--model m] [--prompt "…"] [--worktree repo] [--branch b] [placement]';
+    }
     let path: string | undefined;
     let model: string | undefined;
     let prompt: string | undefined;
+    let worktreeRepo: string | undefined;
+    let branch: string | undefined;
     for (let i = 1; i < rest.length; i += 1) {
       const flag = rest[i];
       const value = rest[i + 1];
@@ -257,9 +261,11 @@ export class CommandRouter {
       if (flag === '--path') path = value;
       else if (flag === '--model') model = value;
       else if (flag === '--prompt') prompt = value;
+      else if (flag === '--worktree') worktreeRepo = value;
+      else if (flag === '--branch') branch = value;
       else continue;
       i += 1;
     }
-    return this.deps.lifecycle.spawn(codename, { path, model, prompt, placement });
+    return this.deps.lifecycle.spawn(codename, { path, model, prompt, placement, worktreeRepo, branch });
   }
 }

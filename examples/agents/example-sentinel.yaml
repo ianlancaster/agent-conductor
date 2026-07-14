@@ -1,0 +1,5 @@
+# The stall sentinel is a normal agent designated by sentinel.codename in supervisor.yaml.
+# Give it a small dedicated directory containing (or pointing at) prompts/sentinel.md.
+codename: watch
+repo: ../watch
+runtime: claude-code

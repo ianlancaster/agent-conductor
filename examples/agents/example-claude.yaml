@@ -1,0 +1,15 @@
+# A Claude Code agent. Place at config/agents/<codename>.yaml — files here hot-reload.
+codename: alpha
+repo: ../my-project # absolute, or relative to the conductor directory
+runtime: claude-code # default
+model: claude-opus-4-6 # optional; falls back to runtimes.claudeCode.defaultModel, then the CLI default
+additionalDirs:
+  - ../shared-notes
+schedules:
+  - label: morning-standup
+    cron: '0 9 * * 1-5'
+    prompt: Review overnight CI results and summarize anything broken.
+  - label: nightly-fresh
+    cron: '0 2 * * *'
+    prompt: Start the nightly maintenance checklist.
+    freshSession: true # stop + restart with a clean context before delivering

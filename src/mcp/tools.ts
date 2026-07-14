@@ -7,6 +7,7 @@ import type { StallSentinelRouter } from '../core/sentinel.js';
 import type { AgentStateManager } from '../core/state.js';
 import type { Placement, StallResolution } from '../core/types.js';
 import { sleep } from '../core/utils.js';
+import { isWorktree } from '../core/worktree.js';
 import type { McpToolDefinition } from './server.js';
 
 export interface McpToolDeps {
@@ -200,6 +201,48 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
           prompt: optionalString(args, 'prompt'),
           placement: optionalPlacement(args),
         }),
+    },
+    {
+      name: 'create_worktree',
+      description: `Create a new agent whose working directory is a git worktree of an existing repository — parallel work on one repo with full file isolation. ${IDENTITY_NOTE}`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          codename: { type: 'string', description: 'New agent codename' },
+          repo: { type: 'string', description: 'Path to the existing git repository' },
+          branch: { type: 'string', description: 'Branch to create/check out (default: the codename)' },
+          model: { type: 'string' },
+          prompt: { type: 'string' },
+          placement: placementSchema,
+        },
+        required: ['codename', 'repo'],
+      },
+      handler: (args, _caller) =>
+        deps.lifecycle.spawn(requireString(args, 'codename'), {
+          worktreeRepo: requireString(args, 'repo'),
+          branch: optionalString(args, 'branch'),
+          model: optionalString(args, 'model'),
+          prompt: optionalString(args, 'prompt'),
+          placement: optionalPlacement(args),
+        }),
+    },
+    {
+      name: 'remove_worktree',
+      description: `Stop a worktree agent, deregister it, and remove its git worktree (refuses dirty worktrees). ${IDENTITY_NOTE}`,
+      inputSchema: {
+        type: 'object',
+        properties: { codename: { type: 'string' } },
+        required: ['codename'],
+      },
+      handler: (args, caller) => {
+        const codename = requireString(args, 'codename');
+        noSelf(caller, codename, 'remove');
+        const agent = deps.agents().get(codename);
+        if (agent === undefined) throw new Error(`Unknown agent: ${codename}`);
+        if (!isWorktree(agent.repo))
+          throw new Error(`${codename}'s directory is not a git worktree — use teardown_agent.`);
+        return deps.lifecycle.teardown(codename, true);
+      },
     },
     {
       name: 'teardown_agent',

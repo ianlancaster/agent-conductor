@@ -1,0 +1,60 @@
+# agent-conductor supervisor config — every value shown is the default; omit what you don't change.
+# Place at <your conductor dir>/config/supervisor.yaml
+
+supervisor:
+  heartbeatIntervalSeconds: 30
+  logLevel: info
+
+terminal:
+  backend: iterm # or: tmux (headless, Linux/SSH)
+  windowName: Agent Conductor
+  iterm:
+    autoPauseOnFocus: false # pause an autonomous agent while you interact with its pane
+    autoPauseResumeDelaySeconds: 60
+    bracketedPasteThreshold: 512
+  tmux:
+    sessionName: conductor
+
+# The stall sentinel: an agent (configured like any other in config/agents/) that
+# receives ALL stalls from autonomous agents and decides what to do.
+# Launch it with prompts/sentinel.md as its instructions.
+sentinel:
+  codename: watch
+
+defaults:
+  autonomy: facilitated # facilitated | autonomous
+  placement: pane # pane | tab | window
+
+mcp:
+  port: 3456
+  host: 127.0.0.1
+
+health:
+  captureLines: 40
+  idleConfirmMs: 15000 # quiet period after a Stop event before it becomes an idle stall
+  stallBeatsThreshold: 2 # fallback watchdog: unchanged heartbeats before a silent stall
+  suppressWindowMs: 300000
+  suppressSimilarity: 0.8
+
+messaging:
+  queueDrainMs: 2000
+  queueMaxAgeMs: 60000
+
+runtimes:
+  claudeCode:
+    binary: claude
+    # defaultModel: claude-opus-4-6
+    autocompactPct: 70
+    skipPermissions: true
+  codex:
+    binary: codex
+    toolTimeoutSec: 600 # Codex default is 60s — too low for long conductor tools
+
+channels:
+  telegram:
+    enabled: true # requires CONDUCTOR_TELEGRAM_TOKEN + CONDUCTOR_TELEGRAM_CHAT_ID in the env
+    panePreviewLines: 20
+
+spawn:
+  dirPattern: '../{codename}'
+  markerFile: .conductor-agent # presence marks a repo as an "agent" project in status
