@@ -1,0 +1,17 @@
+#!/bin/sh
+# Escape hatch: SKIP_HOOKS=1 git commit ...
+if [ "$SKIP_HOOKS" = "1" ]; then
+  echo "SKIP_HOOKS=1 — skipping pre-commit checks"
+  exit 0
+fi
+
+# Skip during rebase/merge
+if [ -d "$(git rev-parse --git-dir)/rebase-merge" ] || [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+  exit 0
+fi
+
+set -e
+pnpm typecheck
+pnpm lint
+pnpm format:check
+pnpm test

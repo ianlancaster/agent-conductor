@@ -1,0 +1,154 @@
+import { z } from 'zod';
+
+export const scheduleEntrySchema = z.object({
+  label: z.string().optional(),
+  cron: z.string(),
+  prompt: z.string(),
+  paused: z.boolean().default(false),
+  freshSession: z.boolean().default(false),
+});
+
+export const agentConfigSchema = z.object({
+  codename: z
+    .string()
+    .min(1)
+    .regex(/^[a-z0-9][a-z0-9-_]*$/i, 'codename must be alphanumeric with dashes/underscores'),
+  /** Human-readable display name. Defaults to the codename. */
+  agent: z.string().optional(),
+  /** Absolute or config-relative path to the agent's working directory. */
+  repo: z.string().min(1),
+  runtime: z.enum(['claude-code', 'codex']).default('claude-code'),
+  model: z.string().optional(),
+  additionalDirs: z.array(z.string()).default([]),
+  schedules: z.array(scheduleEntrySchema).default([]),
+});
+
+export const supervisorConfigSchema = z.object({
+  supervisor: z
+    .object({
+      heartbeatIntervalSeconds: z.number().int().positive().default(30),
+      logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+    })
+    .default({}),
+  paths: z
+    .object({
+      dataDir: z.string().default('./data'),
+    })
+    .default({}),
+  mcp: z
+    .object({
+      port: z.number().int().positive().default(3456),
+      host: z.string().default('127.0.0.1'),
+      keepAliveTimeoutMs: z.number().int().positive().default(60_000),
+    })
+    .default({}),
+  health: z
+    .object({
+      /** Pane lines captured per check and attached to stall events. */
+      captureLines: z.number().int().positive().default(40),
+      /** Unchanged heartbeats before the fallback watchdog flags a silent stall. */
+      stallBeatsThreshold: z.number().int().positive().default(2),
+      /** Quiet period after a runtime `stop` event before it becomes an idle stall. */
+      idleConfirmMs: z.number().int().nonnegative().default(15_000),
+      /** Window in which similar stalls are suppressed as duplicates. */
+      suppressWindowMs: z.number().int().positive().default(300_000),
+      /** Content similarity (0..1) above which a repeat stall is suppressed. */
+      suppressSimilarity: z.number().min(0).max(1).default(0.8),
+      /** With lifecycle events flowing, how stale events must be before pane-diffing kicks in. */
+      eventSilenceMs: z.number().int().positive().default(120_000),
+    })
+    .default({}),
+  messaging: z
+    .object({
+      queueDrainMs: z.number().int().positive().default(2_000),
+      queueMaxAgeMs: z.number().int().positive().default(60_000),
+      tailDefaultLines: z.number().int().positive().default(30),
+      tailMaxLines: z.number().int().positive().default(500),
+    })
+    .default({}),
+  defaults: z
+    .object({
+      autonomy: z.enum(['facilitated', 'autonomous']).default('facilitated'),
+      placement: z.enum(['pane', 'tab', 'window']).default('pane'),
+    })
+    .default({}),
+  sentinel: z
+    .object({
+      /** Codename of the designated stall sentinel. Autonomous mode requires one. */
+      codename: z.string().optional(),
+    })
+    .default({}),
+  terminal: z
+    .object({
+      backend: z.enum(['iterm', 'tmux']).default('iterm'),
+      windowName: z.string().default('Agent Conductor'),
+      iterm: z
+        .object({
+          autoPauseOnFocus: z.boolean().default(false),
+          autoPauseResumeDelaySeconds: z.number().int().positive().default(60),
+          focusCheckMs: z.number().int().positive().default(5_000),
+          bracketedPasteThreshold: z.number().int().positive().default(512),
+          launchTimeoutSec: z.number().positive().default(8),
+          pollIntervalSec: z.number().positive().default(0.25),
+        })
+        .default({}),
+      tmux: z
+        .object({
+          sessionName: z.string().default('conductor'),
+        })
+        .default({}),
+    })
+    .default({}),
+  channels: z
+    .object({
+      telegram: z
+        .object({
+          /** Token/chat id come from env: CONDUCTOR_TELEGRAM_TOKEN / CONDUCTOR_TELEGRAM_CHAT_ID. */
+          enabled: z.boolean().default(true),
+          panePreviewLines: z.number().int().positive().default(20),
+        })
+        .default({}),
+    })
+    .default({}),
+  runtimes: z
+    .object({
+      claudeCode: z
+        .object({
+          binary: z.string().default('claude'),
+          defaultModel: z.string().optional(),
+          autocompactPct: z.number().int().min(1).max(100).default(70),
+          skipPermissions: z.boolean().default(true),
+          /** Extra env vars exported to every agent. Values here override the built-in defaults. */
+          env: z.record(z.string()).default({}),
+          /** Path to the conductor protocol prompt appended to every agent's system prompt. */
+          systemPromptFile: z.string().optional(),
+        })
+        .default({}),
+      codex: z
+        .object({
+          binary: z.string().default('codex'),
+          defaultModel: z.string().optional(),
+          /** MCP tool timeout — Codex defaults to 60s, far too low for long consults. */
+          toolTimeoutSec: z.number().int().positive().default(600),
+        })
+        .default({}),
+    })
+    .default({}),
+  spawn: z
+    .object({
+      /** Directory pattern for spawned agents; {codename} is substituted. */
+      dirPattern: z.string().default('../{codename}'),
+      /** Marker file that flags a repo as an "agent" project (display-only). */
+      markerFile: z.string().default('.conductor-agent'),
+    })
+    .default({}),
+  scheduler: z
+    .object({
+      reloadIntervalBeats: z.number().int().positive().default(10),
+    })
+    .default({}),
+});
+
+export type ScheduleEntry = z.infer<typeof scheduleEntrySchema>;
+export type AgentConfig = z.infer<typeof agentConfigSchema>;
+export type SupervisorConfig = z.infer<typeof supervisorConfigSchema>;
