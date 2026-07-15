@@ -34,6 +34,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+      # Real-tmux E2E suite runs in CI (test/e2e-tmux.test.ts skips itself when tmux is absent).
+      - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:coverage
 

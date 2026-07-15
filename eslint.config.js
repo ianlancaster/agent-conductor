@@ -28,6 +28,24 @@ export default tseslint.config(
     },
   },
   {
+    files: ['src/**/*.ts'],
+    rules: {
+      // The cc-conductor event-loop-blocking lesson, mechanically enforced.
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'node:child_process',
+              importNames: ['execSync'],
+              message: 'execSync blocks the event loop — use promisified execFile.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ['test/**/*.ts'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
