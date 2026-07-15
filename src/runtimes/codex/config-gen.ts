@@ -86,11 +86,18 @@ export function renderNotifyScript(eventsUrl: string): string {
  * not amends), so the generated file re-embeds the repo's own AGENTS.md before
  * appending the conductor protocol.
  */
-export function renderAgentsOverride(protocolText: string, existingAgentsMd: string | null): string {
+export function renderAgentsOverride(
+  protocolText: string,
+  existingAgentsMd: string | null,
+  agentPromptText?: string | null,
+): string {
   const parts = [`<!-- ${GENERATED_MARKER}; do not edit or commit — regenerated on every prepare() -->`];
   if (existingAgentsMd !== null && existingAgentsMd.trim().length > 0) {
     parts.push(existingAgentsMd.trim());
   }
   parts.push('# Conductor protocol', protocolText.trim());
+  if (agentPromptText !== undefined && agentPromptText !== null && agentPromptText.trim().length > 0) {
+    parts.push('# Agent instructions', agentPromptText.trim());
+  }
   return `${parts.join('\n\n')}\n`;
 }

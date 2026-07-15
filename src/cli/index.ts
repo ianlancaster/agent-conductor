@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
@@ -14,7 +14,17 @@ const packageJson = JSON.parse(
 ) as { version: string };
 
 const program = new Command();
-program.name('conductor').description('Lightweight supervisor for terminal coding agents').version(packageJson.version);
+program
+  .name('conductor')
+  .description('Lightweight supervisor for terminal coding agents')
+  .version(packageJson.version)
+  .option('-C, --dir <path>', 'Fleet directory containing config/ (default: current directory)');
+
+/** Resolve the fleet directory from --dir, else the current directory. */
+function baseDir(): string {
+  const dir = program.opts<{ dir?: string }>().dir;
+  return dir !== undefined ? resolve(dir) : process.cwd();
+}
 
 program
   .command('start')
@@ -31,7 +41,7 @@ program
       );
     });
 
-    const supervisor = new Supervisor(process.cwd());
+    const supervisor = new Supervisor(baseDir());
     await supervisor.start({ startAll: opts.startAll ?? false });
 
     const shutdown = async (): Promise<void> => {
@@ -64,7 +74,7 @@ program
   .command('cmd <line...>')
   .description('Send a command to a running conductor (via its /cmd endpoint)')
   .action(async (line: string[]) => {
-    const config = loadSupervisorConfig(process.cwd());
+    const config = loadSupervisorConfig(baseDir());
     const response = await fetch(`http://${config.mcp.host}:${config.mcp.port}/cmd`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -78,8 +88,8 @@ program
   .command('status')
   .description('Show agent and session status from the local store')
   .action(() => {
-    const config = loadSupervisorConfig(process.cwd());
-    const store = new Store(join(process.cwd(), config.paths.dataDir, 'conductor.db'));
+    const config = loadSupervisorConfig(baseDir());
+    const store = new Store(join(baseDir(), config.paths.dataDir, 'conductor.db'));
     const sessions = store.getActiveSessions();
     if (sessions.length === 0) {
       process.stdout.write('No active sessions.\n');
@@ -96,8 +106,8 @@ program
   .description('Show recent health events')
   .option('-n, --count <count>', 'Number of events', '20')
   .action((agent: string | undefined, opts: { count: string }) => {
-    const config = loadSupervisorConfig(process.cwd());
-    const store = new Store(join(process.cwd(), config.paths.dataDir, 'conductor.db'));
+    const config = loadSupervisorConfig(baseDir());
+    const store = new Store(join(baseDir(), config.paths.dataDir, 'conductor.db'));
     for (const row of store.getHealthLog(agent, Number.parseInt(opts.count, 10)).reverse()) {
       process.stdout.write(
         `${row.created_at}  ${row.agent}  ${row.event}${row.detail !== null ? `  ${row.detail}` : ''}\n`,
@@ -110,7 +120,7 @@ program
   .command('validate')
   .description('Validate supervisor and agent configs')
   .action(() => {
-    const problems = validateConfig(process.cwd());
+    const problems = validateConfig(baseDir());
     if (problems.length === 0) {
       process.stdout.write('Config OK.\n');
       return;
@@ -124,7 +134,7 @@ daemon
   .command('install')
   .description('Install a launchd (macOS) or systemd (Linux) service')
   .action(() => {
-    process.stdout.write(`${installDaemon(process.cwd())}\n`);
+    process.stdout.write(`${installDaemon(baseDir())}\n`);
   });
 daemon
   .command('uninstall')

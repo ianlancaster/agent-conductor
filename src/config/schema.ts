@@ -24,6 +24,12 @@ export const agentConfigSchema = z.object({
   runtime: z.enum(['claude-code', 'codex']).default('claude-code'),
   model: z.string().optional(),
   additionalDirs: z.array(z.string()).default([]),
+  /**
+   * Per-agent instructions appended to this agent's system prompt, on top of the
+   * conductor protocol every agent receives. Point the sentinel at the shipped
+   * sentinel prompt here. Absolute, or resolved relative to the config dir.
+   */
+  systemPromptFile: z.string().optional(),
   schedules: z.array(scheduleEntrySchema).default([]),
 });
 

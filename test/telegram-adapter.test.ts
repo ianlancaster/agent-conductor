@@ -58,7 +58,11 @@ function json(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
 }
 
-async function until(condition: () => boolean, timeoutMs = 2000): Promise<void> {
+// Generous budget: these assertions only wait for a mocked fetch call to be
+// recorded, which is near-instant when the worker has CPU. The margin absorbs
+// scheduler starvation when the whole suite (incl. the process-spawning tmux
+// E2E) runs in parallel, so this can't flake on a busy machine.
+async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
   const start = Date.now();
   while (!condition()) {
     if (Date.now() - start > timeoutMs) throw new Error('until(): condition not met in time');

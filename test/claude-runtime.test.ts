@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -58,6 +58,18 @@ describe('buildLaunchCommand', () => {
       config: { ...defaults.runtimes.claudeCode, defaultModel: 'claude-sonnet-5' },
     });
     expect(withDefault.buildLaunchCommand(agent, identity, {})).toContain(`--model 'claude-sonnet-5'`);
+  });
+
+  it('appends a per-agent systemPromptFile after the conductor protocol when it exists', () => {
+    const promptFile = join(configDir, 'sentinel.md');
+    writeFileSync(promptFile, '# be the sentinel');
+    const command = runtime.buildLaunchCommand({ ...agent, systemPromptFile: promptFile }, identity, {});
+    expect(command).toContain(`--append-system-prompt-file '${promptFile}'`);
+  });
+
+  it('skips a per-agent systemPromptFile that does not exist', () => {
+    const command = runtime.buildLaunchCommand({ ...agent, systemPromptFile: '/nope/missing.md' }, identity, {});
+    expect(command).not.toContain('/nope/missing.md');
   });
 
   it('uses -c for continuation and never pipes a prompt into it', () => {

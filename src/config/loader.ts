@@ -47,6 +47,9 @@ export function parseAgentConfig(raw: unknown, file: string, baseDir: string): A
   if (!isAbsolute(agent.repo)) {
     agent.repo = resolve(baseDir, agent.repo);
   }
+  if (agent.systemPromptFile !== undefined && !isAbsolute(agent.systemPromptFile)) {
+    agent.systemPromptFile = resolve(baseDir, agent.systemPromptFile);
+  }
   return agent;
 }
 

@@ -76,6 +76,13 @@ describe('config generation', () => {
     expect(output).toContain('# Conductor protocol');
     expect(output).not.toContain('undefined');
   });
+
+  it('appends per-agent instructions after the protocol when provided', () => {
+    const output = renderAgentsOverride('PROTOCOL TEXT', null, 'Be the sentinel.');
+    expect(output).toContain('# Agent instructions');
+    expect(output).toContain('Be the sentinel.');
+    expect(output.indexOf('# Conductor protocol')).toBeLessThan(output.indexOf('# Agent instructions'));
+  });
 });
 
 describe('buildLaunchCommand', () => {
