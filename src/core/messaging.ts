@@ -28,8 +28,13 @@ export class Messaging {
     if (this.deps.states.get(target)?.sessionActive === true) {
       const result = await this.deps.delivery.deliverOrQueue(target, envelope);
       if (result === 'no-pane') return `${target} has no pane — message stored but undelivered.`;
-      this.deps.store.markMessageDelivered(id);
-      return result === 'delivered' ? `Delivered to ${target}.` : `Queued for ${target} (their input is busy).`;
+      // Only mark the durable record delivered when it actually reached the
+      // pane; a queued message may still be dropped, and the audit must not lie.
+      if (result === 'delivered') {
+        this.deps.store.markMessageDelivered(id);
+        return `Delivered to ${target}.`;
+      }
+      return `Queued for ${target} (their input is busy).`;
     }
 
     const started = await this.deps.startAgent(target, { prompt: envelope });

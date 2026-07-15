@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  PASTE_BUFFER,
   buildCreatePaneArgs,
   buildDeliveryCommands,
   hasShellPrompt,
   parseAgentPanes,
   parsePaneIds,
+  pasteBufferName,
   trimToTrailingLines,
 } from '../src/terminals/tmux/tmux.js';
 
@@ -47,12 +47,17 @@ describe('parseAgentPanes', () => {
 describe('buildCreatePaneArgs', () => {
   it("maps 'pane' to split-window on the session's first window", () => {
     const args = buildCreatePaneArgs({ placement: 'pane', sessionName: 'conductor', agent: 'alpha' });
-    expect(args).toEqual(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', 'conductor:{start}']);
+    expect(args).toEqual(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', '=conductor:{start}']);
   });
 
   it("maps 'tab' to new-window named after the agent", () => {
     const args = buildCreatePaneArgs({ placement: 'tab', sessionName: 'conductor', agent: 'alpha' });
-    expect(args).toEqual(['new-window', '-d', '-P', '-F', '#{pane_id}', '-t', 'conductor:', '-n', 'alpha']);
+    expect(args).toEqual(['new-window', '-d', '-P', '-F', '#{pane_id}', '-t', '=conductor:', '-n', 'alpha']);
+  });
+
+  it('targets the session with an exact-match = prefix (M21)', () => {
+    const args = buildCreatePaneArgs({ placement: 'pane', sessionName: 'conductor', agent: 'alpha' });
+    expect(args).toContain('=conductor:{start}');
   });
 
   it("maps 'window' to new-window too (tmux has no separate OS windows)", () => {
@@ -87,13 +92,24 @@ describe('buildDeliveryCommands', () => {
     expect(first).toEqual(['send-keys', '-t', '%4', '-l', '--', '-rf --no-preserve-root']);
   });
 
-  it('uses set-buffer + bracketed paste-buffer for multiline text', () => {
+  it('uses set-buffer + bracketed paste-buffer with a per-pane buffer for multiline text', () => {
     const text = 'line one\nline two';
+    const buffer = pasteBufferName('%7');
+    expect(buffer).toBe('conductor-paste-7');
     expect(buildDeliveryCommands('%7', text)).toEqual([
-      ['set-buffer', '-b', PASTE_BUFFER, '--', text],
-      ['paste-buffer', '-d', '-p', '-b', PASTE_BUFFER, '-t', '%7'],
+      ['set-buffer', '-b', buffer, '--', text],
+      ['paste-buffer', '-d', '-p', '-b', buffer, '-t', '%7'],
       ['send-keys', '-t', '%7', 'Enter'],
     ]);
+  });
+
+  it('gives distinct panes distinct paste buffers (no cross-agent clobber)', () => {
+    expect(pasteBufferName('%7')).not.toBe(pasteBufferName('%12'));
+  });
+
+  it('treats carriage-return text as multiline so a raw CR cannot submit mid-message', () => {
+    const [first] = buildDeliveryCommands('%2', 'line one\r\nline two');
+    expect(first?.[0]).toBe('set-buffer');
   });
 
   it('always ends with a standalone Enter keystroke', () => {

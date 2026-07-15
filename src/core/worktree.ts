@@ -37,11 +37,25 @@ export async function addWorktree(repo: string, dir: string, branch: string): Pr
   if (!existsSync(join(repo, '.git'))) {
     throw new Error(`${repo} is not a git repository`);
   }
+  // A branch name is never an option: reject leading dashes so a value like
+  // `--detach`/`--force` can't be smuggled in as a git flag, and pass `--` so
+  // git stops option parsing before the branch/dir positionals.
+  if (branch.startsWith('-')) {
+    throw new Error(`Invalid branch name '${branch}': must not begin with '-'.`);
+  }
+  const exists = await branchExists(repo, branch);
+  const args = exists
+    ? ['-C', repo, 'worktree', 'add', '--', dir, branch]
+    : ['-C', repo, 'worktree', 'add', '-b', branch, '--', dir];
+  await execFileAsync('git', args);
+}
+
+async function branchExists(repo: string, branch: string): Promise<boolean> {
   try {
-    await execFileAsync('git', ['-C', repo, 'worktree', 'add', dir, '-b', branch]);
+    await execFileAsync('git', ['-C', repo, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+    return true;
   } catch {
-    // Branch probably exists — check it out instead of creating it.
-    await execFileAsync('git', ['-C', repo, 'worktree', 'add', dir, branch]);
+    return false;
   }
 }
 

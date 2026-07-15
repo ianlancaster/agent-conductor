@@ -80,4 +80,9 @@ describe('git integration', () => {
     mkdirSync(notRepo);
     await expect(addWorktree(notRepo, join(base, 'x'), 'b')).rejects.toThrow(/not a git repository/);
   });
+
+  it('rejects a branch name that could be smuggled in as a git flag (M15)', async () => {
+    await expect(addWorktree(repo, join(base, 'x'), '--detach')).rejects.toThrow(/must not begin with/);
+    expect(existsSync(join(base, 'x'))).toBe(false);
+  });
 });

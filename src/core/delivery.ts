@@ -39,8 +39,17 @@ export class DeliveryQueue {
 
     const existing = this.queues.get(agent);
     if ((existing === undefined || existing.length === 0) && (await this.isInputClear(agent, pane))) {
-      await this.deps.backend.run(pane, text);
-      return 'delivered';
+      try {
+        await this.deps.backend.run(pane, text);
+        return 'delivered';
+      } catch (err) {
+        // The pane errored on write (closed window, dead tmux). Queue for retry
+        // rather than letting the rejection escape — callers are often fire-and-forget.
+        log().warn(
+          'delivery',
+          `${agent}: direct delivery failed, queueing: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
 
     const queue = existing ?? [];

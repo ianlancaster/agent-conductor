@@ -309,6 +309,11 @@ export class Supervisor {
     return this.commands.route(line);
   }
 
+  /** Force a config reload synchronously. Exposed for tests (normally driven by the watcher). */
+  reloadAgentsForTest(): void {
+    this.reloadAgents();
+  }
+
   statusReport(codename?: string): string {
     return statusReport(
       {
@@ -382,16 +387,25 @@ export class Supervisor {
       }
       this.states.register(codename, this.lifecycle.isAgentProject(agent));
     }
+    const configDir = agentConfigDir(this.baseDir);
     for (const codename of this.agents.keys()) {
-      if (!fresh.has(codename)) {
-        if (this.states.get(codename)?.sessionActive === true) {
-          log().warn('supervisor', `Config for ${codename} removed but session is active — keeping registered.`);
-          const kept = this.agents.get(codename);
-          if (kept !== undefined) fresh.set(codename, kept);
-        } else {
-          log().info('supervisor', `Agent deregistered: ${codename}`);
-          this.states.deregister(codename);
-        }
+      if (fresh.has(codename)) continue;
+      const kept = this.agents.get(codename);
+      // Distinguish a genuinely deleted config from one that merely failed to
+      // parse this tick (an editor's atomic save the mtime poller caught
+      // mid-write). Only a truly-gone file deregisters — otherwise a transient
+      // parse error would wipe the agent's persisted autonomy/tag.
+      const fileStillPresent =
+        existsSync(join(configDir, `${codename}.yaml`)) || existsSync(join(configDir, `${codename}.yml`));
+      if (fileStillPresent) {
+        log().warn('supervisor', `Config for ${codename} failed to parse — keeping last-good registration.`);
+        if (kept !== undefined) fresh.set(codename, kept);
+      } else if (this.states.get(codename)?.sessionActive === true) {
+        log().warn('supervisor', `Config for ${codename} removed but session is active — keeping registered.`);
+        if (kept !== undefined) fresh.set(codename, kept);
+      } else {
+        log().info('supervisor', `Agent deregistered: ${codename}`);
+        this.states.deregister(codename);
       }
     }
     this.agents = fresh;

@@ -104,4 +104,19 @@ describe('DeliveryQueue', () => {
     backend.capture = () => Promise.reject(new Error('osascript exploded'));
     expect(await queue.deliverOrQueue('alpha', 'resilient')).toBe('delivered');
   });
+
+  it('queues instead of rejecting when the direct write throws (H1)', async () => {
+    let failNext = true;
+    backend.run = (pane, text) => {
+      if (failNext) {
+        failNext = false;
+        return Promise.reject(new Error('pane closed'));
+      }
+      return FakeTerminalBackend.prototype.run.call(backend, pane, text);
+    };
+    // The direct path throws; instead of an unhandled rejection it queues.
+    expect(await queue.deliverOrQueue('alpha', 'important')).toBe('queued');
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['important']);
+  });
 });

@@ -41,6 +41,7 @@ export class HealthMonitor {
   private readonly lastCapture = new Map<string, string>();
   private readonly stillBeats = new Map<string, number>();
   private readonly silentNotified = new Set<string>();
+  private heartbeatInFlight = false;
 
   constructor(private readonly deps: HealthDeps) {}
 
@@ -82,8 +83,21 @@ export class HealthMonitor {
     }
   }
 
-  /** One heartbeat of the fallback watchdog. */
+  /** One heartbeat of the fallback watchdog. Skips if the previous pass is still running. */
   async heartbeat(): Promise<void> {
+    if (this.heartbeatInFlight) {
+      log().debug('health', 'heartbeat still in flight — skipping this tick');
+      return;
+    }
+    this.heartbeatInFlight = true;
+    try {
+      await this.runHeartbeat();
+    } finally {
+      this.heartbeatInFlight = false;
+    }
+  }
+
+  private async runHeartbeat(): Promise<void> {
     for (const agent of this.deps.getActiveAgents()) {
       try {
         await this.checkAgent(agent);

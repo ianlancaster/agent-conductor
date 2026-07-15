@@ -22,6 +22,7 @@ export interface FocusAutoPauseDeps {
 export class FocusAutoPause {
   private on: boolean;
   private timer: NodeJS.Timeout | undefined;
+  private checkInFlight = false;
   private focused: string | null = null;
   private readonly resumeTimers = new Map<string, NodeJS.Timeout>();
 
@@ -40,7 +41,11 @@ export class FocusAutoPause {
   start(): void {
     if (this.deps.backend.getFocusedAgent === undefined) return;
     this.timer = setInterval(() => {
-      void this.check();
+      if (this.checkInFlight) return;
+      this.checkInFlight = true;
+      void this.check().finally(() => {
+        this.checkInFlight = false;
+      });
     }, this.deps.config.checkMs);
     this.timer.unref();
   }

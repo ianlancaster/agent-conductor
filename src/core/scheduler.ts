@@ -27,8 +27,11 @@ export class Scheduler {
       for (const entry of agent.schedules) {
         if (entry.paused) continue;
         try {
-          const job = new Cron(entry.cron, { catch: true, protect: true }, () => {
-            void this.fire(codename, entry);
+          // The callback must be async (not a sync fn that voids a promise) or
+          // croner's `protect` clears the moment the sync fn returns and overlap
+          // protection never engages.
+          const job = new Cron(entry.cron, { catch: true, protect: true }, async () => {
+            await this.fire(codename, entry);
           });
           this.jobs.push(job);
         } catch (err) {

@@ -158,8 +158,10 @@ export class Store {
   }
 
   getPendingMessages(recipient: string): MessageRow[] {
+    // `id` tiebreaks within a one-second created_at bucket so dependent
+    // messages ("apply patch" then "run tests") keep insertion order.
     return this.db
-      .prepare("SELECT * FROM messages WHERE recipient = ? AND status = 'pending' ORDER BY created_at")
+      .prepare("SELECT * FROM messages WHERE recipient = ? AND status = 'pending' ORDER BY created_at, id")
       .all(recipient) as MessageRow[];
   }
 

@@ -126,4 +126,29 @@ describe('lifecycle edges', () => {
     expect(await lifecycle.stop('ghost')).toBe('Unknown agent: ghost');
     expect(await lifecycle.stop('alpha')).toBe('alpha stopped.'); // never started
   });
+
+  it('resets health tracking on stop so stale timers cannot fire (H5)', async () => {
+    await lifecycle.start('alpha');
+    healthResets.length = 0;
+    await lifecycle.stop('alpha');
+    expect(healthResets).toContain('alpha');
+  });
+
+  it('serializes concurrent starts into a single pane (H6)', async () => {
+    const [a, b] = await Promise.all([lifecycle.start('alpha'), lifecycle.start('alpha')]);
+    // Both callers share one in-flight start and get the same result...
+    expect(a).toBe('alpha started.');
+    expect(b).toBe('alpha started.');
+    // ...and exactly one pane was opened for the identity.
+    const alphaPanes = [...backend.panes.values()].filter((p) => p.agent === 'alpha' && p.alive);
+    expect(alphaPanes.length).toBe(1);
+    expect(lifecycle.getPane('alpha')).toBeDefined();
+  });
+
+  it('kills the pane if launch setup throws, leaving no orphan (M16)', async () => {
+    backend.launch = () => Promise.reject(new Error('shell init failed'));
+    await expect(lifecycle.start('alpha')).rejects.toThrow('shell init failed');
+    expect(lifecycle.getPane('alpha')).toBeUndefined();
+    expect([...backend.panes.values()].every((p) => !p.alive)).toBe(true);
+  });
 });
