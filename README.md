@@ -21,22 +21,49 @@ together:
    you full fleet control from anywhere: status, start/stop, messaging, mode changes, and
    answer-with-a-button escalations.
 
-## Quick start
+## Prerequisites
+
+- **Node.js 22+** and **pnpm**
+- At least one agent CLI on your `PATH`: **`claude`** (Claude Code) and/or **`codex`** (OpenAI Codex)
+- A terminal backend: **iTerm2** (macOS) or **tmux** (macOS/Linux, headless-capable)
+- **`curl`** (used by the lifecycle hooks that drive health monitoring)
+- Optional: a **Telegram** bot token + chat id for remote control
+
+## Install
+
+Not yet published to npm — run from a checkout. From the `agent-conductor` repo:
 
 ```bash
-pnpm add -g agent-conductor        # or run from a checkout: pnpm install
-mkdir my-fleet && cd my-fleet
-mkdir -p config/agents
-cp <package>/examples/supervisor.yaml config/supervisor.yaml
-cp <package>/examples/agents/example-claude.yaml config/agents/alpha.yaml
-# edit both, then:
-conductor validate
-conductor start                    # foreground, with an interactive console
+pnpm install
+pnpm build            # compiles to dist/
+pnpm link --global    # puts `conductor` on your PATH
 ```
 
-Type `/help` in the console. `/start alpha` opens a pane running Claude Code wired to the
-conductor. Agent YAMLs hot-reload — add a file to `config/agents/` and the agent registers
-itself.
+Now `conductor` works anywhere. (Prefer not to link? Use
+`pnpm --dir <repo> cli -- <args>`, or `npx tsx <repo>/src/cli/index.ts <args>`. Every command
+also accepts `-C, --dir <fleet-dir>` so you needn't be inside the fleet directory.)
+
+## Quick start
+
+A "fleet directory" holds your `config/`. Create one:
+
+```bash
+mkdir -p ~/fleet/config/agents && cd ~/fleet
+cp "$(npm root -g)/agent-conductor/examples/supervisor.yaml" config/supervisor.yaml
+cp "$(npm root -g)/agent-conductor/examples/agents/example-claude.yaml" config/agents/alpha.yaml
+$EDITOR config/agents/alpha.yaml    # set `repo:` to a real project path
+conductor validate                  # catches config mistakes before launch
+conductor start                     # foreground, with an interactive console
+```
+
+At the `conductor>` prompt, type `/help`. `/start alpha` opens an iTerm2 (or tmux) pane
+running Claude Code wired to the conductor; `/tell alpha <message>` talks to it;
+`/status` shows the fleet. Agent YAMLs hot-reload — drop a new file in `config/agents/`
+and it registers itself, no restart.
+
+**New here? Follow [docs/getting-started.md](docs/getting-started.md)** — a step-by-step
+first run (single agent → sentinel → Telegram) with the shakedown order that surfaces
+problems early.
 
 ## Concepts
 

@@ -150,7 +150,9 @@ export class CodexRuntime implements AgentRuntime {
     }
 
     const existingAgentsMd = await this.readIfExists(path.join(repo, 'AGENTS.md'));
-    await writeFile(overridePath, renderAgentsOverride(protocolText, existingAgentsMd));
+    const agentPromptText =
+      agent.systemPromptFile !== undefined ? await this.readIfExists(this.resolvePath(agent.systemPromptFile)) : null;
+    await writeFile(overridePath, renderAgentsOverride(protocolText, existingAgentsMd, agentPromptText));
   }
 
   buildLaunchCommand(agent: AgentConfig, identity: IdentityEndpoints, opts: LaunchOptions): string {

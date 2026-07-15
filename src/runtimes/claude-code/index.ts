@@ -62,9 +62,14 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     }
     flags.push('--mcp-config', shellQuote(this.mcpConfigPath(identity)));
     flags.push('--settings', shellQuote(this.hooksSettingsPath(identity)));
+    // Conductor protocol first (all agents), then any per-agent instructions
+    // (e.g. the sentinel prompt). Claude Code allows repeated appends.
     const promptFile = this.systemPromptPath();
     if (promptFile !== undefined) {
       flags.push('--append-system-prompt-file', shellQuote(promptFile));
+    }
+    if (agent.systemPromptFile !== undefined && existsSync(agent.systemPromptFile)) {
+      flags.push('--append-system-prompt-file', shellQuote(agent.systemPromptFile));
     }
 
     const claude = `${this.config.binary} ${flags.join(' ')}`;

@@ -16,6 +16,11 @@ let delivered: { agent: string; text: string }[];
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // Pin to a fixed sub-second offset (.500) so an every-second cron advanced by
+  // 1100ms deterministically crosses exactly ONE boundary. Without this the fake
+  // clock starts at the real wall-clock time, and a 1100ms window straddles one
+  // or two second boundaries depending on that offset — a genuine flake source.
+  vi.setSystemTime(new Date('2026-01-02T03:04:05.500Z'));
   agents = new Map();
   active = false;
   paused = false;
