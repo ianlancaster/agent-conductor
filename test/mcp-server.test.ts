@@ -140,6 +140,32 @@ describe('events endpoint', () => {
   });
 });
 
+describe('anti-CSRF guard', () => {
+  it('rejects a POST carrying an Origin header (drive-by browser request)', async () => {
+    const response = await fetch(`${BASE}/cmd`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', 'Origin': 'https://evil.example' },
+      body: JSON.stringify({ command: '/stop all' }),
+    });
+    expect(response.status).toBe(403);
+    expect(commands).toEqual([]); // never reached the handler
+  });
+
+  it('rejects a POST carrying a Referer header', async () => {
+    const response = await fetch(`${BASE}/mcp/alpha`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Referer': 'https://evil.example/x' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it('allows requests with no Origin/Referer (the Node clients we ship)', async () => {
+    const result = await rpc('/mcp/alpha', 'tools/list');
+    expect(result.result).toBeDefined();
+  });
+});
+
 describe('cmd and health endpoints', () => {
   it('routes CLI commands', async () => {
     const response = await fetch(`${BASE}/cmd`, {
