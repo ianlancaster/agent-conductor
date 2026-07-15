@@ -314,6 +314,30 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       },
     },
     {
+      name: 'whoami',
+      description:
+        'Return your own codename and status. Your identity is mechanical — the conductor derives it from the connection, so this is authoritative.',
+      inputSchema: { type: 'object', properties: {} },
+      handler: (_args, caller) => {
+        const state = deps.states.get(caller);
+        return Promise.resolve(
+          JSON.stringify(
+            {
+              codename: caller,
+              registered: deps.agents().has(caller),
+              isSentinel: deps.sentinel.isSentinel(caller),
+              autonomy: state?.autonomy ?? null,
+              activity: state?.activity ?? null,
+              sessionActive: state?.sessionActive ?? false,
+              tag: state?.tag ?? null,
+            },
+            null,
+            2,
+          ),
+        );
+      },
+    },
+    {
       name: 'list_agents',
       description: 'List all agents with their status.',
       inputSchema: { type: 'object', properties: {} },

@@ -20,6 +20,7 @@ you are from your connection; never claim to be another agent.
 - `notify_agents` — queue a message delivered when agents next start.
 - `respond_to_user` — reply to the human operator (required when they message you remotely).
 - `request_human_input` — ask for a human decision; blocks until answered.
+- `whoami` — your own codename and status (identity is mechanical; this is authoritative).
 - `list_agents`, `get_agent_status`, `agent_exists`, `tail_agent` — fleet observability.
 - `start_agent`, `stop_agent`, `continue_agent`, `spawn_agent`, `teardown_agent` — lifecycle.
 - `set_autonomy`, `set_tag`, `get_tag` — mode and status labels.

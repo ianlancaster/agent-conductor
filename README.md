@@ -97,7 +97,7 @@ Same language everywhere (console, `conductor cmd`, Telegram):
 `send_to_agent` · `broadcast` (sparingly) · `notify_agents` · `respond_to_user` ·
 `request_human_input` · `start_agent` / `stop_agent` / `continue_agent` ·
 `spawn_agent` / `teardown_agent` · `create_worktree` / `remove_worktree` ·
-`set_autonomy` · `set_tag` / `get_tag` · `list_agents` / `get_agent_status` /
+`set_autonomy` · `set_tag` / `get_tag` · `whoami` · `list_agents` / `get_agent_status` /
 `agent_exists` · `tail_agent` · `type_in_pane` · `request_restart`
 
 Sentinel-only: `get_stall_queue` · `resolve_stall` · `answer_human_input`.
