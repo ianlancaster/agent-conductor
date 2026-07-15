@@ -110,6 +110,8 @@ describe('hasShellPrompt', () => {
     expect(hasShellPrompt('bash-5.2$')).toBe(true);
     expect(hasShellPrompt('~/repo ❯')).toBe(true);
     expect(hasShellPrompt('root@box:~#')).toBe(true);
+    expect(hasShellPrompt('cc-conductor ==>')).toBe(true);
+    expect(hasShellPrompt('cc-conductor ==> ')).toBe(true);
   });
 
   it('ignores trailing blank lines from the capture', () => {

@@ -151,7 +151,9 @@ export function hasShellPrompt(capture: string): boolean {
     .filter((line) => line.length > 0);
   const last = lines[lines.length - 1];
   if (last === undefined) return false;
-  return /(?:(?<!\d)%|[$#❯])$/.test(last);
+  // `>` covers custom prompts like `myproject ==>`; a false positive only means
+  // delivering slightly early — the same behavior as the poll-timeout fallback.
+  return /(?:(?<!\d)%|[$#❯>])$/.test(last);
 }
 
 /** Trailing `lines` lines of `text`, with trailing blank lines stripped first. */
