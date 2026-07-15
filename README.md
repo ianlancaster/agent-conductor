@@ -89,6 +89,20 @@ Set `CONDUCTOR_TELEGRAM_TOKEN` and `CONDUCTOR_TELEGRAM_CHAT_ID` (create a bot wi
 @BotFather). Every command above works remotely; escalations and human-input requests
 arrive with inline buttons.
 
+## Security posture
+
+The MCP/events/command surface binds to `127.0.0.1` only and rejects any request
+carrying a browser `Origin`/`Referer` header, so a web page you visit cannot drive your
+fleet. Identity is mechanical (the codename comes from the URL path the agent was
+configured with). There is no per-agent bearer auth yet — a _different_ local process
+could still assume a codename; hardening that is planned alongside the cross-machine relay.
+Run the conductor only on a trusted machine.
+
+Codex agents each get an isolated `CODEX_HOME` (under the conductor's data dir) so
+`resume` only ever sees that agent's own sessions; your shared `auth.json`/`config.toml`
+are symlinked in, so login still works. Codex protocol injection writes
+`AGENTS.override.md` into each agent's repo — **add it to that repo's `.gitignore`.**
+
 ## Running headless
 
 `terminal.backend: tmux` runs the whole fleet detached — a Linux box over SSH works.

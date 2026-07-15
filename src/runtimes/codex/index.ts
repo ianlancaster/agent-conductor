@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import type { AgentConfig, SupervisorConfig } from '../../config/schema.js';
 import type { RuntimeEvent } from '../../core/types.js';
@@ -27,6 +28,12 @@ const PROTOCOL_PLACEHOLDER =
   '<!-- conductor protocol placeholder: no protocolPath configured; the conductor supplies the real instructions -->';
 
 const NOTIFY_SCRIPT_NAME = 'notify.sh';
+
+/** Per-agent CODEX_HOME lives here (isolates sessions/); auth is symlinked in from the shared home. */
+const CODEX_HOME_DIR = 'codex-home';
+
+/** Files symlinked from the shared codex home so a per-agent home still authenticates and inherits config. */
+const SHARED_CODEX_FILES = ['auth.json', 'config.toml'] as const;
 
 /**
  * TUI chrome patterns (Codex CLI, ratatui-based). The composer prompt row
@@ -126,6 +133,7 @@ export class CodexRuntime implements AgentRuntime {
   async prepare(agent: AgentConfig, identity: IdentityEndpoints): Promise<void> {
     await mkdir(identity.configDir, { recursive: true });
     await writeFile(this.notifyScriptPath(identity), renderNotifyScript(identity.eventsUrl), { mode: 0o755 });
+    await this.prepareCodexHome(identity);
 
     const protocolText = await this.readProtocolText();
     const repo = this.resolvePath(agent.repo);
@@ -148,6 +156,10 @@ export class CodexRuntime implements AgentRuntime {
   buildLaunchCommand(agent: AgentConfig, identity: IdentityEndpoints, opts: LaunchOptions): string {
     const repo = this.resolvePath(agent.repo);
     const parts: string[] = [shellQuote(this.settings.binary)];
+    // `resume --last` picks the newest rollout in CODEX_HOME/sessions. With a
+    // per-agent CODEX_HOME that set only ever contains THIS agent's sessions, so
+    // a continue can't accidentally resume another codex agent's (or the
+    // operator's own) session.
     if (opts.continueSession === true) parts.push('resume', '--last');
 
     const overrides = buildConfigOverrides({
@@ -166,7 +178,8 @@ export class CodexRuntime implements AgentRuntime {
 
     if (opts.prompt !== undefined) parts.push('--', shellQuote(opts.prompt));
 
-    return `cd ${shellQuote(repo)} && ${parts.join(' ')}`;
+    const codexHome = this.codexHomePath(identity);
+    return `cd ${shellQuote(repo)} && export CODEX_HOME=${shellQuote(codexHome)} && ${parts.join(' ')}`;
   }
 
   /**
@@ -248,6 +261,34 @@ export class CodexRuntime implements AgentRuntime {
 
   private notifyScriptPath(identity: IdentityEndpoints): string {
     return path.join(identity.configDir, NOTIFY_SCRIPT_NAME);
+  }
+
+  private codexHomePath(identity: IdentityEndpoints): string {
+    return path.join(identity.configDir, CODEX_HOME_DIR);
+  }
+
+  /**
+   * Create the per-agent CODEX_HOME and symlink the shared home's auth/config
+   * into it, so the agent authenticates and inherits provider config while
+   * keeping its own isolated `sessions/`. Symlink failures are non-fatal: a
+   * missing shared auth.json just means the agent relies on env-var auth.
+   */
+  private async prepareCodexHome(identity: IdentityEndpoints): Promise<void> {
+    const home = this.codexHomePath(identity);
+    await mkdir(home, { recursive: true });
+    const sharedHome = process.env.CODEX_HOME ?? path.join(homedir(), '.codex');
+    for (const file of SHARED_CODEX_FILES) {
+      const src = path.join(sharedHome, file);
+      const dest = path.join(home, file);
+      try {
+        await symlink(src, dest);
+      } catch (err) {
+        // EEXIST (already linked from a prior prepare) is fine and silent.
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+          log().debug('codex', `could not link ${file} into per-agent CODEX_HOME: ${(err as Error).message}`);
+        }
+      }
+    }
   }
 
   private async readProtocolText(): Promise<string> {

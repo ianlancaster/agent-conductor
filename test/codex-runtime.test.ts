@@ -84,7 +84,7 @@ describe('buildLaunchCommand', () => {
 
   it('constructs a fresh launch command', () => {
     const cmd = runtime.buildLaunchCommand(makeAgent(), identity, {});
-    expect(cmd.startsWith("cd '/repos/midgard' && 'codex' ")).toBe(true);
+    expect(cmd.startsWith("cd '/repos/midgard' && export CODEX_HOME='/cfg/midgard/codex-home' && 'codex' ")).toBe(true);
     expect(cmd).toContain(`-c 'mcp_servers.conductor.url="http://127.0.0.1:3456/mcp/midgard"'`);
     expect(cmd).toContain(`-c 'mcp_servers.conductor.tool_timeout_sec=600'`);
     expect(cmd).toContain(`-c 'notify=["/bin/sh","/cfg/midgard/notify.sh"]'`);
@@ -100,6 +100,13 @@ describe('buildLaunchCommand', () => {
     // Config overrides still apply on resume (the bypass flag alone is not honored there).
     expect(cmd).toContain(`-c 'approval_policy="never"'`);
     expect(cmd).toContain(`-c 'sandbox_mode="danger-full-access"'`);
+  });
+
+  it('exports a per-agent CODEX_HOME so resume --last only sees this agent (H4)', () => {
+    const cmd = runtime.buildLaunchCommand(makeAgent(), identity, { continueSession: true });
+    expect(cmd).toContain("export CODEX_HOME='/cfg/midgard/codex-home'");
+    // The export precedes the binary so the resume reads the isolated sessions dir.
+    expect(cmd.indexOf('CODEX_HOME')).toBeLessThan(cmd.indexOf("'codex'"));
   });
 
   it('passes the initial prompt as a positional argument after --', () => {
@@ -195,6 +202,41 @@ describe('prepare', () => {
     await runtime.prepare(makeAgent({ repo: repoDir }), makeIdentity(configDir));
 
     expect(await readFile(overridePath, 'utf8')).toBe('# Hand-written override');
+  });
+
+  it('creates a per-agent CODEX_HOME and symlinks shared auth in (H4)', async () => {
+    const sharedHome = path.join(workDir, 'shared-codex');
+    await mkdir(sharedHome, { recursive: true });
+    await writeFile(path.join(sharedHome, 'auth.json'), '{"token":"shared"}');
+    const prev = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = sharedHome;
+    try {
+      const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+      await runtime.prepare(makeAgent({ repo: repoDir }), makeIdentity(configDir));
+
+      const home = path.join(configDir, 'codex-home');
+      expect((await stat(home)).isDirectory()).toBe(true);
+      // Auth resolves through the symlink; sessions/ stays isolated to this home.
+      expect(await readFile(path.join(home, 'auth.json'), 'utf8')).toBe('{"token":"shared"}');
+    } finally {
+      if (prev === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = prev;
+    }
+  });
+
+  it('tolerates a shared home with no auth.json (env-var auth)', async () => {
+    const sharedHome = path.join(workDir, 'empty-codex');
+    await mkdir(sharedHome, { recursive: true });
+    const prev = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = sharedHome;
+    try {
+      const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+      await expect(runtime.prepare(makeAgent({ repo: repoDir }), makeIdentity(configDir))).resolves.toBeUndefined();
+      expect((await stat(path.join(configDir, 'codex-home'))).isDirectory()).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = prev;
+    }
   });
 });
 

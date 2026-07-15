@@ -95,6 +95,17 @@ export class ConductorMcpServer {
       return;
     }
 
+    // Anti-CSRF: the legitimate clients (Claude Code / Codex MCP, the CLI) are
+    // Node HTTP clients and never send Origin/Referer. A browser always does on
+    // a cross-origin fetch, so their presence means a drive-by page is trying to
+    // reach the localhost surface — reject it. (Full per-agent auth is deferred
+    // to the relay phase; this closes the browser vector cheaply.)
+    if (req.headers.origin !== undefined || req.headers.referer !== undefined) {
+      log().warn('mcp', `Rejected request with Origin/Referer header (possible CSRF) to ${path}`);
+      this.respondJson(res, 403, { error: 'cross-origin requests are not allowed' });
+      return;
+    }
+
     const body = await this.readBody(req);
 
     if (path.startsWith('/events/')) {
