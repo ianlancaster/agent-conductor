@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import yaml from 'js-yaml';
 import { log } from '../logger.js';
-import type { AgentConfig } from '../config/schema.js';
+import { isValidCodename, type AgentConfig } from '../config/schema.js';
 import type { AgentRuntime, IdentityEndpoints } from '../runtimes/types.js';
 import type { Store } from '../store/index.js';
 import type { TerminalBackend } from '../terminals/types.js';
@@ -54,6 +55,8 @@ export interface LifecycleDeps {
 export class Lifecycle {
   private readonly panes = new Map<string, PaneRef>();
   private readonly sessions = new Map<string, string>();
+  /** In-flight start per codename — serializes concurrent starts so we never open two panes for one agent. */
+  private readonly starting = new Map<string, Promise<string>>();
 
   constructor(private readonly deps: LifecycleDeps) {}
 
@@ -71,7 +74,20 @@ export class Lifecycle {
     }
   }
 
-  async start(codename: string, opts: StartOptions = {}): Promise<string> {
+  start(codename: string, opts: StartOptions = {}): Promise<string> {
+    // Serialize starts for one codename: a cron fire racing an operator /start
+    // (or an auto-start via sendToAgent) must not both pass the liveness check
+    // and open two panes for a single identity.
+    const inFlight = this.starting.get(codename);
+    if (inFlight !== undefined) return inFlight;
+    const promise = this.startInner(codename, opts).finally(() => {
+      this.starting.delete(codename);
+    });
+    this.starting.set(codename, promise);
+    return promise;
+  }
+
+  private async startInner(codename: string, opts: StartOptions): Promise<string> {
     const agent = this.deps.agents().get(codename);
     if (agent === undefined) return `Unknown agent: ${codename}`;
 
@@ -95,13 +111,24 @@ export class Lifecycle {
     const placement = opts.placement ?? this.deps.config.defaultPlacement;
     const pane = await this.deps.backend.createPane(codename, placement, agent.repo);
     this.panes.set(codename, pane);
-    await this.deps.backend.rename(pane, codename);
 
-    const command = runtime.buildLaunchCommand(agent, identity, {
-      prompt: opts.prompt,
-      continueSession: opts.continueSession ?? false,
-    });
-    await this.deps.backend.launch(pane, command);
+    try {
+      await this.deps.backend.rename(pane, codename);
+      const command = runtime.buildLaunchCommand(agent, identity, {
+        prompt: opts.prompt,
+        continueSession: opts.continueSession ?? false,
+      });
+      await this.deps.backend.launch(pane, command);
+    } catch (err) {
+      // Don't leak the pane we just opened if launch setup fails.
+      this.panes.delete(codename);
+      try {
+        await this.deps.backend.kill(pane);
+      } catch {
+        // Best effort — the pane may already be gone.
+      }
+      throw err;
+    }
 
     const sessionId = randomUUID();
     this.sessions.set(codename, sessionId);
@@ -152,6 +179,12 @@ export class Lifecycle {
   }
 
   async spawn(codename: string, opts: SpawnOptions = {}): Promise<string> {
+    // Validate BEFORE any filesystem write: the codename becomes a directory
+    // name and a config filename, so an unvalidated value (e.g. '../../x') is a
+    // path-traversal write. The schema only checks codenames at load time.
+    if (!isValidCodename(codename)) {
+      return `Invalid codename '${codename}': must be alphanumeric with dashes/underscores.`;
+    }
     if (this.deps.agents().has(codename)) return `Agent '${codename}' already exists.`;
 
     const rawDir = opts.path ?? this.deps.config.spawnDirPattern.replace('{codename}', codename);
@@ -163,10 +196,12 @@ export class Lifecycle {
       mkdirSync(dir, { recursive: true });
     }
 
-    const configLines = [`codename: ${codename}`, `repo: ${dir}`];
-    if (opts.model !== undefined) configLines.push(`model: ${opts.model}`);
+    // Serialize with js-yaml, never string interpolation: a model/prompt value
+    // containing a newline would otherwise inject arbitrary YAML keys.
+    const config: Record<string, string> = { codename, repo: dir };
+    if (opts.model !== undefined) config.model = opts.model;
     mkdirSync(this.deps.agentConfigDir, { recursive: true });
-    writeFileSync(join(this.deps.agentConfigDir, `${codename}.yaml`), `${configLines.join('\n')}\n`);
+    writeFileSync(join(this.deps.agentConfigDir, `${codename}.yaml`), yaml.dump(config));
 
     this.deps.reloadAgents();
     const started = await this.start(codename, { prompt: opts.prompt, placement: opts.placement });
@@ -220,6 +255,9 @@ export class Lifecycle {
       this.sessions.delete(codename);
     }
     this.panes.delete(codename);
+    // Cancel any armed idle/stall timers so they can't fire into a stopped or
+    // (after teardown) deregistered agent — that would throw inside setTimeout.
+    this.deps.healthReset(codename);
     if (this.deps.states.has(codename)) {
       this.deps.states.setSession(codename, undefined);
       this.deps.states.setActivity(codename, 'stopped');

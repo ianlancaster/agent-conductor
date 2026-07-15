@@ -56,7 +56,10 @@ export class TmuxBackend implements TerminalBackend {
 
   /** Create the detached session if it does not already exist. */
   async init(): Promise<void> {
-    const exists = await tmuxSucceeds(['has-session', '-t', this.sessionName]);
+    // `=name` forces an EXACT session match. Without it, tmux prefix-matches, so
+    // `has-session -t conductor` would find a user's `conductor-dev` session and
+    // we'd inject agent panes into it.
+    const exists = await tmuxSucceeds(['has-session', '-t', `=${this.sessionName}`]);
     if (exists) {
       log().debug('tmux', `session '${this.sessionName}' already exists`);
       return;

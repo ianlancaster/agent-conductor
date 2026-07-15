@@ -22,6 +22,15 @@ program
   .option('--start-all', 'Start every configured agent immediately')
   .option('--no-console', 'Run without the interactive console')
   .action(async (opts: { startAll?: boolean; console?: boolean }) => {
+    // Backstop: the conductor's whole job is supervision, so a stray rejection
+    // from a fire-and-forget path (a pane dying mid-write) must be logged, not
+    // allowed to terminate the process and take down the whole fleet's oversight.
+    process.on('unhandledRejection', (reason) => {
+      process.stderr.write(
+        `[unhandledRejection] ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}\n`,
+      );
+    });
+
     const supervisor = new Supervisor(process.cwd());
     await supervisor.start({ startAll: opts.startAll ?? false });
 

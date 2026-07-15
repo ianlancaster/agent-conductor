@@ -245,6 +245,22 @@ describe('spawn and teardown', () => {
     expect(agents.has('newbie')).toBe(false);
   });
 
+  it('rejects a traversal codename before writing any files (H7)', async () => {
+    const reply = await router.route('/spawn ../../../etc/evil');
+    expect(reply).toContain('Invalid codename');
+    expect(existsSync(join(baseDir, '..', '..', '..', 'etc', 'evil'))).toBe(false);
+    expect(agents.has('../../../etc/evil')).toBe(false);
+  });
+
+  it('serializes model values as YAML data, not injectable config (H7)', async () => {
+    // A real newline inside the quoted model value: string interpolation would
+    // have injected a `runtime:` key; js-yaml keeps it a single scalar.
+    await router.route('/spawn injected --model "sonnet\nruntime: evil"');
+    const spawned = agents.get('injected');
+    expect(spawned?.runtime).toBe('claude-code');
+    expect(spawned?.model).toContain('sonnet');
+  });
+
   it('refuses to delete directories containing a git repo', async () => {
     await router.route('/spawn gitty');
     mkdirSync(join(baseDir, 'spawned', 'gitty', '.git'), { recursive: true });

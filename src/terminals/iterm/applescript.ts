@@ -6,6 +6,14 @@ const execFileAsync = promisify(execFile);
 /** osascript stdout can include large pane captures. */
 const OSA_MAX_BUFFER = 10 * 1024 * 1024;
 
+/**
+ * Hard timeout for any osascript call. iTerm2 can block indefinitely on a modal
+ * dialog, a beachball, or a macOS automation-permission (TCC) prompt; without a
+ * timeout the heartbeat/focus intervals would spawn a fresh stuck process every
+ * tick. On timeout execFile kills the child and rejects.
+ */
+const OSA_TIMEOUT_MS = 20_000;
+
 /** iTerm2 session user variable holding the base64-encoded agent codename (used for restart rediscovery). */
 export const AGENT_USER_VAR = 'user.conductor_agent';
 
@@ -21,7 +29,10 @@ const ESC = '\u001b';
  * Returns raw stdout (callers trim as needed).
  */
 export async function runOsa(script: string): Promise<string> {
-  const { stdout } = await execFileAsync('osascript', ['-e', script], { maxBuffer: OSA_MAX_BUFFER });
+  const { stdout } = await execFileAsync('osascript', ['-e', script], {
+    maxBuffer: OSA_MAX_BUFFER,
+    timeout: OSA_TIMEOUT_MS,
+  });
   return stdout;
 }
 

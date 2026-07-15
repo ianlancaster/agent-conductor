@@ -81,6 +81,33 @@ describe('Supervisor construction', () => {
     expect(status).toContain('"tag": "carry-over"');
   });
 
+  it('keeps persisted state when a config transiently fails to parse (M13)', async () => {
+    writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43396\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    supervisor = new Supervisor(baseDir);
+    await supervisor.command('/auto alpha');
+
+    // Simulate an editor's mid-write atomic save: the file exists but is invalid.
+    writeFileSync(join(baseDir, 'config', 'agents', 'alpha.yaml'), 'codename: alpha\nrepo:\n  - bad');
+    await supervisor.command('/status'); // any op; the reload runs on the watcher, so force one:
+    supervisor.reloadAgentsForTest();
+
+    expect(supervisor.statusReport()).toContain('alpha');
+    expect(supervisor.statusReport('alpha')).toContain('"autonomy": "autonomous"');
+  });
+
+  it('deregisters and clears state when a config is genuinely removed', async () => {
+    writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43397\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    supervisor = new Supervisor(baseDir);
+    await supervisor.command('/auto alpha');
+    rmSync(join(baseDir, 'config', 'agents', 'alpha.yaml'));
+    supervisor.reloadAgentsForTest();
+    expect(supervisor.statusReport()).toContain('No agents configured');
+  });
+
   it('flags marker-file repos as agent projects in status', () => {
     const repo = join(baseDir, 'agent-repo');
     mkdirSync(repo, { recursive: true });

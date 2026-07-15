@@ -7,6 +7,8 @@ import { splitMessage } from './split.js';
 const POLL_TIMEOUT_SECONDS = 30;
 const ERROR_BACKOFF_MS = 5000;
 const CALLBACK_ANSWER_MAX_LENGTH = 200;
+/** Ceiling for a single sendMessage/answerCallbackQuery round-trip so a half-open socket can't freeze the poll loop. */
+const SEND_TIMEOUT_MS = 15_000;
 
 // ── Minimal Telegram Bot API payload shapes (only the fields we touch) ───────
 
@@ -266,11 +268,16 @@ export class TelegramAdapter implements ChannelAdapter {
   // ── Bot API transport ──────────────────────────────────────────────────────
 
   private async api<T = unknown>(method: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+    // Every call gets a hard timeout; long-poll getUpdates also honors the
+    // shutdown signal. Without this a half-open TCP (laptop sleep) would block
+    // the single poll loop for undici's ~300s default.
+    const timeout = AbortSignal.timeout(method === 'getUpdates' ? (POLL_TIMEOUT_SECONDS + 10) * 1000 : SEND_TIMEOUT_MS);
+    const combined = signal !== undefined ? AbortSignal.any([signal, timeout]) : timeout;
     const res = await fetch(`https://api.telegram.org/bot${this.botToken}/${method}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
-      signal: signal ?? null,
+      signal: combined,
     });
     const body = (await res.json()) as TelegramApiResponse<T>;
     if (!body.ok || body.result === undefined) {

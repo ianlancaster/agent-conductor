@@ -1,5 +1,12 @@
 import { z } from 'zod';
 
+/** Codenames become URL path segments, filenames, and tmux targets — keep them boring. */
+export const CODENAME_PATTERN = /^[a-z0-9][a-z0-9-_]*$/i;
+
+export function isValidCodename(value: string): boolean {
+  return CODENAME_PATTERN.test(value);
+}
+
 export const scheduleEntrySchema = z.object({
   label: z.string().optional(),
   cron: z.string(),
@@ -9,10 +16,7 @@ export const scheduleEntrySchema = z.object({
 });
 
 export const agentConfigSchema = z.object({
-  codename: z
-    .string()
-    .min(1)
-    .regex(/^[a-z0-9][a-z0-9-_]*$/i, 'codename must be alphanumeric with dashes/underscores'),
+  codename: z.string().min(1).regex(CODENAME_PATTERN, 'codename must be alphanumeric with dashes/underscores'),
   /** Human-readable display name. Defaults to the codename. */
   agent: z.string().optional(),
   /** Absolute or config-relative path to the agent's working directory. */

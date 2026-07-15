@@ -4,6 +4,9 @@ import type { Placement } from '../../core/types.js';
 
 const execFileAsync = promisify(execFile);
 
+/** Hard timeout for any tmux invocation so a hung server can't wedge the heartbeat loop. */
+const TMUX_TIMEOUT_MS = 15_000;
+
 /** Error from a tmux invocation, including tmux's stderr when available. */
 export class TmuxError extends Error {
   constructor(args: readonly string[], cause: string) {
@@ -28,7 +31,7 @@ function describeExecError(error: unknown): string {
  */
 export async function tmux(args: readonly string[]): Promise<string> {
   try {
-    const { stdout } = await execFileAsync('tmux', [...args]);
+    const { stdout } = await execFileAsync('tmux', [...args], { timeout: TMUX_TIMEOUT_MS });
     return stdout;
   } catch (error) {
     throw new TmuxError(args, describeExecError(error));
@@ -102,17 +105,26 @@ export interface CreatePaneSpec {
  */
 export function buildCreatePaneArgs(spec: CreatePaneSpec): string[] {
   const cwdArgs = spec.cwd !== undefined ? ['-c', spec.cwd] : [];
+  // `=name` forces an exact session match so we never target a user's
+  // prefix-colliding session (e.g. `conductor-dev`).
+  const session = `=${spec.sessionName}`;
   switch (spec.placement) {
     case 'pane':
-      return ['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${spec.sessionName}:{start}`, ...cwdArgs];
+      return ['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${session}:{start}`, ...cwdArgs];
     case 'tab':
     case 'window':
-      return ['new-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${spec.sessionName}:`, '-n', spec.agent, ...cwdArgs];
+      return ['new-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${session}:`, '-n', spec.agent, ...cwdArgs];
   }
 }
 
-/** Buffer name used for multiline paste delivery so we never clobber buffer 0. */
-export const PASTE_BUFFER = 'conductor-paste';
+/**
+ * Per-pane buffer name for multiline paste delivery. Deriving it from the pane
+ * id (e.g. `%3` → `conductor-paste-3`) keeps concurrent deliveries to different
+ * panes from clobbering each other's buffer mid-paste.
+ */
+export function pasteBufferName(paneId: string): string {
+  return `conductor-paste-${paneId.replace(/[^a-zA-Z0-9]/g, '')}`;
+}
 
 /**
  * Build the sequence of tmux commands that delivers `text` to a pane and
@@ -126,12 +138,11 @@ export const PASTE_BUFFER = 'conductor-paste';
  */
 export function buildDeliveryCommands(paneId: string, text: string): string[][] {
   const enter = ['send-keys', '-t', paneId, 'Enter'];
-  if (text.includes('\n')) {
-    return [
-      ['set-buffer', '-b', PASTE_BUFFER, '--', text],
-      ['paste-buffer', '-d', '-p', '-b', PASTE_BUFFER, '-t', paneId],
-      enter,
-    ];
+  // Carriage returns take the literal path otherwise and a raw \r submits
+  // mid-message, so treat any embedded newline OR CR as multiline.
+  if (/[\n\r]/.test(text)) {
+    const buffer = pasteBufferName(paneId);
+    return [['set-buffer', '-b', buffer, '--', text], ['paste-buffer', '-d', '-p', '-b', buffer, '-t', paneId], enter];
   }
   return [['send-keys', '-t', paneId, '-l', '--', text], enter];
 }
