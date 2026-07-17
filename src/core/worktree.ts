@@ -5,6 +5,20 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Run git with any inherited GIT_* repo-scoping env stripped. When the
+ * conductor (or its test suite) runs inside a git hook, git exports
+ * GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE pointing at the OUTER repo — inheriting
+ * them would make these commands operate on the wrong repository.
+ */
+function git(args: string[]): Promise<{ stdout: string; stderr: string }> {
+  const env = { ...process.env };
+  for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
+    delete env[key];
+  }
+  return execFileAsync('git', args, { env });
+}
+
 /** Parse the `gitdir: <path>` pointer inside a worktree's .git FILE. */
 export function parseGitdirPointer(content: string): string | null {
   const match = /^gitdir:\s*(.+)\s*$/m.exec(content);
@@ -47,12 +61,12 @@ export async function addWorktree(repo: string, dir: string, branch: string): Pr
   const args = exists
     ? ['-C', repo, 'worktree', 'add', '--', dir, branch]
     : ['-C', repo, 'worktree', 'add', '-b', branch, '--', dir];
-  await execFileAsync('git', args);
+  await git(args);
 }
 
 async function branchExists(repo: string, branch: string): Promise<boolean> {
   try {
-    await execFileAsync('git', ['-C', repo, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+    await git(['-C', repo, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
     return true;
   } catch {
     return false;
@@ -65,5 +79,5 @@ export async function removeWorktree(dir: string): Promise<void> {
   if (pointer === null) throw new Error(`${dir}/.git has no gitdir pointer`);
   const mainRepo = mainRepoFromGitdir(pointer);
   if (mainRepo === null) throw new Error(`Cannot locate the main repository for worktree ${dir}`);
-  await execFileAsync('git', ['-C', mainRepo, 'worktree', 'remove', dir]);
+  await git(['-C', mainRepo, 'worktree', 'remove', dir]);
 }

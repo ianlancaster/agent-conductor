@@ -29,8 +29,18 @@ describe('git integration', () => {
   let base: string;
   let repo: string;
 
+  // Strip repo-scoping GIT_* vars: when the suite runs inside a git hook
+  // (husky pre-commit), the inherited GIT_DIR/GIT_INDEX_FILE point at the
+  // conductor repo and would corrupt these tmp-repo commands.
+  const gitEnv = { ...process.env };
+  for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
+    delete gitEnv[key];
+  }
   const git = (cwd: string, ...args: string[]): string =>
-    execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' });
+    execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {
+      encoding: 'utf8',
+      env: gitEnv,
+    });
 
   beforeEach(() => {
     base = mkdtempSync(join(tmpdir(), 'conductor-wt-'));

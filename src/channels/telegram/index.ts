@@ -201,7 +201,19 @@ export class TelegramAdapter implements ChannelAdapter {
         }
       } catch (err) {
         if (!this.polling) return;
-        log().warn('telegram', `getUpdates failed, backing off ${ERROR_BACKOFF_MS}ms: ${String(err).slice(0, 200)}`);
+        if (err instanceof TelegramApiError && err.status === 409) {
+          // Telegram allows exactly one getUpdates poller per bot token. A 409
+          // here means another process (most likely a second conductor) is
+          // polling the same token. Keep retrying so we take over if it stops.
+          log().error(
+            'telegram',
+            'Another process is polling this bot token (Telegram 409). ' +
+              'Each conductor needs its own bot token — set a different CONDUCTOR_TELEGRAM_TOKEN ' +
+              'for this fleet, or disable telegram in its config/supervisor.yaml.',
+          );
+        } else {
+          log().warn('telegram', `getUpdates failed, backing off ${ERROR_BACKOFF_MS}ms: ${String(err).slice(0, 200)}`);
+        }
         await this.backoff();
       }
     }

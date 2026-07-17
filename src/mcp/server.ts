@@ -59,9 +59,21 @@ export class ConductorMcpServer {
 
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.server.once('error', reject);
+      const onError = (err: NodeJS.ErrnoException): void => {
+        if (err.code === 'EADDRINUSE') {
+          reject(
+            new Error(
+              `Port ${String(this.opts.port)} is already in use — likely another conductor. ` +
+                `Set a unique 'mcp: port:' in this fleet's config/supervisor.yaml, or stop the other process.`,
+            ),
+          );
+          return;
+        }
+        reject(err);
+      };
+      this.server.once('error', onError);
       this.server.listen(this.opts.port, this.opts.host, () => {
-        this.server.removeListener('error', reject);
+        this.server.removeListener('error', onError);
         log().info('mcp', `MCP server listening on ${this.opts.host}:${this.opts.port}`);
         resolve();
       });

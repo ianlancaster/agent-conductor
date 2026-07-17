@@ -135,6 +135,20 @@ are symlinked in, so login still works. Codex protocol injection writes
 `terminal.backend: tmux` runs the whole fleet detached — a Linux box over SSH works.
 `conductor daemon install` sets up launchd (macOS) or a systemd user unit (Linux).
 
+## Running multiple fleets
+
+Each fleet directory is a fully independent conductor — run as many as you like at once.
+The instance-scoped defaults (MCP port, tmux session name, window title, daemon service
+name) are derived from the fleet directory path, so two fleets never collide and the
+values stay stable across restarts. Set `mcp: port:` / `terminal: tmux: sessionName:`
+explicitly only if you want specific values. Two things to know:
+
+- **One conductor per fleet directory** — a pid lockfile (`data/conductor.lock`) makes a
+  second `conductor start` in the same fleet dir refuse with a clear error.
+- **Telegram needs one bot token per fleet.** Telegram allows a single poller per token;
+  a second conductor on the same token logs a 409 conflict until you give it its own
+  token (or disable telegram for that fleet).
+
 ## Development
 
 ```bash

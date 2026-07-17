@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import yaml from 'js-yaml';
 import type { ZodError } from 'zod';
 import { log } from '../logger.js';
+import { deriveInstanceDefaults } from './instance.js';
 import { agentConfigSchema, supervisorConfigSchema, type AgentConfig, type SupervisorConfig } from './schema.js';
 
 export interface LoadedConfig {
@@ -35,7 +36,16 @@ export function loadSupervisorConfig(baseDir: string): SupervisorConfig {
   if (!parsed.success) {
     throw new ConfigError(`Invalid supervisor config: ${formatZodError(parsed.error)}`, file);
   }
-  return parsed.data;
+  // Instance-scoped values default per fleet dir so multiple conductors never
+  // collide on a port or tmux session. Explicit config always wins. Derivation
+  // is deterministic — agents' MCP configs bake the port into URLs, so it must
+  // be stable across restarts.
+  const config = parsed.data;
+  const derived = deriveInstanceDefaults(baseDir);
+  config.mcp.port ??= derived.port;
+  config.terminal.windowName ??= derived.windowName;
+  config.terminal.tmux.sessionName ??= derived.tmuxSessionName;
+  return config as SupervisorConfig;
 }
 
 export function parseAgentConfig(raw: unknown, file: string, baseDir: string): AgentConfig {

@@ -23,6 +23,7 @@ import { HealthMonitor } from './health.js';
 import { HumanInputBroker } from './human-input.js';
 import { identityFor } from './identity.js';
 import { Lifecycle } from './lifecycle.js';
+import { FleetLock } from './lock.js';
 import { Messaging } from './messaging.js';
 import { StallSentinelRouter } from './sentinel.js';
 import { AgentStateManager } from './state.js';
@@ -56,12 +57,14 @@ export class Supervisor {
   private readonly watcher: ConfigWatcher;
   private readonly channels: ChannelAdapter[] = [];
   private readonly autoPause: FocusAutoPause | undefined;
+  private readonly lock: FleetLock;
   private heartbeatTimer: NodeJS.Timeout | undefined;
 
   constructor(readonly baseDir: string) {
     this.config = loadSupervisorConfig(baseDir);
     const dataDir = join(baseDir, this.config.paths.dataDir);
     initLogger({ level: this.config.supervisor.logLevel, filePath: join(dataDir, 'conductor.log') });
+    this.lock = new FleetLock(join(dataDir, 'conductor.lock'));
 
     this.agents = loadAgentConfigs(baseDir, { tolerant: true });
     this.store = new Store(join(dataDir, 'conductor.db'));
@@ -245,6 +248,17 @@ export class Supervisor {
   }
 
   async start(opts: SupervisorStartOptions = {}): Promise<void> {
+    this.lock.acquire();
+    try {
+      await this.startLocked(opts);
+    } catch (err) {
+      // A failed startup must not leave the fleet dir locked.
+      this.lock.release();
+      throw err;
+    }
+  }
+
+  private async startLocked(opts: SupervisorStartOptions): Promise<void> {
     log().info('supervisor', `Starting agent-conductor (backend: ${this.backend.name})`);
     await this.backend.init();
 
@@ -301,6 +315,7 @@ export class Supervisor {
     }
     await this.mcpServer.stop();
     this.store.close();
+    this.lock.release();
     log().info('supervisor', 'Stopped (agent panes left running).');
   }
 

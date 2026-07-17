@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChannelHandlers } from '../src/channels/types.js';
 import { TelegramAdapter, type TelegramUpdate } from '../src/channels/telegram/index.js';
+import { log } from '../src/logger.js';
 
 const CHAT_ID = 777;
 
@@ -14,6 +15,7 @@ class TelegramFetchMock {
   readonly calls: RecordedCall[] = [];
   private readonly updateBatches: TelegramUpdate[][] = [];
   readonly sendMessageResponses: { ok: boolean; error_code?: number; description?: string }[] = [];
+  readonly getUpdatesErrors: { error_code: number; description: string }[] = [];
 
   queueUpdates(batch: TelegramUpdate[]): void {
     this.updateBatches.push(batch);
@@ -30,6 +32,8 @@ class TelegramFetchMock {
     this.calls.push({ method, payload });
 
     if (method === 'getUpdates') {
+      const error = this.getUpdatesErrors.shift();
+      if (error !== undefined) return Promise.resolve(json({ ok: false, ...error }));
       const batch = this.updateBatches.shift();
       if (batch !== undefined) return Promise.resolve(json({ ok: true, result: batch }));
       // No scripted updates: hang like a real long-poll until aborted.
@@ -174,6 +178,16 @@ describe('poll loop', () => {
     await until(() => mock.callsFor('getUpdates').length === 1);
     await adapter.stop(); // afterEach stops again — must be safe
     expect(mock.callsFor('getUpdates').length).toBe(1);
+  });
+
+  it('explains a 409 getUpdates conflict (another conductor on the same bot token)', async () => {
+    const errorSpy = vi.spyOn(log(), 'error').mockImplementation(() => undefined);
+    mock.getUpdatesErrors.push({ error_code: 409, description: 'terminated by other getUpdates request' });
+    await adapter.start(handlers);
+    await until(() =>
+      errorSpy.mock.calls.some(([scope, message]) => scope === 'telegram' && message.includes('its own bot token')),
+    );
+    errorSpy.mockRestore();
   });
 });
 

@@ -7,13 +7,13 @@ supervisor:
 
 terminal:
   backend: iterm # or: tmux (headless, Linux/SSH)
-  windowName: Agent Conductor
+  # windowName: My Fleet          # default: "Agent Conductor (<fleet dir name>)"
   iterm:
     autoPauseOnFocus: false # pause an autonomous agent while you interact with its pane
     autoPauseResumeDelaySeconds: 60
     bracketedPasteThreshold: 512
-  tmux:
-    sessionName: conductor
+  # tmux:
+  #   sessionName: my-fleet       # default: conductor-<fleet slug>, unique per fleet dir
 
 # The stall sentinel: an agent (configured like any other in config/agents/) that
 # receives ALL stalls from autonomous agents and decides what to do.
@@ -26,7 +26,7 @@ defaults:
   placement: pane # pane | tab | window
 
 mcp:
-  port: 3456
+  # port: 3456                    # default: derived per fleet dir (3456–3955), stable across restarts
   host: 127.0.0.1
 
 health:

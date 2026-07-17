@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { deriveInstanceDefaults, PORT_RANGE_SIZE, PORT_RANGE_START } from '../src/config/instance.js';
 import { loadAgentConfigs, loadConfig, loadSupervisorConfig, validateConfig } from '../src/config/loader.js';
 import { ConfigWatcher } from '../src/config/watcher.js';
 
@@ -24,7 +25,6 @@ describe('loadSupervisorConfig', () => {
   it('applies full defaults when no config file exists', () => {
     const config = loadSupervisorConfig(baseDir);
     expect(config.supervisor.heartbeatIntervalSeconds).toBe(30);
-    expect(config.mcp.port).toBe(3456);
     expect(config.mcp.host).toBe('127.0.0.1');
     expect(config.health.captureLines).toBe(40);
     expect(config.messaging.queueDrainMs).toBe(2000);
@@ -35,13 +35,30 @@ describe('loadSupervisorConfig', () => {
     expect(config.spawn.markerFile).toBe('.conductor-agent');
   });
 
-  it('merges partial config over defaults', () => {
-    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'mcp:\n  port: 9999\nhealth:\n  captureLines: 80\n');
+  it('derives per-fleet instance defaults so two fleets never collide', () => {
+    const config = loadSupervisorConfig(baseDir);
+    const derived = deriveInstanceDefaults(baseDir);
+    expect(config.mcp.port).toBe(derived.port);
+    expect(config.mcp.port).toBeGreaterThanOrEqual(PORT_RANGE_START);
+    expect(config.mcp.port).toBeLessThan(PORT_RANGE_START + PORT_RANGE_SIZE);
+    expect(config.terminal.tmux.sessionName).toBe(derived.tmuxSessionName);
+    expect(config.terminal.windowName).toBe(derived.windowName);
+    // Stable across reloads — agent MCP configs bake the port into URLs.
+    expect(loadSupervisorConfig(baseDir).mcp.port).toBe(config.mcp.port);
+  });
+
+  it('merges partial config over defaults, explicit values beating derivation', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'mcp:\n  port: 9999\nhealth:\n  captureLines: 80\nterminal:\n  windowName: Fleet One\n  tmux:\n    sessionName: fleet-one\n',
+    );
     const config = loadSupervisorConfig(baseDir);
     expect(config.mcp.port).toBe(9999);
     expect(config.mcp.host).toBe('127.0.0.1');
     expect(config.health.captureLines).toBe(80);
     expect(config.health.suppressSimilarity).toBe(0.8);
+    expect(config.terminal.windowName).toBe('Fleet One');
+    expect(config.terminal.tmux.sessionName).toBe('fleet-one');
   });
 
   it('rejects invalid values with a readable error', () => {
