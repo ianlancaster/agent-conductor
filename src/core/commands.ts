@@ -64,6 +64,9 @@ const HELP = [
   '*Lifecycle*',
   '`/spawn <name> [--path p] [--model m] [--prompt "…"] [placement]`',
   '`/teardown <name> [--delete]`',
+  '',
+  '*Console*',
+  '`/clear` (or `/c`) — clear the console screen (console-only)',
 ].join('\n');
 
 /**
