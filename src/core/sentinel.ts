@@ -5,7 +5,7 @@ import type { StallInfo } from './health.js';
 import { contentSimilarity, stallEnvelope, truncate } from './utils.js';
 import type { Autonomy, PaneRef, StallEvent, StallKind, StallResolution } from './types.js';
 
-const NO_SENTINEL_WARN_INTERVAL_MS = 10 * 60 * 1000;
+const SENTINEL_DOWN_WARN_INTERVAL_MS = 10 * 60 * 1000;
 
 export interface SentinelDeps {
   config: {
@@ -33,7 +33,7 @@ export class StallSentinelRouter {
   private queue: StallEvent[] = [];
   private nextId = 1;
   private readonly lastRouted = new Map<string, { capture: string; at: number }>();
-  private lastNoSentinelWarnAt = 0;
+  private lastSentinelDownWarnAt = 0;
 
   constructor(private readonly deps: SentinelDeps) {}
 
@@ -71,6 +71,19 @@ export class StallSentinelRouter {
       return;
     }
 
+    this.lastRouted.set(session, { capture, at: Date.now() });
+
+    // No sentinel is a perfectly fine setup: the stall goes straight to the
+    // operator as a plain report — no queue (nothing would drain it), no
+    // suggestion to configure one.
+    const sentinel = this.deps.config.sentinelCodename;
+    if (sentinel === undefined) {
+      const summary = info.reason !== undefined ? `: ${truncate(info.reason, 120)}` : '';
+      this.deps.logEvent(session, 'stall_reported', `${kind} → operator`);
+      await this.deps.notifyOperator(`⚠️ *${session}* stalled (${kind})${summary}`);
+      return;
+    }
+
     const event: StallEvent = {
       id: this.nextId,
       session,
@@ -82,19 +95,13 @@ export class StallSentinelRouter {
     };
     this.nextId += 1;
     this.queue.push(event);
-    this.lastRouted.set(session, { capture, at: event.createdAt });
     this.deps.logEvent(session, 'stall_routed', `#${event.id} ${kind}`);
 
-    const sentinel = this.deps.config.sentinelCodename;
-    if (sentinel === undefined || !this.deps.isActive(sentinel)) {
+    if (!this.deps.isActive(sentinel)) {
       const now = Date.now();
-      if (now - this.lastNoSentinelWarnAt > NO_SENTINEL_WARN_INTERVAL_MS) {
-        this.lastNoSentinelWarnAt = now;
-        await this.deps.notifyOperator(
-          sentinel === undefined
-            ? `⚠️ *${session}* stalled (${kind}) but no sentinel is configured. Set sentinel.codename or switch the session to facilitated.`
-            : `⚠️ *${session}* stalled (${kind}) but sentinel *${sentinel}* is not running. Stalls are queueing.`,
-        );
+      if (now - this.lastSentinelDownWarnAt > SENTINEL_DOWN_WARN_INTERVAL_MS) {
+        this.lastSentinelDownWarnAt = now;
+        await this.deps.notifyOperator(`⚠️ *${session}* stalled (${kind}) but sentinel *${sentinel}* is not running.`);
       }
       return;
     }

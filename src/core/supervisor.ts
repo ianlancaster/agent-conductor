@@ -294,10 +294,10 @@ export class Supervisor {
       }
     }
 
+    // The sentinel is optional extra functionality — never nag about its
+    // absence. A configured-but-missing codename IS a config error, though.
     const sentinel = this.config.sentinel.codename;
-    if (sentinel === undefined) {
-      log().warn('supervisor', 'No sentinel configured — autonomous sessions will be unsupervised.');
-    } else if (!this.sessions.has(sentinel)) {
+    if (sentinel !== undefined && !this.sessions.has(sentinel)) {
       log().warn('supervisor', `Configured sentinel '${sentinel}' has no session config.`);
     }
     log().info('supervisor', `Ready — ${this.sessions.size} session(s) registered.`);
@@ -335,7 +335,6 @@ export class Supervisor {
         sessions: () => this.sessions,
         getState: (name) => this.states.get(name),
         sentinelCodename: () => this.config.sentinel.codename,
-        pendingStallCount: () => this.sentinel.pendingStalls().length,
       },
       codename,
     );

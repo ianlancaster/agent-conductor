@@ -39,18 +39,18 @@ describe('Supervisor construction', () => {
     supervisor = new Supervisor(baseDir);
 
     const status = supervisor.statusReport();
+    expect(status).toContain('Sessions:');
     expect(status).toContain('alpha');
     expect(status).toContain('watch');
     expect(status).toContain('🛡'); // sentinel marker
-    expect(status).not.toContain('No sentinel configured');
   });
 
-  it('assembles with the iTerm backend and warns about a missing sentinel', () => {
+  it('assembles with the iTerm backend and never nags about a missing sentinel', () => {
     writeConfig('terminal:\n  backend: iterm\nmcp:\n  port: 43392\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
     });
     supervisor = new Supervisor(baseDir);
-    expect(supervisor.statusReport()).toContain('No sentinel configured');
+    expect(supervisor.statusReport()).not.toContain('sentinel');
   });
 
   it('routes operator commands through the shared router', async () => {
@@ -108,14 +108,21 @@ describe('Supervisor construction', () => {
     expect(supervisor.statusReport()).toContain('No sessions configured');
   });
 
-  it('flags marker-file repos as agent projects in status', () => {
+  it('groups marker-file repos under the Agents header in status', () => {
     const repo = join(baseDir, 'session-repo');
     mkdirSync(repo, { recursive: true });
     writeFileSync(join(repo, '.conductor-agent'), '');
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43395\n', {
       alpha: `codename: alpha\nrepo: ${repo}\n`,
+      beta: `codename: beta\nrepo: ${baseDir}\n`,
     });
     supervisor = new Supervisor(baseDir);
-    expect(supervisor.statusReport()).toContain('🤖');
+    const status = supervisor.statusReport();
+    const agentsAt = status.indexOf('Agents:');
+    const sessionsAt = status.indexOf('Sessions:');
+    expect(agentsAt).toBeGreaterThanOrEqual(0);
+    expect(sessionsAt).toBeGreaterThan(agentsAt);
+    expect(status.slice(agentsAt, sessionsAt)).toContain('alpha');
+    expect(status.slice(sessionsAt)).toContain('beta');
   });
 });

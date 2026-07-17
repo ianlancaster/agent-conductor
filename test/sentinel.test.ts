@@ -87,22 +87,31 @@ describe('stall routing', () => {
     expect(delivered.length).toBe(1);
   });
 
-  it('warns the operator (rate-limited) when no sentinel is configured', async () => {
+  it('reports stalls plainly to the operator when no sentinel is configured', async () => {
     router = makeRouter(undefined);
     await router.handleStall('alpha', 'blocked', { reason: 'permission prompt' });
     expect(operatorMessages.length).toBe(1);
-    expect(operatorMessages[0]).toContain('no sentinel is configured');
-    // Second distinct stall inside the warn window: queued but not re-warned.
+    expect(operatorMessages[0]).toContain('*alpha* stalled (blocked)');
+    expect(operatorMessages[0]).toContain('permission prompt');
+    // No preaching about configuring one, and no queue nobody will drain.
+    expect(operatorMessages[0]).not.toContain('sentinel');
+    expect(router.pendingStalls().length).toBe(0);
+    // Every distinct stall is reported — these are real reports, not nags.
     backend.setPaneContent(panes.get('alpha') ?? '', 'completely different content now');
     await router.handleStall('alpha', 'idle', {});
-    expect(operatorMessages.length).toBe(1);
-    expect(router.pendingStalls().length).toBe(2);
+    expect(operatorMessages.length).toBe(2);
   });
 
-  it('warns when the sentinel is configured but not running', async () => {
+  it('warns (rate-limited) when the sentinel is configured but not running', async () => {
     activeSessions.delete('watch');
     await router.handleStall('alpha', 'idle', {});
     expect(operatorMessages[0]).toContain('sentinel *watch* is not running');
+    expect(router.pendingStalls().length).toBe(1); // queued for the sentinel to drain on start
+    // Second distinct stall inside the warn window: queued but not re-warned.
+    backend.setPaneContent(panes.get('alpha') ?? '', 'completely different content now');
+    await router.handleStall('alpha', 'blocked', {});
+    expect(operatorMessages.length).toBe(1);
+    expect(router.pendingStalls().length).toBe(2);
   });
 });
 
