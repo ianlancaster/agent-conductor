@@ -51,21 +51,24 @@ A "fleet directory" holds your `config/`. Scaffold one:
 mkdir ~/fleet && cd ~/fleet
 conductor init --session alpha --repo ~/code/my-project   # any project dir the session will work in
 conductor validate                  # catches config mistakes before launch
-conductor start                     # the conductor process: headless log feed
-conductor console                   # in another terminal: the operator console
+conductor start                     # this terminal becomes the conductor> console
 ```
 
 `init` writes a minimal commented `config/supervisor.yaml` (every setting is optional —
 ports and names are derived per fleet dir) and `config/sessions/alpha.yaml`. The full
 reference config with every knob lives in `examples/supervisor.yaml`.
 
-The conductor process and the operator console are separate: `start` runs the
-supervisor (its terminal is the log feed — or daemonize it and have no terminal at
-all), and `conductor console` attaches an interactive `conductor>` prompt to it from
-any terminal. At that prompt, type `/help`. `/start alpha` opens an iTerm2 (or tmux)
-pane running Claude Code wired to the conductor; `/tell alpha <message>` talks to it;
-`/status` shows the fleet. Session YAMLs hot-reload — drop a new file in
+`start` boots the conductor as a hidden background process (terminal output in
+`data/conductor.out.log`, structured log in `data/conductor.log`) and turns the current
+terminal into the operator console. Closing the console stops the conductor. At the
+`conductor>` prompt, type `/help`. `/start alpha` opens a pane running Claude Code —
+in this same window on iTerm2 — wired to the conductor; `/tell alpha <message>` talks
+to it; `/status` shows the fleet. Session YAMLs hot-reload — drop a new file in
 `config/sessions/` and it registers itself, no restart.
+
+Two variants: `conductor console` attaches a second console to a running conductor
+(exiting it does NOT stop anything), and `conductor start --foreground` runs the
+supervisor visibly in the current terminal (the log feed — what daemons use).
 
 **New here? Follow [docs/getting-started.md](docs/getting-started.md)** — a step-by-step
 first run (single session → sentinel → Telegram) with the shakedown order that surfaces

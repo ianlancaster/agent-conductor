@@ -309,10 +309,14 @@ export class ITermBackend implements TerminalBackend {
     return this.createWorkspaceWindow();
   }
 
-  /** The tty this conductor was started in, or null (daemon, piped stdin). */
+  /** The operator's tty, or null (daemon with no console). */
   private processTty(): string | null {
+    // Console-first mode: the supervisor runs as a hidden child of `conductor
+    // start`, which passes ITS terminal here so panes join the console window.
+    const consoleTty = process.env.CONDUCTOR_CONSOLE_TTY;
+    if (consoleTty?.startsWith('/dev/') === true) return consoleTty;
     try {
-      // `tty` reads fd 0 — resolves the terminal this conductor was started in.
+      // --foreground mode: `tty` reads fd 0 — the terminal we were started in.
       const ttyPath = execFileSync('tty', [], { stdio: ['inherit', 'pipe', 'ignore'] })
         .toString()
         .trim();

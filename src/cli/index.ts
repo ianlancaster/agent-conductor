@@ -1,7 +1,10 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, openSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { validateConfig, loadSupervisorConfig } from '../config/loader.js';
@@ -30,55 +33,43 @@ function baseDir(): string {
 /** Name this terminal's tab/window — otherwise it just shows "node". */
 function setTerminalTitle(title: string): void {
   if (process.stdout.isTTY) {
-    process.stdout.write(`\u001b]0;${title}\u0007`);
+    process.stdout.write(`]0;${title}`);
   }
 }
-
-program
-  .command('init')
-  .description('Scaffold a fleet directory (config/supervisor.yaml + config/sessions/)')
-  .option('--session <codename>', 'Also create the first session config')
-  .option('--repo <path>', "The session's project directory (required with --session)")
-  .action((opts: { session?: string; repo?: string }) => {
-    for (const line of initFleet(baseDir(), opts)) process.stdout.write(`${line}\n`);
-  });
-
-program
-  .command('start')
-  .description('Run the conductor process (headless log feed — attach with `conductor console`)')
-  .option('--start-all', 'Start every configured session immediately')
-  .action(async (opts: { startAll?: boolean }) => {
-    // Backstop: the conductor's whole job is supervision, so a stray rejection
-    // from a fire-and-forget path (a pane dying mid-write) must be logged, not
-    // allowed to terminate the process and take down the whole fleet's oversight.
-    process.on('unhandledRejection', (reason) => {
-      process.stderr.write(
-        `[unhandledRejection] ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}\n`,
-      );
-    });
-
-    setTerminalTitle(`conductor — ${basename(baseDir())}`);
-
-    const supervisor = new Supervisor(baseDir());
-    await supervisor.start({ startAll: opts.startAll ?? false });
-    log('Operator console: run `conductor console` in another terminal.');
-
-    const shutdown = async (): Promise<void> => {
-      await supervisor.stop();
-      process.exit(0);
-    };
-    process.on('SIGINT', () => void shutdown());
-    process.on('SIGTERM', () => void shutdown());
-  });
 
 function log(line: string): void {
   process.stdout.write(`${line}\n`);
 }
 
+/** The tty this process runs in, or null (no controlling terminal). */
+function ownTty(): string | null {
+  try {
+    const tty = execFileSync('tty', [], { stdio: ['inherit', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+    return tty.startsWith('/dev/') ? tty : null;
+  } catch {
+    return null;
+  }
+}
+
+function cmdUrl(): string {
+  const config = loadSupervisorConfig(baseDir());
+  return `http://${config.mcp.host}:${config.mcp.port}`;
+}
+
+async function conductorUp(base: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${base}/health`, { signal: AbortSignal.timeout(1000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** POST one command line to a running conductor's /cmd endpoint. */
 async function sendCommand(line: string): Promise<string> {
-  const config = loadSupervisorConfig(baseDir());
-  const url = `http://${config.mcp.host}:${config.mcp.port}/cmd`;
+  const url = `${cmdUrl()}/cmd`;
   let response: Response;
   try {
     response = await fetch(url, {
@@ -95,14 +86,9 @@ async function sendCommand(line: string): Promise<string> {
   return payload.reply ?? '';
 }
 
-program
-  .command('console')
-  .description('Interactive operator console attached to a running conductor')
-  .action(async () => {
-    setTerminalTitle(`console — ${basename(baseDir())}`);
-    // Fail fast with a clear message when no conductor is up.
-    await sendCommand('/status');
-
+/** The interactive conductor> REPL. Resolves when the operator exits. */
+function runConsole(): Promise<void> {
+  return new Promise((resolveDone) => {
     const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: 'conductor> ' });
     rl.prompt();
     rl.on('line', (line) => {
@@ -113,7 +99,7 @@ program
       }
       // Console-local: clear screen + scrollback (never sent to the conductor).
       if (trimmed === '/clear' || trimmed === '/c') {
-        process.stdout.write('\u001b[2J\u001b[3J\u001b[H');
+        process.stdout.write('[2J[3J[H');
         rl.prompt();
         return;
       }
@@ -128,8 +114,125 @@ program
         });
     });
     rl.on('close', () => {
-      process.exit(0);
+      resolveDone();
     });
+  });
+}
+
+/** Run the supervisor in THIS process (visible log feed). Used by --foreground and daemons. */
+async function runForeground(startAll: boolean): Promise<void> {
+  // Backstop: the conductor's whole job is supervision, so a stray rejection
+  // from a fire-and-forget path (a pane dying mid-write) must be logged, not
+  // allowed to terminate the process and take down the whole fleet's oversight.
+  process.on('unhandledRejection', (reason) => {
+    process.stderr.write(
+      `[unhandledRejection] ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}\n`,
+    );
+  });
+
+  setTerminalTitle(`conductor feed — ${basename(baseDir())}`);
+
+  const supervisor = new Supervisor(baseDir());
+  await supervisor.start({ startAll });
+
+  const shutdown = async (): Promise<void> => {
+    await supervisor.stop();
+    process.exit(0);
+  };
+  process.on('SIGINT', () => void shutdown());
+  process.on('SIGTERM', () => void shutdown());
+}
+
+program
+  .command('init')
+  .description('Scaffold a fleet directory (config/supervisor.yaml + config/sessions/)')
+  .option('--session <codename>', 'Also create the first session config')
+  .option('--repo <path>', "The session's project directory (required with --session)")
+  .action((opts: { session?: string; repo?: string }) => {
+    for (const line of initFleet(baseDir(), opts)) process.stdout.write(`${line}\n`);
+  });
+
+program
+  .command('start')
+  .description('Launch the conductor and turn this terminal into the operator console')
+  .option('--start-all', 'Start every configured session immediately')
+  .option('--foreground', 'Run the conductor process in this terminal instead (visible log feed, no console)')
+  .action(async (opts: { startAll?: boolean; foreground?: boolean }) => {
+    if (opts.foreground === true) {
+      await runForeground(opts.startAll ?? false);
+      return;
+    }
+
+    setTerminalTitle(`conductor — ${basename(baseDir())}`);
+    const config = loadSupervisorConfig(baseDir());
+    const base = `http://${config.mcp.host}:${config.mcp.port}`;
+
+    let childPid: number | undefined;
+    if (await conductorUp(base)) {
+      log('Attached to the already-running conductor (it will keep running when this console exits).');
+    } else {
+      // Spawn the supervisor as a hidden, headless child. Its terminal output
+      // goes to a file; the structured log is data/conductor.log as always.
+      const dataDir = join(baseDir(), config.paths.dataDir);
+      mkdirSync(dataDir, { recursive: true });
+      const outPath = join(dataDir, 'conductor.out.log');
+      const out = openSync(outPath, 'a');
+      const args = ['-C', baseDir(), 'start', '--foreground', ...(opts.startAll === true ? ['--start-all'] : [])];
+      const child = spawn(process.execPath, [process.argv[1] ?? 'conductor', ...args], {
+        detached: true,
+        stdio: ['ignore', out, out],
+        env: {
+          ...process.env,
+          // Panes open in THIS terminal's window: the backend adopts the
+          // window owning this tty instead of the (tty-less) child's.
+          ...(ownTty() !== null ? { CONDUCTOR_CONSOLE_TTY: ownTty() ?? '' } : {}),
+        },
+      });
+      child.unref();
+      childPid = child.pid;
+
+      // Wait for the /health endpoint so the console's first command works.
+      const deadline = Date.now() + 15_000;
+      while (!(await conductorUp(base))) {
+        if (Date.now() > deadline || child.exitCode !== null) {
+          throw new Error(`The conductor process failed to start — see ${outPath} and data/conductor.log`);
+        }
+        await sleep(250);
+      }
+      log(`Conductor running (pid ${String(childPid)}, logs: ${outPath}).`);
+      log('This terminal is the operator console — closing it stops the conductor. Type /help.');
+    }
+
+    // This console owns the conductor it spawned: when the console dies (exit,
+    // Ctrl-C, terminal closed), take the conductor down with it.
+    const killChild = (): void => {
+      if (childPid === undefined) return;
+      try {
+        process.kill(childPid, 'SIGTERM');
+      } catch {
+        // Already gone.
+      }
+    };
+    process.on('exit', killChild);
+    for (const signal of ['SIGHUP', 'SIGINT', 'SIGTERM'] as const) {
+      process.on(signal, () => {
+        process.exit(0); // triggers the exit handler above
+      });
+    }
+
+    await runConsole();
+    process.exit(0);
+  });
+
+program
+  .command('console')
+  .description('Attach an operator console to a running conductor (does not stop it on exit)')
+  .action(async () => {
+    setTerminalTitle(`console — ${basename(baseDir())}`);
+    // Fail fast with a clear message when no conductor is up.
+    await sendCommand('/status');
+    await runConsole();
+    process.exit(0);
   });
 
 program
