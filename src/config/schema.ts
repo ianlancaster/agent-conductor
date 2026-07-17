@@ -133,6 +133,8 @@ export const supervisorConfigSchema = z.object({
           skipPermissions: z.boolean().default(true),
           /** Export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 (disable if it breaks tools you rely on). */
           disableNonessentialTraffic: z.boolean().default(true),
+          /** Strip Claude Code's optional UI chrome from panes: spinner tips, prompt suggestions, onboarding/startup hints. */
+          bareUi: z.boolean().default(true),
           /** Extra env vars exported to every session. Values here override the built-in defaults. */
           env: z.record(z.string()).default({}),
           /** Path to the conductor protocol prompt appended to every session's system prompt. */

@@ -49,6 +49,7 @@ runtimes:
     autocompactPct: 70
     skipPermissions: true
     disableNonessentialTraffic: true # exports CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; disable if it breaks tools you rely on
+    bareUi: true # bare-bones panes: no spinner tips, prompt suggestions, or onboarding/startup hints. Set false for the full Claude Code UI.
   codex:
     binary: codex
     toolTimeoutSec: 600 # Codex default is 60s — too low for long conductor tools
