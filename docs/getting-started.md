@@ -1,7 +1,7 @@
 # Getting Started
 
 A step-by-step first run. It builds up in the order that surfaces problems early:
-one hand-driven agent, then autonomous mode with a sentinel, then remote control.
+one hand-driven session, then autonomous mode with a sentinel, then remote control.
 Do them in order — each step assumes the previous one worked.
 
 Prerequisites and install are in the [README](../README.md). This guide assumes
@@ -20,12 +20,12 @@ conductor init
 ~/fleet/
 ├── config/
 │   ├── supervisor.yaml        # global settings
-│   └── agents/
-│       ├── alpha.yaml         # one file per agent (hot-reloaded)
+│   └── sessions/
+│       ├── alpha.yaml         # one file per session (hot-reloaded)
 │       └── watch.yaml         # the stall sentinel (later)
-├── prompts/                   # optional: agent-specific instructions
+├── prompts/                   # optional: session-specific instructions
 │   └── sentinel.md
-└── data/                      # created on first run — SQLite, logs, per-agent config
+└── data/                      # created on first run — SQLite, logs, per-session config
 ```
 
 Everything is relative to the fleet directory. Run `conductor` from inside it, or pass
@@ -33,20 +33,20 @@ Everything is relative to the fleet directory. Run `conductor` from inside it, o
 
 ---
 
-## Step 1 — One facilitated agent (the shakedown)
+## Step 1 — One facilitated session (the shakedown)
 
 Start here even if your goal is full autonomy. **Facilitated** mode means _you_ drive:
-the conductor launches the agent and relays your messages, but does not nudge it. This
+the conductor launches the session and relays your messages, but does not nudge it. This
 isolates the terminal/launch machinery from the health/sentinel machinery, so if
 something is wrong with your iTerm2 or `claude` setup you find out cleanly.
 
-1. Create the agent config (point it at a real repo you don't mind an agent touching):
+1. Create the session config (point it at a real repo you don't mind a session touching):
 
    ```bash
-   conductor init --agent alpha --repo /path/to/some/project
+   conductor init --session alpha --repo /path/to/some/project
    ```
 
-   That writes `config/agents/alpha.yaml` — open it to see the optional knobs
+   That writes `config/sessions/alpha.yaml` — open it to see the optional knobs
    (`runtime: codex`, `model:`, `schedules:`).
 
 2. Confirm defaults are facilitated in `config/supervisor.yaml` (they are unless you
@@ -66,11 +66,11 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    /start alpha            # opens a pane, launches `claude` in your repo
    /status                 # 🟢 alpha [facilitated]
    /tell alpha summarize what this project does
-   /tail alpha 40          # see the agent's pane contents
+   /tail alpha 40          # see the session's pane contents
    /stop alpha
    ```
 
-   `/tell` delivers your message into the agent's pane. The agent replies **in its own
+   `/tell` delivers your message into the session's pane. The session replies **in its own
    pane** (watch it in iTerm2). To have replies come back to _you_ over a channel, that's
    Telegram (Step 3).
 
@@ -82,10 +82,10 @@ doesn't exist, or iTerm2 automation permission (macOS will prompt the first time
 
 ## Step 2 — Autonomous mode with a stall sentinel
 
-Autonomous agents run unattended. When one stalls (finishes a turn, blocks on a prompt,
-compacts, or wedges), the conductor routes the stall to the **sentinel** — an agent you
+Autonomous sessions run unattended. When one stalls (finishes a turn, blocks on a prompt,
+compacts, or wedges), the conductor routes the stall to the **sentinel** — a session you
 designate — which decides whether to nudge, dismiss, or escalate to you. Without a
-sentinel, autonomous agents are unsupervised (and the conductor warns you).
+sentinel, autonomous sessions are unsupervised (and the conductor warns you).
 
 1. Give the sentinel its instructions. Copy the shipped prompt into your fleet:
 
@@ -94,7 +94,7 @@ sentinel, autonomous agents are unsupervised (and the conductor warns you).
    cp "$(npm root -g)/agent-conductor/prompts/sentinel.md" ~/fleet/prompts/sentinel.md
    ```
 
-2. Create `config/agents/watch.yaml`:
+2. Create `config/sessions/watch.yaml`:
 
    ```yaml
    codename: watch
@@ -110,7 +110,7 @@ sentinel, autonomous agents are unsupervised (and the conductor warns you).
      codename: watch
    ```
 
-4. Restart the conductor (supervisor.yaml is not hot-reloaded; agent files are):
+4. Restart the conductor (supervisor.yaml is not hot-reloaded; session files are):
 
    ```
    /start watch            # bring the sentinel up first
@@ -125,7 +125,7 @@ sentinel, autonomous agents are unsupervised (and the conductor warns you).
    the `stall_routed` / `stall_nudged` trail.
 
 **Key idea:** the conductor never uses an LLM itself — all judgment lives in the sentinel
-agent. If the sentinel itself stalls or isn't running, the conductor alerts you directly.
+session. If the sentinel itself stalls or isn't running, the conductor alerts you directly.
 
 ---
 
@@ -144,32 +144,32 @@ agent. If the sentinel itself stalls or isn't running, the conductor alerts you 
 4. Restart `conductor start`. The log shows `Telegram channel connected.`
 
 Now every operator command works from your phone: `/status`, `/tell alpha …`, `/auto`,
-`/pause`, etc. When an agent calls `request_human_input`, or the sentinel escalates, you
-get a message with inline buttons — tap to answer. Agents reply to you with the
-`respond_to_user` tool (this is why an agent's terminal reply doesn't reach your phone
+`/pause`, etc. When a session calls `request_human_input`, or the sentinel escalates, you
+get a message with inline buttons — tap to answer. Sessions reply to you with the
+`respond_to_user` tool (this is why a session's terminal reply doesn't reach your phone
 unless it uses that tool — the conductor protocol prompt tells it to).
 
 ---
 
 ## Step 4 — Scheduling, spawning, worktrees (as needed)
 
-- **Scheduled prompts**: add a `schedules:` block to an agent (see
-  [examples/agents/example-claude.yaml](../examples/agents/example-claude.yaml)).
-- **Spawn a throwaway agent**: `/spawn scratch --prompt "investigate X"` — makes a
+- **Scheduled prompts**: add a `schedules:` block to a session (see
+  [examples/sessions/example-claude.yaml](../examples/sessions/example-claude.yaml)).
+- **Spawn a throwaway session**: `/spawn scratch --prompt "investigate X"` — makes a
   directory, registers a config, starts it. `/teardown scratch --delete` reverses it.
-- **Worktree agents** (parallel work on one repo): `/spawn reviewer --worktree
+- **Worktree sessions** (parallel work on one repo): `/spawn reviewer --worktree
 /path/to/repo --branch review-pass`. Full file isolation, shared git history.
   `remove_worktree` / `--delete` refuses a dirty worktree.
-- **Codex agents**: set `runtime: codex`. The conductor writes `AGENTS.override.md` into
-  the agent's repo to inject the protocol — **add `AGENTS.override.md` to that repo's
-  `.gitignore`.** Each codex agent gets an isolated `CODEX_HOME` so sessions don't cross.
+- **Codex sessions**: set `runtime: codex`. The conductor writes `AGENTS.override.md` into
+  the session's repo to inject the protocol — **add `AGENTS.override.md` to that repo's
+  `.gitignore`.** Each codex session gets an isolated `CODEX_HOME` so sessions don't cross.
 
 ---
 
 ## Running unattended (headless / daemon)
 
 - **tmux backend** (`terminal.backend: tmux` in supervisor.yaml) runs with no GUI — works
-  over SSH on a Linux box. `conductor start --no-console --start-all` starts every agent
+  over SSH on a Linux box. `conductor start --no-console --start-all` starts every session
   and skips the interactive prompt.
 - **As a service**: `conductor daemon install` writes a launchd (macOS) or systemd-user
   (Linux) unit that keeps the conductor running across logins. `conductor daemon
@@ -193,5 +193,5 @@ Telegram.
 | `conductor validate` says OK but nothing is configured | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                      |
 | Pane never launches / hangs on start                   | `claude`/`codex` not on PATH, or bad `repo:` path                                     |
 | macOS dialog on first start                            | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)    |
-| Autonomous agent stalls but nothing happens            | No sentinel configured/running, or the sentinel lacks `systemPromptFile`              |
-| Agent replies in its pane but not on Telegram          | Expected — it must use `respond_to_user`; check the protocol prompt is being injected |
+| Autonomous session stalls but nothing happens          | No sentinel configured/running, or the sentinel lacks `systemPromptFile`              |
+| Session replies in its pane but not on Telegram        | Expected — it must use `respond_to_user`; check the protocol prompt is being injected |

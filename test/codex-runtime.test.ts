@@ -2,8 +2,8 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { agentConfigSchema } from '../src/config/schema.js';
-import type { AgentConfig } from '../src/config/schema.js';
+import { sessionConfigSchema } from '../src/config/schema.js';
+import type { SessionConfig } from '../src/config/schema.js';
 import type { IdentityEndpoints } from '../src/runtimes/types.js';
 import { CodexRuntime } from '../src/runtimes/codex/index.js';
 import type { CodexRuntimeSettings } from '../src/runtimes/codex/index.js';
@@ -18,8 +18,8 @@ import {
 
 const SETTINGS: CodexRuntimeSettings = { binary: 'codex', toolTimeoutSec: 600 };
 
-function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
-  return agentConfigSchema.parse({ codename: 'midgard', repo: '/repos/midgard', runtime: 'codex', ...overrides });
+function makeSession(overrides: Partial<SessionConfig> = {}): SessionConfig {
+  return sessionConfigSchema.parse({ codename: 'midgard', repo: '/repos/midgard', runtime: 'codex', ...overrides });
 }
 
 function makeIdentity(configDir: string): IdentityEndpoints {
@@ -77,11 +77,11 @@ describe('config generation', () => {
     expect(output).not.toContain('undefined');
   });
 
-  it('appends per-agent instructions after the protocol when provided', () => {
+  it('appends per-session instructions after the protocol when provided', () => {
     const output = renderAgentsOverride('PROTOCOL TEXT', null, 'Be the sentinel.');
-    expect(output).toContain('# Agent instructions');
+    expect(output).toContain('# Session instructions');
     expect(output).toContain('Be the sentinel.');
-    expect(output.indexOf('# Conductor protocol')).toBeLessThan(output.indexOf('# Agent instructions'));
+    expect(output.indexOf('# Conductor protocol')).toBeLessThan(output.indexOf('# Session instructions'));
   });
 });
 
@@ -90,7 +90,7 @@ describe('buildLaunchCommand', () => {
   const identity = makeIdentity('/cfg/midgard');
 
   it('constructs a fresh launch command', () => {
-    const cmd = runtime.buildLaunchCommand(makeAgent(), identity, {});
+    const cmd = runtime.buildLaunchCommand(makeSession(), identity, {});
     expect(cmd.startsWith("cd '/repos/midgard' && export CODEX_HOME='/cfg/midgard/codex-home' && 'codex' ")).toBe(true);
     expect(cmd).toContain(`-c 'mcp_servers.conductor.url="http://127.0.0.1:3456/mcp/midgard"'`);
     expect(cmd).toContain(`-c 'mcp_servers.conductor.tool_timeout_sec=600'`);
@@ -102,42 +102,42 @@ describe('buildLaunchCommand', () => {
   });
 
   it('uses resume --last when continuing a session', () => {
-    const cmd = runtime.buildLaunchCommand(makeAgent(), identity, { continueSession: true });
+    const cmd = runtime.buildLaunchCommand(makeSession(), identity, { continueSession: true });
     expect(cmd).toContain("'codex' resume --last -c ");
     // Config overrides still apply on resume (the bypass flag alone is not honored there).
     expect(cmd).toContain(`-c 'approval_policy="never"'`);
     expect(cmd).toContain(`-c 'sandbox_mode="danger-full-access"'`);
   });
 
-  it('exports a per-agent CODEX_HOME so resume --last only sees this agent (H4)', () => {
-    const cmd = runtime.buildLaunchCommand(makeAgent(), identity, { continueSession: true });
+  it('exports a per-session CODEX_HOME so resume --last only sees this session (H4)', () => {
+    const cmd = runtime.buildLaunchCommand(makeSession(), identity, { continueSession: true });
     expect(cmd).toContain("export CODEX_HOME='/cfg/midgard/codex-home'");
     // The export precedes the binary so the resume reads the isolated sessions dir.
     expect(cmd.indexOf('CODEX_HOME')).toBeLessThan(cmd.indexOf("'codex'"));
   });
 
   it('passes the initial prompt as a positional argument after --', () => {
-    const cmd = runtime.buildLaunchCommand(makeAgent(), identity, { prompt: "fix the bug in o'brien.ts" });
+    const cmd = runtime.buildLaunchCommand(makeSession(), identity, { prompt: "fix the bug in o'brien.ts" });
     expect(cmd.endsWith(`-- 'fix the bug in o'\\''brien.ts'`)).toBe(true);
   });
 
   it('combines resume with a follow-up prompt', () => {
-    const cmd = runtime.buildLaunchCommand(makeAgent(), identity, { continueSession: true, prompt: 'carry on' });
+    const cmd = runtime.buildLaunchCommand(makeSession(), identity, { continueSession: true, prompt: 'carry on' });
     expect(cmd).toContain('resume --last');
     expect(cmd.endsWith("-- 'carry on'")).toBe(true);
   });
 
-  it('prefers the agent model, falling back to the runtime default', () => {
-    const withAgentModel = runtime.buildLaunchCommand(makeAgent({ model: 'gpt-5.5-codex' }), identity, {});
-    expect(withAgentModel).toContain("--model 'gpt-5.5-codex'");
+  it('prefers the session model, falling back to the runtime default', () => {
+    const withSessionModel = runtime.buildLaunchCommand(makeSession({ model: 'gpt-5.5-codex' }), identity, {});
+    expect(withSessionModel).toContain("--model 'gpt-5.5-codex'");
 
     const defaulted = new CodexRuntime({ config: { ...SETTINGS, defaultModel: 'gpt-5.5' }, baseDir: '/base' });
-    expect(defaulted.buildLaunchCommand(makeAgent(), identity, {})).toContain("--model 'gpt-5.5'");
+    expect(defaulted.buildLaunchCommand(makeSession(), identity, {})).toContain("--model 'gpt-5.5'");
   });
 
   it('grants additional directories via --add-dir and resolves relative paths against baseDir', () => {
     const cmd = runtime.buildLaunchCommand(
-      makeAgent({ repo: 'repos/midgard', additionalDirs: ['/shared/docs', 'sibling'] }),
+      makeSession({ repo: 'repos/midgard', additionalDirs: ['/shared/docs', 'sibling'] }),
       identity,
       {},
     );
@@ -165,7 +165,7 @@ describe('prepare', () => {
 
   it('writes an executable notify script and a repo AGENTS.override.md with a placeholder protocol', async () => {
     const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
-    await runtime.prepare(makeAgent({ repo: repoDir }), makeIdentity(configDir));
+    await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
 
     const notifyPath = path.join(configDir, 'notify.sh');
     const notifyStat = await stat(notifyPath);
@@ -183,7 +183,7 @@ describe('prepare', () => {
     await writeFile(path.join(repoDir, 'AGENTS.md'), '# House rules');
 
     const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir, protocolPath });
-    await runtime.prepare(makeAgent({ repo: repoDir }), makeIdentity(configDir));
+    await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
 
     const override = await readFile(path.join(repoDir, 'AGENTS.override.md'), 'utf8');
     expect(override).toContain('# House rules');
@@ -192,10 +192,10 @@ describe('prepare', () => {
 
   it('is idempotent and refreshes its own generated override', async () => {
     const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
-    const agent = makeAgent({ repo: repoDir });
-    await runtime.prepare(agent, makeIdentity(configDir));
+    const session = makeSession({ repo: repoDir });
+    await runtime.prepare(session, makeIdentity(configDir));
     await writeFile(path.join(repoDir, 'AGENTS.md'), '# Added later');
-    await runtime.prepare(agent, makeIdentity(configDir));
+    await runtime.prepare(session, makeIdentity(configDir));
 
     const override = await readFile(path.join(repoDir, 'AGENTS.override.md'), 'utf8');
     expect(override).toContain('# Added later');
@@ -206,12 +206,12 @@ describe('prepare', () => {
     await writeFile(overridePath, '# Hand-written override');
 
     const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
-    await runtime.prepare(makeAgent({ repo: repoDir }), makeIdentity(configDir));
+    await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
 
     expect(await readFile(overridePath, 'utf8')).toBe('# Hand-written override');
   });
 
-  it('creates a per-agent CODEX_HOME and symlinks shared auth in (H4)', async () => {
+  it('creates a per-session CODEX_HOME and symlinks shared auth in (H4)', async () => {
     const sharedHome = path.join(workDir, 'shared-codex');
     await mkdir(sharedHome, { recursive: true });
     await writeFile(path.join(sharedHome, 'auth.json'), '{"token":"shared"}');
@@ -219,7 +219,7 @@ describe('prepare', () => {
     process.env.CODEX_HOME = sharedHome;
     try {
       const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
-      await runtime.prepare(makeAgent({ repo: repoDir }), makeIdentity(configDir));
+      await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
 
       const home = path.join(configDir, 'codex-home');
       expect((await stat(home)).isDirectory()).toBe(true);
@@ -238,7 +238,7 @@ describe('prepare', () => {
     process.env.CODEX_HOME = sharedHome;
     try {
       const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
-      await expect(runtime.prepare(makeAgent({ repo: repoDir }), makeIdentity(configDir))).resolves.toBeUndefined();
+      await expect(runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir))).resolves.toBeUndefined();
       expect((await stat(path.join(configDir, 'codex-home'))).isDirectory()).toBe(true);
     } finally {
       if (prev === undefined) delete process.env.CODEX_HOME;
@@ -250,9 +250,9 @@ describe('prepare', () => {
 describe('parseEvent', () => {
   const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
 
-  it('maps agent-turn-complete to a stop event carrying the last assistant message', () => {
+  it('maps session-turn-complete to a stop event carrying the last assistant message', () => {
     const event = runtime.parseEvent({
-      'type': 'agent-turn-complete',
+      'type': 'session-turn-complete',
       'turn-id': 'abc123',
       'input-messages': ['Run tests'],
       'last-assistant-message': 'All tests passed',
@@ -261,16 +261,16 @@ describe('parseEvent', () => {
   });
 
   it('tolerates a missing last-assistant-message', () => {
-    const event = runtime.parseEvent({ 'type': 'agent-turn-complete', 'turn-id': 'abc123' });
+    const event = runtime.parseEvent({ 'type': 'session-turn-complete', 'turn-id': 'abc123' });
     expect(event).toEqual({ type: 'stop', reason: undefined, transcriptPath: undefined });
   });
 
   it('returns null for unknown event types and malformed bodies', () => {
-    expect(runtime.parseEvent({ type: 'agent-turn-start' })).toBeNull();
+    expect(runtime.parseEvent({ type: 'session-turn-start' })).toBeNull();
     expect(runtime.parseEvent({ type: 42 })).toBeNull();
-    expect(runtime.parseEvent('agent-turn-complete')).toBeNull();
+    expect(runtime.parseEvent('session-turn-complete')).toBeNull();
     expect(runtime.parseEvent(null)).toBeNull();
-    expect(runtime.parseEvent(['agent-turn-complete'])).toBeNull();
+    expect(runtime.parseEvent(['session-turn-complete'])).toBeNull();
   });
 });
 

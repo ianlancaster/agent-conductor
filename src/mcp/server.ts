@@ -17,8 +17,8 @@ export interface McpServerOptions {
   tools: McpToolDefinition[];
   /** Whether this caller is the designated sentinel (gates sentinelOnly tools). */
   isSentinel(caller: string): boolean;
-  /** Lifecycle event pushed by an agent's runtime hooks. */
-  onEvent(agent: string, body: unknown): void;
+  /** Lifecycle event pushed by a session's runtime hooks. */
+  onEvent(session: string, body: unknown): void;
   /** CLI command line (from the interactive client via POST /cmd). */
   onCommand?(line: string): Promise<string>;
 }
@@ -35,7 +35,7 @@ const PROTOCOL_VERSION = '2024-11-05';
 /**
  * Plain-HTTP MCP server (streamable-HTTP compatible JSON responses).
  *
- * Identity is mechanical: agents are configured with /mcp/<codename> URLs, and
+ * Identity is mechanical: sessions are configured with /mcp/<codename> URLs, and
  * the codename is extracted from the path — never from request contents.
  */
 export class ConductorMcpServer {
@@ -110,7 +110,7 @@ export class ConductorMcpServer {
     // Anti-CSRF: the legitimate clients (Claude Code / Codex MCP, the CLI) are
     // Node HTTP clients and never send Origin/Referer. A browser always does on
     // a cross-origin fetch, so their presence means a drive-by page is trying to
-    // reach the localhost surface — reject it. (Full per-agent auth is deferred
+    // reach the localhost surface — reject it. (Full per-session auth is deferred
     // to the relay phase; this closes the browser vector cheaply.)
     if (req.headers.origin !== undefined || req.headers.referer !== undefined) {
       log().warn('mcp', `Rejected request with Origin/Referer header (possible CSRF) to ${path}`);
@@ -121,12 +121,12 @@ export class ConductorMcpServer {
     const body = await this.readBody(req);
 
     if (path.startsWith('/events/')) {
-      const agent = decodeURIComponent(path.slice('/events/'.length));
-      if (agent.length === 0) {
-        this.respondJson(res, 400, { error: 'missing agent' });
+      const session = decodeURIComponent(path.slice('/events/'.length));
+      if (session.length === 0) {
+        this.respondJson(res, 400, { error: 'missing session' });
         return;
       }
-      this.opts.onEvent(agent, body);
+      this.opts.onEvent(session, body);
       res.writeHead(204).end();
       return;
     }

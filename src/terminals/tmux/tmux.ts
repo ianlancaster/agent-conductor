@@ -50,16 +50,16 @@ export async function tmuxSucceeds(args: readonly string[]): Promise<boolean> {
 
 // ── pure helpers (no tmux required; unit-tested) ─────────────────────────────
 
-/** Pane-scoped tmux user option used to mark which agent owns a pane. */
-export const AGENT_OPTION = '@conductor_agent';
+/** Pane-scoped tmux user option used to mark which session owns a pane. */
+export const SESSION_OPTION = '@conductor_session';
 
 /**
- * Marker value stored in AGENT_OPTION: `<fleetId>:<codename>`. The fleet id
+ * Marker value stored in SESSION_OPTION: `<fleetId>:<codename>`. The fleet id
  * scopes the marker — `list-panes -a` scans the whole tmux server, which may
  * host several conductors' sessions, and rediscovery must only ever adopt
  * this fleet's panes.
  */
-export function encodeAgentOption(fleetId: string, codename: string): string {
+export function encodeSessionOption(fleetId: string, codename: string): string {
   return `${fleetId}:${codename}`;
 }
 
@@ -72,12 +72,12 @@ export function parsePaneIds(output: string): string[] {
 }
 
 /**
- * Parse `list-panes -a -F '#{pane_id} #{@conductor_agent}'` output into a
+ * Parse `list-panes -a -F '#{pane_id} #{@conductor_session}'` output into a
  * codename -> pane id map for THIS fleet only. Panes without a marker, or
  * marked by another fleet, are skipped. If two panes carry the same codename,
  * the last one listed wins.
  */
-export function parseAgentPanes(output: string, fleetId: string): Map<string, string> {
+export function parseSessionPanes(output: string, fleetId: string): Map<string, string> {
   const result = new Map<string, string>();
   const prefix = `${fleetId}:`;
   for (const raw of output.split('\n')) {
@@ -88,9 +88,9 @@ export function parseAgentPanes(output: string, fleetId: string): Map<string, st
     const paneId = line.slice(0, spaceIdx);
     const marker = line.slice(spaceIdx + 1).trim();
     if (!marker.startsWith(prefix)) continue;
-    const agent = marker.slice(prefix.length);
-    if (agent.length === 0) continue;
-    result.set(agent, paneId);
+    const session = marker.slice(prefix.length);
+    if (session.length === 0) continue;
+    result.set(session, paneId);
   }
   return result;
 }
@@ -99,7 +99,7 @@ export interface CreatePaneSpec {
   placement: Placement;
   sessionName: string;
   /** Used as the window name for 'tab'/'window' placements. */
-  agent: string;
+  session: string;
   cwd?: string;
 }
 
@@ -127,7 +127,7 @@ export function buildCreatePaneArgs(spec: CreatePaneSpec): string[] {
       return ['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${session}:{start}`, ...cwdArgs];
     case 'tab':
     case 'window':
-      return ['new-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${session}:`, '-n', spec.agent, ...cwdArgs];
+      return ['new-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${session}:`, '-n', spec.session, ...cwdArgs];
   }
 }
 

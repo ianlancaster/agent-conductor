@@ -33,8 +33,8 @@ export function conductorEnvelope(message: string): string {
   return `[Message from conductor] ${message}`;
 }
 
-export function stallEnvelope(agent: string, kind: string, detail: string): string {
-  return `[Stall] agent=${agent} kind=${kind} ${detail}`;
+export function stallEnvelope(session: string, kind: string, detail: string): string {
+  return `[Stall] session=${session} kind=${kind} ${detail}`;
 }
 
 export function truncate(text: string, max: number): string {

@@ -2,14 +2,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { supervisorConfigSchema, type AgentConfig } from '../src/config/schema.js';
+import { supervisorConfigSchema, type SessionConfig } from '../src/config/schema.js';
 import { ClaudeCodeRuntime } from '../src/runtimes/claude-code/index.js';
 import { parseClaudeInputClear, stripClaudeChrome } from '../src/runtimes/claude-code/chrome.js';
 import type { IdentityEndpoints } from '../src/runtimes/types.js';
 
 const defaults = supervisorConfigSchema.parse({});
 
-const agent: AgentConfig = {
+const session: SessionConfig = {
   codename: 'alpha',
   repo: '/tmp/alpha repo',
   runtime: 'claude-code',
@@ -37,7 +37,7 @@ afterEach(() => {
 
 describe('buildLaunchCommand', () => {
   it('builds a fresh launch with cd, env exports, flags, and piped prompt', () => {
-    const command = runtime.buildLaunchCommand(agent, identity, { prompt: 'do the thing' });
+    const command = runtime.buildLaunchCommand(session, identity, { prompt: 'do the thing' });
     expect(command).toContain(`cd '/tmp/alpha repo'`);
     expect(command).toContain('export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=');
     expect(command).toContain(`echo 'do the thing' | claude`);
@@ -48,8 +48,8 @@ describe('buildLaunchCommand', () => {
     expect(command).not.toContain('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC');
   });
 
-  it('passes the agent model — the cc-conductor bug fix', () => {
-    const command = runtime.buildLaunchCommand({ ...agent, model: 'claude-opus-4-6' }, identity, {});
+  it('passes the session model — the cc-conductor bug fix', () => {
+    const command = runtime.buildLaunchCommand({ ...session, model: 'claude-opus-4-6' }, identity, {});
     expect(command).toContain(`--model 'claude-opus-4-6'`);
   });
 
@@ -57,23 +57,23 @@ describe('buildLaunchCommand', () => {
     const withDefault = new ClaudeCodeRuntime({
       config: { ...defaults.runtimes.claudeCode, defaultModel: 'claude-sonnet-5' },
     });
-    expect(withDefault.buildLaunchCommand(agent, identity, {})).toContain(`--model 'claude-sonnet-5'`);
+    expect(withDefault.buildLaunchCommand(session, identity, {})).toContain(`--model 'claude-sonnet-5'`);
   });
 
-  it('appends a per-agent systemPromptFile after the conductor protocol when it exists', () => {
+  it('appends a per-session systemPromptFile after the conductor protocol when it exists', () => {
     const promptFile = join(configDir, 'sentinel.md');
     writeFileSync(promptFile, '# be the sentinel');
-    const command = runtime.buildLaunchCommand({ ...agent, systemPromptFile: promptFile }, identity, {});
+    const command = runtime.buildLaunchCommand({ ...session, systemPromptFile: promptFile }, identity, {});
     expect(command).toContain(`--append-system-prompt-file '${promptFile}'`);
   });
 
-  it('skips a per-agent systemPromptFile that does not exist', () => {
-    const command = runtime.buildLaunchCommand({ ...agent, systemPromptFile: '/nope/missing.md' }, identity, {});
+  it('skips a per-session systemPromptFile that does not exist', () => {
+    const command = runtime.buildLaunchCommand({ ...session, systemPromptFile: '/nope/missing.md' }, identity, {});
     expect(command).not.toContain('/nope/missing.md');
   });
 
   it('uses -c for continuation and never pipes a prompt into it', () => {
-    const command = runtime.buildLaunchCommand(agent, identity, { continueSession: true, prompt: 'ignored' });
+    const command = runtime.buildLaunchCommand(session, identity, { continueSession: true, prompt: 'ignored' });
     expect(command).toContain('claude -c');
     expect(command).not.toContain('echo');
   });
@@ -86,21 +86,21 @@ describe('buildLaunchCommand', () => {
         env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0', EXTRA: 'yes' },
       },
     });
-    const command = custom.buildLaunchCommand(agent, identity, {});
+    const command = custom.buildLaunchCommand(session, identity, {});
     expect(command).not.toContain('--dangerously-skip-permissions');
     expect(command).toContain(`export CLAUDE_CODE_DISABLE_AUTO_MEMORY='0'`);
     expect(command).toContain(`export EXTRA='yes'`);
   });
 
   it('shell-quotes hostile prompts', () => {
-    const command = runtime.buildLaunchCommand(agent, identity, { prompt: `it's; rm -rf /` });
+    const command = runtime.buildLaunchCommand(session, identity, { prompt: `it's; rm -rf /` });
     expect(command).toContain(`echo 'it'\\''s; rm -rf /' | claude`);
   });
 });
 
 describe('prepare', () => {
   it('writes MCP identity config and hook settings', async () => {
-    await runtime.prepare(agent, identity);
+    await runtime.prepare(session, identity);
     const mcp = JSON.parse(readFileSync(join(configDir, 'mcp.json'), 'utf8')) as {
       mcpServers: { conductor: { url: string } };
     };

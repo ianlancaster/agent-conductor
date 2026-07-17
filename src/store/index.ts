@@ -3,9 +3,10 @@ import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import type { Activity, Autonomy, PauseState } from '../core/types.js';
 
-export interface SessionRow {
+/** One launch of a session's CLI (start → stop). A session has many runs over time. */
+export interface RunRow {
   id: string;
-  agent: string;
+  session: string;
   status: 'active' | 'completed' | 'failed';
   started_at: string;
   last_activity_at: string;
@@ -25,33 +26,33 @@ export interface MessageRow {
 
 export interface HealthLogRow {
   id: number;
-  agent: string;
+  session: string;
   event: string;
   detail: string | null;
   created_at: string;
 }
 
-export interface PersistedAgentState {
-  agent: string;
+export interface PersistedSessionState {
+  session: string;
   autonomy: Autonomy;
   tag: string | null;
   pause: PauseState | null;
   activity: Activity;
 }
 
-/** Versioned migrations. Append only — never edit an existing entry. */
+/** Versioned migrations. Append only — never edit an existing entry (post first release). */
 const MIGRATIONS: string[] = [
   `
-  CREATE TABLE sessions (
+  CREATE TABLE runs (
     id TEXT PRIMARY KEY,
-    agent TEXT NOT NULL,
+    session TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     started_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
     prompt_summary TEXT
   );
-  CREATE INDEX idx_sessions_agent ON sessions(agent);
+  CREATE INDEX idx_runs_session ON runs(session);
 
   CREATE TABLE messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,15 +67,15 @@ const MIGRATIONS: string[] = [
 
   CREATE TABLE health_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    agent TEXT NOT NULL,
+    session TEXT NOT NULL,
     event TEXT NOT NULL,
     detail TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
-  CREATE INDEX idx_health_agent ON health_log(agent);
+  CREATE INDEX idx_health_session ON health_log(session);
 
-  CREATE TABLE agent_state (
-    agent TEXT PRIMARY KEY,
+  CREATE TABLE session_state (
+    session TEXT PRIMARY KEY,
     autonomy TEXT NOT NULL DEFAULT 'facilitated',
     tag TEXT,
     pause_json TEXT,
@@ -118,34 +119,34 @@ export class Store {
     this.db.close();
   }
 
-  // ── sessions ──────────────────────────────────────────────────────────────
+  // ── runs ──────────────────────────────────────────────────────────────────
 
-  insertSession(id: string, agent: string, promptSummary?: string): void {
+  insertRun(id: string, session: string, promptSummary?: string): void {
     this.db
-      .prepare('INSERT INTO sessions (id, agent, prompt_summary) VALUES (?, ?, ?)')
-      .run(id, agent, promptSummary ?? null);
+      .prepare('INSERT INTO runs (id, session, prompt_summary) VALUES (?, ?, ?)')
+      .run(id, session, promptSummary ?? null);
   }
 
-  touchSession(id: string): void {
-    this.db.prepare("UPDATE sessions SET last_activity_at = datetime('now') WHERE id = ?").run(id);
+  touchRun(id: string): void {
+    this.db.prepare("UPDATE runs SET last_activity_at = datetime('now') WHERE id = ?").run(id);
   }
 
-  completeSession(id: string, status: 'completed' | 'failed' = 'completed'): void {
-    this.db.prepare("UPDATE sessions SET status = ?, completed_at = datetime('now') WHERE id = ?").run(status, id);
+  completeRun(id: string, status: 'completed' | 'failed' = 'completed'): void {
+    this.db.prepare("UPDATE runs SET status = ?, completed_at = datetime('now') WHERE id = ?").run(status, id);
   }
 
-  getSession(id: string): SessionRow | undefined {
-    return this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow | undefined;
+  getRun(id: string): RunRow | undefined {
+    return this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as RunRow | undefined;
   }
 
-  getActiveSessions(): SessionRow[] {
-    return this.db.prepare("SELECT * FROM sessions WHERE status = 'active' ORDER BY started_at").all() as SessionRow[];
+  getActiveRuns(): RunRow[] {
+    return this.db.prepare("SELECT * FROM runs WHERE status = 'active' ORDER BY started_at").all() as RunRow[];
   }
 
-  getRecentSessions(agent: string, limit = 10): SessionRow[] {
+  getRecentRuns(session: string, limit = 10): RunRow[] {
     return this.db
-      .prepare('SELECT * FROM sessions WHERE agent = ? ORDER BY started_at DESC LIMIT ?')
-      .all(agent, limit) as SessionRow[];
+      .prepare('SELECT * FROM runs WHERE session = ? ORDER BY started_at DESC LIMIT ?')
+      .all(session, limit) as RunRow[];
   }
 
   // ── messages ──────────────────────────────────────────────────────────────
@@ -171,28 +172,30 @@ export class Store {
 
   // ── health log ────────────────────────────────────────────────────────────
 
-  logHealthEvent(agent: string, event: string, detail?: string): void {
-    this.db.prepare('INSERT INTO health_log (agent, event, detail) VALUES (?, ?, ?)').run(agent, event, detail ?? null);
+  logHealthEvent(session: string, event: string, detail?: string): void {
+    this.db
+      .prepare('INSERT INTO health_log (session, event, detail) VALUES (?, ?, ?)')
+      .run(session, event, detail ?? null);
   }
 
-  getHealthLog(agent?: string, limit = 20): HealthLogRow[] {
-    if (agent !== undefined) {
+  getHealthLog(session?: string, limit = 20): HealthLogRow[] {
+    if (session !== undefined) {
       return this.db
-        .prepare('SELECT * FROM health_log WHERE agent = ? ORDER BY id DESC LIMIT ?')
-        .all(agent, limit) as HealthLogRow[];
+        .prepare('SELECT * FROM health_log WHERE session = ? ORDER BY id DESC LIMIT ?')
+        .all(session, limit) as HealthLogRow[];
     }
     return this.db.prepare('SELECT * FROM health_log ORDER BY id DESC LIMIT ?').all(limit) as HealthLogRow[];
   }
 
-  // ── agent state (was mode-state.json) ─────────────────────────────────────
+  // ── session state ─────────────────────────────────────────────────────────
 
-  getAgentState(agent: string): PersistedAgentState | undefined {
-    const row = this.db.prepare('SELECT * FROM agent_state WHERE agent = ?').get(agent) as
-      | { agent: string; autonomy: Autonomy; tag: string | null; pause_json: string | null; activity: Activity }
+  getSessionState(session: string): PersistedSessionState | undefined {
+    const row = this.db.prepare('SELECT * FROM session_state WHERE session = ?').get(session) as
+      | { session: string; autonomy: Autonomy; tag: string | null; pause_json: string | null; activity: Activity }
       | undefined;
     if (!row) return undefined;
     return {
-      agent: row.agent,
+      session: row.session,
       autonomy: row.autonomy,
       tag: row.tag,
       pause: row.pause_json !== null ? (JSON.parse(row.pause_json) as PauseState) : null,
@@ -200,24 +203,24 @@ export class Store {
     };
   }
 
-  getAllAgentStates(): PersistedAgentState[] {
-    const rows = this.db.prepare('SELECT agent FROM agent_state').all() as { agent: string }[];
+  getAllSessionStates(): PersistedSessionState[] {
+    const rows = this.db.prepare('SELECT session FROM session_state').all() as { session: string }[];
     return rows
-      .map((row) => this.getAgentState(row.agent))
-      .filter((state): state is PersistedAgentState => state !== undefined);
+      .map((row) => this.getSessionState(row.session))
+      .filter((state): state is PersistedSessionState => state !== undefined);
   }
 
-  upsertAgentState(state: PersistedAgentState): void {
+  upsertSessionState(state: PersistedSessionState): void {
     this.db
       .prepare(
-        `INSERT INTO agent_state (agent, autonomy, tag, pause_json, activity, updated_at)
-         VALUES (@agent, @autonomy, @tag, @pause, @activity, datetime('now'))
-         ON CONFLICT(agent) DO UPDATE SET
+        `INSERT INTO session_state (session, autonomy, tag, pause_json, activity, updated_at)
+         VALUES (@session, @autonomy, @tag, @pause, @activity, datetime('now'))
+         ON CONFLICT(session) DO UPDATE SET
            autonomy = @autonomy, tag = @tag, pause_json = @pause, activity = @activity,
            updated_at = datetime('now')`,
       )
       .run({
-        agent: state.agent,
+        session: state.session,
         autonomy: state.autonomy,
         tag: state.tag,
         pause: state.pause !== null ? JSON.stringify(state.pause) : null,
@@ -225,11 +228,11 @@ export class Store {
       });
   }
 
-  deleteAgentState(agent: string): void {
-    this.db.prepare('DELETE FROM agent_state WHERE agent = ?').run(agent);
+  deleteSessionState(session: string): void {
+    this.db.prepare('DELETE FROM session_state WHERE session = ?').run(session);
   }
 
-  // ── workspace KV (was workspace.json) ─────────────────────────────────────
+  // ── workspace KV ──────────────────────────────────────────────────────────
 
   getWorkspaceValue<T>(key: string): T | undefined {
     const row = this.db.prepare('SELECT value_json FROM workspace WHERE key = ?').get(key) as

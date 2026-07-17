@@ -11,26 +11,26 @@ afterEach(() => {
   store.close();
 });
 
-describe('sessions', () => {
-  it('round-trips a session lifecycle', () => {
-    store.insertSession('s1', 'alpha', 'do the thing');
-    const session = store.getSession('s1');
-    expect(session?.agent).toBe('alpha');
-    expect(session?.status).toBe('active');
-    expect(session?.prompt_summary).toBe('do the thing');
+describe('runs', () => {
+  it('round-trips a run lifecycle', () => {
+    store.insertRun('r1', 'alpha', 'do the thing');
+    const run = store.getRun('r1');
+    expect(run?.session).toBe('alpha');
+    expect(run?.status).toBe('active');
+    expect(run?.prompt_summary).toBe('do the thing');
 
-    expect(store.getActiveSessions().map((s) => s.id)).toEqual(['s1']);
+    expect(store.getActiveRuns().map((r) => r.id)).toEqual(['r1']);
 
-    store.completeSession('s1');
-    expect(store.getSession('s1')?.status).toBe('completed');
-    expect(store.getActiveSessions()).toEqual([]);
+    store.completeRun('r1');
+    expect(store.getRun('r1')?.status).toBe('completed');
+    expect(store.getActiveRuns()).toEqual([]);
   });
 
-  it('lists recent sessions per agent', () => {
-    store.insertSession('s1', 'alpha');
-    store.insertSession('s2', 'alpha');
-    store.insertSession('s3', 'beta');
-    expect(store.getRecentSessions('alpha').length).toBe(2);
+  it('lists recent runs per session', () => {
+    store.insertRun('r1', 'alpha');
+    store.insertRun('r2', 'alpha');
+    store.insertRun('r3', 'beta');
+    expect(store.getRecentRuns('alpha').length).toBe(2);
   });
 });
 
@@ -44,7 +44,7 @@ describe('messages', () => {
 });
 
 describe('health log', () => {
-  it('records and filters by agent', () => {
+  it('records and filters by session', () => {
     store.logHealthEvent('alpha', 'stall', 'idle at prompt');
     store.logHealthEvent('beta', 'stall');
     expect(store.getHealthLog('alpha').length).toBe(1);
@@ -53,31 +53,43 @@ describe('health log', () => {
   });
 });
 
-describe('agent state', () => {
+describe('session state', () => {
   it('upserts and reads back state including pause JSON', () => {
-    store.upsertAgentState({
-      agent: 'alpha',
+    store.upsertSessionState({
+      session: 'alpha',
       autonomy: 'autonomous',
       tag: 'refactor',
       pause: { previousAutonomy: 'autonomous', pausedBy: 'manual' },
       activity: 'working',
     });
-    const state = store.getAgentState('alpha');
+    const state = store.getSessionState('alpha');
     expect(state?.autonomy).toBe('autonomous');
     expect(state?.tag).toBe('refactor');
     expect(state?.pause?.pausedBy).toBe('manual');
 
-    store.upsertAgentState({ agent: 'alpha', autonomy: 'facilitated', tag: null, pause: null, activity: 'stopped' });
-    const updated = store.getAgentState('alpha');
+    store.upsertSessionState({
+      session: 'alpha',
+      autonomy: 'facilitated',
+      tag: null,
+      pause: null,
+      activity: 'stopped',
+    });
+    const updated = store.getSessionState('alpha');
     expect(updated?.autonomy).toBe('facilitated');
     expect(updated?.pause).toBeNull();
-    expect(store.getAllAgentStates().length).toBe(1);
+    expect(store.getAllSessionStates().length).toBe(1);
   });
 
   it('deletes state', () => {
-    store.upsertAgentState({ agent: 'alpha', autonomy: 'facilitated', tag: null, pause: null, activity: 'stopped' });
-    store.deleteAgentState('alpha');
-    expect(store.getAgentState('alpha')).toBeUndefined();
+    store.upsertSessionState({
+      session: 'alpha',
+      autonomy: 'facilitated',
+      tag: null,
+      pause: null,
+      activity: 'stopped',
+    });
+    store.deleteSessionState('alpha');
+    expect(store.getSessionState('alpha')).toBeUndefined();
   });
 });
 

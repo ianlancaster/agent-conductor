@@ -9,16 +9,16 @@ terminal:
   backend: iterm # or: tmux (headless, Linux/SSH)
   # windowName: My Fleet          # default: "Agent Conductor (<fleet dir name>)"
   iterm:
-    autoPauseOnFocus: false # pause an autonomous agent while you interact with its pane
+    autoPauseOnFocus: false # pause an autonomous session while you interact with its pane
     autoPauseResumeDelaySeconds: 60
     bracketedPasteThreshold: 512
   # tmux:
   #   sessionName: my-fleet       # default: conductor-<fleet slug>, unique per fleet dir
 
-# The stall sentinel: an agent (configured like any other in config/agents/) that
-# receives ALL stalls from autonomous agents and decides what to do.
+# The stall sentinel: a session (configured like any other in config/sessions/) that
+# receives ALL stalls from autonomous sessions and decides what to do.
 # Launch it with prompts/sentinel.md as its instructions. Leave unset until you
-# have defined that agent — a dangling codename only earns you a startup warning.
+# have defined that session — a dangling codename only earns you a startup warning.
 # sentinel:
 #   codename: watch
 
@@ -58,4 +58,4 @@ channels:
 
 spawn:
   dirPattern: '../{codename}'
-  markerFile: .conductor-agent # presence marks a repo as an "agent" project in status
+  markerFile: .conductor-agent # presence marks a repo as an agent project (🤖) in status

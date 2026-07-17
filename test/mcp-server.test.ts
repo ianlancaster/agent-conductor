@@ -5,7 +5,7 @@ const PORT = 43_217;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 let server: ConductorMcpServer;
-let events: { agent: string; body: unknown }[];
+let events: { session: string; body: unknown }[];
 let commands: string[];
 
 const tools: McpToolDefinition[] = [
@@ -48,7 +48,7 @@ beforeEach(async () => {
     keepAliveTimeoutMs: 1000,
     tools,
     isSentinel: (caller) => caller === 'watch',
-    onEvent: (agent, body) => events.push({ agent, body }),
+    onEvent: (session, body) => events.push({ session, body }),
     onCommand: (line) => {
       commands.push(line);
       return Promise.resolve(`ran: ${line}`);
@@ -69,9 +69,9 @@ describe('identity routing', () => {
   });
 
   it('URL-decodes the caller segment', async () => {
-    const result = await rpc('/mcp/agent%2Dx', 'tools/call', { name: 'echo_caller', arguments: {} });
+    const result = await rpc('/mcp/session%2Dx', 'tools/call', { name: 'echo_caller', arguments: {} });
     const content = (result.result as { content: { text: string }[] }).content;
-    expect(content[0]?.text).toBe('caller=agent-x');
+    expect(content[0]?.text).toBe('caller=session-x');
   });
 
   it('defaults to unknown on the bare /mcp route', async () => {
@@ -89,7 +89,7 @@ describe('JSON-RPC surface', () => {
     expect(payload.serverInfo.name).toBe('agent-conductor');
   });
 
-  it('hides sentinel-only tools from regular agents but shows them to the sentinel', async () => {
+  it('hides sentinel-only tools from regular sessions but shows them to the sentinel', async () => {
     const regular = await rpc('/mcp/alpha', 'tools/list');
     const regularNames = (regular.result as { tools: { name: string }[] }).tools.map((t) => t.name);
     expect(regularNames).toContain('echo_caller');
@@ -129,14 +129,14 @@ describe('JSON-RPC surface', () => {
 });
 
 describe('events endpoint', () => {
-  it('routes hook payloads with the agent from the path', async () => {
+  it('routes hook payloads with the session from the path', async () => {
     const response = await fetch(`${BASE}/events/alpha`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hook_event_name: 'Stop' }),
     });
     expect(response.status).toBe(204);
-    expect(events).toEqual([{ agent: 'alpha', body: { hook_event_name: 'Stop' } }]);
+    expect(events).toEqual([{ session: 'alpha', body: { hook_event_name: 'Stop' } }]);
   });
 });
 

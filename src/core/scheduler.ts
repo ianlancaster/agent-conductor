@@ -1,20 +1,20 @@
 import { Cron } from 'croner';
 import { log } from '../logger.js';
-import type { AgentConfig, ScheduleEntry } from '../config/schema.js';
+import type { SessionConfig, ScheduleEntry } from '../config/schema.js';
 import { sleep } from './utils.js';
 
 const FRESH_SESSION_SETTLE_MS = 3000;
 
 export interface SchedulerDeps {
-  agents(): Map<string, AgentConfig>;
-  isActive(agent: string): boolean;
-  isPaused(agent: string): boolean;
-  startAgent(agent: string, opts: { prompt?: string }): Promise<string>;
-  stopAgent(agent: string): Promise<string>;
-  deliver(agent: string, text: string): Promise<unknown>;
+  sessions(): Map<string, SessionConfig>;
+  isActive(session: string): boolean;
+  isPaused(session: string): boolean;
+  startSession(session: string, opts: { prompt?: string }): Promise<string>;
+  stopSession(session: string): Promise<string>;
+  deliver(session: string, text: string): Promise<unknown>;
 }
 
-/** Cron scheduling of agent prompts, on croner. Rebuilt whenever configs reload. */
+/** Cron scheduling of session prompts, on croner. Rebuilt whenever configs reload. */
 export class Scheduler {
   private jobs: Cron[] = [];
 
@@ -23,8 +23,8 @@ export class Scheduler {
   /** Tear down and re-create all jobs from current configs. */
   rebuild(): void {
     this.stop();
-    for (const [codename, agent] of this.deps.agents()) {
-      for (const entry of agent.schedules) {
+    for (const [codename, session] of this.deps.sessions()) {
+      for (const entry of session.schedules) {
         if (entry.paused) continue;
         try {
           // The callback must be async (not a sync fn that voids a promise) or
@@ -54,22 +54,22 @@ export class Scheduler {
     const label = entry.label ?? entry.cron;
     try {
       if (this.deps.isPaused(codename)) {
-        log().info('scheduler', `${codename}: '${label}' deferred (agent is paused)`);
+        log().info('scheduler', `${codename}: '${label}' deferred (session is paused)`);
         return;
       }
-      if (entry.freshSession) {
+      if (entry.freshContext) {
         if (this.deps.isActive(codename)) {
-          await this.deps.stopAgent(codename);
+          await this.deps.stopSession(codename);
           await sleep(FRESH_SESSION_SETTLE_MS);
         }
-        await this.deps.startAgent(codename, { prompt: entry.prompt });
+        await this.deps.startSession(codename, { prompt: entry.prompt });
         log().info('scheduler', `${codename}: '${label}' fired (fresh session)`);
         return;
       }
       if (this.deps.isActive(codename)) {
         await this.deps.deliver(codename, entry.prompt);
       } else {
-        await this.deps.startAgent(codename, { prompt: entry.prompt });
+        await this.deps.startSession(codename, { prompt: entry.prompt });
       }
       log().info('scheduler', `${codename}: '${label}' fired`);
     } catch (err) {

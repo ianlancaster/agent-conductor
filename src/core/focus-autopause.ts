@@ -1,11 +1,11 @@
 import { log } from '../logger.js';
 import type { TerminalBackend } from '../terminals/types.js';
-import type { AgentStateManager } from './state.js';
+import type { SessionStateManager } from './state.js';
 
 export interface FocusAutoPauseDeps {
   backend: TerminalBackend;
-  states: AgentStateManager;
-  healthReset(agent: string): void;
+  states: SessionStateManager;
+  healthReset(session: string): void;
   config: {
     checkMs: number;
     resumeDelayMs: number;
@@ -14,7 +14,7 @@ export interface FocusAutoPauseDeps {
 }
 
 /**
- * Optional iTerm capability: when the operator focuses an autonomous agent's
+ * Optional iTerm capability: when the operator focuses an autonomous session's
  * pane, pause it (temporary facilitated) so the sentinel machinery doesn't
  * type into the pane mid-interaction; auto-resume after a cooldown once focus
  * leaves.
@@ -39,7 +39,7 @@ export class FocusAutoPause {
   }
 
   start(): void {
-    if (this.deps.backend.getFocusedAgent === undefined) return;
+    if (this.deps.backend.getFocusedSession === undefined) return;
     this.timer = setInterval(() => {
       if (this.checkInFlight) return;
       this.checkInFlight = true;
@@ -58,10 +58,10 @@ export class FocusAutoPause {
   }
 
   private async check(): Promise<void> {
-    if (!this.on || this.deps.backend.getFocusedAgent === undefined) return;
+    if (!this.on || this.deps.backend.getFocusedSession === undefined) return;
     let focused: string | null = null;
     try {
-      focused = await this.deps.backend.getFocusedAgent();
+      focused = await this.deps.backend.getFocusedSession();
     } catch {
       return;
     }
@@ -84,25 +84,25 @@ export class FocusAutoPause {
     }
   }
 
-  private scheduleResume(agent: string): void {
-    this.cancelResume(agent);
+  private scheduleResume(session: string): void {
+    this.cancelResume(session);
     const timer = setTimeout(() => {
-      this.resumeTimers.delete(agent);
-      if (this.deps.states.get(agent)?.pause?.pausedBy === 'auto-focus') {
-        this.deps.states.resume(agent);
-        this.deps.healthReset(agent);
-        log().info('autopause', `${agent}: resumed (focus left)`);
+      this.resumeTimers.delete(session);
+      if (this.deps.states.get(session)?.pause?.pausedBy === 'auto-focus') {
+        this.deps.states.resume(session);
+        this.deps.healthReset(session);
+        log().info('autopause', `${session}: resumed (focus left)`);
       }
     }, this.deps.config.resumeDelayMs);
     timer.unref();
-    this.resumeTimers.set(agent, timer);
+    this.resumeTimers.set(session, timer);
   }
 
-  private cancelResume(agent: string): void {
-    const timer = this.resumeTimers.get(agent);
+  private cancelResume(session: string): void {
+    const timer = this.resumeTimers.get(session);
     if (timer !== undefined) {
       clearTimeout(timer);
-      this.resumeTimers.delete(agent);
+      this.resumeTimers.delete(session);
     }
   }
 }

@@ -10,8 +10,8 @@ const SUPERVISOR_TEMPLATE = `# agent-conductor supervisor config.
 # terminal:
 #   backend: iterm              # or: tmux (headless, Linux/SSH)
 
-# Designate a stall sentinel — an agent (defined in config/agents/) that receives
-# every stall from autonomous agents and decides: nudge, dismiss, or escalate.
+# Designate a stall sentinel — a session (defined in config/sessions/) that receives
+# every stall from autonomous sessions and decides: nudge, dismiss, or escalate.
 # Launch it with prompts/sentinel.md as its instructions.
 # sentinel:
 #   codename: watch
@@ -21,7 +21,7 @@ const SUPERVISOR_TEMPLATE = `# agent-conductor supervisor config.
 #     enabled: true             # needs CONDUCTOR_TELEGRAM_TOKEN + CONDUCTOR_TELEGRAM_CHAT_ID
 `;
 
-function agentTemplate(codename: string, repo: string): string {
+function sessionTemplate(codename: string, repo: string): string {
   return `codename: ${codename}
 repo: ${repo}
 # runtime: claude-code          # or: codex
@@ -34,20 +34,20 @@ repo: ${repo}
 }
 
 export interface InitOptions {
-  agent?: string;
+  session?: string;
   repo?: string;
 }
 
 /**
- * Scaffold a fleet directory: config/supervisor.yaml, config/agents/, and
- * (optionally) a first agent. Never overwrites existing files. Returns the
+ * Scaffold a fleet directory: config/supervisor.yaml, config/sessions/, and
+ * (optionally) a first session. Never overwrites existing files. Returns the
  * lines to print — pure enough to test without capturing stdout.
  */
 export function initFleet(baseDir: string, opts: InitOptions = {}): string[] {
   const lines: string[] = [];
   const configDir = join(baseDir, 'config');
-  const agentsDir = join(configDir, 'agents');
-  mkdirSync(agentsDir, { recursive: true });
+  const sessionsDir = join(configDir, 'sessions');
+  mkdirSync(sessionsDir, { recursive: true });
 
   const supervisorFile = join(configDir, 'supervisor.yaml');
   if (existsSync(supervisorFile)) {
@@ -57,38 +57,38 @@ export function initFleet(baseDir: string, opts: InitOptions = {}): string[] {
     lines.push(`created ${supervisorFile}`);
   }
 
-  let agentCreated: string | undefined;
-  if (opts.agent !== undefined) {
-    if (!isValidCodename(opts.agent)) {
-      throw new Error(`Invalid codename '${opts.agent}': letters, digits, dashes, underscores only.`);
+  let sessionCreated: string | undefined;
+  if (opts.session !== undefined) {
+    if (!isValidCodename(opts.session)) {
+      throw new Error(`Invalid codename '${opts.session}': letters, digits, dashes, underscores only.`);
     }
     if (opts.repo === undefined) {
-      throw new Error(`--agent needs --repo <path>: the project directory ${opts.agent} will work in.`);
+      throw new Error(`--session needs --repo <path>: the project directory ${opts.session} will work in.`);
     }
     const repo = resolve(opts.repo);
     if (!existsSync(repo)) {
       throw new Error(`--repo ${repo} does not exist. Create or clone it first.`);
     }
-    const agentFile = join(agentsDir, `${opts.agent}.yaml`);
-    if (existsSync(agentFile)) {
-      lines.push(`kept    ${agentFile} (already exists)`);
+    const sessionFile = join(sessionsDir, `${opts.session}.yaml`);
+    if (existsSync(sessionFile)) {
+      lines.push(`kept    ${sessionFile} (already exists)`);
     } else {
-      writeFileSync(agentFile, agentTemplate(opts.agent, repo));
-      lines.push(`created ${agentFile}`);
-      agentCreated = opts.agent;
+      writeFileSync(sessionFile, sessionTemplate(opts.session, repo));
+      lines.push(`created ${sessionFile}`);
+      sessionCreated = opts.session;
     }
   }
 
   lines.push('');
   lines.push(`Fleet '${basename(resolve(baseDir))}' is ready. Next steps:`);
   let step = 1;
-  if (agentCreated === undefined) {
-    lines.push(`  ${String(step++)}. Add an agent:  conductor init --agent <codename> --repo <project-path>`);
+  if (sessionCreated === undefined) {
+    lines.push(`  ${String(step++)}. Add a session:  conductor init --session <codename> --repo <project-path>`);
   }
   lines.push(`  ${String(step++)}. conductor validate`);
   lines.push(`  ${String(step++)}. conductor start`);
-  if (agentCreated !== undefined) {
-    lines.push(`  ${String(step)}. At the conductor> prompt:  /start ${agentCreated}`);
+  if (sessionCreated !== undefined) {
+    lines.push(`  ${String(step)}. At the conductor> prompt:  /start ${sessionCreated}`);
   }
   return lines;
 }

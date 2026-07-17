@@ -1,18 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentConfig } from '../src/config/schema.js';
+import type { SessionConfig } from '../src/config/schema.js';
 import { Scheduler } from '../src/core/scheduler.js';
 
-function agentWith(schedules: AgentConfig['schedules']): AgentConfig {
+function sessionWith(schedules: SessionConfig['schedules']): SessionConfig {
   return { codename: 'alpha', repo: '/tmp/alpha', runtime: 'claude-code', additionalDirs: [], schedules };
 }
 
 let scheduler: Scheduler;
-let agents: Map<string, AgentConfig>;
+let sessions: Map<string, SessionConfig>;
 let active: boolean;
 let paused: boolean;
-let started: { agent: string; prompt?: string }[];
+let started: { session: string; prompt?: string }[];
 let stopped: string[];
-let delivered: { agent: string; text: string }[];
+let delivered: { session: string; text: string }[];
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -21,26 +21,26 @@ beforeEach(() => {
   // clock starts at the real wall-clock time, and a 1100ms window straddles one
   // or two second boundaries depending on that offset — a genuine flake source.
   vi.setSystemTime(new Date('2026-01-02T03:04:05.500Z'));
-  agents = new Map();
+  sessions = new Map();
   active = false;
   paused = false;
   started = [];
   stopped = [];
   delivered = [];
   scheduler = new Scheduler({
-    agents: () => agents,
+    sessions: () => sessions,
     isActive: () => active,
     isPaused: () => paused,
-    startAgent: async (agent, opts) => {
-      started.push({ agent, prompt: opts.prompt });
+    startSession: async (session, opts) => {
+      started.push({ session, prompt: opts.prompt });
       return 'started';
     },
-    stopAgent: async (agent) => {
-      stopped.push(agent);
+    stopSession: async (session) => {
+      stopped.push(session);
       return 'stopped';
     },
-    deliver: async (agent, text) => {
-      delivered.push({ agent, text });
+    deliver: async (session, text) => {
+      delivered.push({ session, text });
       return 'delivered';
     },
   });
@@ -56,36 +56,36 @@ afterEach(() => {
 const EVERY_SECOND = '* * * * * *';
 
 describe('Scheduler', () => {
-  it('delivers the prompt into an active agent', async () => {
-    agents.set('alpha', agentWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: false, freshSession: false }]));
+  it('delivers the prompt into an active session', async () => {
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: false, freshContext: false }]));
     active = true;
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
-    expect(delivered[0]).toEqual({ agent: 'alpha', text: 'tick' });
+    expect(delivered[0]).toEqual({ session: 'alpha', text: 'tick' });
     expect(started).toEqual([]);
   });
 
-  it('starts an inactive agent with the prompt', async () => {
-    agents.set('alpha', agentWith([{ cron: EVERY_SECOND, prompt: 'wake up', paused: false, freshSession: false }]));
+  it('starts an inactive session with the prompt', async () => {
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'wake up', paused: false, freshContext: false }]));
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
-    expect(started[0]).toEqual({ agent: 'alpha', prompt: 'wake up' });
+    expect(started[0]).toEqual({ session: 'alpha', prompt: 'wake up' });
     expect(delivered).toEqual([]);
   });
 
-  it('stops then restarts for freshSession schedules', async () => {
-    agents.set('alpha', agentWith([{ cron: EVERY_SECOND, prompt: 'nightly', paused: false, freshSession: true }]));
+  it('stops then restarts for freshContext schedules', async () => {
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'nightly', paused: false, freshContext: true }]));
     active = true;
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100); // fire -> stop + settle sleep begins
     expect(stopped).toEqual(['alpha']);
     expect(started).toEqual([]);
     await vi.advanceTimersByTimeAsync(3100); // settle period elapses
-    expect(started[0]).toEqual({ agent: 'alpha', prompt: 'nightly' });
+    expect(started[0]).toEqual({ session: 'alpha', prompt: 'nightly' });
   });
 
-  it('defers when the agent is paused', async () => {
-    agents.set('alpha', agentWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: false, freshSession: false }]));
+  it('defers when the session is paused', async () => {
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: false, freshContext: false }]));
     paused = true;
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
@@ -94,7 +94,7 @@ describe('Scheduler', () => {
   });
 
   it('skips schedule entries marked paused', async () => {
-    agents.set('alpha', agentWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: true, freshSession: false }]));
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: true, freshContext: false }]));
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(2100);
     expect(started).toEqual([]);
@@ -102,11 +102,11 @@ describe('Scheduler', () => {
   });
 
   it('tolerates invalid cron patterns without dropping valid ones', async () => {
-    agents.set(
+    sessions.set(
       'alpha',
-      agentWith([
-        { cron: 'not a cron', prompt: 'never', paused: false, freshSession: false },
-        { cron: EVERY_SECOND, prompt: 'still works', paused: false, freshSession: false },
+      sessionWith([
+        { cron: 'not a cron', prompt: 'never', paused: false, freshContext: false },
+        { cron: EVERY_SECOND, prompt: 'still works', paused: false, freshContext: false },
       ]),
     );
     expect(() => {
@@ -117,7 +117,7 @@ describe('Scheduler', () => {
   });
 
   it('rebuild replaces jobs and stop() cancels them', async () => {
-    agents.set('alpha', agentWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: false, freshSession: false }]));
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: false, freshContext: false }]));
     scheduler.rebuild();
     scheduler.rebuild(); // must not double-arm
     await vi.advanceTimersByTimeAsync(1100);

@@ -13,14 +13,14 @@ import {
 
 describe('pure helpers', () => {
   it('parses gitdir pointer files', () => {
-    expect(parseGitdirPointer('gitdir: /home/x/repo/.git/worktrees/agent-1\n')).toBe(
-      '/home/x/repo/.git/worktrees/agent-1',
+    expect(parseGitdirPointer('gitdir: /home/x/repo/.git/worktrees/session-1\n')).toBe(
+      '/home/x/repo/.git/worktrees/session-1',
     );
     expect(parseGitdirPointer('not a pointer')).toBeNull();
   });
 
   it('derives the main repo from a worktree gitdir', () => {
-    expect(mainRepoFromGitdir('/home/x/repo/.git/worktrees/agent-1')).toBe('/home/x/repo');
+    expect(mainRepoFromGitdir('/home/x/repo/.git/worktrees/session-1')).toBe('/home/x/repo');
     expect(mainRepoFromGitdir('/home/x/elsewhere')).toBeNull();
   });
 });
@@ -57,29 +57,29 @@ describe('git integration', () => {
   });
 
   it('adds a worktree on a new branch, detects it, and removes it', async () => {
-    const dir = join(base, 'agent-1');
-    await addWorktree(repo, dir, 'agent-1');
+    const dir = join(base, 'session-1');
+    await addWorktree(repo, dir, 'session-1');
     expect(existsSync(join(dir, 'README.md'))).toBe(true);
     expect(isWorktree(dir)).toBe(true);
     expect(isWorktree(repo)).toBe(false);
-    expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('agent-1');
+    expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('session-1');
 
     await removeWorktree(dir);
     expect(existsSync(dir)).toBe(false);
-    expect(git(repo, 'worktree', 'list')).not.toContain('agent-1');
+    expect(git(repo, 'worktree', 'list')).not.toContain('session-1');
   });
 
   it('checks out an existing branch when it already exists', async () => {
     git(repo, 'branch', 'feature-x');
-    const dir = join(base, 'agent-2');
+    const dir = join(base, 'session-2');
     await addWorktree(repo, dir, 'feature-x');
     expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('feature-x');
     await removeWorktree(dir);
   });
 
   it('refuses to remove a dirty worktree', async () => {
-    const dir = join(base, 'agent-3');
-    await addWorktree(repo, dir, 'agent-3');
+    const dir = join(base, 'session-3');
+    await addWorktree(repo, dir, 'session-3');
     writeFileSync(join(dir, 'uncommitted.txt'), 'work in progress');
     await expect(removeWorktree(dir)).rejects.toThrow();
     expect(existsSync(dir)).toBe(true);

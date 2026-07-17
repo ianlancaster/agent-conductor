@@ -7,11 +7,11 @@ import { Supervisor } from '../src/core/supervisor.js';
 let baseDir: string;
 let supervisor: Supervisor | undefined;
 
-function writeConfig(supervisorYaml: string, agents: Record<string, string>): void {
-  mkdirSync(join(baseDir, 'config', 'agents'), { recursive: true });
+function writeConfig(supervisorYaml: string, sessions: Record<string, string>): void {
+  mkdirSync(join(baseDir, 'config', 'sessions'), { recursive: true });
   writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), supervisorYaml);
-  for (const [name, content] of Object.entries(agents)) {
-    writeFileSync(join(baseDir, 'config', 'agents', `${name}.yaml`), content);
+  for (const [name, content] of Object.entries(sessions)) {
+    writeFileSync(join(baseDir, 'config', 'sessions', `${name}.yaml`), content);
   }
 }
 
@@ -60,13 +60,13 @@ describe('Supervisor construction', () => {
     supervisor = new Supervisor(baseDir);
 
     expect(await supervisor.command('/help')).toContain('/status');
-    expect(await supervisor.command('/start ghost')).toBe('Unknown agent: ghost');
+    expect(await supervisor.command('/start ghost')).toBe('Unknown session: ghost');
     expect(await supervisor.command('/tag alpha smoke test')).toContain('smoke test');
     expect(await supervisor.command('/auto alpha')).toBe('alpha set to autonomous.');
     expect(supervisor.statusReport('alpha')).toContain('"autonomy": "autonomous"');
   });
 
-  it('persists agent state across supervisor instances (single SQLite store)', async () => {
+  it('persists session state across supervisor instances (single SQLite store)', async () => {
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43394\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
     });
@@ -89,9 +89,9 @@ describe('Supervisor construction', () => {
     await supervisor.command('/auto alpha');
 
     // Simulate an editor's mid-write atomic save: the file exists but is invalid.
-    writeFileSync(join(baseDir, 'config', 'agents', 'alpha.yaml'), 'codename: alpha\nrepo:\n  - bad');
+    writeFileSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'), 'codename: alpha\nrepo:\n  - bad');
     await supervisor.command('/status'); // any op; the reload runs on the watcher, so force one:
-    supervisor.reloadAgentsForTest();
+    supervisor.reloadSessionsForTest();
 
     expect(supervisor.statusReport()).toContain('alpha');
     expect(supervisor.statusReport('alpha')).toContain('"autonomy": "autonomous"');
@@ -103,13 +103,13 @@ describe('Supervisor construction', () => {
     });
     supervisor = new Supervisor(baseDir);
     await supervisor.command('/auto alpha');
-    rmSync(join(baseDir, 'config', 'agents', 'alpha.yaml'));
-    supervisor.reloadAgentsForTest();
-    expect(supervisor.statusReport()).toContain('No agents configured');
+    rmSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'));
+    supervisor.reloadSessionsForTest();
+    expect(supervisor.statusReport()).toContain('No sessions configured');
   });
 
   it('flags marker-file repos as agent projects in status', () => {
-    const repo = join(baseDir, 'agent-repo');
+    const repo = join(baseDir, 'session-repo');
     mkdirSync(repo, { recursive: true });
     writeFileSync(join(repo, '.conductor-agent'), '');
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43395\n', {

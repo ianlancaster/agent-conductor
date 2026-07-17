@@ -2,14 +2,14 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadAgentConfigs } from '../src/config/loader.js';
-import type { AgentConfig } from '../src/config/schema.js';
+import { loadSessionConfigs } from '../src/config/loader.js';
+import type { SessionConfig } from '../src/config/schema.js';
 import { CommandRouter, tokenize } from '../src/core/commands.js';
 import { DeliveryQueue } from '../src/core/delivery.js';
 import { HumanInputBroker } from '../src/core/human-input.js';
 import { Lifecycle } from '../src/core/lifecycle.js';
 import { Messaging } from '../src/core/messaging.js';
-import { AgentStateManager } from '../src/core/state.js';
+import { SessionStateManager } from '../src/core/state.js';
 import { Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
@@ -18,36 +18,36 @@ let baseDir: string;
 let store: Store;
 let backend: FakeTerminalBackend;
 let runtime: FakeRuntime;
-let states: AgentStateManager;
+let states: SessionStateManager;
 let lifecycle: Lifecycle;
 let router: CommandRouter;
 let operatorMessages: string[];
-let agents: Map<string, AgentConfig>;
+let sessions: Map<string, SessionConfig>;
 let humanInput: HumanInputBroker;
 
-function writeAgentConfig(codename: string): void {
+function writeSessionConfig(codename: string): void {
   const repo = join(baseDir, 'repos', codename);
   mkdirSync(repo, { recursive: true });
-  writeFileSync(join(baseDir, 'config', 'agents', `${codename}.yaml`), `codename: ${codename}\nrepo: ${repo}\n`);
+  writeFileSync(join(baseDir, 'config', 'sessions', `${codename}.yaml`), `codename: ${codename}\nrepo: ${repo}\n`);
 }
 
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-cmd-'));
-  mkdirSync(join(baseDir, 'config', 'agents'), { recursive: true });
-  writeAgentConfig('alpha');
-  writeAgentConfig('beta');
+  mkdirSync(join(baseDir, 'config', 'sessions'), { recursive: true });
+  writeSessionConfig('alpha');
+  writeSessionConfig('beta');
 
   store = new Store(':memory:');
   backend = new FakeTerminalBackend();
   runtime = new FakeRuntime();
-  states = new AgentStateManager(store, 'facilitated');
+  states = new SessionStateManager(store, 'facilitated');
   operatorMessages = [];
-  agents = loadAgentConfigs(baseDir);
+  sessions = loadSessionConfigs(baseDir);
 
   const delivery = new DeliveryQueue({
     backend,
     runtimeFor: () => runtime,
-    getPane: (agent) => lifecycle.getPane(agent),
+    getPane: (session) => lifecycle.getPane(session),
     config: { queueDrainMs: 2000, queueMaxAgeMs: 60_000 },
   });
 
@@ -56,18 +56,18 @@ beforeEach(() => {
     backend,
     states,
     runtimes: new Map([['claude-code', runtime]]),
-    agents: () => agents,
+    sessions: () => sessions,
     identityFor: (codename) => ({
       mcpUrl: `http://127.0.0.1:1/mcp/${codename}`,
       eventsUrl: `http://127.0.0.1:1/events/${codename}`,
-      configDir: join(baseDir, 'data', 'agents', codename),
+      configDir: join(baseDir, 'data', 'sessions', codename),
     }),
     config: { defaultPlacement: 'pane', markerFile: '.conductor-agent', spawnDirPattern: './spawned/{codename}' },
     baseDir,
-    agentConfigDir: join(baseDir, 'config', 'agents'),
-    reloadAgents: () => {
-      agents = loadAgentConfigs(baseDir, { tolerant: true });
-      for (const codename of agents.keys()) states.register(codename, false);
+    sessionConfigDir: join(baseDir, 'config', 'sessions'),
+    reloadSessions: () => {
+      sessions = loadSessionConfigs(baseDir, { tolerant: true });
+      for (const codename of sessions.keys()) states.register(codename, false);
     },
     healthReset: () => undefined,
     onStarted: async () => undefined,
@@ -77,8 +77,8 @@ beforeEach(() => {
     store,
     delivery,
     states,
-    agents: () => agents,
-    startAgent: (codename, opts) => lifecycle.start(codename, opts),
+    sessions: () => sessions,
+    startSession: (codename, opts) => lifecycle.start(codename, opts),
     channelSend: async (text) => {
       operatorMessages.push(text);
       return true;
@@ -90,12 +90,12 @@ beforeEach(() => {
       operatorMessages.push(text);
     },
     sentinelCodename: () => undefined,
-    isActive: (agent) => states.get(agent)?.sessionActive === true,
-    getAutonomy: (agent) => states.getAutonomy(agent),
-    deliver: (agent, text) => delivery.deliverOrQueue(agent, text),
+    isActive: (session) => states.get(session)?.running === true,
+    getAutonomy: (session) => states.getAutonomy(session),
+    deliver: (session, text) => delivery.deliverOrQueue(session, text),
   });
 
-  for (const codename of agents.keys()) states.register(codename, false);
+  for (const codename of sessions.keys()) states.register(codename, false);
 
   router = new CommandRouter({
     lifecycle,
@@ -103,7 +103,7 @@ beforeEach(() => {
     humanInput,
     states,
     delivery,
-    agents: () => agents,
+    sessions: () => sessions,
     statusReport: (codename) => (codename !== undefined ? `status:${codename}` : 'status:all'),
     tail: async (codename, lines) => `tail:${codename}:${lines}`,
     tailLimits: { defaultLines: 30, maxLines: 500 },
@@ -129,17 +129,17 @@ describe('tokenize', () => {
 });
 
 describe('session commands', () => {
-  it('starts, reports already-running, and stops an agent', async () => {
+  it('starts, reports already-running, and stops a session', async () => {
     expect(await router.route('/start alpha')).toBe('alpha started.');
     expect(backend.paneFor('alpha')?.launched[0]).toContain('fake-launch alpha');
-    expect(states.get('alpha')?.sessionActive).toBe(true);
+    expect(states.get('alpha')?.running).toBe(true);
 
     expect(await router.route('/start alpha')).toBe('alpha is already running.');
     expect(await router.route('/stop alpha')).toBe('alpha stopped.');
-    expect(states.get('alpha')?.sessionActive).toBe(false);
+    expect(states.get('alpha')?.running).toBe(false);
   });
 
-  it('starts all agents with placement flags', async () => {
+  it('starts all sessions with placement flags', async () => {
     const reply = await router.route('/start all --tab');
     expect(reply).toContain('alpha started.');
     expect(reply).toContain('beta started.');
@@ -151,13 +151,13 @@ describe('session commands', () => {
     expect(backend.paneFor('alpha')?.launched[0]).toContain('--continue');
   });
 
-  it('rejects unknown agents', async () => {
-    expect(await router.route('/start ghost')).toBe('Unknown agent: ghost');
+  it('rejects unknown sessions', async () => {
+    expect(await router.route('/start ghost')).toBe('Unknown session: ghost');
   });
 });
 
 describe('conversation commands', () => {
-  it('tell starts a stopped agent with the message as prompt', async () => {
+  it('tell starts a stopped session with the message as prompt', async () => {
     const reply = await router.route('/tell beta check the build');
     expect(reply).toContain('started with your message');
     expect(backend.paneFor('beta')?.launched[0]).toContain('[Message from operator] check the build');
@@ -174,22 +174,22 @@ describe('conversation commands', () => {
     expect(await router.route('hello?')).toContain('No active conversation');
   });
 
-  it('agent-shortcut command sets the target and sends', async () => {
+  it('session-shortcut command sets the target and sends', async () => {
     await router.route('/start alpha');
     await router.route('/alpha ship it');
     expect(backend.paneFor('alpha')?.received).toContain('[Message from operator] ship it');
   });
 
-  it('broadcast reaches active agents only', async () => {
+  it('broadcast reaches active sessions only', async () => {
     await router.route('/start alpha');
     const reply = await router.route('/broadcast stand-up in 5');
-    expect(reply).toBe('Broadcast delivered to 1 agent(s).');
+    expect(reply).toBe('Broadcast delivered to 1 session(s).');
     expect(backend.paneFor('alpha')?.received).toContain('[Broadcast from operator] stand-up in 5');
   });
 });
 
 describe('mode commands', () => {
-  it('sets autonomy for one or all agents', async () => {
+  it('sets autonomy for one or all sessions', async () => {
     expect(await router.route('/auto alpha')).toBe('alpha set to autonomous.');
     expect(states.getAutonomy('alpha')).toBe('autonomous');
     await router.route('/facilitated all');
@@ -223,17 +223,17 @@ describe('tail and status', () => {
     expect(await router.route('/tail alpha')).toBe('tail:alpha:30');
   });
 
-  it('routes status with and without an agent', async () => {
+  it('routes status with and without a session', async () => {
     expect(await router.route('/status')).toBe('status:all');
     expect(await router.route('/status alpha')).toBe('status:alpha');
   });
 });
 
 describe('spawn and teardown', () => {
-  it('spawns a new agent end to end and tears it down with directory deletion', async () => {
+  it('spawns a new session end to end and tears it down with directory deletion', async () => {
     const reply = await router.route('/spawn newbie --prompt "hello world"');
     expect(reply).toContain('Spawned newbie');
-    expect(agents.has('newbie')).toBe(true);
+    expect(sessions.has('newbie')).toBe(true);
     expect(backend.paneFor('newbie')?.launched[0]).toContain('hello world');
     const spawnedDir = join(baseDir, 'spawned', 'newbie');
     expect(existsSync(spawnedDir)).toBe(true);
@@ -242,21 +242,21 @@ describe('spawn and teardown', () => {
     expect(teardown).toContain('newbie deregistered');
     expect(teardown).toContain('Directory deleted');
     expect(existsSync(spawnedDir)).toBe(false);
-    expect(agents.has('newbie')).toBe(false);
+    expect(sessions.has('newbie')).toBe(false);
   });
 
   it('rejects a traversal codename before writing any files (H7)', async () => {
     const reply = await router.route('/spawn ../../../etc/evil');
     expect(reply).toContain('Invalid codename');
     expect(existsSync(join(baseDir, '..', '..', '..', 'etc', 'evil'))).toBe(false);
-    expect(agents.has('../../../etc/evil')).toBe(false);
+    expect(sessions.has('../../../etc/evil')).toBe(false);
   });
 
   it('serializes model values as YAML data, not injectable config (H7)', async () => {
     // A real newline inside the quoted model value: string interpolation would
     // have injected a `runtime:` key; js-yaml keeps it a single scalar.
     await router.route('/spawn injected --model "sonnet\nruntime: evil"');
-    const spawned = agents.get('injected');
+    const spawned = sessions.get('injected');
     expect(spawned?.runtime).toBe('claude-code');
     expect(spawned?.model).toContain('sonnet');
   });

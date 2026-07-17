@@ -8,7 +8,7 @@ import type { Store } from '../../store/index.js';
 import type { TerminalBackend, TerminalCapabilities } from '../types.js';
 import {
   buildCloseSessionScript,
-  buildCreateAgentWindowScript,
+  buildCreateSessionWindowScript,
   buildCreateTabScript,
   buildCreateWindowScript,
   buildFocusWindowScript,
@@ -19,7 +19,7 @@ import {
   buildSplitPaneScript,
   buildWindowExistsScript,
   containsPromptMarker,
-  encodeAgentVar,
+  encodeSessionVar,
   escapeAppleScript,
   parseRediscoveryOutput,
   parseWindowCreateResult,
@@ -60,7 +60,7 @@ const PANES_KEY = 'iterm.panes';
  *  - Panes are tracked by iTerm2 session UUID, searched across ALL windows, so
  *    panes moved to other windows keep working. Only pane creation targets the
  *    conductor window.
- *  - Each agent session carries a `user.conductor_agent` variable (base64
+ *  - Each session session carries a `user.conductor_session` variable (base64
  *    codename), set atomically in the creation AppleScript, which is how
  *    rediscover() reattaches after a conductor restart.
  *  - Text delivery always goes through a temp file + `write contents of file`,
@@ -78,7 +78,7 @@ export class ITermBackend implements TerminalBackend {
   private readonly store: Store;
   private readonly config: ITermBackendConfig;
   private windowId: number | null = null;
-  /** agent codename -> iTerm2 session UUID */
+  /** session codename -> iTerm2 session UUID */
   private readonly panes = new Map<string, string>();
   private tmpDirPromise: Promise<string> | null = null;
 
@@ -93,8 +93,8 @@ export class ITermBackend implements TerminalBackend {
     this.windowId = this.store.getWorkspaceValue<number>(WINDOW_ID_KEY) ?? null;
     this.panes.clear();
     const persisted = this.store.getWorkspaceValue<Record<string, string>>(PANES_KEY) ?? {};
-    for (const [agent, sessionId] of Object.entries(persisted)) {
-      this.panes.set(agent, sessionId);
+    for (const [session, sessionId] of Object.entries(persisted)) {
+      this.panes.set(session, sessionId);
     }
 
     if (this.windowId !== null) {
@@ -120,37 +120,37 @@ export class ITermBackend implements TerminalBackend {
 
   // ── Pane lifecycle ──────────────────────────────────────────────────────────
 
-  async createPane(agent: string, placement: Placement, cwd?: string): Promise<PaneRef> {
-    const existing = this.panes.get(agent);
+  async createPane(session: string, placement: Placement, cwd?: string): Promise<PaneRef> {
+    const existing = this.panes.get(session);
     if (existing !== undefined) {
       if (await this.sessionAlive(existing)) {
-        log().debug('iterm', `${agent}: pane already exists, reusing (session=${existing.slice(0, 8)})`);
+        log().debug('iterm', `${session}: pane already exists, reusing (session=${existing.slice(0, 8)})`);
         return { backend: this.name, id: existing };
       }
-      this.panes.delete(agent);
+      this.panes.delete(session);
       this.persistPanes();
     }
 
-    log().info('iterm', `${agent}: creating ${placement}`);
-    const agentVar = encodeAgentVar(this.config.fleetId, agent);
+    log().info('iterm', `${session}: creating ${placement}`);
+    const sessionVar = encodeSessionVar(this.config.fleetId, session);
     let script: string;
     if (placement === 'window') {
-      script = buildCreateAgentWindowScript(agent, agentVar);
+      script = buildCreateSessionWindowScript(session, sessionVar);
     } else {
       const windowId = await this.ensureWindow();
       script =
         placement === 'tab'
-          ? buildCreateTabScript(windowId, agent, agentVar)
-          : buildSplitPaneScript(windowId, agent, agentVar);
+          ? buildCreateTabScript(windowId, session, sessionVar)
+          : buildSplitPaneScript(windowId, session, sessionVar);
     }
 
     const sessionId = (await runOsa(script)).trim();
     if (sessionId === '') {
-      throw new Error(`iTerm2 returned no session id creating ${placement} for ${agent}`);
+      throw new Error(`iTerm2 returned no session id creating ${placement} for ${session}`);
     }
-    this.panes.set(agent, sessionId);
+    this.panes.set(session, sessionId);
     this.persistPanes();
-    log().debug('iterm', `${agent}: ${placement} created (session=${sessionId.slice(0, 8)})`);
+    log().debug('iterm', `${session}: ${placement} created (session=${sessionId.slice(0, 8)})`);
 
     if (cwd !== undefined) {
       // The shell starts in the profile's default directory; move it before the
@@ -224,24 +224,24 @@ export class ITermBackend implements TerminalBackend {
       const raw = await runOsa(buildRediscoverScript());
       const found = parseRediscoveryOutput(raw, this.config.fleetId);
       this.panes.clear();
-      for (const [agent, sessionId] of found) {
-        this.panes.set(agent, sessionId);
-        result.set(agent, { backend: this.name, id: sessionId });
+      for (const [session, sessionId] of found) {
+        this.panes.set(session, sessionId);
+        result.set(session, { backend: this.name, id: sessionId });
       }
       this.persistPanes();
-      log().info('iterm', `Rediscovery: ${result.size} surviving agent pane(s)`);
+      log().info('iterm', `Rediscovery: ${result.size} surviving session pane(s)`);
     } catch (err) {
       log().warn('iterm', `Rediscovery failed: ${String(err)}`);
     }
     return result;
   }
 
-  async getFocusedAgent(): Promise<string | null> {
+  async getFocusedSession(): Promise<string | null> {
     if (this.windowId === null) return null;
     try {
       const sessionId = (await runOsa(buildFocusedSessionScript(this.windowId))).trim();
-      for (const [agent, paneSessionId] of this.panes) {
-        if (paneSessionId === sessionId) return agent;
+      for (const [session, paneSessionId] of this.panes) {
+        if (paneSessionId === sessionId) return session;
       }
       return null;
     } catch {
@@ -298,10 +298,10 @@ export class ITermBackend implements TerminalBackend {
           .filter((line) => line !== ''),
       );
       let changed = false;
-      for (const [agent, sessionId] of [...this.panes]) {
+      for (const [session, sessionId] of [...this.panes]) {
         if (!live.has(sessionId)) {
-          log().warn('iterm', `${agent}: session gone, removing mapping`);
-          this.panes.delete(agent);
+          log().warn('iterm', `${session}: session gone, removing mapping`);
+          this.panes.delete(session);
           changed = true;
         }
       }
@@ -367,9 +367,9 @@ export class ITermBackend implements TerminalBackend {
 
   private forgetSession(sessionId: string): void {
     let changed = false;
-    for (const [agent, paneSessionId] of [...this.panes]) {
+    for (const [session, paneSessionId] of [...this.panes]) {
       if (paneSessionId === sessionId) {
-        this.panes.delete(agent);
+        this.panes.delete(session);
         changed = true;
       }
     }

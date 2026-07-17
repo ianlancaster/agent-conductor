@@ -1,7 +1,7 @@
-import type { AgentConfig } from '../config/schema.js';
-import type { AgentState } from './types.js';
+import type { SessionConfig } from '../config/schema.js';
+import type { SessionState } from './types.js';
 
-const ACTIVITY_ICONS: Record<AgentState['activity'], string> = {
+const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
   working: '🟢',
   idle: '🟡',
   stalled: '🟠',
@@ -9,15 +9,15 @@ const ACTIVITY_ICONS: Record<AgentState['activity'], string> = {
 };
 
 export interface StatusDeps {
-  agents(): Map<string, AgentConfig>;
-  getState(codename: string): AgentState | undefined;
+  sessions(): Map<string, SessionConfig>;
+  getState(codename: string): SessionState | undefined;
   sentinelCodename(): string | undefined;
   pendingStallCount(): number;
 }
 
-export function formatAgentLine(codename: string, state: AgentState | undefined, isSentinel: boolean): string {
+export function formatSessionLine(codename: string, state: SessionState | undefined, isSentinel: boolean): string {
   if (state === undefined) return `⚪ ${codename} — unregistered`;
-  const icon = state.sessionActive ? ACTIVITY_ICONS[state.activity] : ACTIVITY_ICONS.stopped;
+  const icon = state.running ? ACTIVITY_ICONS[state.activity] : ACTIVITY_ICONS.stopped;
   const mode = state.pause !== undefined ? `paused→${state.pause.previousAutonomy}` : state.autonomy;
   const markers = [isSentinel ? '🛡' : '', state.isAgentProject ? '🤖' : ''].filter((m) => m.length > 0).join('');
   const tag = state.tag !== undefined ? ` — ${state.tag}` : '';
@@ -29,14 +29,14 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
 
   if (codename !== undefined) {
     const state = deps.getState(codename);
-    if (state === undefined || !deps.agents().has(codename)) return `Unknown agent: ${codename}`;
+    if (state === undefined || !deps.sessions().has(codename)) return `Unknown session: ${codename}`;
     return JSON.stringify(
       {
         codename,
         autonomy: state.autonomy,
         paused: state.pause !== undefined,
         tag: state.tag ?? null,
-        sessionActive: state.sessionActive,
+        running: state.running,
         activity: state.activity,
         agentProject: state.isAgentProject,
         isSentinel: codename === sentinel,
@@ -47,12 +47,12 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
   }
 
   const lines: string[] = [];
-  for (const name of [...deps.agents().keys()].sort()) {
-    lines.push(formatAgentLine(name, deps.getState(name), name === sentinel));
+  for (const name of [...deps.sessions().keys()].sort()) {
+    lines.push(formatSessionLine(name, deps.getState(name), name === sentinel));
   }
-  if (lines.length === 0) lines.push('No agents configured.');
+  if (lines.length === 0) lines.push('No sessions configured.');
   if (sentinel === undefined) {
-    lines.push('', '⚠️ No sentinel configured — autonomous agents are unsupervised.');
+    lines.push('', '⚠️ No sentinel configured — autonomous sessions are unsupervised.');
   }
   const stalls = deps.pendingStallCount();
   if (stalls > 0) lines.push('', `📥 ${stalls} unresolved stall(s) in the sentinel queue.`);

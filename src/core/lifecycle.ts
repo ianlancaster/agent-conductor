@@ -3,11 +3,11 @@ import { existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:f
 import { isAbsolute, join, resolve } from 'node:path';
 import yaml from 'js-yaml';
 import { log } from '../logger.js';
-import { isValidCodename, type AgentConfig } from '../config/schema.js';
-import type { AgentRuntime, IdentityEndpoints } from '../runtimes/types.js';
+import { isValidCodename, type SessionConfig } from '../config/schema.js';
+import type { SessionRuntime, IdentityEndpoints } from '../runtimes/types.js';
 import type { Store } from '../store/index.js';
 import type { TerminalBackend } from '../terminals/types.js';
-import type { AgentStateManager } from './state.js';
+import type { SessionStateManager } from './state.js';
 import { truncate } from './utils.js';
 import type { PaneRef, Placement } from './types.js';
 import { addWorktree, isWorktree, removeWorktree } from './worktree.js';
@@ -23,7 +23,7 @@ export interface SpawnOptions {
   model?: string;
   prompt?: string;
   placement?: Placement;
-  /** Create the agent's directory as a git worktree of this repository. */
+  /** Create the session's directory as a git worktree of this repository. */
   worktreeRepo?: string;
   /** Branch for the worktree (default: the codename). */
   branch?: string;
@@ -32,9 +32,9 @@ export interface SpawnOptions {
 export interface LifecycleDeps {
   store: Store;
   backend: TerminalBackend;
-  states: AgentStateManager;
-  runtimes: Map<string, AgentRuntime>;
-  agents(): Map<string, AgentConfig>;
+  states: SessionStateManager;
+  runtimes: Map<string, SessionRuntime>;
+  sessions(): Map<string, SessionConfig>;
   identityFor(codename: string): IdentityEndpoints;
   config: {
     defaultPlacement: Placement;
@@ -42,26 +42,26 @@ export interface LifecycleDeps {
     spawnDirPattern: string;
   };
   baseDir: string;
-  agentConfigDir: string;
-  /** Re-read agent configs immediately (after spawn/teardown writes). */
-  reloadAgents(): void;
-  /** Reset health tracking for an agent (on start/restart). */
-  healthReset(agent: string): void;
+  sessionConfigDir: string;
+  /** Re-read session configs immediately (after spawn/teardown writes). */
+  reloadSessions(): void;
+  /** Reset health tracking for a session (on start/restart). */
+  healthReset(session: string): void;
   /** Post-start hook (pending notification delivery). */
-  onStarted(agent: string): Promise<void>;
+  onStarted(session: string): Promise<void>;
 }
 
-/** Agent session lifecycle: start / continue / stop / restart / spawn / teardown. */
+/** Session session lifecycle: start / continue / stop / restart / spawn / teardown. */
 export class Lifecycle {
   private readonly panes = new Map<string, PaneRef>();
   private readonly sessions = new Map<string, string>();
-  /** In-flight start per codename — serializes concurrent starts so we never open two panes for one agent. */
+  /** In-flight start per codename — serializes concurrent starts so we never open two panes for one session. */
   private readonly starting = new Map<string, Promise<string>>();
 
   constructor(private readonly deps: LifecycleDeps) {}
 
-  getPane(agent: string): PaneRef | undefined {
-    return this.panes.get(agent);
+  getPane(session: string): PaneRef | undefined {
+    return this.panes.get(session);
   }
 
   /** Adopt a surviving pane after a conductor restart. */
@@ -76,7 +76,7 @@ export class Lifecycle {
 
   start(codename: string, opts: StartOptions = {}): Promise<string> {
     // Serialize starts for one codename: a cron fire racing an operator /start
-    // (or an auto-start via sendToAgent) must not both pass the liveness check
+    // (or an auto-start via sendToSession) must not both pass the liveness check
     // and open two panes for a single identity.
     const inFlight = this.starting.get(codename);
     if (inFlight !== undefined) return inFlight;
@@ -88,11 +88,11 @@ export class Lifecycle {
   }
 
   private async startInner(codename: string, opts: StartOptions): Promise<string> {
-    const agent = this.deps.agents().get(codename);
-    if (agent === undefined) return `Unknown agent: ${codename}`;
+    const session = this.deps.sessions().get(codename);
+    if (session === undefined) return `Unknown session: ${codename}`;
 
     const existingPane = this.panes.get(codename);
-    if (this.deps.states.get(codename)?.sessionActive === true && existingPane !== undefined) {
+    if (this.deps.states.get(codename)?.running === true && existingPane !== undefined) {
       if (await this.safeIsAlive(existingPane)) {
         return `${codename} is already running.`;
       }
@@ -100,21 +100,21 @@ export class Lifecycle {
       this.clearSession(codename);
     }
 
-    const runtime = this.deps.runtimes.get(agent.runtime);
-    if (runtime === undefined) return `No runtime registered for '${agent.runtime}'.`;
+    const runtime = this.deps.runtimes.get(session.runtime);
+    if (runtime === undefined) return `No runtime registered for '${session.runtime}'.`;
 
     const identity = this.deps.identityFor(codename);
-    await runtime.prepare(agent, identity);
+    await runtime.prepare(session, identity);
 
-    this.deps.states.register(codename, this.isAgentProject(agent));
+    this.deps.states.register(codename, this.isAgentProject(session));
 
     const placement = opts.placement ?? this.deps.config.defaultPlacement;
-    const pane = await this.deps.backend.createPane(codename, placement, agent.repo);
+    const pane = await this.deps.backend.createPane(codename, placement, session.repo);
     this.panes.set(codename, pane);
 
     try {
       await this.deps.backend.rename(pane, codename);
-      const command = runtime.buildLaunchCommand(agent, identity, {
+      const command = runtime.buildLaunchCommand(session, identity, {
         prompt: opts.prompt,
         continueSession: opts.continueSession ?? false,
       });
@@ -132,11 +132,7 @@ export class Lifecycle {
 
     const sessionId = randomUUID();
     this.sessions.set(codename, sessionId);
-    this.deps.store.insertSession(
-      sessionId,
-      codename,
-      opts.prompt !== undefined ? truncate(opts.prompt, 200) : undefined,
-    );
+    this.deps.store.insertRun(sessionId, codename, opts.prompt !== undefined ? truncate(opts.prompt, 200) : undefined);
 
     this.deps.states.setSession(codename, pane.id);
     this.deps.states.setActivity(codename, 'working');
@@ -152,7 +148,7 @@ export class Lifecycle {
   }
 
   async stop(codename: string): Promise<string> {
-    if (!this.deps.states.has(codename)) return `Unknown agent: ${codename}`;
+    if (!this.deps.states.has(codename)) return `Unknown session: ${codename}`;
     const pane = this.panes.get(codename);
     if (pane !== undefined) {
       try {
@@ -173,7 +169,7 @@ export class Lifecycle {
 
   /** Session ended without us stopping it (pane closed, session-end event). */
   handleSessionEnd(codename: string): void {
-    if (this.deps.states.get(codename)?.sessionActive !== true) return;
+    if (this.deps.states.get(codename)?.running !== true) return;
     this.clearSession(codename);
     log().info('lifecycle', `${codename}: session ended`);
   }
@@ -185,7 +181,7 @@ export class Lifecycle {
     if (!isValidCodename(codename)) {
       return `Invalid codename '${codename}': must be alphanumeric with dashes/underscores.`;
     }
-    if (this.deps.agents().has(codename)) return `Agent '${codename}' already exists.`;
+    if (this.deps.sessions().has(codename)) return `Session '${codename}' already exists.`;
 
     const rawDir = opts.path ?? this.deps.config.spawnDirPattern.replace('{codename}', codename);
     const dir = isAbsolute(rawDir) ? rawDir : resolve(this.deps.baseDir, rawDir);
@@ -200,63 +196,63 @@ export class Lifecycle {
     // containing a newline would otherwise inject arbitrary YAML keys.
     const config: Record<string, string> = { codename, repo: dir };
     if (opts.model !== undefined) config.model = opts.model;
-    mkdirSync(this.deps.agentConfigDir, { recursive: true });
-    writeFileSync(join(this.deps.agentConfigDir, `${codename}.yaml`), yaml.dump(config));
+    mkdirSync(this.deps.sessionConfigDir, { recursive: true });
+    writeFileSync(join(this.deps.sessionConfigDir, `${codename}.yaml`), yaml.dump(config));
 
-    this.deps.reloadAgents();
+    this.deps.reloadSessions();
     const started = await this.start(codename, { prompt: opts.prompt, placement: opts.placement });
     return `Spawned ${codename} at ${dir}. ${started}`;
   }
 
   async teardown(codename: string, deleteDir = false): Promise<string> {
-    const agent = this.deps.agents().get(codename);
-    if (agent === undefined) return `Unknown agent: ${codename}`;
+    const session = this.deps.sessions().get(codename);
+    if (session === undefined) return `Unknown session: ${codename}`;
 
-    if (this.deps.states.get(codename)?.sessionActive === true) {
+    if (this.deps.states.get(codename)?.running === true) {
       await this.stop(codename);
     }
 
-    const configFile = join(this.deps.agentConfigDir, `${codename}.yaml`);
+    const configFile = join(this.deps.sessionConfigDir, `${codename}.yaml`);
     if (existsSync(configFile)) unlinkSync(configFile);
 
     let dirNote = '';
     if (deleteDir) {
-      if (isWorktree(agent.repo)) {
+      if (isWorktree(session.repo)) {
         try {
-          await removeWorktree(agent.repo);
+          await removeWorktree(session.repo);
           dirNote = ' Worktree removed.';
         } catch (err) {
           dirNote = ` Worktree NOT removed: ${err instanceof Error ? err.message : String(err)} (commit or stash changes, or remove it manually).`;
         }
-      } else if (existsSync(join(agent.repo, '.git'))) {
-        dirNote = ` Directory kept: ${agent.repo} contains a git repository.`;
-      } else if (existsSync(join(agent.repo, this.deps.config.markerFile))) {
-        dirNote = ` Directory kept: ${agent.repo} is marked as an agent project.`;
+      } else if (existsSync(join(session.repo, '.git'))) {
+        dirNote = ` Directory kept: ${session.repo} contains a git repository.`;
+      } else if (existsSync(join(session.repo, this.deps.config.markerFile))) {
+        dirNote = ` Directory kept: ${session.repo} is marked as an agent project.`;
       } else {
-        rmSync(agent.repo, { recursive: true, force: true });
+        rmSync(session.repo, { recursive: true, force: true });
         dirNote = ` Directory deleted.`;
       }
     }
 
     this.deps.states.deregister(codename);
-    this.deps.reloadAgents();
+    this.deps.reloadSessions();
     log().info('lifecycle', `${codename}: torn down`);
     return `${codename} deregistered.${dirNote}`;
   }
 
-  isAgentProject(agent: AgentConfig): boolean {
-    return existsSync(join(agent.repo, this.deps.config.markerFile));
+  isAgentProject(session: SessionConfig): boolean {
+    return existsSync(join(session.repo, this.deps.config.markerFile));
   }
 
   private clearSession(codename: string): void {
     const sessionId = this.sessions.get(codename);
     if (sessionId !== undefined) {
-      this.deps.store.completeSession(sessionId);
+      this.deps.store.completeRun(sessionId);
       this.sessions.delete(codename);
     }
     this.panes.delete(codename);
     // Cancel any armed idle/stall timers so they can't fire into a stopped or
-    // (after teardown) deregistered agent — that would throw inside setTimeout.
+    // (after teardown) deregistered session — that would throw inside setTimeout.
     this.deps.healthReset(codename);
     if (this.deps.states.has(codename)) {
       this.deps.states.setSession(codename, undefined);
