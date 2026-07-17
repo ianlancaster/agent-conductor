@@ -1,4 +1,4 @@
-# A Claude Code agent. Place at config/agents/<codename>.yaml — files here hot-reload.
+# A Claude Code session. Place at config/sessions/<codename>.yaml — files here hot-reload.
 codename: alpha
 repo: ../my-project # absolute, or relative to the conductor directory
 runtime: claude-code # default
@@ -12,4 +12,4 @@ schedules:
   - label: nightly-fresh
     cron: '0 2 * * *'
     prompt: Start the nightly maintenance checklist.
-    freshSession: true # stop + restart with a clean context before delivering
+    freshContext: true # stop + restart with a clean context before delivering

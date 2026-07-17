@@ -184,7 +184,7 @@ hook, AGENTS.md protocol injection, `codex resume`, Codex glyphs/chrome).
 
 ### Phase 6 — Scheduler, worktrees, focus auto-pause, release (M)
 
-Scheduler on croner (freshSession, pause gate, hot-reload via the shared watcher). N10 worktree
+Scheduler on croner (freshContext, pause gate, hot-reload via the shared watcher). N10 worktree
 lifecycle (`create_worktree`/`remove_worktree` tools + `spawn_agent --worktree`, teardown
 integration). Focus auto-pause (iTerm capability flag). README + architecture doc + examples,
 npm publish via changesets.

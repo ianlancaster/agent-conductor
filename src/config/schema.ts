@@ -12,21 +12,19 @@ export const scheduleEntrySchema = z.object({
   cron: z.string(),
   prompt: z.string(),
   paused: z.boolean().default(false),
-  freshSession: z.boolean().default(false),
+  freshContext: z.boolean().default(false),
 });
 
-export const agentConfigSchema = z.object({
+export const sessionConfigSchema = z.object({
   codename: z.string().min(1).regex(CODENAME_PATTERN, 'codename must be alphanumeric with dashes/underscores'),
-  /** Human-readable display name. Defaults to the codename. */
-  agent: z.string().optional(),
-  /** Absolute or config-relative path to the agent's working directory. */
+  /** Absolute or config-relative path to the session's working directory. */
   repo: z.string().min(1),
   runtime: z.enum(['claude-code', 'codex']).default('claude-code'),
   model: z.string().optional(),
   additionalDirs: z.array(z.string()).default([]),
   /**
-   * Per-agent instructions appended to this agent's system prompt, on top of the
-   * conductor protocol every agent receives. Point the sentinel at the shipped
+   * Per-session instructions appended to this session's system prompt, on top of the
+   * conductor protocol every session receives. Point the sentinel at the shipped
    * sentinel prompt here. Absolute, or resolved relative to the config dir.
    */
   systemPromptFile: z.string().optional(),
@@ -131,9 +129,9 @@ export const supervisorConfigSchema = z.object({
           defaultModel: z.string().optional(),
           autocompactPct: z.number().int().min(1).max(100).default(70),
           skipPermissions: z.boolean().default(true),
-          /** Extra env vars exported to every agent. Values here override the built-in defaults. */
+          /** Extra env vars exported to every session. Values here override the built-in defaults. */
           env: z.record(z.string()).default({}),
-          /** Path to the conductor protocol prompt appended to every agent's system prompt. */
+          /** Path to the conductor protocol prompt appended to every session's system prompt. */
           systemPromptFile: z.string().optional(),
         })
         .default({}),
@@ -149,9 +147,9 @@ export const supervisorConfigSchema = z.object({
     .default({}),
   spawn: z
     .object({
-      /** Directory pattern for spawned agents; {codename} is substituted. */
+      /** Directory pattern for spawned sessions; {codename} is substituted. */
       dirPattern: z.string().default('../{codename}'),
-      /** Marker file that flags a repo as an "agent" project (display-only). */
+      /** Marker file that flags a repo as an agent project (display-only 🤖). */
       markerFile: z.string().default('.conductor-agent'),
     })
     .default({}),
@@ -163,7 +161,7 @@ export const supervisorConfigSchema = z.object({
 });
 
 export type ScheduleEntry = z.infer<typeof scheduleEntrySchema>;
-export type AgentConfig = z.infer<typeof agentConfigSchema>;
+export type SessionConfig = z.infer<typeof sessionConfigSchema>;
 
 /** Raw parse output — instance-scoped fields may be absent (loader derives them per fleet dir). */
 export type SupervisorConfigInput = z.infer<typeof supervisorConfigSchema>;

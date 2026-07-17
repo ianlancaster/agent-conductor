@@ -5,7 +5,7 @@ import { basename, resolve } from 'node:path';
  * Per-fleet instance defaults, derived deterministically from the fleet
  * directory path. Multiple conductors (one per fleet dir) get non-colliding
  * ports, tmux session names, and window titles without any manual config —
- * and the values are stable across restarts, which matters because agent MCP
+ * and the values are stable across restarts, which matters because session MCP
  * configs bake the port into their URLs.
  *
  * Explicit values in supervisor.yaml always win; these only fill the gaps.

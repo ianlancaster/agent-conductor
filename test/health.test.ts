@@ -7,7 +7,7 @@ import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 const CONFIG = { captureLines: 40, stallBeatsThreshold: 2, idleConfirmMs: 15_000, eventSilenceMs: 120_000 };
 
 interface Recorded {
-  agent: string;
+  session: string;
   kind: StallKind;
   reason?: string;
 }
@@ -31,10 +31,10 @@ beforeEach(async () => {
     config: CONFIG,
     backend,
     runtimeFor: () => runtime,
-    getPane: (agent) => (agent === 'alpha' ? { backend: 'fake', id: paneId } : undefined),
-    getActiveAgents: () => ['alpha'],
-    onStall: (agent, kind, info) => stalls.push({ agent, kind, reason: info.reason }),
-    onSessionEnd: (agent) => sessionEnds.push(agent),
+    getPane: (session) => (session === 'alpha' ? { backend: 'fake', id: paneId } : undefined),
+    getActiveSessions: () => ['alpha'],
+    onStall: (session, kind, info) => stalls.push({ session, kind, reason: info.reason }),
+    onSessionEnd: (session) => sessionEnds.push(session),
     logEvent: () => undefined,
   });
 });
@@ -45,7 +45,7 @@ afterEach(() => {
 });
 
 function event(type: 'stop' | 'notification' | 'compaction' | 'session-start' | 'session-end', reason?: string): void {
-  monitor.handleEvent({ agent: 'alpha', type, reason, receivedAt: Date.now() });
+  monitor.handleEvent({ session: 'alpha', type, reason, receivedAt: Date.now() });
 }
 
 describe('event-driven signals', () => {
@@ -53,10 +53,10 @@ describe('event-driven signals', () => {
     event('stop');
     expect(stalls).toEqual([]);
     vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
-    expect(stalls).toEqual([{ agent: 'alpha', kind: 'idle', reason: undefined }]);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: undefined }]);
   });
 
-  it('cancels the idle timer when another event arrives (agent got new work)', () => {
+  it('cancels the idle timer when another event arrives (session got new work)', () => {
     event('stop');
     vi.advanceTimersByTime(CONFIG.idleConfirmMs / 2);
     event('session-start');
@@ -66,7 +66,7 @@ describe('event-driven signals', () => {
 
   it('raises blocked stalls immediately on notification events', () => {
     event('notification', 'needs permission');
-    expect(stalls).toEqual([{ agent: 'alpha', kind: 'blocked', reason: 'needs permission' }]);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'blocked', reason: 'needs permission' }]);
   });
 
   it('raises compaction stalls immediately', () => {
@@ -97,7 +97,7 @@ describe('fallback pane-diff watchdog', () => {
     await monitor.heartbeat(); // snapshot
     await monitor.heartbeat(); // beat 1 unchanged
     await monitor.heartbeat(); // beat 2 unchanged -> threshold
-    expect(stalls).toEqual([{ agent: 'alpha', kind: 'silent', reason: undefined }]);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'silent', reason: undefined }]);
     // No repeat notification while content stays frozen.
     await monitor.heartbeat();
     expect(stalls.length).toBe(1);
@@ -111,9 +111,9 @@ describe('fallback pane-diff watchdog', () => {
       backend,
       runtimeFor: () => silent,
       getPane: () => ({ backend: 'fake', id: paneId }),
-      getActiveAgents: () => ['alpha'],
-      onStall: (agent, kind, info) => stalls.push({ agent, kind, reason: info.reason }),
-      onSessionEnd: (agent) => sessionEnds.push(agent),
+      getActiveSessions: () => ['alpha'],
+      onStall: (session, kind, info) => stalls.push({ session, kind, reason: info.reason }),
+      onSessionEnd: (session) => sessionEnds.push(session),
       logEvent: () => undefined,
     });
     backend.setPaneContent(paneId, 'a');

@@ -2,7 +2,7 @@ import type { PaneRef, Placement } from '../../src/core/types.js';
 import type { TerminalBackend, TerminalCapabilities } from '../../src/terminals/types.js';
 
 export interface FakePane {
-  agent: string;
+  session: string;
   placement: Placement;
   cwd: string | undefined;
   lines: string[];
@@ -18,7 +18,7 @@ export class FakeTerminalBackend implements TerminalBackend {
   readonly capabilities: TerminalCapabilities = { focusTracking: true, headless: true };
 
   readonly panes = new Map<string, FakePane>();
-  focusedAgent: string | null = null;
+  focusedSession: string | null = null;
   survivors = new Map<string, PaneRef>();
   private counter = 0;
 
@@ -26,16 +26,16 @@ export class FakeTerminalBackend implements TerminalBackend {
     // no-op
   }
 
-  async createPane(agent: string, placement: Placement, cwd?: string): Promise<PaneRef> {
+  async createPane(session: string, placement: Placement, cwd?: string): Promise<PaneRef> {
     this.counter += 1;
     const id = `pane-${this.counter}`;
     this.panes.set(id, {
-      agent,
+      session,
       placement,
       cwd,
       lines: [],
       alive: true,
-      name: agent,
+      name: session,
       launched: [],
       received: [],
     });
@@ -75,8 +75,8 @@ export class FakeTerminalBackend implements TerminalBackend {
     return new Map(this.survivors);
   }
 
-  async getFocusedAgent(): Promise<string | null> {
-    return this.focusedAgent;
+  async getFocusedSession(): Promise<string | null> {
+    return this.focusedSession;
   }
 
   async focusWindow(): Promise<void> {
@@ -91,8 +91,8 @@ export class FakeTerminalBackend implements TerminalBackend {
     p.lines = content.split('\n');
   }
 
-  paneFor(agent: string): FakePane | undefined {
-    return [...this.panes.values()].find((p) => p.agent === agent && p.alive);
+  paneFor(session: string): FakePane | undefined {
+    return [...this.panes.values()].find((p) => p.session === session && p.alive);
   }
 
   private mustGet(pane: PaneRef): FakePane {

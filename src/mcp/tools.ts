@@ -1,10 +1,10 @@
-import type { AgentConfig } from '../config/schema.js';
+import type { SessionConfig } from '../config/schema.js';
 import type { DeliveryQueue } from '../core/delivery.js';
 import type { HumanInputBroker } from '../core/human-input.js';
 import type { Lifecycle } from '../core/lifecycle.js';
 import type { Messaging } from '../core/messaging.js';
 import type { StallSentinelRouter } from '../core/sentinel.js';
-import type { AgentStateManager } from '../core/state.js';
+import type { SessionStateManager } from '../core/state.js';
 import type { Placement, StallResolution } from '../core/types.js';
 import { sleep } from '../core/utils.js';
 import { isWorktree } from '../core/worktree.js';
@@ -15,9 +15,9 @@ export interface McpToolDeps {
   messaging: Messaging;
   humanInput: HumanInputBroker;
   sentinel: StallSentinelRouter;
-  states: AgentStateManager;
+  states: SessionStateManager;
   delivery: DeliveryQueue;
-  agents(): Map<string, AgentConfig>;
+  sessions(): Map<string, SessionConfig>;
   statusReport(codename?: string): string;
   tail(codename: string, lines: number): Promise<string>;
   tailLimits: { defaultLines: number; maxLines: number };
@@ -56,22 +56,22 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
 
   return [
     {
-      name: 'send_to_agent',
-      description: `Send a message to another agent's session. Starts the agent if it is not running. ${IDENTITY_NOTE}`,
+      name: 'send_to_session',
+      description: `Send a message to another session's session. Starts the session if it is not running. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: {
-          codename: { type: 'string', description: 'Target agent codename' },
+          codename: { type: 'string', description: 'Target session codename' },
           message: { type: 'string', description: 'Message text' },
         },
         required: ['codename', 'message'],
       },
       handler: (args, caller) =>
-        deps.messaging.sendToAgent(caller, requireString(args, 'codename'), requireString(args, 'message')),
+        deps.messaging.sendToSession(caller, requireString(args, 'codename'), requireString(args, 'message')),
     },
     {
       name: 'broadcast',
-      description: `Send a message to ALL active agents. Use carefully and sparingly — prefer send_to_agent or notify_agents with explicit recipients. ${IDENTITY_NOTE}`,
+      description: `Send a message to ALL active sessions. Use carefully and sparingly — prefer send_to_session or notify_sessions with explicit recipients. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: { message: { type: 'string', description: 'Message text' } },
@@ -80,13 +80,13 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       handler: (args, caller) => deps.messaging.broadcast(caller, requireString(args, 'message')),
     },
     {
-      name: 'notify_agents',
-      description: `Queue a notification for agents, delivered when they next start a session. ${IDENTITY_NOTE}`,
+      name: 'notify_sessions',
+      description: `Queue a notification for sessions, delivered when they next start a session. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: {
           message: { type: 'string' },
-          recipients: { type: 'array', items: { type: 'string' }, description: 'Codenames (default: all agents)' },
+          recipients: { type: 'array', items: { type: 'string' }, description: 'Codenames (default: all sessions)' },
         },
         required: ['message'],
       },
@@ -132,8 +132,8 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       },
     },
     {
-      name: 'start_agent',
-      description: `Start another agent's session. ${IDENTITY_NOTE}`,
+      name: 'start_session',
+      description: `Start another session's session. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -153,8 +153,8 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       },
     },
     {
-      name: 'stop_agent',
-      description: `Stop another agent's session. ${IDENTITY_NOTE}`,
+      name: 'stop_session',
+      description: `Stop another session's session. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: { codename: { type: 'string' } },
@@ -167,8 +167,8 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       },
     },
     {
-      name: 'continue_agent',
-      description: `Resume another agent's most recent session. ${IDENTITY_NOTE}`,
+      name: 'continue_session',
+      description: `Resume another session's most recent session. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: { codename: { type: 'string' }, placement: placementSchema },
@@ -181,8 +181,8 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       },
     },
     {
-      name: 'spawn_agent',
-      description: `Create and start a new agent: makes a directory, registers a config, starts a session. ${IDENTITY_NOTE}`,
+      name: 'spawn_session',
+      description: `Create and start a new session: makes a directory, registers a config, starts a session. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -204,11 +204,11 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     },
     {
       name: 'create_worktree',
-      description: `Create a new agent whose working directory is a git worktree of an existing repository — parallel work on one repo with full file isolation. ${IDENTITY_NOTE}`,
+      description: `Create a new session whose working directory is a git worktree of an existing repository — parallel work on one repo with full file isolation. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: {
-          codename: { type: 'string', description: 'New agent codename' },
+          codename: { type: 'string', description: 'New session codename' },
           repo: { type: 'string', description: 'Path to the existing git repository' },
           branch: { type: 'string', description: 'Branch to create/check out (default: the codename)' },
           model: { type: 'string' },
@@ -228,7 +228,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     },
     {
       name: 'remove_worktree',
-      description: `Stop a worktree agent, deregister it, and remove its git worktree (refuses dirty worktrees). ${IDENTITY_NOTE}`,
+      description: `Stop a worktree session, deregister it, and remove its git worktree (refuses dirty worktrees). ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: { codename: { type: 'string' } },
@@ -237,16 +237,16 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       handler: (args, caller) => {
         const codename = requireString(args, 'codename');
         noSelf(caller, codename, 'remove');
-        const agent = deps.agents().get(codename);
-        if (agent === undefined) throw new Error(`Unknown agent: ${codename}`);
-        if (!isWorktree(agent.repo))
-          throw new Error(`${codename}'s directory is not a git worktree — use teardown_agent.`);
+        const session = deps.sessions().get(codename);
+        if (session === undefined) throw new Error(`Unknown session: ${codename}`);
+        if (!isWorktree(session.repo))
+          throw new Error(`${codename}'s directory is not a git worktree — use teardown_session.`);
         return deps.lifecycle.teardown(codename, true);
       },
     },
     {
-      name: 'teardown_agent',
-      description: `Stop and deregister an agent. Refuses to delete directories containing a git repo or agent marker. ${IDENTITY_NOTE}`,
+      name: 'teardown_session',
+      description: `Stop and deregister a session. Refuses to delete directories containing a git repo or session marker. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -263,7 +263,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     },
     {
       name: 'set_autonomy',
-      description: `Set another agent's autonomy mode: 'autonomous' routes stalls to the sentinel; 'facilitated' means the operator drives. ${IDENTITY_NOTE}`,
+      description: `Set another session's autonomy mode: 'autonomous' routes stalls to the sentinel; 'facilitated' means the operator drives. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -279,14 +279,14 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
         if (mode !== 'facilitated' && mode !== 'autonomous') {
           throw new Error("mode must be 'facilitated' or 'autonomous'");
         }
-        if (!deps.states.has(codename)) throw new Error(`Unknown agent: ${codename}`);
+        if (!deps.states.has(codename)) throw new Error(`Unknown session: ${codename}`);
         deps.states.setAutonomy(codename, mode);
         return Promise.resolve(`${codename} set to ${mode}.`);
       },
     },
     {
       name: 'set_tag',
-      description: `Set or clear a short status label on an agent (shown in status output). ${IDENTITY_NOTE}`,
+      description: `Set or clear a short status label on a session (shown in status output). ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: { codename: { type: 'string' }, tag: { type: 'string', description: 'Omit to clear' } },
@@ -294,7 +294,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       },
       handler: (args, _caller) => {
         const codename = requireString(args, 'codename');
-        if (!deps.states.has(codename)) throw new Error(`Unknown agent: ${codename}`);
+        if (!deps.states.has(codename)) throw new Error(`Unknown session: ${codename}`);
         const tag = optionalString(args, 'tag');
         deps.states.setTag(codename, tag);
         return Promise.resolve(tag === undefined ? `Tag cleared for ${codename}.` : `${codename} tagged '${tag}'.`);
@@ -302,7 +302,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     },
     {
       name: 'get_tag',
-      description: "Get an agent's current tag.",
+      description: "Get a session's current tag.",
       inputSchema: {
         type: 'object',
         properties: { codename: { type: 'string' } },
@@ -324,11 +324,11 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
           JSON.stringify(
             {
               codename: caller,
-              registered: deps.agents().has(caller),
+              registered: deps.sessions().has(caller),
               isSentinel: deps.sentinel.isSentinel(caller),
               autonomy: state?.autonomy ?? null,
               activity: state?.activity ?? null,
-              sessionActive: state?.sessionActive ?? false,
+              running: state?.running ?? false,
               tag: state?.tag ?? null,
             },
             null,
@@ -338,14 +338,14 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       },
     },
     {
-      name: 'list_agents',
-      description: 'List all agents with their status.',
+      name: 'list_sessions',
+      description: 'List all sessions with their status.',
       inputSchema: { type: 'object', properties: {} },
       handler: (_args, _caller) => Promise.resolve(deps.statusReport()),
     },
     {
-      name: 'get_agent_status',
-      description: 'Detailed status for one agent as JSON.',
+      name: 'get_session_status',
+      description: 'Detailed status for one session as JSON.',
       inputSchema: {
         type: 'object',
         properties: { codename: { type: 'string' } },
@@ -354,18 +354,18 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       handler: (args, _caller) => Promise.resolve(deps.statusReport(requireString(args, 'codename'))),
     },
     {
-      name: 'agent_exists',
-      description: 'Whether an agent with this codename is registered.',
+      name: 'session_exists',
+      description: 'Whether a session with this codename is registered.',
       inputSchema: {
         type: 'object',
         properties: { codename: { type: 'string' } },
         required: ['codename'],
       },
-      handler: (args, _caller) => Promise.resolve(String(deps.agents().has(requireString(args, 'codename')))),
+      handler: (args, _caller) => Promise.resolve(String(deps.sessions().has(requireString(args, 'codename')))),
     },
     {
-      name: 'tail_agent',
-      description: `Read the trailing pane output of another agent (default ${String(deps.tailLimits.defaultLines)} lines, max ${String(deps.tailLimits.maxLines)}).`,
+      name: 'tail_session',
+      description: `Read the trailing pane output of another session (default ${String(deps.tailLimits.defaultLines)} lines, max ${String(deps.tailLimits.maxLines)}).`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -383,7 +383,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     },
     {
       name: 'type_in_pane',
-      description: `Type raw text into another agent's pane with no envelope — for answering prompts or slash commands. ${IDENTITY_NOTE}`,
+      description: `Type raw text into another session's pane with no envelope — for answering prompts or slash commands. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: { codename: { type: 'string' }, text: { type: 'string' } },
@@ -423,7 +423,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     {
       name: 'resolve_stall',
       description:
-        "SENTINEL: resolve a stall. action 'nudge' types text into the stalled agent's session; 'suppress' dismisses it; 'escalate' asks the operator.",
+        "SENTINEL: resolve a stall. action 'nudge' types text into the stalled session's session; 'suppress' dismisses it; 'escalate' asks the operator.",
       sentinelOnly: true,
       inputSchema: {
         type: 'object',
@@ -468,9 +468,9 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       handler: (args, _caller) => {
         const id = typeof args.id === 'number' ? args.id : Number.NaN;
         if (!Number.isInteger(id)) throw new Error("'id' must be an integer");
-        const agent = deps.humanInput.answer(id, requireString(args, 'answer'));
+        const session = deps.humanInput.answer(id, requireString(args, 'answer'));
         return Promise.resolve(
-          agent === undefined ? `No pending question #${String(id)}.` : `Answer delivered to ${agent}.`,
+          session === undefined ? `No pending question #${String(id)}.` : `Answer delivered to ${session}.`,
         );
       },
     },

@@ -4,15 +4,15 @@ import { fileURLToPath } from 'node:url';
 import type { ChannelAdapter, ChannelChoice } from '../channels/types.js';
 import { TelegramAdapter } from '../channels/telegram/index.js';
 import { fleetSlug } from '../config/instance.js';
-import { agentConfigDir, loadAgentConfigs, loadSupervisorConfig } from '../config/loader.js';
-import type { AgentConfig, SupervisorConfig } from '../config/schema.js';
+import { sessionConfigDir, loadSessionConfigs, loadSupervisorConfig } from '../config/loader.js';
+import type { SessionConfig, SupervisorConfig } from '../config/schema.js';
 import { ConfigWatcher } from '../config/watcher.js';
 import { initLogger, log } from '../logger.js';
 import { ConductorMcpServer } from '../mcp/server.js';
 import { buildMcpTools } from '../mcp/tools.js';
 import { ClaudeCodeRuntime } from '../runtimes/claude-code/index.js';
 import { CodexRuntime } from '../runtimes/codex/index.js';
-import type { AgentRuntime } from '../runtimes/types.js';
+import type { SessionRuntime } from '../runtimes/types.js';
 import { Store } from '../store/index.js';
 import { ITermBackend } from '../terminals/iterm/index.js';
 import { TmuxBackend } from '../terminals/tmux/index.js';
@@ -27,7 +27,7 @@ import { Lifecycle } from './lifecycle.js';
 import { FleetLock } from './lock.js';
 import { Messaging } from './messaging.js';
 import { StallSentinelRouter } from './sentinel.js';
-import { AgentStateManager } from './state.js';
+import { SessionStateManager } from './state.js';
 import { statusReport } from './status.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
@@ -40,12 +40,12 @@ export interface SupervisorStartOptions {
 /** Thin orchestrator: constructs the modules, wires the seams, owns the loops. */
 export class Supervisor {
   readonly config: SupervisorConfig;
-  private agents: Map<string, AgentConfig>;
+  private sessions: Map<string, SessionConfig>;
 
   private readonly store: Store;
-  private readonly states: AgentStateManager;
+  private readonly states: SessionStateManager;
   private readonly backend: TerminalBackend;
-  private readonly runtimes = new Map<string, AgentRuntime>();
+  private readonly runtimes = new Map<string, SessionRuntime>();
   private readonly delivery: DeliveryQueue;
   private readonly lifecycle: Lifecycle;
   private readonly health: HealthMonitor;
@@ -67,9 +67,9 @@ export class Supervisor {
     initLogger({ level: this.config.supervisor.logLevel, filePath: join(dataDir, 'conductor.log') });
     this.lock = new FleetLock(join(dataDir, 'conductor.lock'));
 
-    this.agents = loadAgentConfigs(baseDir, { tolerant: true });
+    this.sessions = loadSessionConfigs(baseDir, { tolerant: true });
     this.store = new Store(join(dataDir, 'conductor.db'));
-    this.states = new AgentStateManager(this.store, this.config.defaults.autonomy);
+    this.states = new SessionStateManager(this.store, this.config.defaults.autonomy);
 
     const fleetId = fleetSlug(baseDir);
     this.backend =
@@ -93,8 +93,8 @@ export class Supervisor {
 
     this.delivery = new DeliveryQueue({
       backend: this.backend,
-      runtimeFor: (agent) => this.runtimeFor(agent),
-      getPane: (agent) => this.lifecycle.getPane(agent),
+      runtimeFor: (session) => this.runtimeFor(session),
+      getPane: (session) => this.lifecycle.getPane(session),
       config: this.config.messaging,
     });
 
@@ -103,7 +103,7 @@ export class Supervisor {
       backend: this.backend,
       states: this.states,
       runtimes: this.runtimes,
-      agents: () => this.agents,
+      sessions: () => this.sessions,
       identityFor: (codename) =>
         identityFor(codename, { host: this.config.mcp.host, port: this.config.mcp.port, dataDir }),
       config: {
@@ -112,22 +112,22 @@ export class Supervisor {
         spawnDirPattern: this.config.spawn.dirPattern,
       },
       baseDir,
-      agentConfigDir: agentConfigDir(baseDir),
-      reloadAgents: () => {
-        this.reloadAgents();
+      sessionConfigDir: sessionConfigDir(baseDir),
+      reloadSessions: () => {
+        this.reloadSessions();
       },
-      healthReset: (agent) => {
-        this.health.reset(agent);
+      healthReset: (session) => {
+        this.health.reset(session);
       },
-      onStarted: (agent) => this.messaging.deliverPendingNotifications(agent),
+      onStarted: (session) => this.messaging.deliverPendingNotifications(session),
     });
 
     this.messaging = new Messaging({
       store: this.store,
       delivery: this.delivery,
       states: this.states,
-      agents: () => this.agents,
-      startAgent: (codename, opts) => this.lifecycle.start(codename, opts),
+      sessions: () => this.sessions,
+      startSession: (codename, opts) => this.lifecycle.start(codename, opts),
       channelSend: (text) => this.channelSend(text),
     });
 
@@ -139,50 +139,50 @@ export class Supervisor {
         sentinelCodename: this.config.sentinel.codename,
       },
       backend: this.backend,
-      runtimeFor: (agent) => this.runtimeFor(agent),
-      getPane: (agent) => this.lifecycle.getPane(agent),
-      getAutonomy: (agent) => this.states.getAutonomy(agent),
-      isActive: (agent) => this.states.get(agent)?.sessionActive === true,
-      deliver: (agent, text) => this.delivery.deliverOrQueue(agent, text),
+      runtimeFor: (session) => this.runtimeFor(session),
+      getPane: (session) => this.lifecycle.getPane(session),
+      getAutonomy: (session) => this.states.getAutonomy(session),
+      isActive: (session) => this.states.get(session)?.running === true,
+      deliver: (session, text) => this.delivery.deliverOrQueue(session, text),
       notifyOperator: (text) => this.channelSend(text),
-      logEvent: (agent, event, detail) => {
-        this.store.logHealthEvent(agent, event, detail);
+      logEvent: (session, event, detail) => {
+        this.store.logHealthEvent(session, event, detail);
       },
     });
 
     this.health = new HealthMonitor({
       config: this.config.health,
       backend: this.backend,
-      runtimeFor: (agent) => this.runtimeFor(agent),
-      getPane: (agent) => this.lifecycle.getPane(agent),
-      getActiveAgents: () => this.states.activeAgents(),
-      onStall: (agent, kind, info) => {
-        this.states.setActivity(agent, kind === 'idle' ? 'idle' : 'stalled');
-        void this.sentinel.handleStall(agent, kind, info);
+      runtimeFor: (session) => this.runtimeFor(session),
+      getPane: (session) => this.lifecycle.getPane(session),
+      getActiveSessions: () => this.states.activeSessions(),
+      onStall: (session, kind, info) => {
+        this.states.setActivity(session, kind === 'idle' ? 'idle' : 'stalled');
+        void this.sentinel.handleStall(session, kind, info);
       },
-      onSessionEnd: (agent) => {
-        this.lifecycle.handleSessionEnd(agent);
+      onSessionEnd: (session) => {
+        this.lifecycle.handleSessionEnd(session);
       },
-      logEvent: (agent, event, detail) => {
-        this.store.logHealthEvent(agent, event, detail);
+      logEvent: (session, event, detail) => {
+        this.store.logHealthEvent(session, event, detail);
       },
     });
 
     this.humanInput = new HumanInputBroker({
       notifyOperator: (text, buttons) => this.channelSend(text, buttons),
       sentinelCodename: () => this.config.sentinel.codename,
-      isActive: (agent) => this.states.get(agent)?.sessionActive === true,
-      getAutonomy: (agent) => this.states.getAutonomy(agent),
-      deliver: (agent, text) => this.delivery.deliverOrQueue(agent, text),
+      isActive: (session) => this.states.get(session)?.running === true,
+      getAutonomy: (session) => this.states.getAutonomy(session),
+      deliver: (session, text) => this.delivery.deliverOrQueue(session, text),
     });
 
     this.autoPause =
-      this.backend.capabilities.focusTracking && this.backend.getFocusedAgent !== undefined
+      this.backend.capabilities.focusTracking && this.backend.getFocusedSession !== undefined
         ? new FocusAutoPause({
             backend: this.backend,
             states: this.states,
-            healthReset: (agent) => {
-              this.health.reset(agent);
+            healthReset: (session) => {
+              this.health.reset(session);
             },
             config: {
               checkMs: this.config.terminal.iterm.focusCheckMs,
@@ -198,7 +198,7 @@ export class Supervisor {
       humanInput: this.humanInput,
       states: this.states,
       delivery: this.delivery,
-      agents: () => this.agents,
+      sessions: () => this.sessions,
       statusReport: (codename) => this.statusReport(codename),
       tail: (codename, lines) => this.tail(codename, lines),
       tailLimits: {
@@ -209,12 +209,12 @@ export class Supervisor {
     });
 
     this.scheduler = new Scheduler({
-      agents: () => this.agents,
-      isActive: (agent) => this.states.get(agent)?.sessionActive === true,
-      isPaused: (agent) => this.states.isPaused(agent),
-      startAgent: (agent, opts) => this.lifecycle.start(agent, opts),
-      stopAgent: (agent) => this.lifecycle.stop(agent),
-      deliver: (agent, text) => this.delivery.deliverOrQueue(agent, text),
+      sessions: () => this.sessions,
+      isActive: (session) => this.states.get(session)?.running === true,
+      isPaused: (session) => this.states.isPaused(session),
+      startSession: (session, opts) => this.lifecycle.start(session, opts),
+      stopSession: (session) => this.lifecycle.stop(session),
+      deliver: (session, text) => this.delivery.deliverOrQueue(session, text),
     });
 
     this.mcpServer = new ConductorMcpServer({
@@ -222,8 +222,8 @@ export class Supervisor {
       host: this.config.mcp.host,
       keepAliveTimeoutMs: this.config.mcp.keepAliveTimeoutMs,
       isSentinel: (caller) => this.sentinel.isSentinel(caller),
-      onEvent: (agent, body) => {
-        this.handleRuntimeEvent(agent, body);
+      onEvent: (session, body) => {
+        this.handleRuntimeEvent(session, body);
       },
       onCommand: (line) => this.commands.route(line),
       tools: buildMcpTools({
@@ -233,7 +233,7 @@ export class Supervisor {
         sentinel: this.sentinel,
         states: this.states,
         delivery: this.delivery,
-        agents: () => this.agents,
+        sessions: () => this.sessions,
         statusReport: (codename) => this.statusReport(codename),
         tail: (codename, lines) => this.tail(codename, lines),
         tailLimits: {
@@ -243,13 +243,13 @@ export class Supervisor {
       }),
     });
 
-    this.watcher = new ConfigWatcher(agentConfigDir(baseDir));
+    this.watcher = new ConfigWatcher(sessionConfigDir(baseDir));
     this.watcher.onChange(() => {
-      this.reloadAgents();
+      this.reloadSessions();
     });
 
-    for (const [codename, agent] of this.agents) {
-      this.states.register(codename, this.lifecycle.isAgentProject(agent));
+    for (const [codename, session] of this.sessions) {
+      this.states.register(codename, this.lifecycle.isAgentProject(session));
     }
   }
 
@@ -271,7 +271,7 @@ export class Supervisor {
     // Re-adopt panes that survived a conductor restart.
     try {
       for (const [codename, pane] of await this.backend.rediscover()) {
-        if (this.agents.has(codename)) this.lifecycle.adopt(codename, pane);
+        if (this.sessions.has(codename)) this.lifecycle.adopt(codename, pane);
       }
     } catch (err) {
       log().warn('supervisor', `Pane rediscovery failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -291,7 +291,7 @@ export class Supervisor {
     this.autoPause?.start();
 
     if (opts.startAll === true) {
-      for (const codename of this.agents.keys()) {
+      for (const codename of this.sessions.keys()) {
         try {
           await this.lifecycle.start(codename);
         } catch (err) {
@@ -302,11 +302,11 @@ export class Supervisor {
 
     const sentinel = this.config.sentinel.codename;
     if (sentinel === undefined) {
-      log().warn('supervisor', 'No sentinel configured — autonomous agents will be unsupervised.');
-    } else if (!this.agents.has(sentinel)) {
-      log().warn('supervisor', `Configured sentinel '${sentinel}' has no agent config.`);
+      log().warn('supervisor', 'No sentinel configured — autonomous sessions will be unsupervised.');
+    } else if (!this.sessions.has(sentinel)) {
+      log().warn('supervisor', `Configured sentinel '${sentinel}' has no session config.`);
     }
-    log().info('supervisor', `Ready — ${this.agents.size} agent(s) registered.`);
+    log().info('supervisor', `Ready — ${this.sessions.size} session(s) registered.`);
   }
 
   async stop(): Promise<void> {
@@ -322,7 +322,7 @@ export class Supervisor {
     await this.mcpServer.stop();
     this.store.close();
     this.lock.release();
-    log().info('supervisor', 'Stopped (agent panes left running).');
+    log().info('supervisor', 'Stopped (session panes left running).');
   }
 
   /** Route an operator command line (used by the interactive console). */
@@ -331,14 +331,14 @@ export class Supervisor {
   }
 
   /** Force a config reload synchronously. Exposed for tests (normally driven by the watcher). */
-  reloadAgentsForTest(): void {
-    this.reloadAgents();
+  reloadSessionsForTest(): void {
+    this.reloadSessions();
   }
 
   statusReport(codename?: string): string {
     return statusReport(
       {
-        agents: () => this.agents,
+        sessions: () => this.sessions,
         getState: (name) => this.states.get(name),
         sentinelCodename: () => this.config.sentinel.codename,
         pendingStallCount: () => this.sentinel.pendingStalls().length,
@@ -353,18 +353,18 @@ export class Supervisor {
     return this.backend.capture(pane, lines);
   }
 
-  private runtimeFor(agent: string): AgentRuntime | undefined {
-    const config = this.agents.get(agent);
+  private runtimeFor(session: string): SessionRuntime | undefined {
+    const config = this.sessions.get(session);
     return config !== undefined ? this.runtimes.get(config.runtime) : undefined;
   }
 
-  private handleRuntimeEvent(agent: string, body: unknown): void {
-    const runtime = this.runtimeFor(agent);
+  private handleRuntimeEvent(session: string, body: unknown): void {
+    const runtime = this.runtimeFor(session);
     if (runtime === undefined) return;
     const parsed = runtime.parseEvent(body);
     if (parsed === null) return;
-    log().debug('events', `${agent}: ${parsed.type}${parsed.reason !== undefined ? ` (${parsed.reason})` : ''}`);
-    this.health.handleEvent({ ...parsed, agent, receivedAt: Date.now() });
+    log().debug('events', `${session}: ${parsed.type}${parsed.reason !== undefined ? ` (${parsed.reason})` : ''}`);
+    this.health.handleEvent({ ...parsed, session, receivedAt: Date.now() });
   }
 
   private async connectChannels(): Promise<void> {
@@ -400,36 +400,36 @@ export class Supervisor {
     return true;
   }
 
-  private reloadAgents(): void {
-    const fresh = loadAgentConfigs(this.baseDir, { tolerant: true });
-    for (const [codename, agent] of fresh) {
-      if (!this.agents.has(codename)) {
-        log().info('supervisor', `Agent registered: ${codename}`);
+  private reloadSessions(): void {
+    const fresh = loadSessionConfigs(this.baseDir, { tolerant: true });
+    for (const [codename, session] of fresh) {
+      if (!this.sessions.has(codename)) {
+        log().info('supervisor', `Session registered: ${codename}`);
       }
-      this.states.register(codename, this.lifecycle.isAgentProject(agent));
+      this.states.register(codename, this.lifecycle.isAgentProject(session));
     }
-    const configDir = agentConfigDir(this.baseDir);
-    for (const codename of this.agents.keys()) {
+    const configDir = sessionConfigDir(this.baseDir);
+    for (const codename of this.sessions.keys()) {
       if (fresh.has(codename)) continue;
-      const kept = this.agents.get(codename);
+      const kept = this.sessions.get(codename);
       // Distinguish a genuinely deleted config from one that merely failed to
       // parse this tick (an editor's atomic save the mtime poller caught
       // mid-write). Only a truly-gone file deregisters — otherwise a transient
-      // parse error would wipe the agent's persisted autonomy/tag.
+      // parse error would wipe the session's persisted autonomy/tag.
       const fileStillPresent =
         existsSync(join(configDir, `${codename}.yaml`)) || existsSync(join(configDir, `${codename}.yml`));
       if (fileStillPresent) {
         log().warn('supervisor', `Config for ${codename} failed to parse — keeping last-good registration.`);
         if (kept !== undefined) fresh.set(codename, kept);
-      } else if (this.states.get(codename)?.sessionActive === true) {
+      } else if (this.states.get(codename)?.running === true) {
         log().warn('supervisor', `Config for ${codename} removed but session is active — keeping registered.`);
         if (kept !== undefined) fresh.set(codename, kept);
       } else {
-        log().info('supervisor', `Agent deregistered: ${codename}`);
+        log().info('supervisor', `Session deregistered: ${codename}`);
         this.states.deregister(codename);
       }
     }
-    this.agents = fresh;
+    this.sessions = fresh;
     this.scheduler.rebuild();
   }
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  AGENT_USER_VAR,
+  SESSION_USER_VAR,
   buildCloseSessionScript,
-  buildCreateAgentWindowScript,
+  buildCreateSessionWindowScript,
   buildCreateTabScript,
   buildCreateWindowScript,
   buildFocusWindowScript,
@@ -13,8 +13,8 @@ import {
   buildSplitPaneScript,
   buildWindowExistsScript,
   containsPromptMarker,
-  decodeAgentVar,
-  encodeAgentVar,
+  decodeSessionVar,
+  encodeSessionVar,
   escapeAppleScript,
   parseRediscoveryOutput,
   parseWindowCreateResult,
@@ -42,7 +42,7 @@ describe('escapeAppleScript', () => {
   });
 
   it('handles unicode and newlines without mangling', () => {
-    expect(escapeAppleScript('agent — “tag” ❯')).toBe('agent — “tag” ❯');
+    expect(escapeAppleScript('session — “tag” ❯')).toBe('session — “tag” ❯');
     expect(escapeAppleScript('a\nb')).toBe('a\nb');
   });
 });
@@ -128,23 +128,23 @@ describe('tailLines', () => {
   });
 });
 
-describe('agent user-variable encoding', () => {
+describe('session user-variable encoding', () => {
   it('round-trips a codename through base64, scoped by fleet id', () => {
-    expect(encodeAgentVar('fleet-1', 'alpha')).toBe(Buffer.from('fleet-1:alpha').toString('base64'));
-    expect(decodeAgentVar(encodeAgentVar('fleet-1', 'midgard-12'), 'fleet-1')).toBe('midgard-12');
+    expect(encodeSessionVar('fleet-1', 'alpha')).toBe(Buffer.from('fleet-1:alpha').toString('base64'));
+    expect(decodeSessionVar(encodeSessionVar('fleet-1', 'midgard-12'), 'fleet-1')).toBe('midgard-12');
   });
 
   it("rejects another fleet's marker", () => {
-    expect(decodeAgentVar(encodeAgentVar('fleet-1', 'alpha'), 'fleet-2')).toBeNull();
+    expect(decodeSessionVar(encodeSessionVar('fleet-1', 'alpha'), 'fleet-2')).toBeNull();
   });
 
   it('rejects a legacy bare-codename marker (cc-conductor uses the same variable)', () => {
-    expect(decodeAgentVar(Buffer.from('midgard-3').toString('base64'), 'fleet-1')).toBeNull();
+    expect(decodeSessionVar(Buffer.from('midgard-3').toString('base64'), 'fleet-1')).toBeNull();
   });
 
   it('returns null for an empty value', () => {
-    expect(decodeAgentVar('', 'fleet-1')).toBeNull();
-    expect(decodeAgentVar(Buffer.from('fleet-1:').toString('base64'), 'fleet-1')).toBeNull();
+    expect(decodeSessionVar('', 'fleet-1')).toBeNull();
+    expect(decodeSessionVar(Buffer.from('fleet-1:').toString('base64'), 'fleet-1')).toBeNull();
   });
 });
 
@@ -166,9 +166,11 @@ describe('parseWindowCreateResult', () => {
 
 describe('parseRediscoveryOutput', () => {
   it('maps decoded codenames to session ids', () => {
-    const raw = [`SESSION-A|${encodeAgentVar('f1', 'alpha')}`, `SESSION-B|${encodeAgentVar('f1', 'beta')}`, ''].join(
-      '\n',
-    );
+    const raw = [
+      `SESSION-A|${encodeSessionVar('f1', 'alpha')}`,
+      `SESSION-B|${encodeSessionVar('f1', 'beta')}`,
+      '',
+    ].join('\n');
     const result = parseRediscoveryOutput(raw, 'f1');
     expect(result.size).toBe(2);
     expect(result.get('alpha')).toBe('SESSION-A');
@@ -177,8 +179,8 @@ describe('parseRediscoveryOutput', () => {
 
   it("skips other fleets' panes — two conductors share one iTerm instance", () => {
     const raw = [
-      `SESSION-A|${encodeAgentVar('f1', 'alpha')}`,
-      `SESSION-B|${encodeAgentVar('f2', 'alpha')}`, // same codename, other fleet
+      `SESSION-A|${encodeSessionVar('f1', 'alpha')}`,
+      `SESSION-B|${encodeSessionVar('f2', 'alpha')}`, // same codename, other fleet
       `SESSION-C|${Buffer.from('midgard-3').toString('base64')}`, // legacy cc-conductor marker
     ].join('\n');
     const result = parseRediscoveryOutput(raw, 'f1');
@@ -187,7 +189,7 @@ describe('parseRediscoveryOutput', () => {
   });
 
   it('skips malformed and empty lines', () => {
-    const raw = ['garbage-without-pipe', '|', 'SESSION-C|', `SESSION-D|${encodeAgentVar('f1', 'gamma')}`].join('\n');
+    const raw = ['garbage-without-pipe', '|', 'SESSION-C|', `SESSION-D|${encodeSessionVar('f1', 'gamma')}`].join('\n');
     const result = parseRediscoveryOutput(raw, 'f1');
     expect(result.size).toBe(1);
     expect(result.get('gamma')).toBe('SESSION-D');
@@ -205,26 +207,26 @@ describe('script builders', () => {
   });
 
   it('buildCreateWindowScript escapes the window name', () => {
-    const script = buildCreateWindowScript('Agent "Conductor"');
-    expect(script).toContain('set name to "Agent \\"Conductor\\""');
+    const script = buildCreateWindowScript('Session "Conductor"');
+    expect(script).toContain('set name to "Session \\"Conductor\\""');
     expect(script).toContain('create window with default profile');
   });
 
-  it('buildCreateAgentWindowScript sets name and the conductor_agent user var', () => {
-    const script = buildCreateAgentWindowScript('alpha', encodeAgentVar('f1', 'alpha'));
+  it('buildCreateSessionWindowScript sets name and the conductor_session user var', () => {
+    const script = buildCreateSessionWindowScript('alpha', encodeSessionVar('f1', 'alpha'));
     expect(script).toContain('set name to "alpha"');
-    expect(script).toContain(`set variable named "${AGENT_USER_VAR}" to "${encodeAgentVar('f1', 'alpha')}"`);
+    expect(script).toContain(`set variable named "${SESSION_USER_VAR}" to "${encodeSessionVar('f1', 'alpha')}"`);
   });
 
   it('buildCreateTabScript targets the conductor window and sets the user var', () => {
-    const script = buildCreateTabScript(7, 'beta', encodeAgentVar('f1', 'beta'));
+    const script = buildCreateTabScript(7, 'beta', encodeSessionVar('f1', 'beta'));
     expect(script).toContain('tell window id 7');
     expect(script).toContain('create tab with default profile');
-    expect(script).toContain(`set variable named "${AGENT_USER_VAR}"`);
+    expect(script).toContain(`set variable named "${SESSION_USER_VAR}"`);
   });
 
   it('buildSplitPaneScript splits the first tab vertically', () => {
-    const script = buildSplitPaneScript(7, 'gamma', encodeAgentVar('f1', 'gamma'));
+    const script = buildSplitPaneScript(7, 'gamma', encodeSessionVar('f1', 'gamma'));
     expect(script).toContain('tell window id 7');
     expect(script).toContain('current session of first tab');
     expect(script).toContain('split vertically with default profile');
@@ -255,9 +257,9 @@ describe('script builders', () => {
     expect(script).toContain('close s');
   });
 
-  it('buildRediscoverScript reads the conductor_agent user variable everywhere', () => {
+  it('buildRediscoverScript reads the conductor_session user variable everywhere', () => {
     const script = buildRediscoverScript();
-    expect(script).toContain(`variable named "${AGENT_USER_VAR}"`);
+    expect(script).toContain(`variable named "${SESSION_USER_VAR}"`);
     expect(script).toContain('repeat with w in windows');
   });
 

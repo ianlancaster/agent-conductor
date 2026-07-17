@@ -19,7 +19,7 @@ beforeEach(async () => {
   queue = new DeliveryQueue({
     backend,
     runtimeFor: () => runtime,
-    getPane: (agent) => (agent === 'alpha' ? pane : undefined),
+    getPane: (session) => (session === 'alpha' ? pane : undefined),
     config: CONFIG,
   });
 });
@@ -36,7 +36,7 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['hello']);
   });
 
-  it('returns no-pane for agents without a pane', async () => {
+  it('returns no-pane for sessions without a pane', async () => {
     expect(await queue.deliverOrQueue('ghost', 'hello')).toBe('no-pane');
   });
 

@@ -63,7 +63,7 @@ export type ClassifiedUpdate =
  *
  * - `callback_query` with data → callback.
  * - Text starting with `//` is the operator pass-through escape: strip ONE
- *   slash and deliver as free text (lets the operator send agent-level slash
+ *   slash and deliver as free text (lets the operator send session-level slash
  *   commands without the bot intercepting them).
  * - Text starting with `/` → command; split on whitespace, leading slash
  *   removed from the command name.
@@ -154,7 +154,7 @@ export class TelegramAdapter implements ChannelAdapter {
       try {
         await this.api('sendMessage', payload);
       } catch (err) {
-        // Markdown parse failures are common (agent output is not valid
+        // Markdown parse failures are common (session output is not valid
         // Telegram Markdown) and surface as HTTP 400 — retry as plain text.
         if (!(err instanceof TelegramApiError) || err.status !== 400) {
           log().error('telegram', `sendMessage failed: ${String(err).slice(0, 200)}`);

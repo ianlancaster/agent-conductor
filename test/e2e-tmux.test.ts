@@ -8,8 +8,8 @@ import { Supervisor } from '../src/core/supervisor.js';
 import { TmuxBackend } from '../src/terminals/tmux/index.js';
 
 /**
- * End-to-end tests against a REAL tmux server. The "agent" is a shell script
- * (test/fixtures/fake-agent.sh) that echoes its prompt and any delivered input,
+ * End-to-end tests against a REAL tmux server. The "session" is a shell script
+ * (test/fixtures/fake-session.sh) that echoes its prompt and any delivered input,
  * so the full stack — config → supervisor → lifecycle → runtime launch command
  * → tmux pane → typing-aware delivery → capture — runs for real with only the
  * LLM faked. Skipped when tmux is not installed (CI installs it).
@@ -24,7 +24,7 @@ const hasTmux = ((): boolean => {
 })();
 
 const SESSION = `conductor-e2e-${process.pid}`;
-const FAKE_AGENT = join(import.meta.dirname, 'fixtures', 'fake-agent.sh');
+const FAKE_BINARY = join(import.meta.dirname, 'fixtures', 'fake-session.sh');
 
 function killSession(): void {
   try {
@@ -99,15 +99,15 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
     });
   });
 
-  describe('full stack: Supervisor + tmux + fake agent binary', () => {
+  describe('full stack: Supervisor + tmux + fake session binary', () => {
     let baseDir: string;
     let supervisor: Supervisor;
 
     beforeEach(() => {
-      chmodSync(FAKE_AGENT, 0o755);
+      chmodSync(FAKE_BINARY, 0o755);
       baseDir = mkdtempSync(join(tmpdir(), 'conductor-e2e-sup-'));
       const repo = join(baseDir, 'alpha-repo');
-      mkdirSync(join(baseDir, 'config', 'agents'), { recursive: true });
+      mkdirSync(join(baseDir, 'config', 'sessions'), { recursive: true });
       mkdirSync(repo, { recursive: true });
       writeFileSync(
         join(baseDir, 'config', 'supervisor.yaml'),
@@ -120,11 +120,11 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
           '  port: 43399',
           'runtimes:',
           '  claudeCode:',
-          `    binary: ${FAKE_AGENT}`,
+          `    binary: ${FAKE_BINARY}`,
           '',
         ].join('\n'),
       );
-      writeFileSync(join(baseDir, 'config', 'agents', 'alpha.yaml'), `codename: alpha\nrepo: ${repo}\n`);
+      writeFileSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'), `codename: alpha\nrepo: ${repo}\n`);
       supervisor = new Supervisor(baseDir);
     });
 
@@ -134,14 +134,14 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       killSession();
     });
 
-    it('starts an agent, delivers an operator message, and reads it back', async () => {
+    it('starts a session, delivers an operator message, and reads it back', async () => {
       await supervisor.start();
 
       const startReply = await supervisor.command('/start alpha');
       expect(startReply).toBe('alpha started.');
 
       const tail = async (): Promise<string> => supervisor.command('/tail alpha 60');
-      await until(async () => (await tail()).includes('FAKE AGENT START'));
+      await until(async () => (await tail()).includes('FAKE SESSION START'));
 
       const tellReply = await supervisor.command('/tell alpha hello from the operator');
       expect(tellReply).toContain('alpha');
@@ -158,7 +158,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       await supervisor.start();
       await supervisor.command('/tell alpha do the morning checklist');
       const tail = async (): Promise<string> => supervisor.command('/tail alpha 60');
-      // Agent was not running: /tell starts it with the message as the prompt.
+      // Session was not running: /tell starts it with the message as the prompt.
       await until(async () => (await tail()).includes('PROMPT: [Message from operator] do the morning checklist'));
     }, 30_000);
   });

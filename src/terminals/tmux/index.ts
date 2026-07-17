@@ -4,12 +4,12 @@ import type { TerminalBackend, TerminalCapabilities } from '../types.js';
 import type { Store } from '../../store/index.js';
 import { log } from '../../logger.js';
 import {
-  AGENT_OPTION,
+  SESSION_OPTION,
   buildCreatePaneArgs,
   buildDeliveryCommands,
-  encodeAgentOption,
+  encodeSessionOption,
   hasShellPrompt,
-  parseAgentPanes,
+  parseSessionPanes,
   parsePaneIds,
   tmux,
   tmuxSucceeds,
@@ -41,7 +41,7 @@ export interface TmuxBackendOptions {
  * Placement notes: tmux has no separate OS windows, so both 'tab' and
  * 'window' placements create a new tmux window; 'pane' splits the session's
  * first window. Focus tracking is not supported (headless backend), so
- * getFocusedAgent/focusWindow are intentionally not implemented.
+ * getFocusedSession/focusWindow are intentionally not implemented.
  */
 export class TmuxBackend implements TerminalBackend {
   readonly name = 'tmux';
@@ -63,7 +63,7 @@ export class TmuxBackend implements TerminalBackend {
   async init(): Promise<void> {
     // `=name` forces an EXACT session match. Without it, tmux prefix-matches, so
     // `has-session -t conductor` would find a user's `conductor-dev` session and
-    // we'd inject agent panes into it.
+    // we'd inject session panes into it.
     const exists = await tmuxSucceeds(['has-session', '-t', `=${this.sessionName}`]);
     if (exists) {
       log().debug('tmux', `session '${this.sessionName}' already exists`);
@@ -73,18 +73,18 @@ export class TmuxBackend implements TerminalBackend {
     log().info('tmux', `created detached session '${this.sessionName}'`);
   }
 
-  async createPane(agent: string, placement: Placement, cwd?: string): Promise<PaneRef> {
-    const args = buildCreatePaneArgs({ placement, sessionName: this.sessionName, agent, cwd });
+  async createPane(session: string, placement: Placement, cwd?: string): Promise<PaneRef> {
+    const args = buildCreatePaneArgs({ placement, sessionName: this.sessionName, session, cwd });
     const paneId = (await tmux(args)).trim();
     if (!paneId.startsWith('%')) {
-      throw new Error(`tmux returned an unexpected pane id for agent '${agent}': '${paneId}'`);
+      throw new Error(`tmux returned an unexpected pane id for session '${session}': '${paneId}'`);
     }
-    // Pane-scoped identity marker so rediscover() can map panes back to agents.
-    await tmux(['set-option', '-p', '-t', paneId, AGENT_OPTION, encodeAgentOption(this.fleetId, agent)]);
+    // Pane-scoped identity marker so rediscover() can map panes back to sessions.
+    await tmux(['set-option', '-p', '-t', paneId, SESSION_OPTION, encodeSessionOption(this.fleetId, session)]);
     const map = this.readPaneMap();
-    map[agent] = paneId;
+    map[session] = paneId;
     this.writePaneMap(map);
-    log().info('tmux', `created pane ${paneId} for '${agent}' (placement=${placement})`);
+    log().info('tmux', `created pane ${paneId} for '${session}' (placement=${placement})`);
     return { backend: this.name, id: paneId };
   }
 
@@ -150,7 +150,7 @@ export class TmuxBackend implements TerminalBackend {
     const result = new Map<string, PaneRef>();
     let output: string;
     try {
-      output = await tmux(['list-panes', '-a', '-F', `#{pane_id} #{${AGENT_OPTION}}`]);
+      output = await tmux(['list-panes', '-a', '-F', `#{pane_id} #{${SESSION_OPTION}}`]);
     } catch (error) {
       // No tmux server -> no surviving panes.
       log().warn('tmux', `rediscover found no tmux server: ${String(error)}`);
@@ -158,12 +158,12 @@ export class TmuxBackend implements TerminalBackend {
       return result;
     }
     const paneMap: Record<string, string> = {};
-    for (const [agent, paneId] of parseAgentPanes(output, this.fleetId)) {
-      result.set(agent, { backend: this.name, id: paneId });
-      paneMap[agent] = paneId;
+    for (const [session, paneId] of parseSessionPanes(output, this.fleetId)) {
+      result.set(session, { backend: this.name, id: paneId });
+      paneMap[session] = paneId;
     }
     this.writePaneMap(paneMap);
-    log().info('tmux', `rediscovered ${result.size} agent pane(s)`);
+    log().info('tmux', `rediscovered ${result.size} session pane(s)`);
     return result;
   }
 

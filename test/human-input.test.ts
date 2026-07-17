@@ -5,32 +5,32 @@ import type { Autonomy } from '../src/core/types.js';
 
 let broker: HumanInputBroker;
 let operatorMessages: { text: string; buttons?: ChannelChoice[][] }[];
-let delivered: { agent: string; text: string }[];
+let delivered: { session: string; text: string }[];
 let autonomies: Map<string, Autonomy>;
-let activeAgents: Set<string>;
+let activeSessions: Set<string>;
 let sentinel: string | undefined;
 
 beforeEach(() => {
   operatorMessages = [];
   delivered = [];
   autonomies = new Map();
-  activeAgents = new Set();
+  activeSessions = new Set();
   sentinel = 'watch';
   broker = new HumanInputBroker({
     notifyOperator: async (text, buttons) => {
       operatorMessages.push({ text, buttons });
     },
     sentinelCodename: () => sentinel,
-    isActive: (agent) => activeAgents.has(agent),
-    getAutonomy: (agent) => autonomies.get(agent) ?? 'facilitated',
-    deliver: async (agent, text) => {
-      delivered.push({ agent, text });
+    isActive: (session) => activeSessions.has(session),
+    getAutonomy: (session) => autonomies.get(session) ?? 'facilitated',
+    deliver: async (session, text) => {
+      delivered.push({ session, text });
       return 'delivered';
     },
   });
 });
 
-describe('facilitated agents', () => {
+describe('facilitated sessions', () => {
   it('routes the question to the operator with option buttons', async () => {
     const answer = broker.request('alpha', 'Deploy to prod?', 'CI is green.', ['yes', 'no']);
     expect(operatorMessages.length).toBe(1);
@@ -38,9 +38,9 @@ describe('facilitated agents', () => {
     expect(operatorMessages[0]?.buttons?.flat().map((b) => b.label)).toEqual(['yes', 'no']);
 
     const [pending] = broker.listPending();
-    expect(pending?.agent).toBe('alpha');
-    const agent = broker.answerByOption(pending?.id ?? 0, 0);
-    expect(agent).toBe('alpha');
+    expect(pending?.session).toBe('alpha');
+    const session = broker.answerByOption(pending?.id ?? 0, 0);
+    expect(session).toBe('alpha');
     expect(await answer).toBe('yes');
     expect(broker.listPending()).toEqual([]);
   });
@@ -57,17 +57,17 @@ describe('facilitated agents', () => {
   });
 });
 
-describe('autonomous agents with a live sentinel', () => {
+describe('autonomous sessions with a live sentinel', () => {
   beforeEach(() => {
     autonomies.set('alpha', 'autonomous');
-    activeAgents.add('watch');
+    activeSessions.add('watch');
   });
 
   it('routes the question to the sentinel instead of the operator', async () => {
     const answer = broker.request('alpha', 'Which package manager?', undefined, ['pnpm', 'npm']);
     expect(operatorMessages).toEqual([]);
     expect(delivered.length).toBe(1);
-    expect(delivered[0]?.agent).toBe('watch');
+    expect(delivered[0]?.session).toBe('watch');
     expect(delivered[0]?.text).toContain('[HumanInput #');
     expect(delivered[0]?.text).toContain('Which package manager?');
 
@@ -77,7 +77,7 @@ describe('autonomous agents with a live sentinel', () => {
   });
 
   it('falls back to the operator when the sentinel is down', async () => {
-    activeAgents.delete('watch');
+    activeSessions.delete('watch');
     void broker.request('alpha', 'Stuck — proceed?');
     expect(operatorMessages.length).toBe(1);
     expect(delivered).toEqual([]);

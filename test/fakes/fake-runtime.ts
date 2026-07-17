@@ -1,25 +1,30 @@
-import type { AgentConfig } from '../../src/config/schema.js';
+import type { SessionConfig } from '../../src/config/schema.js';
 import type { RuntimeEvent } from '../../src/core/types.js';
-import type { AgentRuntime, IdentityEndpoints, LaunchOptions, RuntimeCapabilities } from '../../src/runtimes/types.js';
+import type {
+  SessionRuntime,
+  IdentityEndpoints,
+  LaunchOptions,
+  RuntimeCapabilities,
+} from '../../src/runtimes/types.js';
 
 const EVENT_TYPES = new Set(['stop', 'notification', 'compaction', 'session-start', 'session-end']);
 
-/** In-memory AgentRuntime for tests. Events are accepted as plain JSON `{type, reason?, transcriptPath?}`. */
-export class FakeRuntime implements AgentRuntime {
+/** In-memory SessionRuntime for tests. Events are accepted as plain JSON `{type, reason?, transcriptPath?}`. */
+export class FakeRuntime implements SessionRuntime {
   readonly name = 'fake';
   readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: false };
 
-  readonly prepared: { agent: AgentConfig; identity: IdentityEndpoints }[] = [];
+  readonly prepared: { session: SessionConfig; identity: IdentityEndpoints }[] = [];
   /** Controls parseInputClear; set to false to simulate the operator typing. */
   inputClear: boolean | null = true;
   readonly transcripts = new Map<string, string>();
 
-  async prepare(agent: AgentConfig, identity: IdentityEndpoints): Promise<void> {
-    this.prepared.push({ agent, identity });
+  async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
+    this.prepared.push({ session, identity });
   }
 
-  buildLaunchCommand(agent: AgentConfig, _identity: IdentityEndpoints, opts: LaunchOptions): string {
-    const parts = [`fake-launch ${agent.codename}`];
+  buildLaunchCommand(session: SessionConfig, _identity: IdentityEndpoints, opts: LaunchOptions): string {
+    const parts = [`fake-launch ${session.codename}`];
     if (opts.continueSession) parts.push('--continue');
     if (opts.prompt !== undefined) parts.push(`--prompt ${JSON.stringify(opts.prompt)}`);
     return parts.join(' ');
@@ -33,7 +38,7 @@ export class FakeRuntime implements AgentRuntime {
     return capture;
   }
 
-  parseEvent(body: unknown): Omit<RuntimeEvent, 'agent' | 'receivedAt'> | null {
+  parseEvent(body: unknown): Omit<RuntimeEvent, 'session' | 'receivedAt'> | null {
     if (typeof body !== 'object' || body === null) return null;
     const record = body as Record<string, unknown>;
     const type = record.type;

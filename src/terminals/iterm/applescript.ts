@@ -14,8 +14,8 @@ const OSA_MAX_BUFFER = 10 * 1024 * 1024;
  */
 const OSA_TIMEOUT_MS = 20_000;
 
-/** iTerm2 session user variable holding the base64-encoded agent codename (used for restart rediscovery). */
-export const AGENT_USER_VAR = 'user.conductor_agent';
+/** iTerm2 session user variable holding the base64-encoded session codename (used for restart rediscovery). */
+export const SESSION_USER_VAR = 'user.conductor_session';
 
 /** Shell prompt markers polled for before delivering the first command to a fresh pane. */
 export const PROMPT_MARKERS: readonly string[] = [' ==> ', '$ ', '% ', '❯'];
@@ -84,12 +84,12 @@ export function tailLines(contents: string, lines: number): string {
  * which uses the same variable name with a bare codename) share one iTerm
  * instance, and rediscovery must only ever adopt this fleet's panes.
  */
-export function encodeAgentVar(fleetId: string, codename: string): string {
+export function encodeSessionVar(fleetId: string, codename: string): string {
   return Buffer.from(`${fleetId}:${codename}`, 'utf-8').toString('base64');
 }
 
 /** Decode a stored user-variable value; null when empty, invalid, or another fleet's. */
-export function decodeAgentVar(value: string, fleetId: string): string | null {
+export function decodeSessionVar(value: string, fleetId: string): string | null {
   const decoded = Buffer.from(value, 'base64').toString('utf-8');
   const prefix = `${fleetId}:`;
   if (!decoded.startsWith(prefix)) return null;
@@ -116,7 +116,7 @@ export function parseRediscoveryOutput(raw: string, fleetId: string): Map<string
   for (const line of raw.split('\n')) {
     const [sessionId, encoded] = line.trim().split('|');
     if (sessionId === undefined || sessionId === '' || encoded === undefined || encoded === '') continue;
-    const codename = decodeAgentVar(encoded, fleetId);
+    const codename = decodeSessionVar(encoded, fleetId);
     if (codename !== null) result.set(codename, sessionId);
   }
   return result;
@@ -144,33 +144,33 @@ export function buildCreateWindowScript(windowName: string): string {
   `;
 }
 
-/** Session setup lines shared by the agent-pane creation scripts. */
-function agentSessionSetup(displayName: string, agentVarB64: string): string {
+/** Session setup lines shared by the session-pane creation scripts. */
+function sessionSetup(displayName: string, sessionVarB64: string): string {
   return `set name to "${escapeAppleScript(displayName)}"
-            set variable named "${AGENT_USER_VAR}" to "${escapeAppleScript(agentVarB64)}"`;
+            set variable named "${SESSION_USER_VAR}" to "${escapeAppleScript(sessionVarB64)}"`;
 }
 
-/** Create a standalone window for an agent. Returns the session id. */
-export function buildCreateAgentWindowScript(displayName: string, agentVarB64: string): string {
+/** Create a standalone window for a session. Returns the session id. */
+export function buildCreateSessionWindowScript(displayName: string, sessionVarB64: string): string {
   return `
     tell application "iTerm2"
       set newWin to (create window with default profile)
       tell current session of current tab of newWin
-        ${agentSessionSetup(displayName, agentVarB64)}
+        ${sessionSetup(displayName, sessionVarB64)}
         return id as string
       end tell
     end tell
   `;
 }
 
-/** Create a new tab in the conductor window for an agent. Returns the session id. */
-export function buildCreateTabScript(windowId: number, displayName: string, agentVarB64: string): string {
+/** Create a new tab in the conductor window for a session. Returns the session id. */
+export function buildCreateTabScript(windowId: number, displayName: string, sessionVarB64: string): string {
   return `
     tell application "iTerm2"
       tell window id ${windowId}
         set newTab to (create tab with default profile)
         tell current session of newTab
-          ${agentSessionSetup(displayName, agentVarB64)}
+          ${sessionSetup(displayName, sessionVarB64)}
           return id as string
         end tell
       end tell
@@ -182,14 +182,14 @@ export function buildCreateTabScript(windowId: number, displayName: string, agen
  * Split the first tab of the conductor window vertically (flat side-by-side layout).
  * Returns the session id.
  */
-export function buildSplitPaneScript(windowId: number, displayName: string, agentVarB64: string): string {
+export function buildSplitPaneScript(windowId: number, displayName: string, sessionVarB64: string): string {
   return `
     tell application "iTerm2"
       tell window id ${windowId}
         tell current session of first tab
           set newSession to (split vertically with default profile)
           tell newSession
-            ${agentSessionSetup(displayName, agentVarB64)}
+            ${sessionSetup(displayName, sessionVarB64)}
             return id as string
           end tell
         end tell
@@ -243,7 +243,7 @@ export function buildListSessionIdsScript(): string {
 
 /**
  * Emit `sessionId|base64Codename` for every session carrying the conductor
- * agent user variable, across all windows.
+ * session user variable, across all windows.
  */
 export function buildRediscoverScript(): string {
   return `
@@ -255,7 +255,7 @@ export function buildRediscoverScript(): string {
             set sid to (id of s)
             set v to missing value
             try
-              tell s to set v to (variable named "${AGENT_USER_VAR}")
+              tell s to set v to (variable named "${SESSION_USER_VAR}")
             end try
             if v is not missing value and v is not "" then
               set out to out & sid & "|" & v & linefeed

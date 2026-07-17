@@ -2,7 +2,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Single mtime-poll watcher over the agent-config directory.
+ * Single mtime-poll watcher over the session-config directory.
  * Replaces cc-conductor's two overlapping hot-reload mechanisms: one watcher,
  * any number of subscribers (roster reload, scheduler reload).
  */

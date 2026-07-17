@@ -3,7 +3,7 @@ import {
   buildCreatePaneArgs,
   buildDeliveryCommands,
   hasShellPrompt,
-  parseAgentPanes,
+  parseSessionPanes,
   parsePaneIds,
   pasteBufferName,
   trimToTrailingLines,
@@ -23,10 +23,10 @@ describe('parsePaneIds', () => {
   });
 });
 
-describe('parseAgentPanes', () => {
+describe('parseSessionPanes', () => {
   it('maps marked panes to codenames and skips unmarked panes', () => {
     const output = '%0 \n%1 f1:midgard-1\n%2\n%3 f1:pr-shepherd\n';
-    const map = parseAgentPanes(output, 'f1');
+    const map = parseSessionPanes(output, 'f1');
     expect(map.get('midgard-1')).toBe('%1');
     expect(map.get('pr-shepherd')).toBe('%3');
     expect(map.size).toBe(2);
@@ -34,43 +34,43 @@ describe('parseAgentPanes', () => {
 
   it("skips other fleets' panes — list-panes -a scans the whole tmux server", () => {
     const output = '%1 f1:alpha\n%2 f2:alpha\n%3 bare-legacy-marker\n';
-    const map = parseAgentPanes(output, 'f1');
+    const map = parseSessionPanes(output, 'f1');
     expect(map.size).toBe(1);
     expect(map.get('alpha')).toBe('%1');
   });
 
   it('lets the last pane win on duplicate codenames', () => {
-    const map = parseAgentPanes('%1 f1:alpha\n%2 f1:alpha\n', 'f1');
+    const map = parseSessionPanes('%1 f1:alpha\n%2 f1:alpha\n', 'f1');
     expect(map.get('alpha')).toBe('%2');
     expect(map.size).toBe(1);
   });
 
   it('handles empty output, empty codenames, and whitespace-only marker values', () => {
-    expect(parseAgentPanes('', 'f1').size).toBe(0);
-    expect(parseAgentPanes('%5   \n', 'f1').size).toBe(0);
-    expect(parseAgentPanes('%5 f1:\n', 'f1').size).toBe(0);
+    expect(parseSessionPanes('', 'f1').size).toBe(0);
+    expect(parseSessionPanes('%5   \n', 'f1').size).toBe(0);
+    expect(parseSessionPanes('%5 f1:\n', 'f1').size).toBe(0);
   });
 });
 
 describe('buildCreatePaneArgs', () => {
   it("maps 'pane' to split-window on the session's first window", () => {
-    const args = buildCreatePaneArgs({ placement: 'pane', sessionName: 'conductor', agent: 'alpha' });
+    const args = buildCreatePaneArgs({ placement: 'pane', sessionName: 'conductor', session: 'alpha' });
     expect(args).toEqual(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', '=conductor:{start}']);
   });
 
-  it("maps 'tab' to new-window named after the agent", () => {
-    const args = buildCreatePaneArgs({ placement: 'tab', sessionName: 'conductor', agent: 'alpha' });
+  it("maps 'tab' to new-window named after the session", () => {
+    const args = buildCreatePaneArgs({ placement: 'tab', sessionName: 'conductor', session: 'alpha' });
     expect(args).toEqual(['new-window', '-d', '-P', '-F', '#{pane_id}', '-t', '=conductor:', '-n', 'alpha']);
   });
 
   it('targets the session with an exact-match = prefix (M21)', () => {
-    const args = buildCreatePaneArgs({ placement: 'pane', sessionName: 'conductor', agent: 'alpha' });
+    const args = buildCreatePaneArgs({ placement: 'pane', sessionName: 'conductor', session: 'alpha' });
     expect(args).toContain('=conductor:{start}');
   });
 
   it("maps 'window' to new-window too (tmux has no separate OS windows)", () => {
-    const windowArgs = buildCreatePaneArgs({ placement: 'window', sessionName: 'conductor', agent: 'alpha' });
-    const tabArgs = buildCreatePaneArgs({ placement: 'tab', sessionName: 'conductor', agent: 'alpha' });
+    const windowArgs = buildCreatePaneArgs({ placement: 'window', sessionName: 'conductor', session: 'alpha' });
+    const tabArgs = buildCreatePaneArgs({ placement: 'tab', sessionName: 'conductor', session: 'alpha' });
     expect(windowArgs).toEqual(tabArgs);
   });
 
@@ -78,11 +78,11 @@ describe('buildCreatePaneArgs', () => {
     const args = buildCreatePaneArgs({
       placement: 'pane',
       sessionName: 's',
-      agent: 'alpha',
+      session: 'alpha',
       cwd: '/tmp/repo',
     });
     expect(args.slice(-2)).toEqual(['-c', '/tmp/repo']);
-    const noCwd = buildCreatePaneArgs({ placement: 'pane', sessionName: 's', agent: 'alpha' });
+    const noCwd = buildCreatePaneArgs({ placement: 'pane', sessionName: 's', session: 'alpha' });
     expect(noCwd).not.toContain('-c');
   });
 });
@@ -111,7 +111,7 @@ describe('buildDeliveryCommands', () => {
     ]);
   });
 
-  it('gives distinct panes distinct paste buffers (no cross-agent clobber)', () => {
+  it('gives distinct panes distinct paste buffers (no cross-session clobber)', () => {
     expect(pasteBufferName('%7')).not.toBe(pasteBufferName('%12'));
   });
 

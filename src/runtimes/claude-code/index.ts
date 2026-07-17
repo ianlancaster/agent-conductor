@@ -1,16 +1,16 @@
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AgentConfig, SupervisorConfig } from '../../config/schema.js';
+import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import type { RuntimeEvent } from '../../core/types.js';
 import { shellQuote } from '../../core/shell.js';
-import type { AgentRuntime, IdentityEndpoints, LaunchOptions, RuntimeCapabilities } from '../types.js';
+import type { SessionRuntime, IdentityEndpoints, LaunchOptions, RuntimeCapabilities } from '../types.js';
 import { parseClaudeInputClear, stripClaudeChrome } from './chrome.js';
 import { readLastAssistantMessage } from './transcript.js';
 
 type ClaudeCodeConfig = SupervisorConfig['runtimes']['claudeCode'];
 
-/** Hook events wired into every agent. All POST their stdin JSON to the events endpoint. */
+/** Hook events wired into every session. All POST their stdin JSON to the events endpoint. */
 const HOOK_EVENTS = ['Stop', 'Notification', 'PreCompact', 'SessionEnd', 'SessionStart'] as const;
 
 const EVENT_MAP: Record<string, RuntimeEvent['type']> = {
@@ -23,11 +23,11 @@ const EVENT_MAP: Record<string, RuntimeEvent['type']> = {
 
 export interface ClaudeCodeRuntimeOptions {
   config: ClaudeCodeConfig;
-  /** Path to the conductor protocol prompt appended to every agent's system prompt. */
+  /** Path to the conductor protocol prompt appended to every session's system prompt. */
   protocolPath?: string;
 }
 
-export class ClaudeCodeRuntime implements AgentRuntime {
+export class ClaudeCodeRuntime implements SessionRuntime {
   readonly name = 'claude-code';
   readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: true };
 
@@ -39,14 +39,14 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     this.protocolPath = opts.protocolPath;
   }
 
-  async prepare(_agent: AgentConfig, identity: IdentityEndpoints): Promise<void> {
+  async prepare(_session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
     await mkdir(identity.configDir, { recursive: true });
     await writeFile(this.mcpConfigPath(identity), `${JSON.stringify(this.buildMcpConfig(identity), null, 2)}\n`);
     await writeFile(this.hooksSettingsPath(identity), `${JSON.stringify(this.buildHookSettings(identity), null, 2)}\n`);
   }
 
-  buildLaunchCommand(agent: AgentConfig, identity: IdentityEndpoints, opts: LaunchOptions): string {
-    const parts: string[] = [`cd ${shellQuote(agent.repo)}`];
+  buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, opts: LaunchOptions): string {
+    const parts: string[] = [`cd ${shellQuote(session.repo)}`];
 
     for (const [key, value] of Object.entries(this.envVars())) {
       parts.push(`export ${key}=${shellQuote(value)}`);
@@ -55,21 +55,21 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     const flags: string[] = [];
     if (opts.continueSession) flags.push('-c');
     if (this.config.skipPermissions) flags.push('--dangerously-skip-permissions');
-    const model = agent.model ?? this.config.defaultModel;
+    const model = session.model ?? this.config.defaultModel;
     if (model !== undefined) flags.push('--model', shellQuote(model));
-    for (const dir of agent.additionalDirs) {
+    for (const dir of session.additionalDirs) {
       flags.push('--add-dir', shellQuote(dir));
     }
     flags.push('--mcp-config', shellQuote(this.mcpConfigPath(identity)));
     flags.push('--settings', shellQuote(this.hooksSettingsPath(identity)));
-    // Conductor protocol first (all agents), then any per-agent instructions
+    // Conductor protocol first (all sessions), then any per-session instructions
     // (e.g. the sentinel prompt). Claude Code allows repeated appends.
     const promptFile = this.systemPromptPath();
     if (promptFile !== undefined) {
       flags.push('--append-system-prompt-file', shellQuote(promptFile));
     }
-    if (agent.systemPromptFile !== undefined && existsSync(agent.systemPromptFile)) {
-      flags.push('--append-system-prompt-file', shellQuote(agent.systemPromptFile));
+    if (session.systemPromptFile !== undefined && existsSync(session.systemPromptFile)) {
+      flags.push('--append-system-prompt-file', shellQuote(session.systemPromptFile));
     }
 
     const claude = `${this.config.binary} ${flags.join(' ')}`;
@@ -87,7 +87,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     return stripClaudeChrome(capture);
   }
 
-  parseEvent(body: unknown): Omit<RuntimeEvent, 'agent' | 'receivedAt'> | null {
+  parseEvent(body: unknown): Omit<RuntimeEvent, 'session' | 'receivedAt'> | null {
     if (typeof body !== 'object' || body === null) return null;
     const record = body as Record<string, unknown>;
     const hookEvent = record.hook_event_name;

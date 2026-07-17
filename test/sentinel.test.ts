@@ -7,10 +7,10 @@ import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 let backend: FakeTerminalBackend;
 let runtime: FakeRuntime;
 let router: StallSentinelRouter;
-let delivered: { agent: string; text: string }[];
+let delivered: { session: string; text: string }[];
 let operatorMessages: string[];
 let autonomies: Map<string, Autonomy>;
-let activeAgents: Set<string>;
+let activeSessions: Set<string>;
 let panes: Map<string, string>;
 
 function makeRouter(sentinelCodename: string | undefined): StallSentinelRouter {
@@ -18,14 +18,14 @@ function makeRouter(sentinelCodename: string | undefined): StallSentinelRouter {
     config: { captureLines: 40, suppressWindowMs: 300_000, suppressSimilarity: 0.8, sentinelCodename },
     backend,
     runtimeFor: () => runtime,
-    getPane: (agent) => {
-      const id = panes.get(agent);
+    getPane: (session) => {
+      const id = panes.get(session);
       return id !== undefined ? { backend: 'fake', id } : undefined;
     },
-    getAutonomy: (agent) => autonomies.get(agent) ?? 'facilitated',
-    isActive: (agent) => activeAgents.has(agent),
-    deliver: async (agent, text) => {
-      delivered.push({ agent, text });
+    getAutonomy: (session) => autonomies.get(session) ?? 'facilitated',
+    isActive: (session) => activeSessions.has(session),
+    deliver: async (session, text) => {
+      delivered.push({ session, text });
       return 'delivered';
     },
     notifyOperator: async (text) => {
@@ -44,7 +44,7 @@ beforeEach(async () => {
     ['alpha', 'autonomous'],
     ['watch', 'autonomous'],
   ]);
-  activeAgents = new Set(['alpha', 'watch']);
+  activeSessions = new Set(['alpha', 'watch']);
   panes = new Map();
   const alphaPane = await backend.createPane('alpha', 'pane');
   panes.set('alpha', alphaPane.id);
@@ -53,13 +53,13 @@ beforeEach(async () => {
 });
 
 describe('stall routing', () => {
-  it('routes an autonomous agent stall to the sentinel with a queue entry', async () => {
+  it('routes an autonomous session stall to the sentinel with a queue entry', async () => {
     runtime.transcripts.set('/tmp/transcript.jsonl', 'I finished the refactor.');
     await router.handleStall('alpha', 'idle', { transcriptPath: '/tmp/transcript.jsonl' });
 
     expect(delivered.length).toBe(1);
-    expect(delivered[0]?.agent).toBe('watch');
-    expect(delivered[0]?.text).toContain('[Stall] agent=alpha kind=idle');
+    expect(delivered[0]?.session).toBe('watch');
+    expect(delivered[0]?.text).toContain('[Stall] session=alpha kind=idle');
 
     const queue = router.pendingStalls();
     expect(queue.length).toBe(1);
@@ -67,7 +67,7 @@ describe('stall routing', () => {
     expect(queue[0]?.lastAssistantMessage).toBe('I finished the refactor.');
   });
 
-  it('ignores stalls from facilitated agents', async () => {
+  it('ignores stalls from facilitated sessions', async () => {
     autonomies.set('alpha', 'facilitated');
     await router.handleStall('alpha', 'idle', {});
     expect(delivered).toEqual([]);
@@ -100,7 +100,7 @@ describe('stall routing', () => {
   });
 
   it('warns when the sentinel is configured but not running', async () => {
-    activeAgents.delete('watch');
+    activeSessions.delete('watch');
     await router.handleStall('alpha', 'idle', {});
     expect(operatorMessages[0]).toContain('sentinel *watch* is not running');
   });
@@ -112,17 +112,17 @@ describe('resolution', () => {
     delivered = [];
   });
 
-  it('nudge types sentinel-prefixed text into the stalled agent', async () => {
+  it('nudge types sentinel-prefixed text into the stalled session', async () => {
     const id = router.pendingStalls()[0]?.id ?? 0;
     const reply = await router.resolve(id, { action: 'nudge', text: 'Fix the failing tests first.' }, 'watch');
-    expect(delivered[0]).toEqual({ agent: 'alpha', text: '[Sentinel] Fix the failing tests first.' });
+    expect(delivered[0]).toEqual({ session: 'alpha', text: '[Sentinel] Fix the failing tests first.' });
     expect(reply).toContain('alpha');
     expect(router.pendingStalls()).toEqual([]);
   });
 
   it('suppress dismisses without action', async () => {
     const id = router.pendingStalls()[0]?.id ?? 0;
-    await router.resolve(id, { action: 'suppress', note: 'agent legitimately done' }, 'watch');
+    await router.resolve(id, { action: 'suppress', note: 'session legitimately done' }, 'watch');
     expect(delivered).toEqual([]);
     expect(router.pendingStalls()).toEqual([]);
   });

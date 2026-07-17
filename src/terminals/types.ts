@@ -1,7 +1,7 @@
 import type { PaneRef, Placement } from '../core/types.js';
 
 export interface TerminalCapabilities {
-  /** Backend can report which agent's pane has OS keyboard focus (iTerm2 only). */
+  /** Backend can report which session's pane has OS keyboard focus (iTerm2 only). */
   focusTracking: boolean;
   /** Backend works without a GUI (tmux). */
   headless: boolean;
@@ -11,8 +11,8 @@ export interface TerminalCapabilities {
  * The seam between the conductor and a terminal multiplexer/emulator.
  *
  * Implementations own pane lifecycle, text delivery, and content capture.
- * They know nothing about agent runtimes — runtime-specific parsing (input-clear
- * glyphs, terminal chrome) lives on AgentRuntime.
+ * They know nothing about session runtimes — runtime-specific parsing (input-clear
+ * glyphs, terminal chrome) lives on SessionRuntime.
  */
 export interface TerminalBackend {
   readonly name: string;
@@ -21,8 +21,8 @@ export interface TerminalBackend {
   /** Create or rediscover the workspace (window / tmux session). */
   init(): Promise<void>;
 
-  /** Create a pane for an agent. `cwd` is the directory the shell should start in. */
-  createPane(agent: string, placement: Placement, cwd?: string): Promise<PaneRef>;
+  /** Create a pane for a session. `cwd` is the directory the shell should start in. */
+  createPane(session: string, placement: Placement, cwd?: string): Promise<PaneRef>;
 
   /**
    * Run the FIRST command in a fresh pane. Implementations must handle the
@@ -43,11 +43,11 @@ export interface TerminalBackend {
   /** Rename the pane's visible label. Conductor passes the codename only. */
   rename(pane: PaneRef, name: string): Promise<void>;
 
-  /** Map of agent codename -> surviving pane, discovered after a conductor restart. */
+  /** Map of session codename -> surviving pane, discovered after a conductor restart. */
   rediscover(): Promise<Map<string, PaneRef>>;
 
-  /** Which agent's pane has keyboard focus, if focusTracking is supported. */
-  getFocusedAgent?(): Promise<string | null>;
+  /** Which session's pane has keyboard focus, if focusTracking is supported. */
+  getFocusedSession?(): Promise<string | null>;
 
   /** Bring the workspace to the foreground, if the backend has a GUI. */
   focusWindow?(): Promise<void>;

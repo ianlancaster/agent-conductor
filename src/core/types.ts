@@ -16,23 +16,23 @@ export interface PauseState {
   pausedBy: 'manual' | 'auto-focus';
 }
 
-/** Persisted + runtime state for one agent. */
-export interface AgentState {
+/** Persisted + runtime state for one session. */
+export interface SessionState {
   autonomy: Autonomy;
   tag?: string;
   pause?: PauseState;
-  sessionActive: boolean;
+  running: boolean;
   paneId?: string;
   activity: Activity;
-  /** Marker file present in the repo — displayed as an "agent" rather than a plain session. */
+  /** Marker file present in the repo — displayed as an agent project (🤖) rather than a plain session. */
   isAgentProject: boolean;
 }
 
 export type RuntimeEventType = 'stop' | 'notification' | 'compaction' | 'session-start' | 'session-end';
 
-/** A lifecycle event pushed by an agent's runtime hooks (Claude hooks / Codex notify). */
+/** A lifecycle event pushed by a session's runtime hooks (Claude hooks / Codex notify). */
 export interface RuntimeEvent {
-  agent: string;
+  session: string;
   type: RuntimeEventType;
   reason?: string;
   transcriptPath?: string;
@@ -44,7 +44,7 @@ export type StallKind = 'idle' | 'blocked' | 'compaction' | 'silent' | 'session-
 /** A stall surfaced to the sentinel. Carries everything needed to judge it. */
 export interface StallEvent {
   id: number;
-  agent: string;
+  session: string;
   kind: StallKind;
   reason?: string;
   paneCapture: string;

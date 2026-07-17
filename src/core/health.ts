@@ -1,5 +1,5 @@
 import { log } from '../logger.js';
-import type { AgentRuntime } from '../runtimes/types.js';
+import type { SessionRuntime } from '../runtimes/types.js';
 import type { TerminalBackend } from '../terminals/types.js';
 import type { PaneRef, RuntimeEvent, StallKind } from './types.js';
 
@@ -16,12 +16,12 @@ export interface HealthDeps {
     eventSilenceMs: number;
   };
   backend: TerminalBackend;
-  runtimeFor(agent: string): AgentRuntime | undefined;
-  getPane(agent: string): PaneRef | undefined;
-  getActiveAgents(): string[];
-  onStall(agent: string, kind: StallKind, info: StallInfo): void;
-  onSessionEnd(agent: string): void;
-  logEvent(agent: string, event: string, detail?: string): void;
+  runtimeFor(session: string): SessionRuntime | undefined;
+  getPane(session: string): PaneRef | undefined;
+  getActiveSessions(): string[];
+  onStall(session: string, kind: StallKind, info: StallInfo): void;
+  onSessionEnd(session: string): void;
+  logEvent(session: string, event: string, detail?: string): void;
 }
 
 /**
@@ -30,7 +30,7 @@ export interface HealthDeps {
  * Primary signal: runtime lifecycle events (Claude hooks, Codex notify).
  *  - `stop` starts a quiet timer; if nothing else arrives it becomes an idle stall.
  *  - `notification` = blocked on a decision — immediate stall.
- *  - `compaction` = immediate stall (the sentinel re-orients the agent).
+ *  - `compaction` = immediate stall (the sentinel re-orients the session).
  * Fallback: for runtimes without events, or when events have gone silent while
  * the pane is alive (wedged TUI), unchanged pane content across heartbeats
  * raises a `silent` stall.
@@ -46,39 +46,39 @@ export class HealthMonitor {
   constructor(private readonly deps: HealthDeps) {}
 
   handleEvent(event: RuntimeEvent): void {
-    const { agent } = event;
-    this.lastEventAt.set(agent, event.receivedAt);
-    this.clearIdleTimer(agent);
+    const { session } = event;
+    this.lastEventAt.set(session, event.receivedAt);
+    this.clearIdleTimer(session);
 
     switch (event.type) {
       case 'stop': {
         const info: StallInfo = { transcriptPath: event.transcriptPath };
         if (this.deps.config.idleConfirmMs <= 0) {
-          this.deps.onStall(agent, 'idle', info);
+          this.deps.onStall(session, 'idle', info);
           return;
         }
         const timer = setTimeout(() => {
-          this.idleTimers.delete(agent);
-          this.deps.onStall(agent, 'idle', info);
+          this.idleTimers.delete(session);
+          this.deps.onStall(session, 'idle', info);
         }, this.deps.config.idleConfirmMs);
         timer.unref();
-        this.idleTimers.set(agent, timer);
+        this.idleTimers.set(session, timer);
         return;
       }
       case 'notification':
-        this.deps.onStall(agent, 'blocked', { reason: event.reason, transcriptPath: event.transcriptPath });
+        this.deps.onStall(session, 'blocked', { reason: event.reason, transcriptPath: event.transcriptPath });
         return;
       case 'compaction':
-        this.deps.onStall(agent, 'compaction', { transcriptPath: event.transcriptPath });
+        this.deps.onStall(session, 'compaction', { transcriptPath: event.transcriptPath });
         return;
       case 'session-end':
-        this.deps.logEvent(agent, 'session_end', event.reason);
-        this.reset(agent);
-        this.deps.onSessionEnd(agent);
+        this.deps.logEvent(session, 'session_end', event.reason);
+        this.reset(session);
+        this.deps.onSessionEnd(session);
         return;
       case 'session-start':
-        this.reset(agent);
-        this.lastEventAt.set(agent, event.receivedAt);
+        this.reset(session);
+        this.lastEventAt.set(session, event.receivedAt);
         return;
     }
   }
@@ -98,22 +98,22 @@ export class HealthMonitor {
   }
 
   private async runHeartbeat(): Promise<void> {
-    for (const agent of this.deps.getActiveAgents()) {
+    for (const session of this.deps.getActiveSessions()) {
       try {
-        await this.checkAgent(agent);
+        await this.checkSession(session);
       } catch (err) {
-        log().warn('health', `${agent}: heartbeat check failed: ${err instanceof Error ? err.message : String(err)}`);
+        log().warn('health', `${session}: heartbeat check failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
 
-  /** Clear all per-agent tracking (on start/restart/mode change). */
-  reset(agent: string): void {
-    this.clearIdleTimer(agent);
-    this.lastEventAt.delete(agent);
-    this.lastCapture.delete(agent);
-    this.stillBeats.delete(agent);
-    this.silentNotified.delete(agent);
+  /** Clear all per-session tracking (on start/restart/mode change). */
+  reset(session: string): void {
+    this.clearIdleTimer(session);
+    this.lastEventAt.delete(session);
+    this.lastCapture.delete(session);
+    this.stillBeats.delete(session);
+    this.silentNotified.delete(session);
   }
 
   stop(): void {
@@ -121,43 +121,43 @@ export class HealthMonitor {
     this.idleTimers.clear();
   }
 
-  private async checkAgent(agent: string): Promise<void> {
-    const runtime = this.deps.runtimeFor(agent);
+  private async checkSession(session: string): Promise<void> {
+    const runtime = this.deps.runtimeFor(session);
     const hasEvents = runtime?.capabilities.lifecycleEvents === true;
-    const lastEvent = this.lastEventAt.get(agent);
+    const lastEvent = this.lastEventAt.get(session);
     if (hasEvents && lastEvent !== undefined && Date.now() - lastEvent < this.deps.config.eventSilenceMs) {
       return; // events are flowing — no need to scrape
     }
 
-    const pane = this.deps.getPane(agent);
+    const pane = this.deps.getPane(session);
     if (pane === undefined) return;
     if (!(await this.deps.backend.isAlive(pane))) {
-      this.deps.logEvent(agent, 'pane_dead');
-      this.reset(agent);
-      this.deps.onSessionEnd(agent);
+      this.deps.logEvent(session, 'pane_dead');
+      this.reset(session);
+      this.deps.onSessionEnd(session);
       return;
     }
 
     const capture = await this.deps.backend.capture(pane, this.deps.config.captureLines);
-    if (capture === this.lastCapture.get(agent)) {
-      const beats = (this.stillBeats.get(agent) ?? 0) + 1;
-      this.stillBeats.set(agent, beats);
-      if (beats >= this.deps.config.stallBeatsThreshold && !this.silentNotified.has(agent)) {
-        this.silentNotified.add(agent);
-        this.deps.onStall(agent, 'silent', {});
+    if (capture === this.lastCapture.get(session)) {
+      const beats = (this.stillBeats.get(session) ?? 0) + 1;
+      this.stillBeats.set(session, beats);
+      if (beats >= this.deps.config.stallBeatsThreshold && !this.silentNotified.has(session)) {
+        this.silentNotified.add(session);
+        this.deps.onStall(session, 'silent', {});
       }
     } else {
-      this.lastCapture.set(agent, capture);
-      this.stillBeats.set(agent, 0);
-      this.silentNotified.delete(agent);
+      this.lastCapture.set(session, capture);
+      this.stillBeats.set(session, 0);
+      this.silentNotified.delete(session);
     }
   }
 
-  private clearIdleTimer(agent: string): void {
-    const timer = this.idleTimers.get(agent);
+  private clearIdleTimer(session: string): void {
+    const timer = this.idleTimers.get(session);
     if (timer !== undefined) {
       clearTimeout(timer);
-      this.idleTimers.delete(agent);
+      this.idleTimers.delete(session);
     }
   }
 }

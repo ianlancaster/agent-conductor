@@ -1,12 +1,12 @@
 import type { Store } from '../store/index.js';
-import type { Activity, AgentState, Autonomy } from './types.js';
+import type { Activity, SessionState, Autonomy } from './types.js';
 
 /**
- * Per-agent state registry. Autonomy/tag/pause persist to SQLite; session and
+ * Per-session state registry. Autonomy/tag/pause persist to SQLite; session and
  * activity fields are runtime-only and recomputed after a conductor restart.
  */
-export class AgentStateManager {
-  private readonly states = new Map<string, AgentState>();
+export class SessionStateManager {
+  private readonly states = new Map<string, SessionState>();
 
   constructor(
     private readonly store: Store,
@@ -19,12 +19,12 @@ export class AgentStateManager {
       existing.isAgentProject = isAgentProject;
       return;
     }
-    const persisted = this.store.getAgentState(codename);
+    const persisted = this.store.getSessionState(codename);
     this.states.set(codename, {
       autonomy: persisted?.autonomy ?? this.defaultAutonomy,
       tag: persisted?.tag ?? undefined,
       pause: persisted?.pause ?? undefined,
-      sessionActive: false,
+      running: false,
       activity: 'stopped',
       isAgentProject,
     });
@@ -32,14 +32,14 @@ export class AgentStateManager {
 
   deregister(codename: string): void {
     this.states.delete(codename);
-    this.store.deleteAgentState(codename);
+    this.store.deleteSessionState(codename);
   }
 
   has(codename: string): boolean {
     return this.states.has(codename);
   }
 
-  get(codename: string): AgentState | undefined {
+  get(codename: string): SessionState | undefined {
     return this.states.get(codename);
   }
 
@@ -47,8 +47,8 @@ export class AgentStateManager {
     return [...this.states.keys()];
   }
 
-  activeAgents(): string[] {
-    return [...this.states.entries()].filter(([, state]) => state.sessionActive).map(([codename]) => codename);
+  activeSessions(): string[] {
+    return [...this.states.entries()].filter(([, state]) => state.running).map(([codename]) => codename);
   }
 
   getAutonomy(codename: string): Autonomy {
@@ -98,7 +98,7 @@ export class AgentStateManager {
   setSession(codename: string, paneId: string | undefined): void {
     const state = this.mustGet(codename);
     state.paneId = paneId;
-    state.sessionActive = paneId !== undefined;
+    state.running = paneId !== undefined;
   }
 
   setActivity(codename: string, activity: Activity): void {
@@ -107,17 +107,17 @@ export class AgentStateManager {
     this.persist(codename);
   }
 
-  private mustGet(codename: string): AgentState {
+  private mustGet(codename: string): SessionState {
     const state = this.states.get(codename);
-    if (state === undefined) throw new Error(`Unknown agent: ${codename}`);
+    if (state === undefined) throw new Error(`Unknown session: ${codename}`);
     return state;
   }
 
   private persist(codename: string): void {
     const state = this.states.get(codename);
     if (state === undefined) return;
-    this.store.upsertAgentState({
-      agent: codename,
+    this.store.upsertSessionState({
+      session: codename,
       autonomy: state.autonomy,
       tag: state.tag ?? null,
       pause: state.pause ?? null,

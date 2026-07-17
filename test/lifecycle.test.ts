@@ -2,10 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadAgentConfigs } from '../src/config/loader.js';
-import type { AgentConfig } from '../src/config/schema.js';
+import { loadSessionConfigs } from '../src/config/loader.js';
+import type { SessionConfig } from '../src/config/schema.js';
 import { Lifecycle } from '../src/core/lifecycle.js';
-import { AgentStateManager } from '../src/core/state.js';
+import { SessionStateManager } from '../src/core/state.js';
 import { Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
@@ -14,24 +14,24 @@ let baseDir: string;
 let store: Store;
 let backend: FakeTerminalBackend;
 let runtime: FakeRuntime;
-let states: AgentStateManager;
+let states: SessionStateManager;
 let lifecycle: Lifecycle;
-let agents: Map<string, AgentConfig>;
+let sessions: Map<string, SessionConfig>;
 let healthResets: string[];
 let notified: string[];
 
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-lc-'));
-  mkdirSync(join(baseDir, 'config', 'agents'), { recursive: true });
+  mkdirSync(join(baseDir, 'config', 'sessions'), { recursive: true });
   const repo = join(baseDir, 'repos', 'alpha');
   mkdirSync(repo, { recursive: true });
-  writeFileSync(join(baseDir, 'config', 'agents', 'alpha.yaml'), `codename: alpha\nrepo: ${repo}\n`);
+  writeFileSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'), `codename: alpha\nrepo: ${repo}\n`);
 
   store = new Store(':memory:');
   backend = new FakeTerminalBackend();
   runtime = new FakeRuntime();
-  states = new AgentStateManager(store, 'facilitated');
-  agents = loadAgentConfigs(baseDir);
+  states = new SessionStateManager(store, 'facilitated');
+  sessions = loadSessionConfigs(baseDir);
   healthResets = [];
   notified = [];
 
@@ -40,22 +40,22 @@ beforeEach(() => {
     backend,
     states,
     runtimes: new Map([['claude-code', runtime]]),
-    agents: () => agents,
+    sessions: () => sessions,
     identityFor: (codename) => ({
       mcpUrl: `http://127.0.0.1:1/mcp/${codename}`,
       eventsUrl: `http://127.0.0.1:1/events/${codename}`,
-      configDir: join(baseDir, 'data', 'agents', codename),
+      configDir: join(baseDir, 'data', 'sessions', codename),
     }),
     config: { defaultPlacement: 'pane', markerFile: '.conductor-agent', spawnDirPattern: './spawned/{codename}' },
     baseDir,
-    agentConfigDir: join(baseDir, 'config', 'agents'),
-    reloadAgents: () => {
-      agents = loadAgentConfigs(baseDir, { tolerant: true });
-      for (const codename of agents.keys()) states.register(codename, false);
+    sessionConfigDir: join(baseDir, 'config', 'sessions'),
+    reloadSessions: () => {
+      sessions = loadSessionConfigs(baseDir, { tolerant: true });
+      for (const codename of sessions.keys()) states.register(codename, false);
     },
-    healthReset: (agent) => healthResets.push(agent),
-    onStarted: async (agent) => {
-      notified.push(agent);
+    healthReset: (session) => healthResets.push(session),
+    onStarted: async (session) => {
+      notified.push(session);
     },
   });
   states.register('alpha', false);
@@ -69,11 +69,11 @@ afterEach(() => {
 describe('lifecycle edges', () => {
   it('runs prepare before launch and resets health on start', async () => {
     await lifecycle.start('alpha', { prompt: 'begin' });
-    expect(runtime.prepared[0]?.agent.codename).toBe('alpha');
+    expect(runtime.prepared[0]?.session.codename).toBe('alpha');
     expect(healthResets).toEqual(['alpha']);
     expect(notified).toEqual(['alpha']);
-    const session = store.getActiveSessions()[0];
-    expect(session?.agent).toBe('alpha');
+    const session = store.getActiveRuns()[0];
+    expect(session?.session).toBe('alpha');
     expect(session?.prompt_summary).toBe('begin');
   });
 
@@ -90,24 +90,24 @@ describe('lifecycle edges', () => {
     expect(secondPane?.id).not.toBe(firstPane?.id);
     expect(await backend.isAlive(secondPane ?? { backend: 'fake', id: '' })).toBe(true);
     // The interrupted session was closed out in the store.
-    expect(store.getActiveSessions().length).toBe(1);
+    expect(store.getActiveRuns().length).toBe(1);
   });
 
   it('adopts a surviving pane after a conductor restart', async () => {
     const pane = await backend.createPane('alpha', 'pane');
     lifecycle.adopt('alpha', pane);
     expect(lifecycle.getPane('alpha')).toEqual(pane);
-    expect(states.get('alpha')?.sessionActive).toBe(true);
+    expect(states.get('alpha')?.running).toBe(true);
     expect(states.get('alpha')?.activity).toBe('working');
   });
 
   it('handles an externally ended session exactly once', async () => {
     await lifecycle.start('alpha');
     lifecycle.handleSessionEnd('alpha');
-    expect(states.get('alpha')?.sessionActive).toBe(false);
+    expect(states.get('alpha')?.running).toBe(false);
     expect(states.get('alpha')?.activity).toBe('stopped');
     expect(lifecycle.getPane('alpha')).toBeUndefined();
-    expect(store.getActiveSessions()).toEqual([]);
+    expect(store.getActiveRuns()).toEqual([]);
     // Second call is a no-op, not a crash.
     lifecycle.handleSessionEnd('alpha');
   });
@@ -122,8 +122,8 @@ describe('lifecycle edges', () => {
     expect(await backend.isAlive(secondPane ?? { backend: 'fake', id: '' })).toBe(true);
   });
 
-  it('stop is graceful about unknown agents and missing panes', async () => {
-    expect(await lifecycle.stop('ghost')).toBe('Unknown agent: ghost');
+  it('stop is graceful about unknown sessions and missing panes', async () => {
+    expect(await lifecycle.stop('ghost')).toBe('Unknown session: ghost');
     expect(await lifecycle.stop('alpha')).toBe('alpha stopped.'); // never started
   });
 
@@ -140,7 +140,7 @@ describe('lifecycle edges', () => {
     expect(a).toBe('alpha started.');
     expect(b).toBe('alpha started.');
     // ...and exactly one pane was opened for the identity.
-    const alphaPanes = [...backend.panes.values()].filter((p) => p.agent === 'alpha' && p.alive);
+    const alphaPanes = [...backend.panes.values()].filter((p) => p.session === 'alpha' && p.alive);
     expect(alphaPanes.length).toBe(1);
     expect(lifecycle.getPane('alpha')).toBeDefined();
   });

@@ -29,17 +29,17 @@ function baseDir(): string {
 
 program
   .command('init')
-  .description('Scaffold a fleet directory (config/supervisor.yaml + config/agents/)')
-  .option('--agent <codename>', 'Also create the first agent config')
-  .option('--repo <path>', "The agent's project directory (required with --agent)")
-  .action((opts: { agent?: string; repo?: string }) => {
+  .description('Scaffold a fleet directory (config/supervisor.yaml + config/sessions/)')
+  .option('--session <codename>', 'Also create the first session config')
+  .option('--repo <path>', "The session's project directory (required with --session)")
+  .action((opts: { session?: string; repo?: string }) => {
     for (const line of initFleet(baseDir(), opts)) process.stdout.write(`${line}\n`);
   });
 
 program
   .command('start')
   .description('Start the conductor (foreground, with an interactive console)')
-  .option('--start-all', 'Start every configured agent immediately')
+  .option('--start-all', 'Start every configured session immediately')
   .option('--no-console', 'Run without the interactive console')
   .action(async (opts: { startAll?: boolean; console?: boolean }) => {
     // Backstop: the conductor's whole job is supervision, so a stray rejection
@@ -96,31 +96,31 @@ program
 
 program
   .command('status')
-  .description('Show agent and session status from the local store')
+  .description('Show session and session status from the local store')
   .action(() => {
     const config = loadSupervisorConfig(baseDir());
     const store = new Store(join(baseDir(), config.paths.dataDir, 'conductor.db'));
-    const sessions = store.getActiveSessions();
+    const sessions = store.getActiveRuns();
     if (sessions.length === 0) {
       process.stdout.write('No active sessions.\n');
     } else {
       for (const session of sessions) {
-        process.stdout.write(`${session.agent}  since ${session.started_at}  (${session.id.slice(0, 8)})\n`);
+        process.stdout.write(`${session.session}  since ${session.started_at}  (${session.id.slice(0, 8)})\n`);
       }
     }
     store.close();
   });
 
 program
-  .command('logs [agent]')
+  .command('logs [session]')
   .description('Show recent health events')
   .option('-n, --count <count>', 'Number of events', '20')
-  .action((agent: string | undefined, opts: { count: string }) => {
+  .action((session: string | undefined, opts: { count: string }) => {
     const config = loadSupervisorConfig(baseDir());
     const store = new Store(join(baseDir(), config.paths.dataDir, 'conductor.db'));
-    for (const row of store.getHealthLog(agent, Number.parseInt(opts.count, 10)).reverse()) {
+    for (const row of store.getHealthLog(session, Number.parseInt(opts.count, 10)).reverse()) {
       process.stdout.write(
-        `${row.created_at}  ${row.agent}  ${row.event}${row.detail !== null ? `  ${row.detail}` : ''}\n`,
+        `${row.created_at}  ${row.session}  ${row.event}${row.detail !== null ? `  ${row.detail}` : ''}\n`,
       );
     }
     store.close();
@@ -128,7 +128,7 @@ program
 
 program
   .command('validate')
-  .description('Validate supervisor and agent configs')
+  .description('Validate supervisor and session configs')
   .action(() => {
     const problems = validateConfig(baseDir());
     if (problems.length === 0) {

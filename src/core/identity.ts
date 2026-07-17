@@ -8,8 +8,8 @@ export interface IdentitySettings {
 }
 
 /**
- * Per-agent identity endpoints. The codename embedded in the URLs IS the
- * identity — the MCP server extracts it from the path, so agents cannot
+ * Per-session identity endpoints. The codename embedded in the URLs IS the
+ * identity — the MCP server extracts it from the path, so sessions cannot
  * impersonate each other.
  */
 export function identityFor(codename: string, settings: IdentitySettings): IdentityEndpoints {
@@ -18,6 +18,6 @@ export function identityFor(codename: string, settings: IdentitySettings): Ident
   return {
     mcpUrl: `${base}/mcp/${encoded}`,
     eventsUrl: `${base}/events/${encoded}`,
-    configDir: join(settings.dataDir, 'agents', codename),
+    configDir: join(settings.dataDir, 'sessions', codename),
   };
 }

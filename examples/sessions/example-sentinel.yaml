@@ -1,4 +1,4 @@
-# The stall sentinel is a normal agent designated by sentinel.codename in supervisor.yaml.
+# The stall sentinel is a normal session designated by sentinel.codename in supervisor.yaml.
 # Give it the shipped sentinel instructions via systemPromptFile so it knows to poll
 # the stall queue and resolve each stall. Copy prompts/sentinel.md from the
 # agent-conductor package into your fleet dir (e.g. ./prompts/sentinel.md) first.
