@@ -171,6 +171,9 @@ unless it uses that tool — the conductor protocol prompt tells it to).
   (Linux) unit that keeps the conductor running across logins. `conductor daemon
 uninstall` removes it. (Requires `pnpm build` + `pnpm link --global` first, so the
   service runs the compiled binary.)
+- **Multiple fleets**: just use separate fleet directories — ports, tmux session names,
+  and daemon service names are derived per fleet dir, so nothing collides. Telegram
+  needs a distinct bot token per fleet (Telegram allows one poller per token).
 
 ## Command reference
 

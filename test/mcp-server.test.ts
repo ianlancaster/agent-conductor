@@ -185,3 +185,20 @@ describe('cmd and health endpoints', () => {
     expect(payload.tools).toContain('echo_caller');
   });
 });
+
+describe('port conflicts', () => {
+  it('fails with an actionable message when the port is taken by another conductor', async () => {
+    // `server` (from beforeEach) already holds PORT.
+    const second = new ConductorMcpServer({
+      port: PORT,
+      host: '127.0.0.1',
+      keepAliveTimeoutMs: 1000,
+      tools: [],
+      isSentinel: () => false,
+      onEvent: () => undefined,
+    });
+    await expect(second.start()).rejects.toThrow(
+      new RegExp(`Port ${PORT} is already in use.*mcp: port:.*supervisor\\.yaml`),
+    );
+  });
+});

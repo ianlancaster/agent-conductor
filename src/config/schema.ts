@@ -47,7 +47,8 @@ export const supervisorConfigSchema = z.object({
     .default({}),
   mcp: z
     .object({
-      port: z.number().int().positive().default(3456),
+      /** Default: derived per fleet dir (stable hash into 3456..3955) so multiple conductors don't collide. */
+      port: z.number().int().positive().optional(),
       host: z.string().default('127.0.0.1'),
       keepAliveTimeoutMs: z.number().int().positive().default(60_000),
     })
@@ -91,7 +92,8 @@ export const supervisorConfigSchema = z.object({
   terminal: z
     .object({
       backend: z.enum(['iterm', 'tmux']).default('iterm'),
-      windowName: z.string().default('Agent Conductor'),
+      /** Default: "Agent Conductor (<fleet dir name>)" so multiple fleets are distinguishable. */
+      windowName: z.string().optional(),
       iterm: z
         .object({
           autoPauseOnFocus: z.boolean().default(false),
@@ -104,7 +106,8 @@ export const supervisorConfigSchema = z.object({
         .default({}),
       tmux: z
         .object({
-          sessionName: z.string().default('conductor'),
+          /** Default: "conductor-<fleet slug>" so multiple fleets don't share one tmux session. */
+          sessionName: z.string().optional(),
         })
         .default({}),
     })
@@ -161,4 +164,15 @@ export const supervisorConfigSchema = z.object({
 
 export type ScheduleEntry = z.infer<typeof scheduleEntrySchema>;
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
-export type SupervisorConfig = z.infer<typeof supervisorConfigSchema>;
+
+/** Raw parse output — instance-scoped fields may be absent (loader derives them per fleet dir). */
+export type SupervisorConfigInput = z.infer<typeof supervisorConfigSchema>;
+
+/** Fully-resolved config: the loader fills port/windowName/sessionName from per-fleet derivation. */
+export type SupervisorConfig = Omit<SupervisorConfigInput, 'mcp' | 'terminal'> & {
+  mcp: SupervisorConfigInput['mcp'] & { port: number };
+  terminal: Omit<SupervisorConfigInput['terminal'], 'windowName' | 'tmux'> & {
+    windowName: string;
+    tmux: SupervisorConfigInput['terminal']['tmux'] & { sessionName: string };
+  };
+};

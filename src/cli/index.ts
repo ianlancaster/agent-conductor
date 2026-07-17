@@ -140,7 +140,7 @@ daemon
   .command('uninstall')
   .description('Remove the service')
   .action(() => {
-    process.stdout.write(`${uninstallDaemon()}\n`);
+    process.stdout.write(`${uninstallDaemon(baseDir())}\n`);
   });
 
 program.parseAsync().catch((err: unknown) => {
