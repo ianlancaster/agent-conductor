@@ -1,6 +1,5 @@
 import type { SessionConfig } from '../config/schema.js';
 import type { DeliveryQueue } from './delivery.js';
-import type { HumanInputBroker } from './human-input.js';
 import type { Lifecycle } from './lifecycle.js';
 import type { Messaging } from './messaging.js';
 import type { SessionStateManager } from './state.js';
@@ -9,7 +8,6 @@ import type { Placement } from './types.js';
 export interface CommandDeps {
   lifecycle: Lifecycle;
   messaging: Messaging;
-  humanInput: HumanInputBroker;
   states: SessionStateManager;
   delivery: DeliveryQueue;
   sessions(): Map<string, SessionConfig>;
@@ -55,7 +53,6 @@ const HELP = [
   '`/tell <session> <msg>` — one-off message (starts the session if needed)',
   '`/broadcast <msg>` — message all active sessions',
   '`/<session> [msg]` — shortcut: talk + optional message',
-  '`/answer <id> <text>` — answer a pending human-input question',
   '',
   '*Modes*',
   '`/auto <session|all>` — autonomous (stalls route to the sentinel)',
@@ -155,13 +152,6 @@ export class CommandRouter {
         );
         return this.deps.tail(target, lines);
       }
-      case 'answer': {
-        const id = args[0] !== undefined ? Number.parseInt(args[0], 10) : Number.NaN;
-        const text = args.slice(1).join(' ');
-        if (Number.isNaN(id) || text.length === 0) return 'Usage: /answer <id> <text>';
-        const session = this.deps.humanInput.answer(id, text);
-        return session === undefined ? `No pending question #${id}.` : `Answer delivered to ${session}.`;
-      }
       case 'spawn':
         return this.spawnCommand(args);
       case 'teardown': {
@@ -180,18 +170,6 @@ export class CommandRouter {
         return `Unknown command: /${command}. Try /help.`;
       }
     }
-  }
-
-  /** Button callbacks from channel adapters. */
-  async callback(data: string): Promise<string | undefined> {
-    const humanInput = /^hi:(\d+):(\d+)$/.exec(data);
-    if (humanInput !== null) {
-      const id = Number.parseInt(humanInput[1] ?? '', 10);
-      const option = Number.parseInt(humanInput[2] ?? '', 10);
-      const session = this.deps.humanInput.answerByOption(id, option);
-      return session === undefined ? `Question #${id} is no longer pending.` : `Answer delivered to ${session}.`;
-    }
-    return `Unrecognized action: ${data}`;
   }
 
   async freeText(text: string): Promise<string> {

@@ -52,7 +52,7 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
 2. Confirm defaults are facilitated in `config/supervisor.yaml` (they are unless you
    changed them): `defaults.autonomy: facilitated`.
 
-3. Launch:
+3. Launch the conductor process (this terminal becomes the log feed):
 
    ```bash
    cd ~/fleet
@@ -60,7 +60,14 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    conductor start
    ```
 
-   A new iTerm2 window (or tmux session) appears. At the `conductor>` prompt:
+4. In a **second terminal**, attach the operator console:
+
+   ```bash
+   cd ~/fleet
+   conductor console
+   ```
+
+   At the `conductor>` prompt:
 
    ```
    /start alpha            # opens a pane, launches `claude` in your repo
@@ -69,6 +76,9 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    /tail alpha 40          # see the session's pane contents
    /stop alpha
    ```
+
+   Session panes open in the window the **conductor process** runs in (when it runs
+   inside iTerm), or a dedicated workspace window otherwise.
 
    `/tell` delivers your message into the session's pane. The session replies **in its own
    pane** (watch it in iTerm2). To have replies come back to _you_ over a channel, that's
@@ -144,10 +154,10 @@ session. If the sentinel itself stalls or isn't running, the conductor alerts yo
 4. Restart `conductor start`. The log shows `Telegram channel connected.`
 
 Now every operator command works from your phone: `/status`, `/tell alpha …`, `/auto`,
-`/pause`, etc. When a session calls `request_human_input`, or the sentinel escalates, you
-get a message with inline buttons — tap to answer. Sessions reply to you with the
-`respond_to_user` tool (this is why a session's terminal reply doesn't reach your phone
-unless it uses that tool — the conductor protocol prompt tells it to).
+`/pause`, etc. Sessions message you with the `send_to_operator` tool — each message
+arrives signed with the sender's codename, and you reply with `/tell <codename> …`.
+(This is why a session's terminal output doesn't reach your phone unless it uses that
+tool — the conductor protocol prompt tells it to.)
 
 ---
 
@@ -169,8 +179,8 @@ unless it uses that tool — the conductor protocol prompt tells it to).
 ## Running unattended (headless / daemon)
 
 - **tmux backend** (`terminal.backend: tmux` in supervisor.yaml) runs with no GUI — works
-  over SSH on a Linux box. `conductor start --no-console --start-all` starts every session
-  and skips the interactive prompt.
+  over SSH on a Linux box. `conductor start --start-all` starts every configured session
+  immediately; the conductor process is headless either way.
 - **As a service**: `conductor daemon install` writes a launchd (macOS) or systemd-user
   (Linux) unit that keeps the conductor running across logins. `conductor daemon
 uninstall` removes it. (Requires `pnpm build` + `pnpm link --global` first, so the
@@ -187,11 +197,11 @@ Telegram.
 
 ## Troubleshooting
 
-| Symptom                                                | Likely cause                                                                          |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| `command not found: conductor`                         | `pnpm link --global` not run, or use `-C`/`npx tsx` (README Install)                  |
-| `conductor validate` says OK but nothing is configured | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                      |
-| Pane never launches / hangs on start                   | `claude`/`codex` not on PATH, or bad `repo:` path                                     |
-| macOS dialog on first start                            | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)    |
-| Autonomous session stalls but nothing happens          | No sentinel configured/running, or the sentinel lacks `systemPromptFile`              |
-| Session replies in its pane but not on Telegram        | Expected — it must use `respond_to_user`; check the protocol prompt is being injected |
+| Symptom                                                | Likely cause                                                                           |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `command not found: conductor`                         | `pnpm link --global` not run, or use `-C`/`npx tsx` (README Install)                   |
+| `conductor validate` says OK but nothing is configured | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                       |
+| Pane never launches / hangs on start                   | `claude`/`codex` not on PATH, or bad `repo:` path                                      |
+| macOS dialog on first start                            | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)     |
+| Autonomous session stalls but nothing happens          | No sentinel configured/running, or the sentinel lacks `systemPromptFile`               |
+| Session replies in its pane but not on Telegram        | Expected — it must use `send_to_operator`; check the protocol prompt is being injected |

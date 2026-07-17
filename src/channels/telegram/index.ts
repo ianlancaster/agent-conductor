@@ -1,13 +1,12 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { log } from '../../logger.js';
-import type { ChannelAdapter, ChannelCapabilities, ChannelHandlers, ChannelSendOptions } from '../types.js';
+import type { ChannelAdapter, ChannelHandlers } from '../types.js';
 import { splitMessage } from './split.js';
 
 const POLL_TIMEOUT_SECONDS = 30;
 const ERROR_BACKOFF_MS = 5000;
-const CALLBACK_ANSWER_MAX_LENGTH = 200;
-/** Ceiling for a single sendMessage/answerCallbackQuery round-trip so a half-open socket can't freeze the poll loop. */
+/** Ceiling for a single sendMessage round-trip so a half-open socket can't freeze the poll loop. */
 const SEND_TIMEOUT_MS = 15_000;
 
 // ── Minimal Telegram Bot API payload shapes (only the fields we touch) ───────
@@ -54,14 +53,11 @@ class TelegramApiError extends Error {
 // ── Pure update classification ───────────────────────────────────────────────
 
 export type ClassifiedUpdate =
-  | { kind: 'command'; command: string; args: string[] }
-  | { kind: 'freeText'; text: string }
-  | { kind: 'callback'; data: string };
+  { kind: 'command'; command: string; args: string[] } | { kind: 'freeText'; text: string };
 
 /**
  * Classify an incoming Telegram update for routing:
  *
- * - `callback_query` with data → callback.
  * - Text starting with `//` is the operator pass-through escape: strip ONE
  *   slash and deliver as free text (lets the operator send session-level slash
  *   commands without the bot intercepting them).
@@ -73,9 +69,6 @@ export type ClassifiedUpdate =
  * messages).
  */
 export function classifyUpdate(update: TelegramUpdate): ClassifiedUpdate | undefined {
-  const data = update.callback_query?.data;
-  if (data !== undefined) return { kind: 'callback', data };
-
   const text = update.message?.text;
   if (text === undefined) return undefined;
 
@@ -105,7 +98,6 @@ export interface TelegramAdapterConfig {
  */
 export class TelegramAdapter implements ChannelAdapter {
   readonly name = 'telegram';
-  readonly capabilities: ChannelCapabilities = { buttons: true };
 
   private readonly botToken: string;
   private readonly chatId: string;
@@ -132,24 +124,16 @@ export class TelegramAdapter implements ChannelAdapter {
     log().info('telegram', `Long-poll loop started for chat ${this.chatId}`);
   }
 
-  async send(text: string, opts?: ChannelSendOptions): Promise<void> {
+  async send(text: string): Promise<void> {
     if (!text.trim()) return;
 
     const chunks = splitMessage(text);
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      if (chunk === undefined) continue;
-
+    for (const chunk of chunks) {
       const payload: Record<string, unknown> = {
         chat_id: this.chatId,
         text: chunk,
         parse_mode: 'Markdown',
       };
-      if (i === chunks.length - 1 && opts?.buttons && opts.buttons.length > 0) {
-        payload.reply_markup = {
-          inline_keyboard: opts.buttons.map((row) => row.map((btn) => ({ text: btn.label, callback_data: btn.data }))),
-        };
-      }
 
       try {
         await this.api('sendMessage', payload);
@@ -246,26 +230,9 @@ export class TelegramAdapter implements ChannelAdapter {
           if (reply) await this.send(reply);
           break;
         }
-        case 'callback': {
-          const reply = await handlers.onCallback(classified.data);
-          await this.answerCallbackQuery(update.callback_query?.id ?? '', reply);
-          if (reply) await this.send(reply);
-          break;
-        }
       }
     } catch (err) {
       log().error('telegram', `Update handler threw: ${String(err).slice(0, 200)}`);
-    }
-  }
-
-  private async answerCallbackQuery(callbackQueryId: string, text: string | undefined): Promise<void> {
-    if (!callbackQueryId) return;
-    const payload: Record<string, unknown> = { callback_query_id: callbackQueryId };
-    if (text) payload.text = text.slice(0, CALLBACK_ANSWER_MAX_LENGTH);
-    try {
-      await this.api<boolean>('answerCallbackQuery', payload);
-    } catch (err) {
-      log().warn('telegram', `answerCallbackQuery failed: ${String(err).slice(0, 200)}`);
     }
   }
 

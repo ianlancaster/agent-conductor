@@ -24,9 +24,19 @@ export function stripClaudeChrome(capture: string): string {
 }
 
 /**
+ * Ghost/placeholder text Claude Code renders inside an EMPTY input box (e.g.
+ * `❯ Try "fix lint errors"`). Pane captures are plain text, so it is
+ * indistinguishable from typed input by styling — match its shape instead.
+ * Treating it as typed input made an idle session read "busy" forever, so
+ * deliveries only ever went out via the max-age force-flush.
+ */
+const GHOST_TEXT_PATTERN = /^Try ["“'].*["”']( to .*)?$/;
+
+/**
  * Whether the Claude Code input line is empty.
  * Looks at the LAST prompt-glyph line in the capture; text after the glyph
- * means the operator (or a queued message) is mid-composition.
+ * means the operator (or a queued message) is mid-composition — unless it is
+ * the placeholder ghost text, which only appears when the input is empty.
  * Returns null when no input line is visible.
  */
 export function parseClaudeInputClear(capture: string): boolean | null {
@@ -40,7 +50,7 @@ export function parseClaudeInputClear(capture: string): boolean | null {
       .slice(glyphIndex + 1)
       .replace(/[│┃|]/g, '')
       .trim();
-    return afterGlyph.length === 0;
+    return afterGlyph.length === 0 || GHOST_TEXT_PATTERN.test(afterGlyph);
   }
   return null;
 }

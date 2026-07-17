@@ -75,14 +75,6 @@ describe('classifyUpdate', () => {
     expect(classifyUpdate(message('hello there'))).toEqual({ kind: 'freeText', text: 'hello there' });
   });
 
-  it('classifies a callback query by its data payload', () => {
-    const update: TelegramUpdate = {
-      update_id: 2,
-      callback_query: { id: 'cb1', data: 'approve:42', message: { chat: { id: 123 } } },
-    };
-    expect(classifyUpdate(update)).toEqual({ kind: 'callback', data: 'approve:42' });
-  });
-
   it('returns undefined for updates with nothing routable', () => {
     expect(classifyUpdate(message(undefined))).toBeUndefined();
     expect(classifyUpdate({ update_id: 3 })).toBeUndefined();

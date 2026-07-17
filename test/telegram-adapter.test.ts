@@ -97,10 +97,6 @@ beforeEach(() => {
       handled.push({ kind: 'freeText', value: text });
       return undefined;
     },
-    onCallback: async (data) => {
-      handled.push({ kind: 'callback', value: data });
-      return 'callback handled';
-    },
   };
 });
 
@@ -144,19 +140,6 @@ describe('poll loop', () => {
     await until(() => handled.length > 0);
 
     expect(handled).toEqual([{ kind: 'freeText', value: '/compact' }]);
-  });
-
-  it('answers callback queries and delivers the reply', async () => {
-    mock.queueUpdates([
-      { update_id: 5, callback_query: { id: 'cb-1', data: 'hi:3:0', message: { chat: { id: CHAT_ID } } } },
-    ]);
-    await adapter.start(handlers);
-    await until(() => mock.callsFor('answerCallbackQuery').length > 0);
-
-    expect(handled).toEqual([{ kind: 'callback', value: 'hi:3:0' }]);
-    expect(mock.callsFor('answerCallbackQuery')[0]?.payload.callback_query_id).toBe('cb-1');
-    await until(() => mock.callsFor('sendMessage').length > 0);
-    expect(mock.callsFor('sendMessage')[0]?.payload.text).toBe('callback handled');
   });
 
   it('survives a throwing handler and keeps processing later updates', async () => {
@@ -203,17 +186,13 @@ describe('send', () => {
     expect(sends[1]?.payload.text).toBe('*unbalanced markdown');
   });
 
-  it('splits long messages and attaches buttons to the LAST chunk only', async () => {
+  it('splits long messages into multiple sends', async () => {
     const long = `${'a'.repeat(5000)}\n\ntail section`;
-    await adapter.send(long, { buttons: [[{ label: 'Approve', data: 'ok:1' }]] });
+    await adapter.send(long);
 
     const sends = mock.callsFor('sendMessage');
     expect(sends.length).toBeGreaterThan(1);
-    expect(sends.slice(0, -1).every((call) => call.payload.reply_markup === undefined)).toBe(true);
-    const last = sends[sends.length - 1]?.payload.reply_markup as {
-      inline_keyboard: { text: string; callback_data: string }[][];
-    };
-    expect(last.inline_keyboard[0]?.[0]).toEqual({ text: 'Approve', callback_data: 'ok:1' });
+    expect(sends[sends.length - 1]?.payload.text).toContain('tail section');
   });
 
   it('skips empty messages without calling the API', async () => {

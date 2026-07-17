@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import type { RuntimeEvent } from '../../core/types.js';
@@ -27,6 +28,38 @@ export interface ClaudeCodeRuntimeOptions {
   protocolPath?: string;
 }
 
+/**
+ * Pre-accept Claude Code's folder-trust dialog for a session's repo.
+ * `--dangerously-skip-permissions` does NOT cover the separate trust gate, so
+ * a freshly-spawned directory otherwise boots into "do you trust this
+ * folder?" and sits not-ready until someone answers. Best-effort: a corrupt
+ * or unwritable ~/.claude.json must never block a launch.
+ */
+export async function seedFolderTrust(claudeJsonPath: string, repo: string): Promise<void> {
+  try {
+    let root: Record<string, unknown> = {};
+    if (existsSync(claudeJsonPath)) {
+      // An existing file that fails to parse must NOT be overwritten — it is
+      // the user's real Claude config (auth, history). Skip seeding instead.
+      const parsed: unknown = JSON.parse(await readFile(claudeJsonPath, 'utf8'));
+      if (typeof parsed !== 'object' || parsed === null) return;
+      root = parsed as Record<string, unknown>;
+    }
+    const projects =
+      typeof root.projects === 'object' && root.projects !== null ? (root.projects as Record<string, unknown>) : {};
+    const entry =
+      typeof projects[repo] === 'object' && projects[repo] !== null ? (projects[repo] as Record<string, unknown>) : {};
+    if (entry.hasTrustDialogAccepted === true) return;
+    entry.hasTrustDialogAccepted = true;
+    projects[repo] = entry;
+    root.projects = projects;
+    await writeFile(claudeJsonPath, JSON.stringify(root, null, 2));
+  } catch (err) {
+    // Never let trust seeding break a launch.
+    void err;
+  }
+}
+
 export class ClaudeCodeRuntime implements SessionRuntime {
   readonly name = 'claude-code';
   readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: true };
@@ -39,10 +72,11 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     this.protocolPath = opts.protocolPath;
   }
 
-  async prepare(_session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
+  async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
     await mkdir(identity.configDir, { recursive: true });
     await writeFile(this.mcpConfigPath(identity), `${JSON.stringify(this.buildMcpConfig(identity), null, 2)}\n`);
     await writeFile(this.hooksSettingsPath(identity), `${JSON.stringify(this.buildHookSettings(identity), null, 2)}\n`);
+    await seedFolderTrust(this.config.claudeJsonPath ?? join(homedir(), '.claude.json'), session.repo);
   }
 
   buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, opts: LaunchOptions): string {
@@ -115,6 +149,10 @@ export class ClaudeCodeRuntime implements SessionRuntime {
       CLAUDE_CODE_DISABLE_TERMINAL_TITLE: '1',
       CLAUDE_CODE_RESUME_INTERRUPTED_TURN: '1',
       CLAUDE_CODE_ENABLE_AWAY_SUMMARY: '0',
+      // Claude's default MCP tool timeout is too short for slower conductor
+      // tools (start_session waits for a pane launch).
+      MCP_TOOL_TIMEOUT: '600000',
+      MCP_TIMEOUT: '60000',
       ...this.config.env,
     };
   }

@@ -27,6 +27,13 @@ function baseDir(): string {
   return dir !== undefined ? resolve(dir) : process.cwd();
 }
 
+/** Name this terminal's tab/window — otherwise it just shows "node". */
+function setTerminalTitle(title: string): void {
+  if (process.stdout.isTTY) {
+    process.stdout.write(`\u001b]0;${title}\u0007`);
+  }
+}
+
 program
   .command('init')
   .description('Scaffold a fleet directory (config/supervisor.yaml + config/sessions/)')
@@ -38,10 +45,9 @@ program
 
 program
   .command('start')
-  .description('Start the conductor (foreground, with an interactive console)')
+  .description('Run the conductor process (headless log feed — attach with `conductor console`)')
   .option('--start-all', 'Start every configured session immediately')
-  .option('--no-console', 'Run without the interactive console')
-  .action(async (opts: { startAll?: boolean; console?: boolean }) => {
+  .action(async (opts: { startAll?: boolean }) => {
     // Backstop: the conductor's whole job is supervision, so a stray rejection
     // from a fire-and-forget path (a pane dying mid-write) must be logged, not
     // allowed to terminate the process and take down the whole fleet's oversight.
@@ -51,13 +57,11 @@ program
       );
     });
 
-    // Name the console's terminal tab/window — otherwise it just shows "node".
-    if (process.stdout.isTTY) {
-      process.stdout.write(`]0;conductor — ${basename(baseDir())}`);
-    }
+    setTerminalTitle(`conductor — ${basename(baseDir())}`);
 
     const supervisor = new Supervisor(baseDir());
     await supervisor.start({ startAll: opts.startAll ?? false });
+    log('Operator console: run `conductor console` in another terminal.');
 
     const shutdown = async (): Promise<void> => {
       await supervisor.stop();
@@ -65,52 +69,81 @@ program
     };
     process.on('SIGINT', () => void shutdown());
     process.on('SIGTERM', () => void shutdown());
+  });
 
-    if (opts.console !== false) {
-      const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: 'conductor> ' });
-      rl.prompt();
-      rl.on('line', (line) => {
-        void supervisor
-          .command(line)
-          .then((reply) => {
-            if (reply.length > 0) process.stdout.write(`${reply}\n`);
-            rl.prompt();
-          })
-          .catch((err: unknown) => {
-            process.stdout.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
-            rl.prompt();
-          });
-      });
-      rl.on('close', () => void shutdown());
-    }
+function log(line: string): void {
+  process.stdout.write(`${line}\n`);
+}
+
+/** POST one command line to a running conductor's /cmd endpoint. */
+async function sendCommand(line: string): Promise<string> {
+  const config = loadSupervisorConfig(baseDir());
+  const url = `http://${config.mcp.host}:${config.mcp.port}/cmd`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: line }),
+    });
+  } catch {
+    throw new Error(
+      `No conductor is running for this fleet (nothing listening on ${url}). Start one with: conductor start`,
+    );
+  }
+  const payload = (await response.json()) as { reply?: string };
+  return payload.reply ?? '';
+}
+
+program
+  .command('console')
+  .description('Interactive operator console attached to a running conductor')
+  .action(async () => {
+    setTerminalTitle(`console — ${basename(baseDir())}`);
+    // Fail fast with a clear message when no conductor is up.
+    await sendCommand('/status');
+
+    const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: 'conductor> ' });
+    rl.prompt();
+    rl.on('line', (line) => {
+      if (line.trim().length === 0) {
+        rl.prompt();
+        return;
+      }
+      sendCommand(line)
+        .then((reply) => {
+          if (reply.length > 0) process.stdout.write(`${reply}\n`);
+          rl.prompt();
+        })
+        .catch((err: unknown) => {
+          process.stdout.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+          rl.prompt();
+        });
+    });
+    rl.on('close', () => {
+      process.exit(0);
+    });
   });
 
 program
   .command('cmd <line...>')
-  .description('Send a command to a running conductor (via its /cmd endpoint)')
+  .description('Send a single command to a running conductor')
   .action(async (line: string[]) => {
-    const config = loadSupervisorConfig(baseDir());
-    const response = await fetch(`http://${config.mcp.host}:${config.mcp.port}/cmd`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command: line.join(' ') }),
-    });
-    const payload = (await response.json()) as { reply?: string };
-    process.stdout.write(`${payload.reply ?? ''}\n`);
+    process.stdout.write(`${await sendCommand(line.join(' '))}\n`);
   });
 
 program
   .command('status')
-  .description('Show session and session status from the local store')
+  .description('Show active runs from the local store')
   .action(() => {
     const config = loadSupervisorConfig(baseDir());
     const store = new Store(join(baseDir(), config.paths.dataDir, 'conductor.db'));
-    const sessions = store.getActiveRuns();
-    if (sessions.length === 0) {
-      process.stdout.write('No active sessions.\n');
+    const runs = store.getActiveRuns();
+    if (runs.length === 0) {
+      process.stdout.write('No active runs.\n');
     } else {
-      for (const session of sessions) {
-        process.stdout.write(`${session.session}  since ${session.started_at}  (${session.id.slice(0, 8)})\n`);
+      for (const run of runs) {
+        process.stdout.write(`${run.session}  since ${run.started_at}  (${run.id.slice(0, 8)})\n`);
       }
     }
     store.close();
