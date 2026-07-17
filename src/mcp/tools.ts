@@ -19,6 +19,8 @@ export interface McpToolDeps {
   statusReport(codename?: string): string;
   tail(codename: string, lines: number): Promise<string>;
   tailLimits: { defaultLines: number; maxLines: number };
+  /** Re-apply a session's pane title (codename — tag). */
+  retitle(codename: string): Promise<void>;
 }
 
 const IDENTITY_NOTE = 'Your identity is determined automatically by the conductor.';
@@ -266,12 +268,13 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
         properties: { codename: { type: 'string' }, tag: { type: 'string', description: 'Omit to clear' } },
         required: ['codename'],
       },
-      handler: (args, _caller) => {
+      handler: async (args, _caller) => {
         const codename = requireString(args, 'codename');
         if (!deps.states.has(codename)) throw new Error(`Unknown session: ${codename}`);
         const tag = optionalString(args, 'tag');
         deps.states.setTag(codename, tag);
-        return Promise.resolve(tag === undefined ? `Tag cleared for ${codename}.` : `${codename} tagged '${tag}'.`);
+        await deps.retitle(codename);
+        return tag === undefined ? `Tag cleared for ${codename}.` : `${codename} tagged '${tag}'.`;
       },
     },
     {

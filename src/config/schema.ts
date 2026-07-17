@@ -94,6 +94,8 @@ export const supervisorConfigSchema = z.object({
       windowName: z.string().optional(),
       iterm: z
         .object({
+          /** Watermark the session codename as an iTerm badge (the big red text). */
+          badge: z.boolean().default(false),
           autoPauseOnFocus: z.boolean().default(false),
           autoPauseResumeDelaySeconds: z.number().int().positive().default(60),
           focusCheckMs: z.number().int().positive().default(5_000),
@@ -129,6 +131,8 @@ export const supervisorConfigSchema = z.object({
           defaultModel: z.string().optional(),
           autocompactPct: z.number().int().min(1).max(100).default(70),
           skipPermissions: z.boolean().default(true),
+          /** Export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 (disable if it breaks tools you rely on). */
+          disableNonessentialTraffic: z.boolean().default(true),
           /** Extra env vars exported to every session. Values here override the built-in defaults. */
           env: z.record(z.string()).default({}),
           /** Path to the conductor protocol prompt appended to every session's system prompt. */

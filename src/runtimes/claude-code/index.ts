@@ -144,6 +144,7 @@ export class ClaudeCodeRuntime implements SessionRuntime {
   private envVars(): Record<string, string> {
     return {
       CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(this.config.autocompactPct),
+      ...(this.config.disableNonessentialTraffic ? { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } : {}),
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1',
       CLAUDE_CODE_DISABLE_TERMINAL_TITLE: '1',

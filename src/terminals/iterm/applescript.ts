@@ -210,15 +210,13 @@ export function buildCreateWindowScript(windowName: string): string {
 }
 
 /**
- * Session setup lines shared by the session-pane creation scripts. The badge
- * matters: the session NAME gets overwritten by iTerm's job detection (every
- * runtime shows as "node"), while the badge is watermarked on the pane and
- * nothing overwrites it.
+ * Session setup lines shared by the session-pane creation scripts. The name
+ * set here is provisional — the shell's title escape overwrites it when the
+ * launch command runs, so the backend re-applies it once the runtime is up.
  */
 export function sessionSetup(displayName: string, sessionVarB64: string): string {
   const escaped = escapeAppleScript(displayName);
   return `set name to "${escaped}"
-            set badge to "${escaped}"
             set variable named "${SESSION_USER_VAR}" to "${escapeAppleScript(sessionVarB64)}"`;
 }
 
