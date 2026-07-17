@@ -74,10 +74,14 @@ async function branchExists(repo: string, branch: string): Promise<boolean> {
 }
 
 /** Remove a linked worktree via its main repository. Refuses dirty worktrees (no --force). */
-export async function removeWorktree(dir: string): Promise<void> {
+/** Remove a linked worktree. Returns the branch it had checked out (kept in the main repo), or null if detached. */
+export async function removeWorktree(dir: string): Promise<string | null> {
   const pointer = parseGitdirPointer(readFileSync(join(dir, '.git'), 'utf8'));
   if (pointer === null) throw new Error(`${dir}/.git has no gitdir pointer`);
   const mainRepo = mainRepoFromGitdir(pointer);
   if (mainRepo === null) throw new Error(`Cannot locate the main repository for worktree ${dir}`);
+  const { stdout } = await git(['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD']);
+  const branch = stdout.trim();
   await git(['-C', mainRepo, 'worktree', 'remove', dir]);
+  return branch === 'HEAD' || branch.length === 0 ? null : branch;
 }

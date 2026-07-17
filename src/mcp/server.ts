@@ -41,6 +41,8 @@ const PROTOCOL_VERSION = '2024-11-05';
 export class ConductorMcpServer {
   private readonly server: Server;
   private readonly tools = new Map<string, McpToolDefinition>();
+  /** Attached operator consoles (SSE streams on GET /feed). */
+  private readonly feedClients = new Set<ServerResponse>();
 
   constructor(private readonly opts: McpServerOptions) {
     for (const tool of opts.tools) this.tools.set(tool.name, tool);
@@ -81,12 +83,29 @@ export class ConductorMcpServer {
   }
 
   stop(): Promise<void> {
+    for (const client of this.feedClients) client.end();
+    this.feedClients.clear();
     return new Promise((resolve) => {
       this.server.close(() => {
         resolve();
       });
       this.server.closeAllConnections();
     });
+  }
+
+  /**
+   * Push an operator-bound message to every attached console. Returns whether
+   * anyone was listening — callers use this to report honest delivery status.
+   */
+  pushToFeed(text: string): boolean {
+    if (this.feedClients.size === 0) return false;
+    const frame = `data: ${JSON.stringify(text)}\n\n`;
+    for (const client of this.feedClients) client.write(frame);
+    return true;
+  }
+
+  feedClientCount(): number {
+    return this.feedClients.size;
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -99,6 +118,25 @@ export class ConductorMcpServer {
 
     if (req.method === 'GET' && path === '/health') {
       this.respondJson(res, 200, { status: 'ok', tools: [...this.tools.keys()] });
+      return;
+    }
+
+    // Operator console feed: a long-lived SSE stream carrying every
+    // operator-bound message (send_to_operator, stall reports, …).
+    if (req.method === 'GET' && path === '/feed') {
+      if (req.headers.origin !== undefined || req.headers.referer !== undefined) {
+        log().warn('mcp', 'Rejected /feed request with Origin/Referer header (possible CSRF)');
+        this.respondJson(res, 403, { error: 'cross-origin requests are not allowed' });
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
+      res.write(': connected\n\n');
+      this.feedClients.add(res);
+      req.on('close', () => this.feedClients.delete(res));
       return;
     }
 

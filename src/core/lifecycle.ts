@@ -228,8 +228,11 @@ export class Lifecycle {
     if (deleteDir) {
       if (isWorktree(session.repo)) {
         try {
-          await removeWorktree(session.repo);
-          dirNote = ' Worktree removed.';
+          const branch = await removeWorktree(session.repo);
+          dirNote =
+            branch !== null
+              ? ` Worktree removed. Its branch '${branch}' was kept in the main repo — delete it with \`git branch -d ${branch}\` if no longer needed.`
+              : ' Worktree removed.';
         } catch (err) {
           dirNote = ` Worktree NOT removed: ${err instanceof Error ? err.message : String(err)} (commit or stash changes, or remove it manually).`;
         }

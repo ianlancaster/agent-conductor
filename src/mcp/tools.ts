@@ -71,7 +71,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     },
     {
       name: 'broadcast',
-      description: `Send a message to ALL active sessions. Use carefully and sparingly — prefer send_to_session or notify_sessions with explicit recipients. ${IDENTITY_NOTE}`,
+      description: `Send a message to ALL active sessions except yourself (the sender is always excluded). Use carefully and sparingly — prefer send_to_session or notify_sessions with explicit recipients. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: { message: { type: 'string', description: 'Message text' } },
@@ -81,7 +81,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     },
     {
       name: 'notify_sessions',
-      description: `Queue a notification for sessions, delivered when they next start. ${IDENTITY_NOTE}`,
+      description: `Queue a notification for sessions, delivered when they next start. With no recipients it targets all sessions except yourself (the sender is always excluded). ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -344,12 +344,16 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     },
     {
       name: 'tail_session',
-      description: `Read the trailing pane output of another session (default ${String(deps.tailLimits.defaultLines)} lines, max ${String(deps.tailLimits.maxLines)}).`,
+      description: `Read the trailing pane output of another session (default ${String(deps.tailLimits.defaultLines)} lines; values above ${String(deps.tailLimits.maxLines)} are clamped, not rejected).`,
       inputSchema: {
         type: 'object',
         properties: {
           codename: { type: 'string' },
-          lines: { type: 'number', minimum: 1, maximum: deps.tailLimits.maxLines },
+          lines: {
+            type: 'number',
+            minimum: 1,
+            description: `Lines to read (clamped to ${String(deps.tailLimits.maxLines)})`,
+          },
         },
         required: ['codename'],
       },

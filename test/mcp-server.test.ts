@@ -61,6 +61,49 @@ afterEach(async () => {
   await server.stop();
 });
 
+describe('operator feed', () => {
+  it('reports no delivery when no console is attached', () => {
+    expect(server.feedClientCount()).toBe(0);
+    expect(server.pushToFeed('hello?')).toBe(false);
+  });
+
+  it('streams pushed messages to an attached console and tracks disconnect', async () => {
+    const abort = new AbortController();
+    const response = await fetch(`${BASE}/feed`, { signal: abort.signal });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/event-stream');
+    expect(server.feedClientCount()).toBe(1);
+
+    expect(server.pushToFeed('*alpha:* build is green\nsecond line')).toBe(true);
+
+    const reader = response.body?.getReader() as ReadableStreamDefaultReader<Uint8Array> | undefined;
+    if (reader === undefined) throw new Error('no stream body');
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (!buffer.includes('\n\n') || !buffer.includes('data: ')) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+    }
+    const dataLine = buffer.split('\n').find((line) => line.startsWith('data: '));
+    expect(dataLine).toBeDefined();
+    expect(JSON.parse((dataLine ?? '').slice('data: '.length))).toBe('*alpha:* build is green\nsecond line');
+
+    abort.abort();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(server.feedClientCount()).toBe(0);
+    expect(server.pushToFeed('anyone?')).toBe(false);
+  });
+
+  it('rejects cross-origin feed subscriptions', async () => {
+    // Retry once: the aborted SSE stream in the prior test can leave undici's
+    // pooled keep-alive socket half-closed, failing the first follow-up fetch.
+    const attempt = (): Promise<Response> => fetch(`${BASE}/feed`, { headers: { Origin: 'http://evil.example' } });
+    const response = await attempt().catch(attempt);
+    expect(response.status).toBe(403);
+  });
+});
+
 describe('identity routing', () => {
   it('extracts the caller from the URL path', async () => {
     const result = await rpc('/mcp/alpha', 'tools/call', { name: 'echo_caller', arguments: {} });

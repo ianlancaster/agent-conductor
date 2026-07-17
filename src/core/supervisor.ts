@@ -394,9 +394,15 @@ export class Supervisor {
   }
 
   private async channelSend(text: string): Promise<boolean> {
+    // Attached operator consoles (conductor start / conductor console) get
+    // every operator-bound message pushed over the /feed SSE stream.
+    const consoleDelivered = this.mcpServer.pushToFeed(text);
     if (this.channels.length === 0) {
-      log().info('operator', text);
-      return false;
+      if (!consoleDelivered) {
+        log().info('operator', text);
+        return false;
+      }
+      return true;
     }
     for (const channel of this.channels) {
       try {
