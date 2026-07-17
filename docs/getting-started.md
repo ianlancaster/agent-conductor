@@ -52,19 +52,13 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
 2. Confirm defaults are facilitated in `config/supervisor.yaml` (they are unless you
    changed them): `defaults.autonomy: facilitated`.
 
-3. Launch the conductor process (this terminal becomes the log feed):
+3. Launch (this terminal becomes the operator console; the conductor process runs
+   hidden in the background and stops when you close the console):
 
    ```bash
    cd ~/fleet
    conductor validate      # expect: Config OK.
    conductor start
-   ```
-
-4. In a **second terminal**, attach the operator console:
-
-   ```bash
-   cd ~/fleet
-   conductor console
    ```
 
    At the `conductor>` prompt:
@@ -77,8 +71,9 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    /stop alpha
    ```
 
-   Session panes open in the window the **conductor process** runs in (when it runs
-   inside iTerm), or a dedicated workspace window otherwise.
+   On iTerm, session panes open **in this same window**, beside the console. Process
+   output lives in `data/conductor.out.log` (`conductor start --foreground` runs it
+   visibly instead; `conductor console` attaches an extra console from elsewhere).
 
    `/tell` delivers your message into the session's pane. The session replies **in its own
    pane** (watch it in iTerm2). To have replies come back to _you_ over a channel, that's
@@ -179,8 +174,8 @@ tool — the conductor protocol prompt tells it to.)
 ## Running unattended (headless / daemon)
 
 - **tmux backend** (`terminal.backend: tmux` in supervisor.yaml) runs with no GUI — works
-  over SSH on a Linux box. `conductor start --start-all` starts every configured session
-  immediately; the conductor process is headless either way.
+  over SSH on a Linux box. `conductor start --foreground --start-all`
+  runs the supervisor in the terminal and starts every configured session immediately.
 - **As a service**: `conductor daemon install` writes a launchd (macOS) or systemd-user
   (Linux) unit that keeps the conductor running across logins. `conductor daemon
 uninstall` removes it. (Requires `pnpm build` + `pnpm link --global` first, so the

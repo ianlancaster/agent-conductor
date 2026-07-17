@@ -39,6 +39,7 @@ export function installDaemon(baseDir: string): string {
     <string>${process.execPath}</string>
     <string>${conductorBin()}</string>
     <string>start</string>
+    <string>--foreground</string>
   </array>
   <key>WorkingDirectory</key><string>${baseDir}</string>
   <key>RunAtLoad</key><true/>
@@ -62,7 +63,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${baseDir}
-ExecStart=${process.execPath} ${conductorBin()} start
+ExecStart=${process.execPath} ${conductorBin()} start --foreground
 Restart=on-failure
 RestartSec=10
 
