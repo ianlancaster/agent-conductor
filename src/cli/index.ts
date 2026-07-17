@@ -106,7 +106,14 @@ program
     const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: 'conductor> ' });
     rl.prompt();
     rl.on('line', (line) => {
-      if (line.trim().length === 0) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) {
+        rl.prompt();
+        return;
+      }
+      // Console-local: clear screen + scrollback (never sent to the conductor).
+      if (trimmed === '/clear' || trimmed === '/c') {
+        process.stdout.write('\u001b[2J\u001b[3J\u001b[H');
         rl.prompt();
         return;
       }
