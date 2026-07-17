@@ -24,6 +24,7 @@ import {
   parseRediscoveryOutput,
   parseWindowCreateResult,
   runOsa,
+  sessionSetup,
   shellQuote,
   shouldUseBracketedPaste,
   tailLines,
@@ -133,18 +134,25 @@ export class ITermBackend implements TerminalBackend {
 
     log().info('iterm', `${session}: creating ${placement}`);
     const sessionVar = encodeSessionVar(this.config.fleetId, session);
-    let script: string;
+    let sessionId: string;
     if (placement === 'window') {
-      script = buildCreateSessionWindowScript(session, sessionVar);
+      sessionId = (await runOsa(buildCreateSessionWindowScript(session, sessionVar))).trim();
     } else {
-      const windowId = await this.ensureWindow();
-      script =
-        placement === 'tab'
-          ? buildCreateTabScript(windowId, session, sessionVar)
-          : buildSplitPaneScript(windowId, session, sessionVar);
+      const { windowId, seedSessionId } = await this.ensureWindow();
+      if (seedSessionId !== null) {
+        // A fresh window unavoidably contains one shell. The first session
+        // claims it instead of splitting, so there is never an unexplained
+        // empty pane in the workspace window.
+        await this.inSession(seedSessionId, sessionSetup(session, sessionVar));
+        sessionId = seedSessionId;
+      } else {
+        const script =
+          placement === 'tab'
+            ? buildCreateTabScript(windowId, session, sessionVar)
+            : buildSplitPaneScript(windowId, session, sessionVar);
+        sessionId = (await runOsa(script)).trim();
+      }
     }
-
-    const sessionId = (await runOsa(script)).trim();
     if (sessionId === '') {
       throw new Error(`iTerm2 returned no session id creating ${placement} for ${session}`);
     }
@@ -251,7 +259,8 @@ export class ITermBackend implements TerminalBackend {
 
   // ── Internals ───────────────────────────────────────────────────────────────
 
-  private async createWorkspaceWindow(): Promise<void> {
+  /** Create the workspace window; returns its id and the seed session's id. */
+  private async createWorkspaceWindow(): Promise<{ windowId: number; seedSessionId: string }> {
     log().info('iterm', `Creating iTerm2 window: "${this.config.windowName}"`);
     const stdout = await runOsa(buildCreateWindowScript(this.config.windowName));
     const parsed = parseWindowCreateResult(stdout);
@@ -264,17 +273,18 @@ export class ITermBackend implements TerminalBackend {
     // iTerm2 needs a moment after window creation before the window id is
     // addressable via AppleScript in subsequent calls.
     await sleep(1000);
+    return { windowId: parsed.windowId, seedSessionId: parsed.sessionId };
   }
 
-  private async ensureWindow(): Promise<number> {
+  /**
+   * Existing window → { windowId, seedSessionId: null }. Freshly created →
+   * the seed session id is returned exactly once so the caller can claim it.
+   */
+  private async ensureWindow(): Promise<{ windowId: number; seedSessionId: string | null }> {
     if (this.windowId !== null && (await this.windowExists(this.windowId))) {
-      return this.windowId;
+      return { windowId: this.windowId, seedSessionId: null };
     }
-    await this.createWorkspaceWindow();
-    if (this.windowId === null) {
-      throw new Error('Failed to create iTerm2 conductor window');
-    }
-    return this.windowId;
+    return this.createWorkspaceWindow();
   }
 
   private async windowExists(windowId: number): Promise<boolean> {

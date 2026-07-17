@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCreatePaneArgs,
+  buildCreateSessionArgs,
   buildDeliveryCommands,
   hasShellPrompt,
   parseSessionPanes,
@@ -49,6 +50,18 @@ describe('parseSessionPanes', () => {
     expect(parseSessionPanes('', 'f1').size).toBe(0);
     expect(parseSessionPanes('%5   \n', 'f1').size).toBe(0);
     expect(parseSessionPanes('%5 f1:\n', 'f1').size).toBe(0);
+  });
+});
+
+describe('buildCreateSessionArgs', () => {
+  it('creates a detached session and prints the initial pane id for the caller to claim', () => {
+    const args = buildCreateSessionArgs({ sessionName: 'conductor-x', windowName: 'Fleet' });
+    expect(args).toEqual(['new-session', '-d', '-P', '-F', '#{pane_id}', '-s', 'conductor-x', '-n', 'Fleet']);
+  });
+
+  it('appends -c <cwd> when provided', () => {
+    const args = buildCreateSessionArgs({ sessionName: 's', windowName: 'w', cwd: '/tmp/repo' });
+    expect(args.slice(-2)).toEqual(['-c', '/tmp/repo']);
   });
 });
 

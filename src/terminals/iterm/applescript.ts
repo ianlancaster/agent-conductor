@@ -129,7 +129,12 @@ export function buildWindowExistsScript(windowId: number): string {
   return `tell application "iTerm2" to return (exists window id ${windowId}) as string`;
 }
 
-/** Create the conductor workspace window. Returns `windowId|sessionId`. */
+/**
+ * Create the conductor workspace window. Returns `windowId|sessionId` — the
+ * seed session id matters: a fresh window unavoidably contains one shell, and
+ * the FIRST session claims it instead of splitting, so the workspace never
+ * shows an unexplained empty pane.
+ */
 export function buildCreateWindowScript(windowName: string): string {
   return `
     tell application "iTerm2"
@@ -144,9 +149,16 @@ export function buildCreateWindowScript(windowName: string): string {
   `;
 }
 
-/** Session setup lines shared by the session-pane creation scripts. */
-function sessionSetup(displayName: string, sessionVarB64: string): string {
-  return `set name to "${escapeAppleScript(displayName)}"
+/**
+ * Session setup lines shared by the session-pane creation scripts. The badge
+ * matters: the session NAME gets overwritten by iTerm's job detection (every
+ * runtime shows as "node"), while the badge is watermarked on the pane and
+ * nothing overwrites it.
+ */
+export function sessionSetup(displayName: string, sessionVarB64: string): string {
+  const escaped = escapeAppleScript(displayName);
+  return `set name to "${escaped}"
+            set badge to "${escaped}"
             set variable named "${SESSION_USER_VAR}" to "${escapeAppleScript(sessionVarB64)}"`;
 }
 

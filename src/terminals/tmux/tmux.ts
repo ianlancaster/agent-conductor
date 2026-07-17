@@ -95,6 +95,24 @@ export function parseSessionPanes(output: string, fleetId: string): Map<string, 
   return result;
 }
 
+export interface CreateTmuxSessionSpec {
+  sessionName: string;
+  /** Name for the initial tmux window. */
+  windowName: string;
+  cwd?: string;
+}
+
+/**
+ * Create the detached tmux session AND hand its unavoidable initial pane to
+ * the caller (`-P -F '#{pane_id}'` prints it). The first conductor session
+ * claims that pane instead of splitting, so the tmux session never carries an
+ * unexplained empty shell.
+ */
+export function buildCreateSessionArgs(spec: CreateTmuxSessionSpec): string[] {
+  const cwdArgs = spec.cwd !== undefined ? ['-c', spec.cwd] : [];
+  return ['new-session', '-d', '-P', '-F', '#{pane_id}', '-s', spec.sessionName, '-n', spec.windowName, ...cwdArgs];
+}
+
 export interface CreatePaneSpec {
   placement: Placement;
   sessionName: string;
