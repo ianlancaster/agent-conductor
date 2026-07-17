@@ -8,6 +8,7 @@ import { validateConfig, loadSupervisorConfig } from '../config/loader.js';
 import { Supervisor } from '../core/supervisor.js';
 import { Store } from '../store/index.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
+import { initFleet } from './init.js';
 
 const packageJson = JSON.parse(
   readFileSync(join(fileURLToPath(import.meta.url), '..', '..', '..', 'package.json'), 'utf8'),
@@ -25,6 +26,15 @@ function baseDir(): string {
   const dir = program.opts<{ dir?: string }>().dir;
   return dir !== undefined ? resolve(dir) : process.cwd();
 }
+
+program
+  .command('init')
+  .description('Scaffold a fleet directory (config/supervisor.yaml + config/agents/)')
+  .option('--agent <codename>', 'Also create the first agent config')
+  .option('--repo <path>', "The agent's project directory (required with --agent)")
+  .action((opts: { agent?: string; repo?: string }) => {
+    for (const line of initFleet(baseDir(), opts)) process.stdout.write(`${line}\n`);
+  });
 
 program
   .command('start')
