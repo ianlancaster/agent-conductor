@@ -86,6 +86,44 @@ async function sendCommand(line: string): Promise<string> {
   return payload.reply ?? '';
 }
 
+/**
+ * Subscribe to the conductor's operator feed (SSE on GET /feed) and hand every
+ * message to onMessage. Reconnects quietly until the signal aborts, so a
+ * conductor restart doesn't detach the console.
+ */
+async function subscribeFeed(base: string, onMessage: (text: string) => void, signal: AbortSignal): Promise<void> {
+  while (!signal.aborted) {
+    try {
+      const response = await fetch(`${base}/feed`, { signal });
+      if (!response.ok || response.body === null) throw new Error(`feed unavailable (${String(response.status)})`);
+      const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let frameEnd = buffer.indexOf('\n\n');
+        while (frameEnd !== -1) {
+          for (const line of buffer.slice(0, frameEnd).split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              onMessage(JSON.parse(line.slice('data: '.length)) as string);
+            } catch {
+              // Malformed frame — skip it rather than kill the stream.
+            }
+          }
+          buffer = buffer.slice(frameEnd + 2);
+          frameEnd = buffer.indexOf('\n\n');
+        }
+      }
+    } catch {
+      // Conductor down or restarting — retry below.
+    }
+    if (!signal.aborted) await sleep(2000);
+  }
+}
+
 /** The interactive conductor> REPL. Resolves when the operator exits. */
 function runConsole(): Promise<void> {
   return new Promise((resolveDone) => {
@@ -93,6 +131,19 @@ function runConsole(): Promise<void> {
     // ANSI in the prompt does not break cursor math). Plain when not a TTY.
     const prompt = process.stdout.isTTY ? '[31mconductor>[39m ' : 'conductor> ';
     const rl = createInterface({ input: process.stdin, output: process.stdout, prompt });
+
+    // Live operator feed: session messages (send_to_operator, stall reports)
+    // print above the prompt without disturbing what the operator is typing.
+    const feedAbort = new AbortController();
+    void subscribeFeed(
+      cmdUrl(),
+      (text) => {
+        process.stdout.write(`\r[2K${text}\n`);
+        rl.prompt(true);
+      },
+      feedAbort.signal,
+    );
+
     rl.prompt();
     rl.on('line', (line) => {
       const trimmed = line.trim();
@@ -117,6 +168,7 @@ function runConsole(): Promise<void> {
         });
     });
     rl.on('close', () => {
+      feedAbort.abort();
       resolveDone();
     });
   });

@@ -64,7 +64,7 @@ describe('git integration', () => {
     expect(isWorktree(repo)).toBe(false);
     expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('session-1');
 
-    await removeWorktree(dir);
+    expect(await removeWorktree(dir)).toBe('session-1'); // reports the branch left behind
     expect(existsSync(dir)).toBe(false);
     expect(git(repo, 'worktree', 'list')).not.toContain('session-1');
   });
