@@ -17,9 +17,10 @@ terminal:
 
 # The stall sentinel: an agent (configured like any other in config/agents/) that
 # receives ALL stalls from autonomous agents and decides what to do.
-# Launch it with prompts/sentinel.md as its instructions.
-sentinel:
-  codename: watch
+# Launch it with prompts/sentinel.md as its instructions. Leave unset until you
+# have defined that agent — a dangling codename only earns you a startup warning.
+# sentinel:
+#   codename: watch
 
 defaults:
   autonomy: facilitated # facilitated | autonomous

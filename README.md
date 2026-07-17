@@ -45,16 +45,18 @@ also accepts `-C, --dir <fleet-dir>` so you needn't be inside the fleet director
 
 ## Quick start
 
-A "fleet directory" holds your `config/`. Create one:
+A "fleet directory" holds your `config/`. Scaffold one:
 
 ```bash
-mkdir -p ~/fleet/config/agents && cd ~/fleet
-cp "$(npm root -g)/agent-conductor/examples/supervisor.yaml" config/supervisor.yaml
-cp "$(npm root -g)/agent-conductor/examples/agents/example-claude.yaml" config/agents/alpha.yaml
-$EDITOR config/agents/alpha.yaml    # set `repo:` to a real project path
+mkdir ~/fleet && cd ~/fleet
+conductor init --agent alpha --repo ~/code/my-project   # any project dir the agent will work in
 conductor validate                  # catches config mistakes before launch
 conductor start                     # foreground, with an interactive console
 ```
+
+`init` writes a minimal commented `config/supervisor.yaml` (every setting is optional —
+ports and names are derived per fleet dir) and `config/agents/alpha.yaml`. The full
+reference config with every knob lives in `examples/supervisor.yaml`.
 
 At the `conductor>` prompt, type `/help`. `/start alpha` opens an iTerm2 (or tmux) pane
 running Claude Code wired to the conductor; `/tell alpha <message>` talks to it;

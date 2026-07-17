@@ -5,8 +5,12 @@ one hand-driven agent, then autonomous mode with a sentinel, then remote control
 Do them in order — each step assumes the previous one worked.
 
 Prerequisites and install are in the [README](../README.md). This guide assumes
-`conductor` is on your PATH and you have a fleet directory (`~/fleet` below) with a
-`config/` inside it.
+`conductor` is on your PATH. Scaffold a fleet directory first:
+
+```bash
+mkdir ~/fleet && cd ~/fleet
+conductor init
+```
 
 ---
 
@@ -36,14 +40,14 @@ the conductor launches the agent and relays your messages, but does not nudge it
 isolates the terminal/launch machinery from the health/sentinel machinery, so if
 something is wrong with your iTerm2 or `claude` setup you find out cleanly.
 
-1. Create `config/agents/alpha.yaml`:
+1. Create the agent config (point it at a real repo you don't mind an agent touching):
 
-   ```yaml
-   codename: alpha
-   repo: /absolute/path/to/some/project # a real repo you don't mind an agent touching
-   runtime: claude-code
-   # model: claude-opus-4-6               # optional
+   ```bash
+   conductor init --agent alpha --repo /path/to/some/project
    ```
+
+   That writes `config/agents/alpha.yaml` — open it to see the optional knobs
+   (`runtime: codex`, `model:`, `schedules:`).
 
 2. Confirm defaults are facilitated in `config/supervisor.yaml` (they are unless you
    changed them): `defaults.autonomy: facilitated`.
