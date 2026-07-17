@@ -50,6 +50,23 @@ export function shellQuote(s: string): string {
 }
 
 /**
+ * Shell snippet that titles the pane from INSIDE the launch command (the
+ * cc-conductor pattern). Emitted before the runtime starts, as part of the
+ * same atomic command line: the shell's own preexec title escape fires first,
+ * then these printfs, then the runtime (which never touches the title) — so
+ * the last writer is us, by construction. No AppleScript, no timing.
+ */
+export function buildTitleShellPrefix(displayName: string, badge: boolean): string {
+  const title = displayName.replaceAll("'", `'\\''`);
+  const parts = [`printf '\\033]0;${title}\\a'`];
+  if (badge) {
+    const badgeB64 = Buffer.from(displayName, 'utf-8').toString('base64');
+    parts.push(`printf '\\033]1337;SetBadgeFormat=${badgeB64}\\a'`);
+  }
+  return parts.join(' && ');
+}
+
+/**
  * Multi-line text must use bracketed paste or the shell treats embedded newlines
  * as submit keystrokes; long text must use it to avoid PTY canonical-mode
  * truncation (MAX_CANON ~1024 bytes).
