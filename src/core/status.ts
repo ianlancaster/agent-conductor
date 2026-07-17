@@ -33,6 +33,7 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
     return JSON.stringify(
       {
         codename,
+        runtime: deps.sessions().get(codename)?.runtime ?? null,
         autonomy: state.autonomy,
         paused: state.pause !== undefined,
         tag: state.tag ?? null,

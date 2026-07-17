@@ -1,30 +1,18 @@
-import type {
-  ChannelAdapter,
-  ChannelCapabilities,
-  ChannelChoice,
-  ChannelHandlers,
-  ChannelSendOptions,
-} from '../../src/channels/types.js';
+import type { ChannelAdapter, ChannelHandlers } from '../../src/channels/types.js';
 
-export interface SentMessage {
-  text: string;
-  buttons?: ChannelChoice[][];
-}
-
-/** In-memory ChannelAdapter for tests. Drive it with command()/freeText()/callback(). */
+/** In-memory ChannelAdapter for tests. Drive it with command()/freeText(). */
 export class FakeChannel implements ChannelAdapter {
   readonly name = 'fake';
-  readonly capabilities: ChannelCapabilities = { buttons: true };
 
-  readonly sent: SentMessage[] = [];
+  readonly sent: string[] = [];
   private handlers: ChannelHandlers | undefined;
 
   async start(handlers: ChannelHandlers): Promise<void> {
     this.handlers = handlers;
   }
 
-  async send(text: string, opts?: ChannelSendOptions): Promise<void> {
-    this.sent.push({ text, buttons: opts?.buttons });
+  async send(text: string): Promise<void> {
+    this.sent.push(text);
   }
 
   async stop(): Promise<void> {
@@ -41,11 +29,7 @@ export class FakeChannel implements ChannelAdapter {
     return this.mustHandlers().onFreeText(text);
   }
 
-  callback(data: string): Promise<string | undefined> {
-    return this.mustHandlers().onCallback(data);
-  }
-
-  lastSent(): SentMessage | undefined {
+  lastSent(): string | undefined {
     return this.sent[this.sent.length - 1];
   }
 

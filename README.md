@@ -18,8 +18,8 @@ together:
    session is routed to a **stall sentinel** — a session you designate — which reads the pane and
    decides: nudge with a precise instruction, dismiss, or escalate to you.
 3. **Where's the operator?** Channel adapters (Telegram today; the interface is small) give
-   you full fleet control from anywhere: status, start/stop, messaging, mode changes, and
-   answer-with-a-button escalations.
+   you full fleet control from anywhere: status, start/stop, messaging, and mode changes.
+   Sessions message you with `send_to_operator`; you reply with `/tell` — no ceremony.
 
 ## Prerequisites
 
@@ -51,17 +51,21 @@ A "fleet directory" holds your `config/`. Scaffold one:
 mkdir ~/fleet && cd ~/fleet
 conductor init --session alpha --repo ~/code/my-project   # any project dir the session will work in
 conductor validate                  # catches config mistakes before launch
-conductor start                     # foreground, with an interactive console
+conductor start                     # the conductor process: headless log feed
+conductor console                   # in another terminal: the operator console
 ```
 
 `init` writes a minimal commented `config/supervisor.yaml` (every setting is optional —
 ports and names are derived per fleet dir) and `config/sessions/alpha.yaml`. The full
 reference config with every knob lives in `examples/supervisor.yaml`.
 
-At the `conductor>` prompt, type `/help`. `/start alpha` opens an iTerm2 (or tmux) pane
-running Claude Code wired to the conductor; `/tell alpha <message>` talks to it;
-`/status` shows the fleet. Session YAMLs hot-reload — drop a new file in `config/sessions/`
-and it registers itself, no restart.
+The conductor process and the operator console are separate: `start` runs the
+supervisor (its terminal is the log feed — or daemonize it and have no terminal at
+all), and `conductor console` attaches an interactive `conductor>` prompt to it from
+any terminal. At that prompt, type `/help`. `/start alpha` opens an iTerm2 (or tmux)
+pane running Claude Code wired to the conductor; `/tell alpha <message>` talks to it;
+`/status` shows the fleet. Session YAMLs hot-reload — drop a new file in
+`config/sessions/` and it registers itself, no restart.
 
 **New here? Follow [docs/getting-started.md](docs/getting-started.md)** — a step-by-step
 first run (single session → sentinel → Telegram) with the shakedown order that surfaces
@@ -82,7 +86,7 @@ problems early.
 
 ## Operator commands
 
-Same language everywhere (console, `conductor cmd`, Telegram):
+Same language everywhere (`conductor console`, `conductor cmd`, Telegram):
 
 ```
 /status [session]            /start <session|all> [--tab|--window]
@@ -93,18 +97,18 @@ Same language everywhere (console, `conductor cmd`, Telegram):
 /facilitated <session|all>   /tag <session> [text]
 /spawn <name> [--worktree <repo>] [--branch <b>] [--model m] [--prompt "…"]
 /teardown <name> [--delete]
-/answer <id> <text>          /autopause [on|off]
+/autopause [on|off]
 ```
 
 ## Session-facing MCP tools
 
-`send_to_session` · `broadcast` (sparingly) · `notify_sessions` · `respond_to_user` ·
-`request_human_input` · `start_session` / `stop_session` / `continue_session` ·
+`send_to_session` · `broadcast` (sparingly) · `notify_sessions` · `send_to_operator` ·
+`start_session` / `stop_session` / `continue_session` ·
 `spawn_session` / `teardown_session` · `create_worktree` / `remove_worktree` ·
 `set_autonomy` · `set_tag` / `get_tag` · `whoami` · `list_sessions` / `get_session_status` /
 `session_exists` · `tail_session` · `type_in_pane` · `request_restart`
 
-Sentinel-only: `get_stall_queue` · `resolve_stall` · `answer_human_input`.
+Sentinel-only: `get_stall_queue` · `resolve_stall`.
 
 ## Worktrees
 
@@ -117,8 +121,8 @@ dirty worktrees.
 ## Telegram
 
 Set `CONDUCTOR_TELEGRAM_TOKEN` and `CONDUCTOR_TELEGRAM_CHAT_ID` (create a bot with
-@BotFather). Every command above works remotely; escalations and human-input requests
-arrive with inline buttons.
+@BotFather). Every command above works remotely; sentinel escalations and
+`send_to_operator` messages arrive as signed messages.
 
 ## Security posture
 

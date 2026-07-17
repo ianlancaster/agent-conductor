@@ -140,6 +140,33 @@ export function buildWindowExistsScript(windowId: number): string {
 }
 
 /**
+ * Set the name of the iTerm session attached to the given tty (best effort).
+ * Used to label the conductor's own terminal — OSC titles can lose to iTerm's
+ * job detection depending on profile settings, but the session name set via
+ * AppleScript is what cc-conductor proved sticks.
+ */
+export function buildNameTtySessionScript(ttyPath: string, name: string): string {
+  const escaped = escapeAppleScript(name);
+  return `
+    tell application "iTerm2"
+      repeat with w in windows
+        repeat with t in tabs of w
+          repeat with s in sessions of t
+            if (tty of s) is "${escapeAppleScript(ttyPath)}" then
+              tell s
+                set name to "${escaped}"
+              end tell
+              return "OK"
+            end if
+          end repeat
+        end repeat
+      end repeat
+      return ""
+    end tell
+  `;
+}
+
+/**
  * Find the window containing the session attached to the given tty. Used to
  * adopt the window the conductor console itself runs in as the workspace —
  * sessions then open beside the console instead of in a separate window.

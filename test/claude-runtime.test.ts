@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { supervisorConfigSchema, type SessionConfig } from '../src/config/schema.js';
-import { ClaudeCodeRuntime } from '../src/runtimes/claude-code/index.js';
+import { ClaudeCodeRuntime, seedFolderTrust } from '../src/runtimes/claude-code/index.js';
 import { parseClaudeInputClear, stripClaudeChrome } from '../src/runtimes/claude-code/chrome.js';
 import type { IdentityEndpoints } from '../src/runtimes/types.js';
 
@@ -28,7 +28,9 @@ beforeEach(() => {
     eventsUrl: 'http://127.0.0.1:3456/events/alpha',
     configDir,
   };
-  runtime = new ClaudeCodeRuntime({ config: defaults.runtimes.claudeCode });
+  runtime = new ClaudeCodeRuntime({
+    config: { ...defaults.runtimes.claudeCode, claudeJsonPath: join(configDir, '.claude.json') },
+  });
 });
 
 afterEach(() => {
@@ -145,8 +147,59 @@ describe('chrome parsing', () => {
     expect(parseClaudeInputClear('❯ old submitted line\noutput\n❯ ')).toBe(true);
   });
 
+  it('treats the ghost placeholder as an EMPTY input line', () => {
+    // Claude renders suggestion ghost text inside an empty input box. Plain
+    // captures can't see the dim styling, and reading it as typed input made
+    // idle sessions look busy forever (tester Issue #3).
+    expect(parseClaudeInputClear('output\n│ ❯ Try "fix lint errors" │')).toBe(true);
+    expect(parseClaudeInputClear('output\n❯ Try “refactor the parser” to get started')).toBe(true);
+    // Real typed text that merely starts with Try but has no quote is busy.
+    expect(parseClaudeInputClear('output\n❯ Try harder next time')).toBe(false);
+  });
+
   it('strips trailing chrome but keeps content', () => {
     const capture = ['real output line', 'more output', '  ❯ ', 'shift+tab to cycle'].join('\n');
     expect(stripClaudeChrome(capture)).toBe('real output line\nmore output');
+  });
+});
+
+describe('seedFolderTrust', () => {
+  const claudeJson = (): string => join(configDir, '.claude.json');
+  const read = (): Record<string, unknown> => JSON.parse(readFileSync(claudeJson(), 'utf8')) as Record<string, unknown>;
+
+  it('creates the file and trusts the repo when no config exists', async () => {
+    await seedFolderTrust(claudeJson(), '/tmp/spawned');
+    expect(read()).toEqual({ projects: { '/tmp/spawned': { hasTrustDialogAccepted: true } } });
+  });
+
+  it('adds trust without disturbing existing config', async () => {
+    writeFileSync(
+      claudeJson(),
+      JSON.stringify({
+        oauthAccount: { email: 'x@y.z' },
+        projects: { '/other': { hasTrustDialogAccepted: true, history: [1] } },
+      }),
+    );
+    await seedFolderTrust(claudeJson(), '/tmp/spawned');
+    const root = read();
+    expect(root.oauthAccount).toEqual({ email: 'x@y.z' });
+    const projects = root.projects as Record<string, unknown>;
+    expect(projects['/other']).toEqual({ hasTrustDialogAccepted: true, history: [1] });
+    expect(projects['/tmp/spawned']).toEqual({ hasTrustDialogAccepted: true });
+  });
+
+  it('preserves other per-project fields when trusting an existing project', async () => {
+    writeFileSync(claudeJson(), JSON.stringify({ projects: { '/tmp/spawned': { history: ['a'] } } }));
+    await seedFolderTrust(claudeJson(), '/tmp/spawned');
+    expect((read().projects as Record<string, unknown>)['/tmp/spawned']).toEqual({
+      history: ['a'],
+      hasTrustDialogAccepted: true,
+    });
+  });
+
+  it('NEVER overwrites an existing file it cannot parse — that is the real Claude config', async () => {
+    writeFileSync(claudeJson(), '{corrupt json!!');
+    await seedFolderTrust(claudeJson(), '/tmp/spawned');
+    expect(readFileSync(claudeJson(), 'utf8')).toBe('{corrupt json!!');
   });
 });

@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SessionConfig } from '../src/config/schema.js';
 import { DeliveryQueue } from '../src/core/delivery.js';
-import { HumanInputBroker } from '../src/core/human-input.js';
 import { Lifecycle } from '../src/core/lifecycle.js';
 import { Messaging } from '../src/core/messaging.js';
 import { StallSentinelRouter } from '../src/core/sentinel.js';
@@ -69,13 +68,6 @@ beforeEach(() => {
     startSession: (c, o) => lifecycle.start(c, o),
     channelSend: async () => false,
   });
-  const humanInput = new HumanInputBroker({
-    notifyOperator: async () => undefined,
-    sentinelCodename: () => sentinelCodename,
-    isActive: (a) => states.get(a)?.running === true,
-    getAutonomy: (a) => states.getAutonomy(a),
-    deliver: (a, t) => delivery.deliverOrQueue(a, t),
-  });
   const sentinel = new StallSentinelRouter({
     config: { captureLines: 40, suppressWindowMs: 300_000, suppressSimilarity: 0.8, sentinelCodename },
     backend,
@@ -93,7 +85,6 @@ beforeEach(() => {
   tools = buildMcpTools({
     lifecycle,
     messaging,
-    humanInput,
     sentinel,
     states,
     delivery,

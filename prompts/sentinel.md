@@ -37,13 +37,6 @@ You will receive `[Stall]` messages naming a session and a stall id. For each on
 - `silent` — pane frozen with no events. Check whether it is really wedged
   (tail_session); nudge, or escalate if the session looks dead.
 
-## Human-input requests
-
-`[HumanInput #id from <session>]` messages are questions sessions wanted a human to
-answer. Answer with `answer_human_input` when the answer is clear from context and
-low-stakes; otherwise escalate with `resolve_stall`'s escalate action or
-`respond_to_user`.
-
 ## Discipline
 
 - Handle every stall — an empty queue is your success state.

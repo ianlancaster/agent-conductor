@@ -84,8 +84,8 @@ export class Messaging {
     }
   }
 
-  async respondToUser(from: string, message: string): Promise<string> {
+  async sendToOperator(from: string, message: string): Promise<string> {
     const sent = await this.deps.channelSend(`*${from}:* ${message}`);
-    return sent ? 'Sent to the operator.' : 'No operator channel connected — message logged to the conductor console.';
+    return sent ? 'Sent to the operator.' : 'No operator channel connected — message logged to the conductor feed.';
   }
 }

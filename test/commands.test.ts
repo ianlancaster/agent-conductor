@@ -6,7 +6,6 @@ import { loadSessionConfigs } from '../src/config/loader.js';
 import type { SessionConfig } from '../src/config/schema.js';
 import { CommandRouter, tokenize } from '../src/core/commands.js';
 import { DeliveryQueue } from '../src/core/delivery.js';
-import { HumanInputBroker } from '../src/core/human-input.js';
 import { Lifecycle } from '../src/core/lifecycle.js';
 import { Messaging } from '../src/core/messaging.js';
 import { SessionStateManager } from '../src/core/state.js';
@@ -23,7 +22,6 @@ let lifecycle: Lifecycle;
 let router: CommandRouter;
 let operatorMessages: string[];
 let sessions: Map<string, SessionConfig>;
-let humanInput: HumanInputBroker;
 
 function writeSessionConfig(codename: string): void {
   const repo = join(baseDir, 'repos', codename);
@@ -86,22 +84,11 @@ beforeEach(() => {
     },
   });
 
-  humanInput = new HumanInputBroker({
-    notifyOperator: async (text) => {
-      operatorMessages.push(text);
-    },
-    sentinelCodename: () => undefined,
-    isActive: (session) => states.get(session)?.running === true,
-    getAutonomy: (session) => states.getAutonomy(session),
-    deliver: (session, text) => delivery.deliverOrQueue(session, text),
-  });
-
   for (const codename of sessions.keys()) states.register(codename, false);
 
   router = new CommandRouter({
     lifecycle,
     messaging,
-    humanInput,
     states,
     delivery,
     sessions: () => sessions,
@@ -268,23 +255,5 @@ describe('spawn and teardown', () => {
     const reply = await router.route('/teardown gitty --delete');
     expect(reply).toContain('Directory kept');
     expect(existsSync(join(baseDir, 'spawned', 'gitty'))).toBe(true);
-  });
-});
-
-describe('human input over commands', () => {
-  it('answers a pending question via /answer', async () => {
-    const pendingAnswer = humanInput.request('alpha', 'Which env?');
-    const [pending] = humanInput.listPending();
-    const reply = await router.route(`/answer ${pending?.id ?? 0} staging`);
-    expect(reply).toBe('Answer delivered to alpha.');
-    expect(await pendingAnswer).toBe('staging');
-  });
-
-  it('answers via button callback data', async () => {
-    const pendingAnswer = humanInput.request('alpha', 'Deploy?', undefined, ['yes', 'no']);
-    const [pending] = humanInput.listPending();
-    const reply = await router.callback(`hi:${pending?.id ?? 0}:1`);
-    expect(reply).toBe('Answer delivered to alpha.');
-    expect(await pendingAnswer).toBe('no');
   });
 });

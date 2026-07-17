@@ -120,6 +120,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
           '  port: 43399',
           'runtimes:',
           '  claudeCode:',
+          `    claudeJsonPath: ${join(baseDir, 'claude.json')}`,
           `    binary: ${FAKE_BINARY}`,
           '',
         ].join('\n'),

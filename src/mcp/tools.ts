@@ -1,6 +1,5 @@
 import type { SessionConfig } from '../config/schema.js';
 import type { DeliveryQueue } from '../core/delivery.js';
-import type { HumanInputBroker } from '../core/human-input.js';
 import type { Lifecycle } from '../core/lifecycle.js';
 import type { Messaging } from '../core/messaging.js';
 import type { StallSentinelRouter } from '../core/sentinel.js';
@@ -13,7 +12,6 @@ import type { McpToolDefinition } from './server.js';
 export interface McpToolDeps {
   lifecycle: Lifecycle;
   messaging: Messaging;
-  humanInput: HumanInputBroker;
   sentinel: StallSentinelRouter;
   states: SessionStateManager;
   delivery: DeliveryQueue;
@@ -81,7 +79,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     },
     {
       name: 'notify_sessions',
-      description: `Queue a notification for sessions, delivered when they next start a session. ${IDENTITY_NOTE}`,
+      description: `Queue a notification for sessions, delivered when they next start. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -98,42 +96,18 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       },
     },
     {
-      name: 'respond_to_user',
-      description: `Send a message to the human operator over the connected channel. ${IDENTITY_NOTE}`,
+      name: 'send_to_operator',
+      description: `Send a message to the operator over the connected channel. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: { message: { type: 'string' } },
         required: ['message'],
       },
-      handler: (args, caller) => deps.messaging.respondToUser(caller, requireString(args, 'message')),
-    },
-    {
-      name: 'request_human_input',
-      description: `Ask for a decision that needs human judgment. Blocks until answered. In autonomous mode the sentinel answers or escalates; otherwise the question goes to the operator. ${IDENTITY_NOTE}`,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          question: { type: 'string' },
-          context: { type: 'string', description: 'Optional background for the decision' },
-          options: { type: 'array', items: { type: 'string' }, description: 'Optional preset answers' },
-        },
-        required: ['question'],
-      },
-      handler: (args, caller) => {
-        const options = Array.isArray(args.options)
-          ? args.options.filter((o): o is string => typeof o === 'string')
-          : undefined;
-        return deps.humanInput.request(
-          caller,
-          requireString(args, 'question'),
-          optionalString(args, 'context'),
-          options,
-        );
-      },
+      handler: (args, caller) => deps.messaging.sendToOperator(caller, requireString(args, 'message')),
     },
     {
       name: 'start_session',
-      description: `Start another session's session. ${IDENTITY_NOTE}`,
+      description: `Start another session. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -154,7 +128,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     },
     {
       name: 'stop_session',
-      description: `Stop another session's session. ${IDENTITY_NOTE}`,
+      description: `Stop another session. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: { codename: { type: 'string' } },
@@ -168,7 +142,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     },
     {
       name: 'continue_session',
-      description: `Resume another session's most recent session. ${IDENTITY_NOTE}`,
+      description: `Resume another session's most recent run (continues its conversation). ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: { codename: { type: 'string' }, placement: placementSchema },
@@ -182,7 +156,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     },
     {
       name: 'spawn_session',
-      description: `Create and start a new session: makes a directory, registers a config, starts a session. ${IDENTITY_NOTE}`,
+      description: `Create and start a new session: makes a directory, registers a config, launches the runtime. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -325,6 +299,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
             {
               codename: caller,
               registered: deps.sessions().has(caller),
+              runtime: deps.sessions().get(caller)?.runtime ?? null,
               isSentinel: deps.sentinel.isSentinel(caller),
               autonomy: state?.autonomy ?? null,
               activity: state?.activity ?? null,
@@ -455,24 +430,6 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
             throw new Error("action must be 'nudge', 'suppress', or 'escalate'");
         }
         return deps.sentinel.resolve(id, resolution, caller);
-      },
-    },
-    {
-      name: 'answer_human_input',
-      description: 'SENTINEL: answer a pending human-input request on behalf of the operator.',
-      sentinelOnly: true,
-      inputSchema: {
-        type: 'object',
-        properties: { id: { type: 'number' }, answer: { type: 'string' } },
-        required: ['id', 'answer'],
-      },
-      handler: (args, _caller) => {
-        const id = typeof args.id === 'number' ? args.id : Number.NaN;
-        if (!Number.isInteger(id)) throw new Error("'id' must be an integer");
-        const session = deps.humanInput.answer(id, requireString(args, 'answer'));
-        return Promise.resolve(
-          session === undefined ? `No pending question #${String(id)}.` : `Answer delivered to ${session}.`,
-        );
       },
     },
   ];

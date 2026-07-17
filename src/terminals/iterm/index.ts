@@ -13,6 +13,7 @@ import {
   buildCreateTabScript,
   buildCreateWindowScript,
   buildFindTtyWindowScript,
+  buildNameTtySessionScript,
   buildFocusWindowScript,
   buildFocusedSessionScript,
   buildInSessionScript,
@@ -109,6 +110,18 @@ export class ITermBackend implements TerminalBackend {
     await this.pruneDeadPanes();
     // The workspace window itself is created lazily — an empty window at
     // startup is just confusing. First pane creation calls ensureWindow().
+
+    // Label the conductor's own terminal (best effort): the shell has already
+    // stamped a job title ("node"), and an AppleScript session name is the one
+    // label that reliably sticks.
+    const tty = this.processTty();
+    if (tty !== null) {
+      try {
+        await runOsa(buildNameTtySessionScript(tty, this.config.windowName));
+      } catch {
+        // Not running inside iTerm — nothing to label.
+      }
+    }
   }
 
   async focusWindow(): Promise<void> {
@@ -296,18 +309,23 @@ export class ITermBackend implements TerminalBackend {
     return this.createWorkspaceWindow();
   }
 
-  /** Window id of the iTerm session hosting this process's tty, if any. */
-  private async findConsoleWindow(): Promise<number | null> {
-    let ttyPath: string;
+  /** The tty this conductor was started in, or null (daemon, piped stdin). */
+  private processTty(): string | null {
     try {
       // `tty` reads fd 0 — resolves the terminal this conductor was started in.
-      ttyPath = execFileSync('tty', [], { stdio: ['inherit', 'pipe', 'ignore'] })
+      const ttyPath = execFileSync('tty', [], { stdio: ['inherit', 'pipe', 'ignore'] })
         .toString()
         .trim();
+      return ttyPath.startsWith('/dev/') ? ttyPath : null;
     } catch {
       return null; // no controlling terminal (daemon, piped stdin)
     }
-    if (!ttyPath.startsWith('/dev/')) return null;
+  }
+
+  /** Window id of the iTerm session hosting this process's tty, if any. */
+  private async findConsoleWindow(): Promise<number | null> {
+    const ttyPath = this.processTty();
+    if (ttyPath === null) return null;
     try {
       const result = (await runOsa(buildFindTtyWindowScript(ttyPath))).trim();
       const windowId = Number.parseInt(result, 10);

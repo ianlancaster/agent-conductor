@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ChannelAdapter, ChannelChoice } from '../channels/types.js';
+import type { ChannelAdapter } from '../channels/types.js';
 import { TelegramAdapter } from '../channels/telegram/index.js';
 import { fleetSlug } from '../config/instance.js';
 import { sessionConfigDir, loadSessionConfigs, loadSupervisorConfig } from '../config/loader.js';
@@ -21,7 +21,6 @@ import { CommandRouter } from './commands.js';
 import { DeliveryQueue } from './delivery.js';
 import { FocusAutoPause } from './focus-autopause.js';
 import { HealthMonitor } from './health.js';
-import { HumanInputBroker } from './human-input.js';
 import { identityFor } from './identity.js';
 import { Lifecycle } from './lifecycle.js';
 import { FleetLock } from './lock.js';
@@ -50,7 +49,6 @@ export class Supervisor {
   private readonly lifecycle: Lifecycle;
   private readonly health: HealthMonitor;
   private readonly sentinel: StallSentinelRouter;
-  private readonly humanInput: HumanInputBroker;
   private readonly messaging: Messaging;
   private readonly commands: CommandRouter;
   private readonly mcpServer: ConductorMcpServer;
@@ -169,14 +167,6 @@ export class Supervisor {
       },
     });
 
-    this.humanInput = new HumanInputBroker({
-      notifyOperator: (text, buttons) => this.channelSend(text, buttons),
-      sentinelCodename: () => this.config.sentinel.codename,
-      isActive: (session) => this.states.get(session)?.running === true,
-      getAutonomy: (session) => this.states.getAutonomy(session),
-      deliver: (session, text) => this.delivery.deliverOrQueue(session, text),
-    });
-
     this.autoPause =
       this.backend.capabilities.focusTracking && this.backend.getFocusedSession !== undefined
         ? new FocusAutoPause({
@@ -196,7 +186,6 @@ export class Supervisor {
     this.commands = new CommandRouter({
       lifecycle: this.lifecycle,
       messaging: this.messaging,
-      humanInput: this.humanInput,
       states: this.states,
       delivery: this.delivery,
       sessions: () => this.sessions,
@@ -230,7 +219,6 @@ export class Supervisor {
       tools: buildMcpTools({
         lifecycle: this.lifecycle,
         messaging: this.messaging,
-        humanInput: this.humanInput,
         sentinel: this.sentinel,
         states: this.states,
         delivery: this.delivery,
@@ -380,21 +368,20 @@ export class Supervisor {
       await telegram.start({
         onCommand: (command, args) => this.commands.route(`/${command} ${args.join(' ')}`.trim()),
         onFreeText: (text) => this.commands.freeText(text),
-        onCallback: (data) => this.commands.callback(data),
       });
       this.channels.push(telegram);
       log().info('supervisor', 'Telegram channel connected.');
     }
   }
 
-  private async channelSend(text: string, buttons?: ChannelChoice[][]): Promise<boolean> {
+  private async channelSend(text: string): Promise<boolean> {
     if (this.channels.length === 0) {
       log().info('operator', text);
       return false;
     }
     for (const channel of this.channels) {
       try {
-        await channel.send(text, buttons !== undefined ? { buttons } : undefined);
+        await channel.send(text);
       } catch (err) {
         log().warn(
           'supervisor',

@@ -29,7 +29,7 @@ repo: ${repo}
 # systemPromptFile: ./prompts/${codename}.md
 # schedules:
 #   - cron: "0 9 * * 1-5"
-#     prompt: Review open PRs and report via respond_to_user.
+#     prompt: Review open PRs and report via send_to_operator.
 `;
 }
 

@@ -133,6 +133,8 @@ export const supervisorConfigSchema = z.object({
           env: z.record(z.string()).default({}),
           /** Path to the conductor protocol prompt appended to every session's system prompt. */
           systemPromptFile: z.string().optional(),
+          /** Claude config file used for folder-trust pre-seeding (override for tests). */
+          claudeJsonPath: z.string().optional(),
         })
         .default({}),
       codex: z
