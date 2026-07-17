@@ -59,5 +59,9 @@ channels:
     panePreviewLines: 20
 
 spawn:
-  dirPattern: './{codename}' # spawned session dirs live inside the fleet dir; {codename} is substituted
+  # Where /spawn and spawn_session create a session's working directory,
+  # resolved relative to the fleet dir; {codename} is substituted.
+  #   './{codename}'  → inside the fleet dir (default)
+  #   '../{codename}' → sibling of the fleet dir (keeps the fleet dir config-only)
+  dirPattern: './{codename}'
   markerFile: .conductor-agent # presence marks a repo as an agent project (🤖) in status
