@@ -7,6 +7,7 @@ import {
   AGENT_OPTION,
   buildCreatePaneArgs,
   buildDeliveryCommands,
+  encodeAgentOption,
   hasShellPrompt,
   parseAgentPanes,
   parsePaneIds,
@@ -24,6 +25,8 @@ const LAUNCH_POLL_MS = 250;
 export interface TmuxBackendConfig {
   sessionName: string;
   windowName: string;
+  /** Scopes pane identity markers so rediscovery never adopts another fleet's panes. */
+  fleetId: string;
 }
 
 export interface TmuxBackendOptions {
@@ -47,11 +50,13 @@ export class TmuxBackend implements TerminalBackend {
   private readonly store: Store;
   private readonly sessionName: string;
   private readonly windowName: string;
+  private readonly fleetId: string;
 
   constructor(opts: TmuxBackendOptions) {
     this.store = opts.store;
     this.sessionName = opts.config.sessionName;
     this.windowName = opts.config.windowName;
+    this.fleetId = opts.config.fleetId;
   }
 
   /** Create the detached session if it does not already exist. */
@@ -75,7 +80,7 @@ export class TmuxBackend implements TerminalBackend {
       throw new Error(`tmux returned an unexpected pane id for agent '${agent}': '${paneId}'`);
     }
     // Pane-scoped identity marker so rediscover() can map panes back to agents.
-    await tmux(['set-option', '-p', '-t', paneId, AGENT_OPTION, agent]);
+    await tmux(['set-option', '-p', '-t', paneId, AGENT_OPTION, encodeAgentOption(this.fleetId, agent)]);
     const map = this.readPaneMap();
     map[agent] = paneId;
     this.writePaneMap(map);
@@ -153,7 +158,7 @@ export class TmuxBackend implements TerminalBackend {
       return result;
     }
     const paneMap: Record<string, string> = {};
-    for (const [agent, paneId] of parseAgentPanes(output)) {
+    for (const [agent, paneId] of parseAgentPanes(output, this.fleetId)) {
       result.set(agent, { backend: this.name, id: paneId });
       paneMap[agent] = paneId;
     }

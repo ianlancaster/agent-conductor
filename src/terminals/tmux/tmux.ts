@@ -53,6 +53,16 @@ export async function tmuxSucceeds(args: readonly string[]): Promise<boolean> {
 /** Pane-scoped tmux user option used to mark which agent owns a pane. */
 export const AGENT_OPTION = '@conductor_agent';
 
+/**
+ * Marker value stored in AGENT_OPTION: `<fleetId>:<codename>`. The fleet id
+ * scopes the marker — `list-panes -a` scans the whole tmux server, which may
+ * host several conductors' sessions, and rediscovery must only ever adopt
+ * this fleet's panes.
+ */
+export function encodeAgentOption(fleetId: string, codename: string): string {
+  return `${fleetId}:${codename}`;
+}
+
 /** Parse `list-panes -a -F '#{pane_id}'` output into pane ids (e.g. `%3`). */
 export function parsePaneIds(output: string): string[] {
   return output
@@ -63,18 +73,22 @@ export function parsePaneIds(output: string): string[] {
 
 /**
  * Parse `list-panes -a -F '#{pane_id} #{@conductor_agent}'` output into a
- * codename -> pane id map. Panes without a marker are skipped. If two panes
- * carry the same codename, the last one listed wins.
+ * codename -> pane id map for THIS fleet only. Panes without a marker, or
+ * marked by another fleet, are skipped. If two panes carry the same codename,
+ * the last one listed wins.
  */
-export function parseAgentPanes(output: string): Map<string, string> {
+export function parseAgentPanes(output: string, fleetId: string): Map<string, string> {
   const result = new Map<string, string>();
+  const prefix = `${fleetId}:`;
   for (const raw of output.split('\n')) {
     const line = raw.trim();
     if (!line.startsWith('%')) continue;
     const spaceIdx = line.indexOf(' ');
     if (spaceIdx === -1) continue; // pane id only — no marker
     const paneId = line.slice(0, spaceIdx);
-    const agent = line.slice(spaceIdx + 1).trim();
+    const marker = line.slice(spaceIdx + 1).trim();
+    if (!marker.startsWith(prefix)) continue;
+    const agent = marker.slice(prefix.length);
     if (agent.length === 0) continue;
     result.set(agent, paneId);
   }

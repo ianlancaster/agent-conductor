@@ -54,7 +54,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
     beforeEach(async () => {
       workDir = mkdtempSync(join(tmpdir(), 'conductor-e2e-'));
       store = new Store(':memory:');
-      backend = new TmuxBackend({ store, config: { sessionName: SESSION, windowName: 'e2e' } });
+      backend = new TmuxBackend({ store, config: { sessionName: SESSION, windowName: 'e2e', fleetId: 'e2e' } });
       await backend.init();
     });
 
@@ -86,7 +86,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
 
     it('rediscovers panes from a fresh backend instance via pane options', async () => {
       const pane = await backend.createPane('gamma', 'tab', workDir);
-      const fresh = new TmuxBackend({ store, config: { sessionName: SESSION, windowName: 'e2e' } });
+      const fresh = new TmuxBackend({ store, config: { sessionName: SESSION, windowName: 'e2e', fleetId: 'e2e' } });
       const found = await fresh.rediscover();
       expect(found.get('gamma')?.id).toBe(pane.id);
     });
