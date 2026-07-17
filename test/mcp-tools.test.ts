@@ -95,7 +95,6 @@ beforeEach(() => {
           sessions: () => sessions,
           getState: (n) => states.get(n),
           sentinelCodename: () => sentinelCodename,
-          pendingStallCount: () => 0,
         },
         c,
       ),

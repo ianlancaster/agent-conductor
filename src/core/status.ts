@@ -12,16 +12,15 @@ export interface StatusDeps {
   sessions(): Map<string, SessionConfig>;
   getState(codename: string): SessionState | undefined;
   sentinelCodename(): string | undefined;
-  pendingStallCount(): number;
 }
 
 export function formatSessionLine(codename: string, state: SessionState | undefined, isSentinel: boolean): string {
-  if (state === undefined) return `⚪ ${codename} — unregistered`;
-  const icon = state.running ? ACTIVITY_ICONS[state.activity] : ACTIVITY_ICONS.stopped;
-  const mode = state.pause !== undefined ? `paused→${state.pause.previousAutonomy}` : state.autonomy;
-  const markers = [isSentinel ? '🛡' : '', state.isAgentProject ? '🤖' : ''].filter((m) => m.length > 0).join('');
-  const tag = state.tag !== undefined ? ` — ${state.tag}` : '';
-  return `${icon} ${codename}${markers.length > 0 ? ` ${markers}` : ''} [${mode}]${tag}`;
+  if (state === undefined) return `⚪ unregistered · ${codename}`;
+  const name = `${codename}${isSentinel ? ' 🛡' : ''}`;
+  const tag = state.tag !== undefined ? ` · ${state.tag}` : '';
+  if (state.pause !== undefined) return `⏸ paused · ${name}${tag}`;
+  const activity = state.running ? state.activity : 'stopped';
+  return `${ACTIVITY_ICONS[activity]} ${activity} · ${name}${tag}`;
 }
 
 export function statusReport(deps: StatusDeps, codename?: string): string {
@@ -48,15 +47,24 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
     );
   }
 
+  const names = [...deps.sessions().keys()].sort();
+  if (names.length === 0) return 'No sessions configured.';
+
+  // Agent projects (repos with the marker file) get their own section.
+  const agents = names.filter((name) => deps.getState(name)?.isAgentProject === true);
+  const sessions = names.filter((name) => deps.getState(name)?.isAgentProject !== true);
+
   const lines: string[] = [];
-  for (const name of [...deps.sessions().keys()].sort()) {
-    lines.push(formatSessionLine(name, deps.getState(name), name === sentinel));
+  for (const [header, group] of [
+    ['Agents:', agents],
+    ['Sessions:', sessions],
+  ] as const) {
+    if (group.length === 0) continue;
+    if (lines.length > 0) lines.push('');
+    lines.push(header);
+    for (const name of group) {
+      lines.push(formatSessionLine(name, deps.getState(name), name === sentinel));
+    }
   }
-  if (lines.length === 0) lines.push('No sessions configured.');
-  if (sentinel === undefined) {
-    lines.push('', '⚠️ No sentinel configured — autonomous sessions are unsupervised.');
-  }
-  const stalls = deps.pendingStallCount();
-  if (stalls > 0) lines.push('', `📥 ${stalls} unresolved stall(s) in the sentinel queue.`);
   return lines.join('\n');
 }
