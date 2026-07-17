@@ -47,7 +47,15 @@ describe('buildLaunchCommand', () => {
     expect(command).toContain(`--add-dir '/tmp/shared'`);
     expect(command).toContain(`--mcp-config '${join(configDir, 'mcp.json')}'`);
     expect(command).toContain(`--settings '${join(configDir, 'settings.json')}'`);
-    expect(command).not.toContain('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC');
+    // Configurable, default ON.
+    expect(command).toContain(`export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'`);
+  });
+
+  it('omits CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC when disabled in config', () => {
+    const custom = new ClaudeCodeRuntime({
+      config: { ...defaults.runtimes.claudeCode, disableNonessentialTraffic: false },
+    });
+    expect(custom.buildLaunchCommand(session, identity, {})).not.toContain('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC');
   });
 
   it('passes the session model — the cc-conductor bug fix', () => {

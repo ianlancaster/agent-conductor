@@ -15,6 +15,8 @@ export interface CommandDeps {
   tail(codename: string, lines: number): Promise<string>;
   tailLimits: { defaultLines: number; maxLines: number };
   autoPause: { enabled(): boolean; setEnabled(on: boolean): void } | undefined;
+  /** Re-apply a session's pane title (codename — tag). */
+  retitle(codename: string): Promise<void>;
 }
 
 /** Tokenize a command line, honoring double quotes. */
@@ -143,6 +145,7 @@ export class CommandRouter {
         if (!this.deps.states.has(target)) return `Unknown session: ${target}`;
         const tag = args.slice(1).join(' ');
         this.deps.states.setTag(target, tag.length > 0 ? tag : undefined);
+        await this.deps.retitle(target);
         return tag.length > 0 ? `${target} tagged '${tag}'.` : `Tag cleared for ${target}.`;
       }
       case 'tail': {

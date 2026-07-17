@@ -230,19 +230,19 @@ describe('script builders', () => {
     expect(script).toContain('create window with default profile');
   });
 
-  it('buildCreateSessionWindowScript sets name, badge, and the conductor_session user var', () => {
+  it('buildCreateSessionWindowScript sets name and the conductor_session user var', () => {
     const script = buildCreateSessionWindowScript('alpha', encodeSessionVar('f1', 'alpha'));
     expect(script).toContain('set name to "alpha"');
-    // Badge is the durable label: iTerm job detection overwrites the NAME with
-    // the running process ("node"), but nothing overwrites the badge.
-    expect(script).toContain('set badge to "alpha"');
+    // No badge at creation: the badge (iTerm's big watermark text) is opt-in
+    // via terminal.iterm.badge and applied by rename() once the runtime is up.
+    expect(script).not.toContain('set badge');
     expect(script).toContain(`set variable named "${SESSION_USER_VAR}" to "${encodeSessionVar('f1', 'alpha')}"`);
   });
 
-  it('sessionSetup escapes quotes in the display name across name, badge, and var', () => {
+  it('sessionSetup escapes quotes in the display name across name and var', () => {
     const ops = sessionSetup('x "y"', 'QUJD');
     expect(ops).toContain('set name to "x \\"y\\""');
-    expect(ops).toContain('set badge to "x \\"y\\""');
+    expect(ops).not.toContain('set badge');
     expect(ops).toContain(`set variable named "${SESSION_USER_VAR}" to "QUJD"`);
   });
 

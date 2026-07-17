@@ -9,6 +9,7 @@ terminal:
   backend: iterm # or: tmux (headless, Linux/SSH)
   # windowName: My Fleet          # default: "Agent Conductor (<fleet dir name>)"
   iterm:
+    badge: false # watermark the session codename on the pane (iTerm's big red badge text)
     autoPauseOnFocus: false # pause an autonomous session while you interact with its pane
     autoPauseResumeDelaySeconds: 60
     bracketedPasteThreshold: 512
@@ -47,6 +48,7 @@ runtimes:
     # defaultModel: claude-opus-4-6
     autocompactPct: 70
     skipPermissions: true
+    disableNonessentialTraffic: true # exports CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; disable if it breaks tools you rely on
   codex:
     binary: codex
     toolTimeoutSec: 600 # Codex default is 60s — too low for long conductor tools

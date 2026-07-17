@@ -38,6 +38,8 @@ export interface ITermBackendConfig {
   windowName: string;
   /** Scopes pane identity markers so rediscovery never adopts another fleet's panes. */
   fleetId: string;
+  /** Watermark the session name as an iTerm badge (the big red text). Off by default. */
+  badge: boolean;
   autoPauseOnFocus: boolean;
   autoPauseResumeDelaySeconds: number;
   focusCheckMs: number;
@@ -225,12 +227,13 @@ export class ITermBackend implements TerminalBackend {
 
   async rename(pane: PaneRef, name: string): Promise<void> {
     const escaped = escapeAppleScript(name);
+    // The badge is iTerm's big watermark text — opt-in (config), off by default.
+    const operations = this.config.badge
+      ? `set name to "${escaped}"
+         set badge to "${escaped}"`
+      : `set name to "${escaped}"`;
     try {
-      await this.inSession(
-        pane.id,
-        `set name to "${escaped}"
-         set badge to "${escaped}"`,
-      );
+      await this.inSession(pane.id, operations);
     } catch (err) {
       log().debug('iterm', `${pane.id.slice(0, 8)}: rename failed: ${String(err)}`);
     }

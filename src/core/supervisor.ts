@@ -196,6 +196,7 @@ export class Supervisor {
         maxLines: this.config.messaging.tailMaxLines,
       },
       autoPause: this.autoPause,
+      retitle: (session) => this.retitle(session),
     });
 
     this.scheduler = new Scheduler({
@@ -229,6 +230,7 @@ export class Supervisor {
           defaultLines: this.config.messaging.tailDefaultLines,
           maxLines: this.config.messaging.tailMaxLines,
         },
+        retitle: (session) => this.retitle(session),
       }),
     });
 
@@ -260,7 +262,10 @@ export class Supervisor {
     // Re-adopt panes that survived a conductor restart.
     try {
       for (const [codename, pane] of await this.backend.rediscover()) {
-        if (this.sessions.has(codename)) this.lifecycle.adopt(codename, pane);
+        if (this.sessions.has(codename)) {
+          this.lifecycle.adopt(codename, pane);
+          void this.retitle(codename);
+        }
       }
     } catch (err) {
       log().warn('supervisor', `Pane rediscovery failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -355,9 +360,24 @@ export class Supervisor {
     log().debug('events', `${session}: ${parsed.type}${parsed.reason !== undefined ? ` (${parsed.reason})` : ''}`);
     // Any lifecycle event proves the runtime process is up — unblock queued
     // deliveries that were held to protect the launch command.
+    const wasReady = this.states.isReady(session);
     this.states.setReady(session);
+    if (!wasReady && this.states.isReady(session)) {
+      // Titles set before/at launch get clobbered by the shell's title escape
+      // when the launch command runs; the runtime never touches the title, so
+      // a rename applied once it is up sticks.
+      void this.retitle(session);
+    }
     this.health.handleEvent({ ...parsed, session, receivedAt: Date.now() });
     void this.delivery.drainNow();
+  }
+
+  /** Re-apply a session's pane title: `codename` or `codename — tag`. */
+  private async retitle(session: string): Promise<void> {
+    const pane = this.lifecycle.getPane(session);
+    if (pane === undefined) return;
+    const tag = this.states.getTag(session);
+    await this.backend.rename(pane, tag !== undefined && tag.length > 0 ? `${session} — ${tag}` : session);
   }
 
   private async connectChannels(): Promise<void> {

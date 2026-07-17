@@ -96,6 +96,7 @@ beforeEach(() => {
     tail: async (codename, lines) => `tail:${codename}:${lines}`,
     tailLimits: { defaultLines: 30, maxLines: 500 },
     autoPause: undefined,
+    retitle: async () => undefined,
   });
 });
 
