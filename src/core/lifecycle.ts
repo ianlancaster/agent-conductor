@@ -51,7 +51,7 @@ export interface LifecycleDeps {
   onStarted(session: string): Promise<void>;
 }
 
-/** Session session lifecycle: start / continue / stop / restart / spawn / teardown. */
+/** Session lifecycle: start / continue / stop / restart / spawn / teardown. */
 export class Lifecycle {
   private readonly panes = new Map<string, PaneRef>();
   private readonly sessions = new Map<string, string>();
@@ -69,6 +69,8 @@ export class Lifecycle {
     this.panes.set(codename, pane);
     if (this.deps.states.has(codename)) {
       this.deps.states.setSession(codename, pane.id);
+      // A surviving pane's runtime was already up before we restarted.
+      this.deps.states.setReady(codename);
       this.deps.states.setActivity(codename, 'working');
       log().info('lifecycle', `${codename}: adopted surviving pane ${pane.id}`);
     }

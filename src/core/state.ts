@@ -25,6 +25,7 @@ export class SessionStateManager {
       tag: persisted?.tag ?? undefined,
       pause: persisted?.pause ?? undefined,
       running: false,
+      ready: false,
       activity: 'stopped',
       isAgentProject,
     });
@@ -99,6 +100,19 @@ export class SessionStateManager {
     const state = this.mustGet(codename);
     state.paneId = paneId;
     state.running = paneId !== undefined;
+    // A fresh run starts NOT ready — the runtime proves liveness via its first
+    // lifecycle event. A cleared session is trivially not ready.
+    state.ready = false;
+  }
+
+  /** The runtime signalled it is up (first lifecycle event / adopted live pane). */
+  setReady(codename: string): void {
+    const state = this.states.get(codename);
+    if (state?.running === true) state.ready = true;
+  }
+
+  isReady(codename: string): boolean {
+    return this.states.get(codename)?.ready === true;
   }
 
   setActivity(codename: string, activity: Activity): void {

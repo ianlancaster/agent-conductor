@@ -22,6 +22,12 @@ export interface SessionState {
   tag?: string;
   pause?: PauseState;
   running: boolean;
+  /**
+   * The runtime process has proven it is up (first lifecycle event received).
+   * Deliveries are queued until then — typing into a pane whose launch command
+   * is still executing splices text into the shell line and corrupts it.
+   */
+  ready: boolean;
   paneId?: string;
   activity: Activity;
   /** Marker file present in the repo — displayed as an agent project (🤖) rather than a plain session. */

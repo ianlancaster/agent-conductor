@@ -10,16 +10,19 @@ let backend: FakeTerminalBackend;
 let runtime: FakeRuntime;
 let queue: DeliveryQueue;
 let pane: PaneRef;
+let ready: boolean;
 
 beforeEach(async () => {
   vi.useFakeTimers();
   backend = new FakeTerminalBackend();
   runtime = new FakeRuntime();
+  ready = true;
   pane = await backend.createPane('alpha', 'pane');
   queue = new DeliveryQueue({
     backend,
     runtimeFor: () => runtime,
     getPane: (session) => (session === 'alpha' ? pane : undefined),
+    isReady: () => ready,
     config: CONFIG,
   });
 });
@@ -95,12 +98,35 @@ describe('DeliveryQueue', () => {
     expect(queue.pendingCount('alpha')).toBe(0);
   });
 
-  it('treats unknown input state (null) as clear', async () => {
+  it('treats unknown input state (null) as clear once the session is ready', async () => {
     runtime.inputClear = null;
     expect(await queue.deliverOrQueue('alpha', 'go')).toBe('delivered');
   });
 
-  it('treats capture failures as clear rather than blocking forever', async () => {
+  it('queues while the session is booting: no runtime chrome AND not yet ready', async () => {
+    // The launch-corruption bug: a message typed while the pane still shows a
+    // shell executing the launch command splices into it. No chrome (null) +
+    // no lifecycle event yet must queue, not type.
+    runtime.inputClear = null;
+    ready = false;
+    expect(await queue.deliverOrQueue('alpha', 'PING-42')).toBe('queued');
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+
+    // First lifecycle event arrives → ready → next drain delivers.
+    ready = true;
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['PING-42']);
+  });
+
+  it('visible runtime chrome proves the process is up even before any event', async () => {
+    // Codex sends no start event — a visible, empty input line must unblock delivery.
+    runtime.inputClear = true;
+    ready = false;
+    expect(await queue.deliverOrQueue('alpha', 'go')).toBe('delivered');
+  });
+
+  it('treats capture failures as clear rather than blocking forever (when ready)', async () => {
     backend.capture = () => Promise.reject(new Error('osascript exploded'));
     expect(await queue.deliverOrQueue('alpha', 'resilient')).toBe('delivered');
   });

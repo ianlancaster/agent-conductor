@@ -17,9 +17,6 @@ const OSA_TIMEOUT_MS = 20_000;
 /** iTerm2 session user variable holding the base64-encoded session codename (used for restart rediscovery). */
 export const SESSION_USER_VAR = 'user.conductor_session';
 
-/** Shell prompt markers polled for before delivering the first command to a fresh pane. */
-export const PROMPT_MARKERS: readonly string[] = [' ==> ', '$ ', '% ', '❯'];
-
 const ESC = '\u001b';
 
 // ── Runner ────────────────────────────────────────────────────────────────────
@@ -66,9 +63,22 @@ export function wrapBracketedPaste(text: string): string {
   return `${ESC}[200~${text}${ESC}[201~`;
 }
 
-/** True when captured pane contents show a shell prompt marker. */
+/**
+ * True when the LAST non-empty line of the capture looks like a shell prompt.
+ * Scanning the whole capture is wrong: scrollback almost always contains an
+ * old prompt, so a whole-capture check reports "ready" while the shell is
+ * still executing — and text delivered then splices into the command line
+ * (raw canonical-mode input: literal ^[[200~, truncation at ~1024 bytes).
+ */
 export function containsPromptMarker(contents: string): boolean {
-  return PROMPT_MARKERS.some((marker) => contents.includes(marker));
+  const lines = contents
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0);
+  const last = lines[lines.length - 1];
+  if (last === undefined) return false;
+  // `%` preceded by a digit is progress output (`42%`), not a zsh prompt.
+  return /(?:(?<!\d)%|[$#❯>])$/.test(last);
 }
 
 /** Trailing `lines` lines of pane contents (a single trailing newline is ignored). */
@@ -127,6 +137,29 @@ export function parseRediscoveryOutput(raw: string, fleetId: string): Map<string
 /** `exists window id N` — "true"/"false". */
 export function buildWindowExistsScript(windowId: number): string {
   return `tell application "iTerm2" to return (exists window id ${windowId}) as string`;
+}
+
+/**
+ * Find the window containing the session attached to the given tty. Used to
+ * adopt the window the conductor console itself runs in as the workspace —
+ * sessions then open beside the console instead of in a separate window.
+ * Returns the window id, or "" when the tty is not an iTerm session.
+ */
+export function buildFindTtyWindowScript(ttyPath: string): string {
+  return `
+    tell application "iTerm2"
+      repeat with w in windows
+        repeat with t in tabs of w
+          repeat with s in sessions of t
+            if (tty of s) is "${escapeAppleScript(ttyPath)}" then
+              return (id of w as string)
+            end if
+          end repeat
+        end repeat
+      end repeat
+      return ""
+    end tell
+  `;
 }
 
 /**

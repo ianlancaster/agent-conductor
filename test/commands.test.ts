@@ -48,6 +48,7 @@ beforeEach(() => {
     backend,
     runtimeFor: () => runtime,
     getPane: (session) => lifecycle.getPane(session),
+    isReady: (session) => states.isReady(session),
     config: { queueDrainMs: 2000, queueMaxAgeMs: 60_000 },
   });
 

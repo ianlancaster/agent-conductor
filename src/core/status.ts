@@ -37,6 +37,7 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
         paused: state.pause !== undefined,
         tag: state.tag ?? null,
         running: state.running,
+        ready: state.ready,
         activity: state.activity,
         agentProject: state.isAgentProject,
         isSentinel: codename === sentinel,
