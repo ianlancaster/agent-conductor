@@ -129,13 +129,22 @@ describe('tailLines', () => {
 });
 
 describe('agent user-variable encoding', () => {
-  it('round-trips a codename through base64', () => {
-    expect(encodeAgentVar('alpha')).toBe('YWxwaGE=');
-    expect(decodeAgentVar(encodeAgentVar('midgard-12'))).toBe('midgard-12');
+  it('round-trips a codename through base64, scoped by fleet id', () => {
+    expect(encodeAgentVar('fleet-1', 'alpha')).toBe(Buffer.from('fleet-1:alpha').toString('base64'));
+    expect(decodeAgentVar(encodeAgentVar('fleet-1', 'midgard-12'), 'fleet-1')).toBe('midgard-12');
+  });
+
+  it("rejects another fleet's marker", () => {
+    expect(decodeAgentVar(encodeAgentVar('fleet-1', 'alpha'), 'fleet-2')).toBeNull();
+  });
+
+  it('rejects a legacy bare-codename marker (cc-conductor uses the same variable)', () => {
+    expect(decodeAgentVar(Buffer.from('midgard-3').toString('base64'), 'fleet-1')).toBeNull();
   });
 
   it('returns null for an empty value', () => {
-    expect(decodeAgentVar('')).toBeNull();
+    expect(decodeAgentVar('', 'fleet-1')).toBeNull();
+    expect(decodeAgentVar(Buffer.from('fleet-1:').toString('base64'), 'fleet-1')).toBeNull();
   });
 });
 
@@ -157,23 +166,36 @@ describe('parseWindowCreateResult', () => {
 
 describe('parseRediscoveryOutput', () => {
   it('maps decoded codenames to session ids', () => {
-    const raw = [`SESSION-A|${encodeAgentVar('alpha')}`, `SESSION-B|${encodeAgentVar('beta')}`, ''].join('\n');
-    const result = parseRediscoveryOutput(raw);
+    const raw = [`SESSION-A|${encodeAgentVar('f1', 'alpha')}`, `SESSION-B|${encodeAgentVar('f1', 'beta')}`, ''].join(
+      '\n',
+    );
+    const result = parseRediscoveryOutput(raw, 'f1');
     expect(result.size).toBe(2);
     expect(result.get('alpha')).toBe('SESSION-A');
     expect(result.get('beta')).toBe('SESSION-B');
   });
 
+  it("skips other fleets' panes — two conductors share one iTerm instance", () => {
+    const raw = [
+      `SESSION-A|${encodeAgentVar('f1', 'alpha')}`,
+      `SESSION-B|${encodeAgentVar('f2', 'alpha')}`, // same codename, other fleet
+      `SESSION-C|${Buffer.from('midgard-3').toString('base64')}`, // legacy cc-conductor marker
+    ].join('\n');
+    const result = parseRediscoveryOutput(raw, 'f1');
+    expect(result.size).toBe(1);
+    expect(result.get('alpha')).toBe('SESSION-A');
+  });
+
   it('skips malformed and empty lines', () => {
-    const raw = ['garbage-without-pipe', '|', 'SESSION-C|', `SESSION-D|${encodeAgentVar('gamma')}`].join('\n');
-    const result = parseRediscoveryOutput(raw);
+    const raw = ['garbage-without-pipe', '|', 'SESSION-C|', `SESSION-D|${encodeAgentVar('f1', 'gamma')}`].join('\n');
+    const result = parseRediscoveryOutput(raw, 'f1');
     expect(result.size).toBe(1);
     expect(result.get('gamma')).toBe('SESSION-D');
   });
 
   it('returns an empty map for empty input', () => {
-    expect(parseRediscoveryOutput('').size).toBe(0);
-    expect(parseRediscoveryOutput('\n\n').size).toBe(0);
+    expect(parseRediscoveryOutput('', 'f1').size).toBe(0);
+    expect(parseRediscoveryOutput('\n\n', 'f1').size).toBe(0);
   });
 });
 
@@ -189,20 +211,20 @@ describe('script builders', () => {
   });
 
   it('buildCreateAgentWindowScript sets name and the conductor_agent user var', () => {
-    const script = buildCreateAgentWindowScript('alpha', encodeAgentVar('alpha'));
+    const script = buildCreateAgentWindowScript('alpha', encodeAgentVar('f1', 'alpha'));
     expect(script).toContain('set name to "alpha"');
-    expect(script).toContain(`set variable named "${AGENT_USER_VAR}" to "YWxwaGE="`);
+    expect(script).toContain(`set variable named "${AGENT_USER_VAR}" to "${encodeAgentVar('f1', 'alpha')}"`);
   });
 
   it('buildCreateTabScript targets the conductor window and sets the user var', () => {
-    const script = buildCreateTabScript(7, 'beta', encodeAgentVar('beta'));
+    const script = buildCreateTabScript(7, 'beta', encodeAgentVar('f1', 'beta'));
     expect(script).toContain('tell window id 7');
     expect(script).toContain('create tab with default profile');
     expect(script).toContain(`set variable named "${AGENT_USER_VAR}"`);
   });
 
   it('buildSplitPaneScript splits the first tab vertically', () => {
-    const script = buildSplitPaneScript(7, 'gamma', encodeAgentVar('gamma'));
+    const script = buildSplitPaneScript(7, 'gamma', encodeAgentVar('f1', 'gamma'));
     expect(script).toContain('tell window id 7');
     expect(script).toContain('current session of first tab');
     expect(script).toContain('split vertically with default profile');

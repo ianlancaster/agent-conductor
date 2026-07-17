@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ChannelAdapter, ChannelChoice } from '../channels/types.js';
 import { TelegramAdapter } from '../channels/telegram/index.js';
+import { fleetSlug } from '../config/instance.js';
 import { agentConfigDir, loadAgentConfigs, loadSupervisorConfig } from '../config/loader.js';
 import type { AgentConfig, SupervisorConfig } from '../config/schema.js';
 import { ConfigWatcher } from '../config/watcher.js';
@@ -70,15 +71,20 @@ export class Supervisor {
     this.store = new Store(join(dataDir, 'conductor.db'));
     this.states = new AgentStateManager(this.store, this.config.defaults.autonomy);
 
+    const fleetId = fleetSlug(baseDir);
     this.backend =
       this.config.terminal.backend === 'tmux'
         ? new TmuxBackend({
             store: this.store,
-            config: { sessionName: this.config.terminal.tmux.sessionName, windowName: this.config.terminal.windowName },
+            config: {
+              sessionName: this.config.terminal.tmux.sessionName,
+              windowName: this.config.terminal.windowName,
+              fleetId,
+            },
           })
         : new ITermBackend({
             store: this.store,
-            config: { ...this.config.terminal.iterm, windowName: this.config.terminal.windowName },
+            config: { ...this.config.terminal.iterm, windowName: this.config.terminal.windowName, fleetId },
           });
 
     const protocolPath = this.resolveProtocolPath();

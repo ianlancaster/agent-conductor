@@ -25,22 +25,30 @@ describe('parsePaneIds', () => {
 
 describe('parseAgentPanes', () => {
   it('maps marked panes to codenames and skips unmarked panes', () => {
-    const output = '%0 \n%1 midgard-1\n%2\n%3 pr-shepherd\n';
-    const map = parseAgentPanes(output);
+    const output = '%0 \n%1 f1:midgard-1\n%2\n%3 f1:pr-shepherd\n';
+    const map = parseAgentPanes(output, 'f1');
     expect(map.get('midgard-1')).toBe('%1');
     expect(map.get('pr-shepherd')).toBe('%3');
     expect(map.size).toBe(2);
   });
 
+  it("skips other fleets' panes — list-panes -a scans the whole tmux server", () => {
+    const output = '%1 f1:alpha\n%2 f2:alpha\n%3 bare-legacy-marker\n';
+    const map = parseAgentPanes(output, 'f1');
+    expect(map.size).toBe(1);
+    expect(map.get('alpha')).toBe('%1');
+  });
+
   it('lets the last pane win on duplicate codenames', () => {
-    const map = parseAgentPanes('%1 alpha\n%2 alpha\n');
+    const map = parseAgentPanes('%1 f1:alpha\n%2 f1:alpha\n', 'f1');
     expect(map.get('alpha')).toBe('%2');
     expect(map.size).toBe(1);
   });
 
-  it('handles empty output and whitespace-only marker values', () => {
-    expect(parseAgentPanes('').size).toBe(0);
-    expect(parseAgentPanes('%5   \n').size).toBe(0);
+  it('handles empty output, empty codenames, and whitespace-only marker values', () => {
+    expect(parseAgentPanes('', 'f1').size).toBe(0);
+    expect(parseAgentPanes('%5   \n', 'f1').size).toBe(0);
+    expect(parseAgentPanes('%5 f1:\n', 'f1').size).toBe(0);
   });
 });
 

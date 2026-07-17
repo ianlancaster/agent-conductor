@@ -33,6 +33,8 @@ import {
 /** The `terminal.iterm` config slice plus the shared `terminal.windowName`. */
 export interface ITermBackendConfig {
   windowName: string;
+  /** Scopes pane identity markers so rediscovery never adopts another fleet's panes. */
+  fleetId: string;
   autoPauseOnFocus: boolean;
   autoPauseResumeDelaySeconds: number;
   focusCheckMs: number;
@@ -95,12 +97,16 @@ export class ITermBackend implements TerminalBackend {
       this.panes.set(agent, sessionId);
     }
 
-    if (this.windowId !== null && (await this.windowExists(this.windowId))) {
-      log().info('iterm', `Existing conductor window found (id=${this.windowId}) — validating persisted panes`);
-      await this.pruneDeadPanes();
-      return;
+    if (this.windowId !== null) {
+      if (await this.windowExists(this.windowId)) {
+        log().info('iterm', `Existing conductor window found (id=${this.windowId}) — validating persisted panes`);
+      } else {
+        this.windowId = null;
+      }
     }
-    await this.createWorkspaceWindow();
+    await this.pruneDeadPanes();
+    // The workspace window itself is created lazily — an empty window at
+    // startup is just confusing. First pane creation calls ensureWindow().
   }
 
   async focusWindow(): Promise<void> {
@@ -126,7 +132,7 @@ export class ITermBackend implements TerminalBackend {
     }
 
     log().info('iterm', `${agent}: creating ${placement}`);
-    const agentVar = encodeAgentVar(agent);
+    const agentVar = encodeAgentVar(this.config.fleetId, agent);
     let script: string;
     if (placement === 'window') {
       script = buildCreateAgentWindowScript(agent, agentVar);
@@ -216,7 +222,7 @@ export class ITermBackend implements TerminalBackend {
     const result = new Map<string, PaneRef>();
     try {
       const raw = await runOsa(buildRediscoverScript());
-      const found = parseRediscoveryOutput(raw);
+      const found = parseRediscoveryOutput(raw, this.config.fleetId);
       this.panes.clear();
       for (const [agent, sessionId] of found) {
         this.panes.set(agent, sessionId);

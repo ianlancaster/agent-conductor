@@ -78,15 +78,23 @@ export function tailLines(contents: string, lines: number): string {
   return trimmed.split('\n').slice(-lines).join('\n');
 }
 
-/** Encode an agent codename for storage in the iTerm2 user variable. */
-export function encodeAgentVar(codename: string): string {
-  return Buffer.from(codename, 'utf-8').toString('base64');
+/**
+ * Encode `<fleetId>:<codename>` for storage in the iTerm2 user variable. The
+ * fleet id scopes the marker: multiple conductors (and the legacy cc-conductor,
+ * which uses the same variable name with a bare codename) share one iTerm
+ * instance, and rediscovery must only ever adopt this fleet's panes.
+ */
+export function encodeAgentVar(fleetId: string, codename: string): string {
+  return Buffer.from(`${fleetId}:${codename}`, 'utf-8').toString('base64');
 }
 
-/** Decode a stored user-variable value back to a codename; null when empty/invalid. */
-export function decodeAgentVar(value: string): string | null {
+/** Decode a stored user-variable value; null when empty, invalid, or another fleet's. */
+export function decodeAgentVar(value: string, fleetId: string): string | null {
   const decoded = Buffer.from(value, 'base64').toString('utf-8');
-  return decoded.length > 0 ? decoded : null;
+  const prefix = `${fleetId}:`;
+  if (!decoded.startsWith(prefix)) return null;
+  const codename = decoded.slice(prefix.length);
+  return codename.length > 0 ? codename : null;
 }
 
 /** Parse `windowId|sessionId` returned by the create-window script. */
@@ -99,15 +107,16 @@ export function parseWindowCreateResult(raw: string): { windowId: number; sessio
 }
 
 /**
- * Parse rediscovery output: one `sessionId|base64Codename` pair per line.
- * Returns codename -> sessionId. Malformed lines are skipped.
+ * Parse rediscovery output: one `sessionId|base64Marker` pair per line.
+ * Returns codename -> sessionId for THIS fleet's panes only; other fleets'
+ * markers (and malformed lines) are skipped.
  */
-export function parseRediscoveryOutput(raw: string): Map<string, string> {
+export function parseRediscoveryOutput(raw: string, fleetId: string): Map<string, string> {
   const result = new Map<string, string>();
   for (const line of raw.split('\n')) {
     const [sessionId, encoded] = line.trim().split('|');
     if (sessionId === undefined || sessionId === '' || encoded === undefined || encoded === '') continue;
-    const codename = decodeAgentVar(encoded);
+    const codename = decodeAgentVar(encoded, fleetId);
     if (codename !== null) result.set(codename, sessionId);
   }
   return result;
