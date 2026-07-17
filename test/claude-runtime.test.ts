@@ -58,6 +58,21 @@ describe('buildLaunchCommand', () => {
     expect(custom.buildLaunchCommand(session, identity, {})).not.toContain('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC');
   });
 
+  it('strips UI chrome by default (bareUi)', () => {
+    const command = runtime.buildLaunchCommand(session, identity, {});
+    expect(command).toContain(`export IS_DEMO='1'`);
+    expect(command).toContain(`export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION='false'`);
+  });
+
+  it('keeps the full UI when bareUi is disabled', () => {
+    const custom = new ClaudeCodeRuntime({
+      config: { ...defaults.runtimes.claudeCode, bareUi: false },
+    });
+    const command = custom.buildLaunchCommand(session, identity, {});
+    expect(command).not.toContain('IS_DEMO');
+    expect(command).not.toContain('CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION');
+  });
+
   it('passes the session model — the cc-conductor bug fix', () => {
     const command = runtime.buildLaunchCommand({ ...session, model: 'claude-opus-4-6' }, identity, {});
     expect(command).toContain(`--model 'claude-opus-4-6'`);
@@ -118,12 +133,30 @@ describe('prepare', () => {
 
     const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as {
       hooks: Record<string, { hooks: { command: string }[] }[]>;
+      spinnerTipsEnabled?: boolean;
     };
     for (const event of ['Stop', 'Notification', 'PreCompact', 'SessionEnd', 'SessionStart']) {
       const command = settings.hooks[event]?.[0]?.hooks[0]?.command;
       expect(command).toContain(identity.eventsUrl);
       expect(command).toContain('|| true');
     }
+    // bareUi (default) also turns spinner tips off via the same settings file.
+    expect(settings.spinnerTipsEnabled).toBe(false);
+  });
+
+  it('leaves spinner tips alone when bareUi is disabled', async () => {
+    const custom = new ClaudeCodeRuntime({
+      config: {
+        ...defaults.runtimes.claudeCode,
+        bareUi: false,
+        claudeJsonPath: join(configDir, '.claude.json'),
+      },
+    });
+    await custom.prepare(session, identity);
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as {
+      spinnerTipsEnabled?: boolean;
+    };
+    expect(settings.spinnerTipsEnabled).toBeUndefined();
   });
 });
 

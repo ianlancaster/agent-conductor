@@ -145,6 +145,10 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     return {
       CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(this.config.autocompactPct),
       ...(this.config.disableNonessentialTraffic ? { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } : {}),
+      // bareUi: IS_DEMO strips onboarding/startup hints and org chrome from the
+      // TUI; the suggestion var kills spinner prompt suggestions. Spinner tips
+      // are a settings key, handled in buildHookSettings().
+      ...(this.config.bareUi ? { IS_DEMO: '1', CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false' } : {}),
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1',
       CLAUDE_CODE_DISABLE_TERMINAL_TITLE: '1',
@@ -187,6 +191,6 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     for (const event of HOOK_EVENTS) {
       hooks[event] = [{ hooks: [{ type: 'command', command }] }];
     }
-    return { hooks };
+    return { hooks, ...(this.config.bareUi ? { spinnerTipsEnabled: false } : {}) };
   }
 }
