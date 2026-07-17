@@ -44,6 +44,7 @@ beforeEach(() => {
     backend,
     runtimeFor: () => runtime,
     getPane: (a) => lifecycle.getPane(a),
+    isReady: (a) => states.isReady(a),
     config: { queueDrainMs: 2000, queueMaxAgeMs: 60_000 },
   });
   const lifecycle = new Lifecycle({

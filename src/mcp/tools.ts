@@ -57,7 +57,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
   return [
     {
       name: 'send_to_session',
-      description: `Send a message to another session's session. Starts the session if it is not running. ${IDENTITY_NOTE}`,
+      description: `Send a message to another session's pane. Starts the session if it is not running. ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -329,6 +329,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
               autonomy: state?.autonomy ?? null,
               activity: state?.activity ?? null,
               running: state?.running ?? false,
+              ready: state?.ready ?? false,
               tag: state?.tag ?? null,
             },
             null,

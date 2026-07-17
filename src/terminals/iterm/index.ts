@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +12,7 @@ import {
   buildCreateSessionWindowScript,
   buildCreateTabScript,
   buildCreateWindowScript,
+  buildFindTtyWindowScript,
   buildFocusWindowScript,
   buildFocusedSessionScript,
   buildInSessionScript,
@@ -25,7 +27,6 @@ import {
   parseWindowCreateResult,
   runOsa,
   sessionSetup,
-  shellQuote,
   shouldUseBracketedPaste,
   tailLines,
   wrapBracketedPaste,
@@ -61,7 +62,7 @@ const PANES_KEY = 'iterm.panes';
  *  - Panes are tracked by iTerm2 session UUID, searched across ALL windows, so
  *    panes moved to other windows keep working. Only pane creation targets the
  *    conductor window.
- *  - Each session session carries a `user.conductor_session` variable (base64
+ *  - Each session pane carries a `user.conductor_session` variable (base64
  *    codename), set atomically in the creation AppleScript, which is how
  *    rediscover() reattaches after a conductor restart.
  *  - Text delivery always goes through a temp file + `write contents of file`,
@@ -159,14 +160,10 @@ export class ITermBackend implements TerminalBackend {
     this.panes.set(session, sessionId);
     this.persistPanes();
     log().debug('iterm', `${session}: ${placement} created (session=${sessionId.slice(0, 8)})`);
-
-    if (cwd !== undefined) {
-      // The shell starts in the profile's default directory; move it before the
-      // runtime's launch command arrives. Wait for the prompt so the cd is not
-      // swallowed by shell rc-file init.
-      await this.waitForPrompt(sessionId);
-      await this.deliver(sessionId, `cd ${shellQuote(cwd)}`);
-    }
+    // No pre-launch `cd` delivery: every runtime's launch command cds itself,
+    // and a second raced write into a booting shell is how launch commands get
+    // corrupted. `cwd` is honored by backends that can set it at creation.
+    void cwd;
     return { backend: this.name, id: sessionId };
   }
 
@@ -279,12 +276,45 @@ export class ITermBackend implements TerminalBackend {
   /**
    * Existing window → { windowId, seedSessionId: null }. Freshly created →
    * the seed session id is returned exactly once so the caller can claim it.
+   *
+   * Before creating anything, try to adopt the window the conductor console
+   * itself runs in: sessions open beside the console instead of in a separate
+   * window nobody asked for. Only when the conductor is not running inside
+   * iTerm (Terminal.app, daemon, SSH) is a new window created.
    */
   private async ensureWindow(): Promise<{ windowId: number; seedSessionId: string | null }> {
     if (this.windowId !== null && (await this.windowExists(this.windowId))) {
       return { windowId: this.windowId, seedSessionId: null };
     }
+    const adopted = await this.findConsoleWindow();
+    if (adopted !== null) {
+      this.windowId = adopted;
+      this.store.setWorkspaceValue(WINDOW_ID_KEY, adopted);
+      log().info('iterm', `Adopted the conductor console's window as workspace (id=${adopted})`);
+      return { windowId: adopted, seedSessionId: null };
+    }
     return this.createWorkspaceWindow();
+  }
+
+  /** Window id of the iTerm session hosting this process's tty, if any. */
+  private async findConsoleWindow(): Promise<number | null> {
+    let ttyPath: string;
+    try {
+      // `tty` reads fd 0 — resolves the terminal this conductor was started in.
+      ttyPath = execFileSync('tty', [], { stdio: ['inherit', 'pipe', 'ignore'] })
+        .toString()
+        .trim();
+    } catch {
+      return null; // no controlling terminal (daemon, piped stdin)
+    }
+    if (!ttyPath.startsWith('/dev/')) return null;
+    try {
+      const result = (await runOsa(buildFindTtyWindowScript(ttyPath))).trim();
+      const windowId = Number.parseInt(result, 10);
+      return Number.isNaN(windowId) ? null : windowId;
+    } catch {
+      return null;
+    }
   }
 
   private async windowExists(windowId: number): Promise<boolean> {

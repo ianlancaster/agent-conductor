@@ -95,6 +95,7 @@ export class Supervisor {
       backend: this.backend,
       runtimeFor: (session) => this.runtimeFor(session),
       getPane: (session) => this.lifecycle.getPane(session),
+      isReady: (session) => this.states.isReady(session),
       config: this.config.messaging,
     });
 
@@ -364,7 +365,11 @@ export class Supervisor {
     const parsed = runtime.parseEvent(body);
     if (parsed === null) return;
     log().debug('events', `${session}: ${parsed.type}${parsed.reason !== undefined ? ` (${parsed.reason})` : ''}`);
+    // Any lifecycle event proves the runtime process is up — unblock queued
+    // deliveries that were held to protect the launch command.
+    this.states.setReady(session);
     this.health.handleEvent({ ...parsed, session, receivedAt: Date.now() });
+    void this.delivery.drainNow();
   }
 
   private async connectChannels(): Promise<void> {

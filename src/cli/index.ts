@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
@@ -50,6 +50,11 @@ program
         `[unhandledRejection] ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}\n`,
       );
     });
+
+    // Name the console's terminal tab/window — otherwise it just shows "node".
+    if (process.stdout.isTTY) {
+      process.stdout.write(`]0;conductor — ${basename(baseDir())}`);
+    }
 
     const supervisor = new Supervisor(baseDir());
     await supervisor.start({ startAll: opts.startAll ?? false });

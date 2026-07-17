@@ -104,6 +104,23 @@ describe('containsPromptMarker', () => {
     expect(containsPromptMarker('Loading nvm...')).toBe(false);
     expect(containsPromptMarker('')).toBe(false);
   });
+
+  it('ignores stale prompts in scrollback — only the LAST line counts', () => {
+    // The launch-corruption bug: a prompt higher up satisfied the whole-capture
+    // check while the shell was still executing, and the launch command was
+    // typed into raw canonical-mode input (literal ^[[200~, 1024-byte cutoff).
+    expect(containsPromptMarker('ian@mac ~ ==> cd /tmp/repo\nCloning into repo...')).toBe(false);
+    expect(containsPromptMarker('~ ==> \nrunning launch command')).toBe(false);
+    expect(containsPromptMarker('scrollback text\nian@mac repo ==> ')).toBe(true);
+  });
+
+  it('ignores trailing blank lines from the capture', () => {
+    expect(containsPromptMarker('user@host %\n\n\n')).toBe(true);
+  });
+
+  it('does not mistake progress percentages for a zsh prompt', () => {
+    expect(containsPromptMarker('receiving objects: 42%')).toBe(false);
+  });
 });
 
 describe('tailLines', () => {

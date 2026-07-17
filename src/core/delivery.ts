@@ -14,6 +14,12 @@ export interface DeliveryDeps {
   backend: TerminalBackend;
   runtimeFor(session: string): SessionRuntime | undefined;
   getPane(session: string): PaneRef | undefined;
+  /**
+   * Whether the session's runtime has proven it is up (first lifecycle event).
+   * Until then nothing is typed into the pane — a message racing the launch
+   * command splices into the shell line and corrupts it.
+   */
+  isReady(session: string): boolean;
   config: {
     queueDrainMs: number;
     queueMaxAgeMs: number;
@@ -38,7 +44,7 @@ export class DeliveryQueue {
     if (pane === undefined) return 'no-pane';
 
     const existing = this.queues.get(session);
-    if ((existing === undefined || existing.length === 0) && (await this.isInputClear(session, pane))) {
+    if ((existing === undefined || existing.length === 0) && (await this.isSafeToType(session, pane))) {
       try {
         await this.deps.backend.run(pane, text);
         return 'delivered';
@@ -94,7 +100,7 @@ export class DeliveryQueue {
       }
       const oldest = queue[0];
       const overdue = oldest !== undefined && Date.now() - oldest.queuedAt >= this.deps.config.queueMaxAgeMs;
-      if (overdue || (await this.isInputClear(session, pane))) {
+      if (overdue || (await this.isSafeToType(session, pane))) {
         if (overdue) log().debug('delivery', `${session}: force-delivering ${queue.length} overdue message(s)`);
         for (const message of queue) {
           try {
@@ -118,18 +124,22 @@ export class DeliveryQueue {
   }
 
   /**
-   * Whether it is safe to type into the pane. Unknown (no runtime, capture
-   * failure, no visible input line) is treated as clear — matching cc-conductor:
-   * only a definitively busy input line queues.
+   * Whether it is safe to type into the pane.
+   *
+   * Visible runtime chrome (parseInputClear returns a boolean) proves the
+   * process is up — its input state decides. NO chrome (null) means the pane
+   * may still be a shell executing the launch command, where typed text
+   * splices into the command line and corrupts it — then only the event-based
+   * ready flag (first lifecycle event received) makes typing safe.
    */
-  private async isInputClear(session: string, pane: PaneRef): Promise<boolean> {
+  private async isSafeToType(session: string, pane: PaneRef): Promise<boolean> {
     const runtime = this.deps.runtimeFor(session);
-    if (runtime === undefined) return true;
+    if (runtime === undefined) return this.deps.isReady(session);
     try {
       const capture = await this.deps.backend.capture(pane, 10);
-      return runtime.parseInputClear(capture) ?? true;
+      return runtime.parseInputClear(capture) ?? this.deps.isReady(session);
     } catch {
-      return true;
+      return this.deps.isReady(session);
     }
   }
 
