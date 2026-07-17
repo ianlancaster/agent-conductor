@@ -89,7 +89,10 @@ async function sendCommand(line: string): Promise<string> {
 /** The interactive conductor> REPL. Resolves when the operator exits. */
 function runConsole(): Promise<void> {
   return new Promise((resolveDone) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: 'conductor> ' });
+    // Red prompt (Node's readline strips VT escapes when measuring width, so
+    // ANSI in the prompt does not break cursor math). Plain when not a TTY.
+    const prompt = process.stdout.isTTY ? '[31mconductor>[39m ' : 'conductor> ';
+    const rl = createInterface({ input: process.stdin, output: process.stdout, prompt });
     rl.prompt();
     rl.on('line', (line) => {
       const trimmed = line.trim();
