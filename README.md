@@ -99,6 +99,8 @@ Same language everywhere (`conductor console`, `conductor cmd`, Telegram):
 /auto <session|all>          /pause | /resume <session|all>
 /facilitated <session|all>   /tag <session> [text]
 /spawn <name> [--worktree <repo>] [--branch <b>] [--model m] [--prompt "…"]
+                             # dir: spawn.dirPattern, default ./<name> inside the
+                             # fleet dir ('../{codename}' makes them siblings)
 /teardown <name> [--delete]
 /autopause [on|off]
 ```
