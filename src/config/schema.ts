@@ -153,8 +153,8 @@ export const supervisorConfigSchema = z.object({
     .default({}),
   spawn: z
     .object({
-      /** Directory pattern for spawned sessions; {codename} is substituted. */
-      dirPattern: z.string().default('../{codename}'),
+      /** Directory pattern for spawned sessions, relative to the fleet dir; {codename} is substituted. */
+      dirPattern: z.string().default('./{codename}'),
       /** Marker file that flags a repo as an agent project (display-only 🤖). */
       markerFile: z.string().default('.conductor-agent'),
     })
