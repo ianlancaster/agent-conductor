@@ -6,6 +6,7 @@ import { log } from '../../logger.js';
 import {
   SESSION_OPTION,
   buildCreatePaneArgs,
+  buildCreateSessionArgs,
   buildDeliveryCommands,
   encodeSessionOption,
   hasShellPrompt,
@@ -59,23 +60,32 @@ export class TmuxBackend implements TerminalBackend {
     this.fleetId = opts.config.fleetId;
   }
 
-  /** Create the detached session if it does not already exist. */
   async init(): Promise<void> {
+    // The detached tmux session is created lazily by the first createPane():
+    // creating it here would leave an unexplained empty shell pane, since a
+    // tmux session cannot exist without one.
+  }
+
+  async createPane(session: string, placement: Placement, cwd?: string): Promise<PaneRef> {
     // `=name` forces an EXACT session match. Without it, tmux prefix-matches, so
     // `has-session -t conductor` would find a user's `conductor-dev` session and
     // we'd inject session panes into it.
     const exists = await tmuxSucceeds(['has-session', '-t', `=${this.sessionName}`]);
+    let paneId: string;
     if (exists) {
-      log().debug('tmux', `session '${this.sessionName}' already exists`);
-      return;
+      const args = buildCreatePaneArgs({ placement, sessionName: this.sessionName, session, cwd });
+      paneId = (await tmux(args)).trim();
+    } else {
+      // First pane: create the tmux session and claim its unavoidable initial
+      // pane, so the workspace never carries an empty shell.
+      const spec = {
+        sessionName: this.sessionName,
+        windowName: placement === 'pane' ? this.windowName : session,
+        ...(cwd !== undefined ? { cwd } : {}),
+      };
+      paneId = (await tmux(buildCreateSessionArgs(spec))).trim();
+      log().info('tmux', `created detached session '${this.sessionName}'`);
     }
-    await tmux(['new-session', '-d', '-s', this.sessionName, '-n', this.windowName]);
-    log().info('tmux', `created detached session '${this.sessionName}'`);
-  }
-
-  async createPane(session: string, placement: Placement, cwd?: string): Promise<PaneRef> {
-    const args = buildCreatePaneArgs({ placement, sessionName: this.sessionName, session, cwd });
-    const paneId = (await tmux(args)).trim();
     if (!paneId.startsWith('%')) {
       throw new Error(`tmux returned an unexpected pane id for session '${session}': '${paneId}'`);
     }
