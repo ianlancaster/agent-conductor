@@ -11,6 +11,7 @@ import {
   buildListSessionIdsScript,
   buildRediscoverScript,
   buildSplitPaneScript,
+  buildTitleShellPrefix,
   buildWindowExistsScript,
   containsPromptMarker,
   decodeSessionVar,
@@ -163,6 +164,25 @@ describe('session user-variable encoding', () => {
   it('returns null for an empty value', () => {
     expect(decodeSessionVar('', 'fleet-1')).toBeNull();
     expect(decodeSessionVar(Buffer.from('fleet-1:').toString('base64'), 'fleet-1')).toBeNull();
+  });
+});
+
+describe('buildTitleShellPrefix', () => {
+  it('emits an OSC 0 title printf (badge off)', () => {
+    const prefix = buildTitleShellPrefix('tester', false);
+    expect(prefix).toBe(`printf '\\033]0;tester\\a'`);
+  });
+
+  it('adds the base64 badge printf when the badge is enabled', () => {
+    const prefix = buildTitleShellPrefix('tester — self-test', true);
+    expect(prefix).toContain(`printf '\\033]0;tester — self-test\\a'`);
+    expect(prefix).toContain(
+      `printf '\\033]1337;SetBadgeFormat=${Buffer.from('tester — self-test').toString('base64')}\\a'`,
+    );
+  });
+
+  it('escapes single quotes in the display name', () => {
+    expect(buildTitleShellPrefix("it's", false)).toBe(`printf '\\033]0;it'\\''s\\a'`);
   });
 });
 

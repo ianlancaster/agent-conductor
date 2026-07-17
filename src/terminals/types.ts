@@ -40,8 +40,15 @@ export interface TerminalBackend {
 
   kill(pane: PaneRef): Promise<void>;
 
-  /** Rename the pane's visible label. Conductor passes the codename only. */
+  /** Rename the pane's visible label. Conductor passes `codename` or `codename — tag`. */
   rename(pane: PaneRef, name: string): Promise<void>;
+
+  /**
+   * Optional shell snippet prepended to the runtime launch command so the pane
+   * titles itself from inside the command line (immune to the shell's own
+   * title escape — last writer wins).
+   */
+  titleShellPrefix?(displayName: string): string;
 
   /** Map of session codename -> surviving pane, discovered after a conductor restart. */
   rediscover(): Promise<Map<string, PaneRef>>;

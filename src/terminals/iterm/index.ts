@@ -20,6 +20,7 @@ import {
   buildListSessionIdsScript,
   buildRediscoverScript,
   buildSplitPaneScript,
+  buildTitleShellPrefix,
   buildWindowExistsScript,
   containsPromptMarker,
   encodeSessionVar,
@@ -223,6 +224,10 @@ export class ITermBackend implements TerminalBackend {
       log().warn('iterm', `${pane.id.slice(0, 8)}: close failed: ${String(err)}`);
     }
     this.forgetSession(pane.id);
+  }
+
+  titleShellPrefix(displayName: string): string {
+    return buildTitleShellPrefix(displayName, this.config.badge);
   }
 
   async rename(pane: PaneRef, name: string): Promise<void> {

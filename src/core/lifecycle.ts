@@ -119,11 +119,15 @@ export class Lifecycle {
         prompt: opts.prompt,
         continueSession: opts.continueSession ?? false,
       });
-      await this.deps.backend.launch(pane, command);
-      // Rename AFTER launch: shells emit a title escape when the command is
-      // submitted (showing "node"), which overwrites a name set earlier. The
-      // runtime itself is told not to touch the title, so this one sticks.
-      await this.deps.backend.rename(pane, codename);
+      // Title the pane from INSIDE the launch command (cc-conductor pattern):
+      // the shell's own preexec title escape fires first, then this prefix,
+      // then the runtime (titles disabled) — last writer wins, no race.
+      const tag = this.deps.states.getTag(codename);
+      const displayName = tag !== undefined && tag.length > 0 ? `${codename} — ${tag}` : codename;
+      const prefix = this.deps.backend.titleShellPrefix?.(displayName);
+      await this.deps.backend.launch(pane, prefix !== undefined ? `${prefix} && ${command}` : command);
+      // Backends without a title prefix (tmux) label the pane directly.
+      if (prefix === undefined) await this.deps.backend.rename(pane, displayName);
     } catch (err) {
       // Don't leak the pane we just opened if launch setup fails.
       this.panes.delete(codename);
