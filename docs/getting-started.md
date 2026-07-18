@@ -65,7 +65,7 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
 
    ```
    /start alpha            # opens a pane, launches `claude` in your repo
-   /status                 # 🟢 alpha [facilitated]
+   /status                 # "Sessions:" then "  alpha · 🟢 working"
    /tell alpha summarize what this project does
    /tail alpha 40          # see the session's pane contents
    /stop alpha

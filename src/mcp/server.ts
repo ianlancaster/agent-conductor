@@ -52,7 +52,7 @@ export class ConductorMcpServer {
         if (!res.headersSent) this.respondJson(res, 500, { error: 'internal error' });
       });
     });
-    // Long-running tool calls (consults, human input) must not be killed by timeouts.
+    // Long-running tool calls (session launches, consults) must not be killed by timeouts.
     this.server.headersTimeout = 0;
     this.server.requestTimeout = 0;
     this.server.timeout = 0;
