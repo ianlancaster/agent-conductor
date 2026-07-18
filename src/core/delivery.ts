@@ -7,14 +7,19 @@ export type DeliveryResult = 'delivered' | 'queued' | 'no-pane';
 
 /**
  * What the pane tells us about typing into it right now.
- * - `clear`  — the runtime's input line is visibly empty (or unknowable but the
- *   session has proven it is up); typing is safe.
- * - `busy`   — the runtime is on screen but its input line has content.
- * - `not-up` — no runtime chrome visible AND no lifecycle event yet: the pane
- *   may still be a shell executing the launch command, where typed text
+ * - `clear`    — the runtime's input line is visibly empty (or unknowable but
+ *   the session has proven it is up); typing is safe.
+ * - `operator` — the input line holds UNSIGNED content: a human is composing.
+ *   Never type — our deliveries end with Enter, which would submit the
+ *   operator's half-typed message. Not even overdue messages go out; the
+ *   queue releases the moment the line clears (submitted or deleted).
+ * - `busy`     — the input line holds one of the conductor's own unsubmitted
+ *   envelopes; overdue force-delivery may proceed.
+ * - `not-up`   — no runtime chrome visible AND no lifecycle event yet: the
+ *   pane may still be a shell executing the launch command, where typed text
  *   splices into the command line and corrupts it. Never type, even overdue.
  */
-type TypingState = 'clear' | 'busy' | 'not-up';
+type TypingState = 'clear' | 'operator' | 'busy' | 'not-up';
 
 interface QueuedMessage {
   text: string;
@@ -41,13 +46,16 @@ export interface DeliveryDeps {
  * Typing-aware message delivery. If the session's input line has content (the
  * operator is mid-composition, or another message is queued in the TUI), the
  * message is held and retried every `queueDrainMs`, force-delivered after
- * `queueMaxAgeMs` so nothing is silently lost. Two hard rules:
+ * `queueMaxAgeMs` so nothing is silently lost. Three hard rules:
  *
  * - Queued messages drain ONE per pass, not as a burst — back-to-back
  *   paste+Enter sequences have been observed to leave the later messages
  *   concatenated and UNSUBMITTED in the runtime's composer.
- * - Overdue force-delivery overrides a busy input line, never a booting pane
- *   (`not-up`): typing over the launch command corrupts it.
+ * - An operator draft is NEVER typed over, no matter how overdue the queue
+ *   is. Everything waits behind it and releases as soon as the input clears.
+ * - Overdue force-delivery overrides only a stuck conductor envelope
+ *   (`busy`), never a booting pane (`not-up`): typing over the launch
+ *   command corrupts it.
  */
 export class DeliveryQueue {
   private readonly queues = new Map<string, QueuedMessage[]>();
@@ -122,6 +130,10 @@ export class DeliveryQueue {
       }
       const state = await this.typingState(session, pane);
       if (state === 'not-up') continue;
+      if (state === 'operator') {
+        log().debug('delivery', `${session}: operator is composing — holding ${queue.length} message(s)`);
+        continue;
+      }
       const overdue = Date.now() - oldest.queuedAt >= this.deps.config.queueMaxAgeMs;
       if (state === 'clear' || overdue) {
         if (state !== 'clear') log().debug('delivery', `${session}: force-delivering overdue message`);
@@ -149,10 +161,11 @@ export class DeliveryQueue {
   }
 
   /**
-   * Classify the pane for typing. Visible runtime chrome (parseInputClear
-   * returns a boolean) proves the process is up — its input state decides
-   * clear vs busy. NO chrome (null, or capture failure) falls back to the
-   * event-based ready flag: ready → clear, otherwise `not-up`.
+   * Classify the pane for typing. Visible runtime chrome (parseInputState
+   * returns non-null) proves the process is up — the draft's signature (or
+   * absence of one) decides whose content is in the way. NO chrome (null, or
+   * capture failure) falls back to the event-based ready flag: ready → clear,
+   * otherwise `not-up`.
    */
   private async typingState(session: string, pane: PaneRef): Promise<TypingState> {
     const runtime = this.deps.runtimeFor(session);
@@ -160,9 +173,10 @@ export class DeliveryQueue {
     if (runtime === undefined) return fallback();
     try {
       const capture = await this.deps.backend.capture(pane, 10);
-      const clear = runtime.parseInputClear(capture, session);
-      if (clear === null) return fallback();
-      return clear ? 'clear' : 'busy';
+      const state = runtime.parseInputState(capture, session);
+      if (state === null) return fallback();
+      if (state === 'clear') return 'clear';
+      return state === 'operator-draft' ? 'operator' : 'busy';
     } catch {
       return fallback();
     }

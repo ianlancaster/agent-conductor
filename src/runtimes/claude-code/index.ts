@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import type { RuntimeEvent } from '../../core/types.js';
 import { shellQuote } from '../../core/shell.js';
-import type { SessionRuntime, IdentityEndpoints, LaunchOptions, RuntimeCapabilities } from '../types.js';
-import { parseClaudeInputClear, stripClaudeChrome } from './chrome.js';
+import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
+import { parseClaudeInputState, stripClaudeChrome } from './chrome.js';
 import { readLastAssistantMessage } from './transcript.js';
 
 type ClaudeCodeConfig = SupervisorConfig['runtimes']['claudeCode'];
@@ -113,8 +113,8 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     return parts.join(' && ');
   }
 
-  parseInputClear(capture: string): boolean | null {
-    return parseClaudeInputClear(capture);
+  parseInputState(capture: string): InputState {
+    return parseClaudeInputState(capture);
   }
 
   stripChrome(capture: string): string {

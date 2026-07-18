@@ -3,6 +3,7 @@ import type { RuntimeEvent } from '../../src/core/types.js';
 import type {
   SessionRuntime,
   IdentityEndpoints,
+  InputState,
   LaunchOptions,
   RuntimeCapabilities,
 } from '../../src/runtimes/types.js';
@@ -15,8 +16,8 @@ export class FakeRuntime implements SessionRuntime {
   readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: false };
 
   readonly prepared: { session: SessionConfig; identity: IdentityEndpoints }[] = [];
-  /** Controls parseInputClear; set to false to simulate the operator typing. */
-  inputClear: boolean | null = true;
+  /** Controls parseInputState; set to 'operator-draft' to simulate the operator typing. */
+  inputState: InputState = 'clear';
   readonly transcripts = new Map<string, string>();
 
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
@@ -30,8 +31,8 @@ export class FakeRuntime implements SessionRuntime {
     return parts.join(' ');
   }
 
-  parseInputClear(_capture: string): boolean | null {
-    return this.inputClear;
+  parseInputState(_capture: string): InputState {
+    return this.inputState;
   }
 
   stripChrome(capture: string): string {

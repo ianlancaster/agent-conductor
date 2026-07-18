@@ -1,3 +1,6 @@
+import { ENVELOPE_SIGNATURE } from '../../core/utils.js';
+import type { InputState } from '../types.js';
+
 /** Claude Code TUI chrome patterns — lines stripped from pane captures before judgment. */
 const CHROME_PATTERNS: RegExp[] = [
   /bypass permissions/i,
@@ -33,13 +36,13 @@ export function stripClaudeChrome(capture: string): string {
 const GHOST_TEXT_PATTERN = /^Try ["“'].*["”']( to .*)?$/;
 
 /**
- * Whether the Claude Code input line is empty.
- * Looks at the LAST prompt-glyph line in the capture; text after the glyph
- * means the operator (or a queued message) is mid-composition — unless it is
- * the placeholder ghost text, which only appears when the input is empty.
- * Returns null when no input line is visible.
+ * Classify the Claude Code input line. Looks at the LAST prompt-glyph line
+ * in the capture: empty (or the placeholder ghost text, which only appears
+ * when the input is empty) is clear; a draft bearing a conductor envelope
+ * signature is one of our own unsubmitted deliveries; any other draft is
+ * the operator mid-composition. Null when no input line is visible.
  */
-export function parseClaudeInputClear(capture: string): boolean | null {
+export function parseClaudeInputState(capture: string): InputState {
   const lines = capture.split('\n');
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i];
@@ -50,7 +53,8 @@ export function parseClaudeInputClear(capture: string): boolean | null {
       .slice(glyphIndex + 1)
       .replace(/[│┃|]/g, '')
       .trim();
-    return afterGlyph.length === 0 || GHOST_TEXT_PATTERN.test(afterGlyph);
+    if (afterGlyph.length === 0 || GHOST_TEXT_PATTERN.test(afterGlyph)) return 'clear';
+    return ENVELOPE_SIGNATURE.test(afterGlyph) ? 'conductor-draft' : 'operator-draft';
   }
   return null;
 }
