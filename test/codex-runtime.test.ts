@@ -361,6 +361,94 @@ describe('parseInputState', () => {
   });
 });
 
+describe('parseInputState — styled captures (tmux -e)', () => {
+  // Byte-for-byte from a live `tmux capture-pane -e` of Codex 0.144.x:
+  // composer glyph is bold, transcript glyph bold+dim, ghost hint dim.
+  const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
+  const BOLD_GLYPH = '\u001b[1m›\u001b[0m';
+
+  it('detects the dim ghost hint as an EMPTY composer — no learning involved', () => {
+    const capture = `${BOLD_GLYPH} \u001b[2mImplement {feature}\u001b[0m`;
+    // No session passed: styling alone decides — the plain path would say operator-draft.
+    expect(runtime.parseInputState(capture)).toBe('clear');
+  });
+
+  it('classifies unstyled content as an operator draft', () => {
+    expect(runtime.parseInputState(`${BOLD_GLYPH} hello this is my draft`, 'alpha')).toBe('operator-draft');
+  });
+
+  it('never learns operator text as a ghost hint (the restart-clobber bug)', () => {
+    const fresh = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
+    // A restarted conductor sees the operator's draft FIRST — with styling it
+    // must classify, not learn.
+    expect(fresh.parseInputState(`${BOLD_GLYPH} my precious draft`, 'alpha')).toBe('operator-draft');
+    // …and the real ghost hint later is still recognized as clear.
+    expect(fresh.parseInputState(`${BOLD_GLYPH} \u001b[2mImplement {feature}\u001b[0m`, 'alpha')).toBe('clear');
+    // …and the draft is STILL an operator draft afterwards.
+    expect(fresh.parseInputState(`${BOLD_GLYPH} my precious draft`, 'alpha')).toBe('operator-draft');
+  });
+
+  it('recognizes a stuck conductor envelope in the live composer', () => {
+    const capture = `${BOLD_GLYPH} [Message from operator] test envelope`;
+    expect(runtime.parseInputState(capture, 'alpha')).toBe('conductor-draft');
+  });
+
+  it('treats a dim-glyph ›-row as transcript history (composer hidden)', () => {
+    const capture = '\u001b[1;2m› \u001b[0m[Message from operator] test envelope';
+    expect(runtime.parseInputState(capture, 'alpha')).toBeNull();
+  });
+
+  it('reports clear for an empty styled composer', () => {
+    expect(runtime.parseInputState(`${BOLD_GLYPH} \n  \u001b[2m⏎ send\u001b[0m`, 'alpha')).toBe('clear');
+  });
+
+  it('does not mistake extended-color components for the dim attribute', () => {
+    // 38;5;2 is a green FOREGROUND, not dim — this is typed text.
+    const capture = `${BOLD_GLYPH} \u001b[38;5;2mgreen typed text\u001b[0m`;
+    expect(runtime.parseInputState(capture, 'alpha')).toBe('operator-draft');
+  });
+});
+
+describe('ghost-hint persistence (plain-capture fallback)', () => {
+  let baseDir: string;
+
+  beforeEach(async () => {
+    baseDir = await mkdtemp(path.join(tmpdir(), 'codex-ghosts-'));
+  });
+
+  afterEach(async () => {
+    await rm(baseDir, { recursive: true, force: true });
+  });
+
+  it('a learned hint survives a conductor restart (new runtime instance)', async () => {
+    const first = new CodexRuntime({ config: SETTINGS, baseDir });
+    expect(first.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
+
+    // "Restart": a fresh instance over the same fleet dir. Without persistence
+    // it would learn whatever it sees first — including an operator draft.
+    const restarted = new CodexRuntime({ config: SETTINGS, baseDir });
+    expect(restarted.parseInputState('› my half-typed operator draft', 'alpha')).toBe('operator-draft');
+    expect(restarted.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
+  });
+
+  it('prepare() forgets the hint on disk too — a relaunch rolls a new one', async () => {
+    const first = new CodexRuntime({ config: SETTINGS, baseDir });
+    expect(first.parseInputState('› Old hint text', 'alpha')).toBe('clear');
+
+    const repo = path.join(baseDir, 'repo');
+    await mkdir(repo, { recursive: true });
+    await first.prepare({ codename: 'alpha', repo, runtime: 'codex', additionalDirs: [], schedules: [] } as never, {
+      mcpUrl: 'http://x/mcp/alpha',
+      eventsUrl: 'http://x/events/alpha',
+      configDir: path.join(baseDir, 'cfg'),
+    });
+
+    const relaunched = new CodexRuntime({ config: SETTINGS, baseDir });
+    // Unknown again — the next non-empty content is learned as the NEW hint.
+    expect(relaunched.parseInputState('› New hint text', 'alpha')).toBe('clear');
+  });
+});
+
 describe('stripChrome', () => {
   const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
 

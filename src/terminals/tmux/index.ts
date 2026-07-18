@@ -174,6 +174,13 @@ export class TmuxBackend implements TerminalBackend {
     return trimToTrailingLines(output, lines);
   }
 
+  /** capture() with ANSI styling retained (`-e`) — see TerminalBackend.captureStyled. */
+  async captureStyled(pane: PaneRef, lines: number): Promise<string> {
+    this.assertRef(pane);
+    const output = await tmux(['capture-pane', '-p', '-e', '-t', pane.id, '-S', `-${lines}`]);
+    return trimToTrailingLines(output, lines);
+  }
+
   async isAlive(pane: PaneRef): Promise<boolean> {
     this.assertRef(pane);
     try {

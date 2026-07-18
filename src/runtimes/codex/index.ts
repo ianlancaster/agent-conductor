@@ -1,6 +1,8 @@
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { ENVELOPE_SIGNATURE } from '../../core/utils.js';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import type { RuntimeEvent } from '../../core/types.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
@@ -50,12 +52,61 @@ const CHROME_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
- * Envelope prefixes the conductor itself types into sessions. Codex echoes
- * submitted messages into the transcript with the same `›` prefix as the
- * composer, so a ›-row carrying one of OUR envelopes is delivery history, not
- * operator typing. These prefixes are conductor constants — not Codex UI text.
+ * One visible character of a styled capture line, with whether the SGR dim
+ * attribute (2) was active where it rendered.
  */
-const DELIVERED_ENVELOPE = /^\[(?:Message|Broadcast) from /u;
+interface StyledChar {
+  ch: string;
+  dim: boolean;
+}
+
+/**
+ * Apply one SGR parameter list to the dim flag. Extended-color introducers
+ * (38/48/58) consume their arguments so a color component like `38;5;2`
+ * can never read as the dim attribute.
+ */
+function applySgrParams(params: string, dim: boolean): boolean {
+  const parts = params.length === 0 ? ['0'] : params.split(';');
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i] ?? '';
+    const code = part.split(':')[0] ?? '';
+    if (code === '38' || code === '48' || code === '58') {
+      if (part.includes(':')) continue; // colon form carries its args in this part
+      const mode = parts[i + 1];
+      i += mode === '2' ? 4 : mode === '5' ? 2 : 0;
+      continue;
+    }
+    if (code === '' || code === '0') dim = false;
+    else if (code === '2') dim = true;
+    else if (code === '22') dim = false;
+  }
+  return dim;
+}
+
+/** Split a styled line into visible chars + their dim state, and its plain text. */
+function parseStyledLine(line: string): { plain: string; chars: StyledChar[] } {
+  const chars: StyledChar[] = [];
+  let dim = false;
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === '\u001b') {
+      // Parse the CSI sequence after the ESC byte by hand (an ESC inside a
+      // regex trips no-control-regex): `[`, params, then one final byte.
+      if (line[i + 1] !== '[') {
+        i += 1; // lone/unknown escape — skip the ESC byte
+        continue;
+      }
+      const body = /^[0-9;:?]*/.exec(line.slice(i + 2))?.[0] ?? '';
+      const final = line[i + 2 + body.length] ?? '';
+      if (final === 'm') dim = applySgrParams(body, dim);
+      i += 2 + body.length + final.length;
+      continue;
+    }
+    chars.push({ ch: line[i] ?? '', dim });
+    i += 1;
+  }
+  return { plain: chars.map((c) => c.ch).join(''), chars };
+}
 
 /**
  * Rows that may legitimately render BELOW the composer: the status footer
@@ -135,7 +186,7 @@ function assistantTextFromRolloutLine(line: unknown): string | null {
  */
 export class CodexRuntime implements SessionRuntime {
   readonly name = 'codex';
-  readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: false };
+  readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: false, styledCapture: true };
 
   private readonly settings: CodexRuntimeSettings;
   private readonly baseDir: string;
@@ -148,8 +199,9 @@ export class CodexRuntime implements SessionRuntime {
   }
 
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
-    // A relaunch rolls a fresh composer ghost hint — forget the old one.
-    this.ghostText.delete(session.codename);
+    // A relaunch rolls a fresh composer ghost hint — forget the old one
+    // (in memory AND on disk; a stale persisted hint would misread the new one).
+    this.forgetGhost(session.codename);
     const repo = this.resolvePath(session.repo);
     await mkdir(identity.configDir, { recursive: true });
     await writeFile(this.notifyScriptPath(identity), renderNotifyScript(identity.eventsUrl), { mode: 0o755 });
@@ -207,27 +259,101 @@ export class CodexRuntime implements SessionRuntime {
   }
 
   /**
-   * An EMPTY Codex composer shows ghost-text hints ("Use /skills to list
-   * available skills", …) drawn from a pool that is hardcoded upstream — no
-   * config disables it, and the pool drifts across versions, so pattern-matching
-   * it is a losing game. Instead: Codex picks ONE hint per launch and never
-   * changes it, so the first non-empty composer content seen for a session IS
-   * that session's ghost text. Learn it, then treat only *different* content as
-   * operator typing. prepare() resets the memory on every (re)launch.
+   * PLAIN-CAPTURE FALLBACK ONLY (iTerm — its AppleScript capture drops
+   * styling). An EMPTY Codex composer shows ghost-text hints ("Use /skills to
+   * list available skills", …) drawn from a pool that is hardcoded upstream —
+   * no config disables it. On styled captures (tmux) the hint is detected
+   * DETERMINISTICALLY by its dim rendering and this map is never consulted.
+   * Without styling: Codex picks ONE hint per launch and never changes it, so
+   * the first non-empty composer content seen for a session is taken as that
+   * session's ghost text. The map is persisted to disk so a conductor restart
+   * cannot re-learn — mis-learning an operator draft as the hint is exactly
+   * the clobber bug. prepare() resets the entry on every (re)launch.
    */
   private readonly ghostText = new Map<string, string>();
+  private ghostsLoaded = false;
+
+  private ghostFilePath(): string {
+    return path.join(this.baseDir, 'data', 'codex-ghost-hints.json');
+  }
+
+  private knownGhost(session: string): string | undefined {
+    if (!this.ghostsLoaded) {
+      this.ghostsLoaded = true;
+      try {
+        const raw = JSON.parse(readFileSync(this.ghostFilePath(), 'utf8')) as Record<string, unknown>;
+        for (const [codename, hint] of Object.entries(raw)) {
+          if (typeof hint === 'string' && !this.ghostText.has(codename)) this.ghostText.set(codename, hint);
+        }
+      } catch {
+        // No file yet (or unreadable) — nothing learned before.
+      }
+    }
+    return this.ghostText.get(session);
+  }
+
+  private learnGhost(session: string, hint: string): void {
+    this.ghostText.set(session, hint);
+    this.persistGhosts();
+  }
+
+  private forgetGhost(session: string): void {
+    this.ghostText.delete(session);
+    this.persistGhosts();
+  }
+
+  private persistGhosts(): void {
+    try {
+      mkdirSync(path.dirname(this.ghostFilePath()), { recursive: true });
+      writeFileSync(this.ghostFilePath(), `${JSON.stringify(Object.fromEntries(this.ghostText), null, 2)}\n`);
+    } catch (err) {
+      log().debug('codex', `could not persist ghost hints: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   /**
    * The composer is the `›` row sitting directly above the footer/hint chrome.
-   * Empty, or showing this session's learned ghost hint, means clear; other
-   * content means the operator is typing (never type over it — our deliveries
-   * end with Enter and would submit the operator's draft). A ›-row bearing a
-   * conductor envelope signature is indistinguishable from a TRANSCRIPT echo
-   * of a past delivery (Codex renders both with `›`), and a bottom content row
-   * that is not a ›-row means the composer is not visible — both are null
-   * (cannot determine; delivery falls back to the readiness gate).
+   * Styled captures (tmux `-e`) make classification DETERMINISTIC — Codex's
+   * own rendering distinguishes every case (verified against 0.144.x):
+   *
+   *   composer glyph   `ESC[1m›ESC[0m`      bold          — the live input line
+   *   transcript glyph `ESC[1;2m› ESC[0m`   bold+dim      — history echo, composer hidden
+   *   ghost hint       `ESC[2m…ESC[0m`      dim content   — EMPTY composer
+   *   operator text    unstyled content                    — a human composing
+   *
+   * Plain captures (iTerm) fall back to the learned-ghost heuristic; there a
+   * ›-row bearing an envelope signature is indistinguishable from a transcript
+   * echo (both plain `›` text), so it stays null.
    */
   parseInputState(capture: string, session?: string): InputState {
+    return capture.includes('\u001b[')
+      ? this.parseStyledInputState(capture)
+      : this.parsePlainInputState(capture, session);
+  }
+
+  private parseStyledInputState(capture: string): InputState {
+    for (const raw of capture.split('\n').reverse()) {
+      const { plain, chars } = parseStyledLine(raw);
+      const trimmed = plain.trim();
+      if (trimmed.length === 0) continue;
+      if (!trimmed.startsWith('›')) {
+        if (BELOW_COMPOSER_CHROME.some((pattern) => pattern.test(trimmed))) continue;
+        return null;
+      }
+      const glyphIdx = chars.findIndex((c) => c.ch === '›');
+      const glyph = chars[glyphIdx];
+      if (glyph === undefined) return null;
+      if (glyph.dim) return null; // transcript echo — the composer is not on screen
+      const content = chars.slice(glyphIdx + 1).filter((c) => c.ch.trim().length > 0);
+      if (content.length === 0) return 'clear';
+      if (content.every((c) => c.dim)) return 'clear'; // ghost hint — dim placeholder in an empty composer
+      const contentText = plain.slice(plain.indexOf('›') + 1).trim();
+      return ENVELOPE_SIGNATURE.test(contentText) ? 'conductor-draft' : 'operator-draft';
+    }
+    return null;
+  }
+
+  private parsePlainInputState(capture: string, session?: string): InputState {
     for (const line of capture.split('\n').reverse()) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
@@ -237,11 +363,11 @@ export class CodexRuntime implements SessionRuntime {
       }
       const content = trimmed.slice('›'.length).trim();
       if (content.length === 0) return 'clear';
-      if (DELIVERED_ENVELOPE.test(content)) return null;
+      if (ENVELOPE_SIGNATURE.test(content)) return null;
       if (session === undefined) return 'operator-draft';
-      const known = this.ghostText.get(session);
+      const known = this.knownGhost(session);
       if (known === undefined) {
-        this.ghostText.set(session, content);
+        this.learnGhost(session, content);
         return 'clear';
       }
       return content === known ? 'clear' : 'operator-draft';

@@ -13,7 +13,7 @@ const EVENT_TYPES = new Set(['stop', 'notification', 'compaction', 'session-star
 /** In-memory SessionRuntime for tests. Events are accepted as plain JSON `{type, reason?, transcriptPath?}`. */
 export class FakeRuntime implements SessionRuntime {
   readonly name = 'fake';
-  readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: false };
+  readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: false, styledCapture: false };
 
   readonly prepared: { session: SessionConfig; identity: IdentityEndpoints }[] = [];
   /** Controls parseInputState; set to 'operator-draft' to simulate the operator typing. */

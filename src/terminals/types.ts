@@ -36,6 +36,15 @@ export interface TerminalBackend {
   /** Trailing `lines` of pane content. */
   capture(pane: PaneRef, lines: number): Promise<string>;
 
+  /**
+   * Like capture(), but retaining the ANSI style escape sequences (SGR).
+   * Styling carries information plain text loses — e.g. Codex renders its
+   * composer ghost hint dim, which is the only reliable way to tell it from
+   * operator-typed text. Only backends whose capture path preserves styling
+   * implement this (tmux `capture-pane -e`; iTerm's AppleScript cannot).
+   */
+  captureStyled?(pane: PaneRef, lines: number): Promise<string>;
+
   isAlive(pane: PaneRef): Promise<boolean>;
 
   kill(pane: PaneRef): Promise<void>;
