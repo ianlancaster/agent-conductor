@@ -47,7 +47,13 @@ export interface SessionRuntime {
    * Whether the session's input line is empty (safe to deliver a message).
    * Returns null when it cannot be determined from the capture.
    */
-  parseInputClear(capture: string): boolean | null;
+  /**
+   * Whether the runtime's input line is clear to type into, from a pane
+   * capture. `session` (the codename) lets runtimes keep per-session state
+   * (e.g. Codex learns each session's composer ghost text). null = cannot
+   * determine from this capture.
+   */
+  parseInputClear(capture: string, session?: string): boolean | null;
 
   /** Strip runtime-specific terminal chrome from a pane capture. */
   stripChrome(capture: string): string;

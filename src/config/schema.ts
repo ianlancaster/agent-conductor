@@ -149,6 +149,13 @@ export const supervisorConfigSchema = z.object({
           defaultModel: z.string().optional(),
           /** MCP tool timeout — Codex defaults to 60s, far too low for long consults. */
           toolTimeoutSec: z.number().int().positive().default(600),
+          /**
+           * Strip Codex's optional UI chrome and non-essential traffic: startup
+           * update check (an interactive prompt that would hang a spawned pane),
+           * analytics, startup tips, animations, and terminal-title writes
+           * (which would clobber the conductor's pane titles).
+           */
+          bareUi: z.boolean().default(true),
         })
         .default({}),
     })

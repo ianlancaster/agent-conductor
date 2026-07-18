@@ -137,7 +137,7 @@ export class DeliveryQueue {
     if (runtime === undefined) return this.deps.isReady(session);
     try {
       const capture = await this.deps.backend.capture(pane, 10);
-      return runtime.parseInputClear(capture) ?? this.deps.isReady(session);
+      return runtime.parseInputClear(capture, session) ?? this.deps.isReady(session);
     } catch {
       return this.deps.isReady(session);
     }

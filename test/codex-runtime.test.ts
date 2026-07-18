@@ -36,12 +36,28 @@ describe('config generation', () => {
       mcpUrl: 'http://127.0.0.1:3456/mcp/midgard',
       notifyCommand: ['/bin/sh', '/cfg/notify.sh'],
       toolTimeoutSec: 600,
+      bareUi: false,
     });
     expect(overrides).toContain('mcp_servers.conductor.url="http://127.0.0.1:3456/mcp/midgard"');
     expect(overrides).toContain('mcp_servers.conductor.tool_timeout_sec=600');
     expect(overrides).toContain('notify=["/bin/sh","/cfg/notify.sh"]');
     expect(overrides).toContain('approval_policy="never"');
     expect(overrides).toContain('sandbox_mode="danger-full-access"');
+    expect(overrides.join(' ')).not.toContain('check_for_update_on_startup');
+  });
+
+  it('bareUi strips update prompt, analytics, tips, animations, and title writes', () => {
+    const overrides = buildConfigOverrides({
+      mcpUrl: 'http://127.0.0.1:3456/mcp/midgard',
+      notifyCommand: ['/bin/sh', '/cfg/notify.sh'],
+      toolTimeoutSec: 600,
+      bareUi: true,
+    });
+    expect(overrides).toContain('check_for_update_on_startup=false');
+    expect(overrides).toContain('analytics.enabled=false');
+    expect(overrides).toContain('tui.show_tooltips=false');
+    expect(overrides).toContain('tui.animations=false');
+    expect(overrides).toContain('tui.terminal_title=[]');
   });
 
   it('escapes TOML strings', () => {
@@ -211,10 +227,11 @@ describe('prepare', () => {
     expect(await readFile(overridePath, 'utf8')).toBe('# Hand-written override');
   });
 
-  it('creates a per-session CODEX_HOME and symlinks shared auth in (H4)', async () => {
+  it('creates a per-session CODEX_HOME: auth symlinked, config copied with the repo pre-trusted (H4)', async () => {
     const sharedHome = path.join(workDir, 'shared-codex');
     await mkdir(sharedHome, { recursive: true });
     await writeFile(path.join(sharedHome, 'auth.json'), '{"token":"shared"}');
+    await writeFile(path.join(sharedHome, 'config.toml'), 'model = "gpt-5.5"\n');
     const prev = process.env.CODEX_HOME;
     process.env.CODEX_HOME = sharedHome;
     try {
@@ -225,6 +242,24 @@ describe('prepare', () => {
       expect((await stat(home)).isDirectory()).toBe(true);
       // Auth resolves through the symlink; sessions/ stays isolated to this home.
       expect(await readFile(path.join(home, 'auth.json'), 'utf8')).toBe('{"token":"shared"}');
+      // config.toml is a copy (shared config intact) plus the trust entry —
+      // Codex only honors folder trust from the config file, and an untrusted
+      // dir blocks the pane on an interactive prompt.
+      const sessionConfig = await readFile(path.join(home, 'config.toml'), 'utf8');
+      expect(sessionConfig).toContain('model = "gpt-5.5"');
+      expect(sessionConfig).toContain(`[projects."${repoDir}"]`);
+      expect(sessionConfig).toContain('trust_level = "trusted"');
+      // The operator's real config was never touched.
+      expect(await readFile(path.join(sharedHome, 'config.toml'), 'utf8')).toBe('model = "gpt-5.5"\n');
+
+      // Re-prepare with a shared config that ALREADY trusts the repo: no duplicate table (TOML would reject it).
+      await writeFile(
+        path.join(sharedHome, 'config.toml'),
+        `model = "gpt-5.5"\n[projects."${repoDir}"]\ntrust_level = "trusted"\n`,
+      );
+      await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
+      const reprepared = await readFile(path.join(home, 'config.toml'), 'utf8');
+      expect(reprepared.split(`[projects."${repoDir}"]`).length - 1).toBe(1);
     } finally {
       if (prev === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = prev;
@@ -250,9 +285,9 @@ describe('prepare', () => {
 describe('parseEvent', () => {
   const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
 
-  it('maps session-turn-complete to a stop event carrying the last assistant message', () => {
+  it('maps agent-turn-complete to a stop event carrying the last assistant message', () => {
     const event = runtime.parseEvent({
-      'type': 'session-turn-complete',
+      'type': 'agent-turn-complete',
       'turn-id': 'abc123',
       'input-messages': ['Run tests'],
       'last-assistant-message': 'All tests passed',
@@ -261,16 +296,16 @@ describe('parseEvent', () => {
   });
 
   it('tolerates a missing last-assistant-message', () => {
-    const event = runtime.parseEvent({ 'type': 'session-turn-complete', 'turn-id': 'abc123' });
+    const event = runtime.parseEvent({ 'type': 'agent-turn-complete', 'turn-id': 'abc123' });
     expect(event).toEqual({ type: 'stop', reason: undefined, transcriptPath: undefined });
   });
 
   it('returns null for unknown event types and malformed bodies', () => {
     expect(runtime.parseEvent({ type: 'session-turn-start' })).toBeNull();
     expect(runtime.parseEvent({ type: 42 })).toBeNull();
-    expect(runtime.parseEvent('session-turn-complete')).toBeNull();
+    expect(runtime.parseEvent('agent-turn-complete')).toBeNull();
     expect(runtime.parseEvent(null)).toBeNull();
-    expect(runtime.parseEvent(['session-turn-complete'])).toBeNull();
+    expect(runtime.parseEvent(['agent-turn-complete'])).toBeNull();
   });
 });
 
@@ -281,17 +316,48 @@ describe('parseInputClear', () => {
     expect(runtime.parseInputClear('some output\n\n› \n  ⏎ send   Ctrl+J newline')).toBe(true);
   });
 
-  it('reports clear for the composer placeholder', () => {
-    expect(runtime.parseInputClear('› Ask Codex to do anything')).toBe(true);
+  it('learns the first composer content as the session ghost hint', () => {
+    const fresh = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
+    // First sighting: Codex's per-session placeholder hint — learned, clear.
+    expect(fresh.parseInputClear('› Use /skills to list available skills', 'alpha')).toBe(true);
+    // Same hint again: still clear.
+    expect(fresh.parseInputClear('› Use /skills to list available skills', 'alpha')).toBe(true);
+    // Different content: operator is typing.
+    expect(fresh.parseInputClear('› refactor the parser', 'alpha')).toBe(false);
+    // Empty is always clear, and does not overwrite the learned hint.
+    expect(fresh.parseInputClear('› ', 'alpha')).toBe(true);
+    expect(fresh.parseInputClear('› Use /skills to list available skills', 'alpha')).toBe(true);
+    // A different session learns its own hint independently.
+    expect(fresh.parseInputClear('› Explain this codebase', 'beta')).toBe(true);
+    expect(fresh.parseInputClear('› Use /skills to list available skills', 'beta')).toBe(false);
   });
 
-  it('reports not-clear when the operator has typed into the composer', () => {
+  it('reports not-clear for non-empty content when no session is given', () => {
     expect(runtime.parseInputClear('output\n› refactor the parser\n⏎ send')).toBe(false);
   });
 
   it('returns null when no composer row is visible', () => {
     expect(runtime.parseInputClear('plain shell output\n$ ')).toBeNull();
     expect(runtime.parseInputClear('')).toBeNull();
+  });
+
+  it('treats a transcript echo of a delivered envelope as history, not typing', () => {
+    // Codex renders submitted messages with the same › prefix as the composer;
+    // while working, the composer row itself is hidden.
+    expect(runtime.parseInputClear('output\n› [Message from operator] MSG-ONE-111\n\n  model med · /repo')).toBeNull();
+    expect(runtime.parseInputClear('› [Broadcast from alpha] heads up', 'x')).toBeNull();
+  });
+
+  it('sees the composer through footer and hint chrome below it', () => {
+    const capture = '› \n  ⏎ send   ⌃J newline\n  gpt-5.6 medium · /repo\n';
+    expect(runtime.parseInputClear(capture)).toBe(true);
+  });
+
+  it('returns null when the bottom content row is transcript, not the composer', () => {
+    // A delivered-but-unechoed message line sits between the last ›-row and
+    // the footer — the composer is not visible in this state.
+    const capture = '› [Message from operator] one\n  [Message from operator] two\n\n  gpt-5.6 medium · /repo\n';
+    expect(runtime.parseInputClear(capture, 'y')).toBeNull();
   });
 });
 

@@ -149,9 +149,11 @@ could still assume a codename; hardening that is planned alongside the cross-mac
 Run the conductor only on a trusted machine.
 
 Codex sessions each get an isolated `CODEX_HOME` (under the conductor's data dir) so
-`resume` only ever sees that session's own history; your shared `auth.json`/`config.toml`
-are symlinked in, so login still works. Codex protocol injection writes
-`AGENTS.override.md` into each session's repo — **add it to that repo's `.gitignore`.**
+`resume` only ever sees that session's own history; your shared `auth.json` is symlinked
+in (login and token refresh still work) and `config.toml` is copied per launch with the
+session's working directory pre-trusted — your real config is never written. Codex
+protocol injection writes `AGENTS.override.md` into each session's repo — **add it to
+that repo's `.gitignore`.**
 
 ## Running headless
 

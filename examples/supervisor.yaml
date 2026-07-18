@@ -53,6 +53,7 @@ runtimes:
   codex:
     binary: codex
     toolTimeoutSec: 600 # Codex default is 60s — too low for long conductor tools
+    bareUi: true # bare-bones panes: no startup update prompt (it BLOCKS spawned panes), analytics, tips, animations, or terminal-title writes. Set false for stock Codex behavior.
 
 channels:
   telegram:
