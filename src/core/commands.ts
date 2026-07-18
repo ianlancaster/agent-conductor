@@ -64,7 +64,7 @@ const HELP = [
   '`/tag <session> [text]` — set/clear a status label',
   '',
   '*Lifecycle*',
-  '`/spawn <name> [--path p] [--model m] [--prompt "…"] [placement]`',
+  '`/spawn <name> [--runtime claude-code|codex] [--path p] [--model m] [--prompt "…"] [--worktree repo] [--branch b] [placement]`',
   '`/teardown <name> [--delete]`',
   '',
   '*Console*',
@@ -233,9 +233,10 @@ export class CommandRouter {
     const { placement, rest } = parsePlacement(args);
     const codename = rest[0];
     if (codename === undefined) {
-      return 'Usage: /spawn <name> [--path p] [--model m] [--prompt "…"] [--worktree repo] [--branch b] [placement]';
+      return 'Usage: /spawn <name> [--runtime claude-code|codex] [--path p] [--model m] [--prompt "…"] [--worktree repo] [--branch b] [placement]';
     }
     let path: string | undefined;
+    let runtime: string | undefined;
     let model: string | undefined;
     let prompt: string | undefined;
     let worktreeRepo: string | undefined;
@@ -245,6 +246,7 @@ export class CommandRouter {
       const value = rest[i + 1];
       if (value === undefined) break;
       if (flag === '--path') path = value;
+      else if (flag === '--runtime') runtime = value;
       else if (flag === '--model') model = value;
       else if (flag === '--prompt') prompt = value;
       else if (flag === '--worktree') worktreeRepo = value;
@@ -252,6 +254,6 @@ export class CommandRouter {
       else continue;
       i += 1;
     }
-    return this.deps.lifecycle.spawn(codename, { path, model, prompt, placement, worktreeRepo, branch });
+    return this.deps.lifecycle.spawn(codename, { path, runtime, model, prompt, placement, worktreeRepo, branch });
   }
 }
