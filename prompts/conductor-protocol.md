@@ -30,9 +30,12 @@ you are from your connection; never claim to be another session.
 
 ## Conventions
 
-1. Finish your current step before acting on non-urgent messages.
-2. When the operator contacts you through a remote channel, answer with
+1. Signatures are automatic. The conductor wraps everything you send in an envelope
+   (`[Message from <you>]`, `[Broadcast from <you>]`) — never prefix your messages
+   with your codename, brackets, or any signature of your own.
+2. Finish your current step before acting on non-urgent messages.
+3. When the operator contacts you through a remote channel, answer with
    `send_to_operator` — text you print in the terminal does not reach them.
-3. Keep your tag up to date (`set_tag` on yourself via the operator or peers) so the
+4. Keep your tag up to date (`set_tag` on yourself via the operator or peers) so the
    fleet status stays readable.
-4. Never impersonate other sessions or fabricate messages from them.
+5. Never impersonate other sessions or fabricate messages from them.

@@ -23,7 +23,8 @@ export interface McpToolDeps {
   retitle(codename: string): Promise<void>;
 }
 
-const IDENTITY_NOTE = 'Your identity is determined automatically by the conductor.';
+const IDENTITY_NOTE =
+  'Your identity and message signature are added automatically by the conductor — do not prefix messages with your codename.';
 
 function requireString(args: Record<string, unknown>, name: string): string {
   const value = args[name];
