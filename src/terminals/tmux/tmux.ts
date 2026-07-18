@@ -149,6 +149,46 @@ export function buildCreatePaneArgs(spec: CreatePaneSpec): string[] {
   }
 }
 
+export interface CreateAttachedPaneSpec {
+  placement: Placement;
+  /** Pane id of the conductor console's own tmux pane ($TMUX_PANE). */
+  attachPane: string;
+  /** Name of the tmux session that owns attachPane (for tab/window placements). */
+  targetSession: string;
+  /** Used as the window name for 'tab'/'window' placements. */
+  session: string;
+  cwd?: string;
+}
+
+/**
+ * Attached-mode variant of buildCreatePaneArgs: the conductor was launched
+ * from inside tmux, so panes join the OPERATOR'S session instead of a
+ * detached one — 'pane' splits the console's own window (like the iTerm
+ * backend splitting the conductor window), 'tab'/'window' add a tmux window
+ * to the console's session.
+ */
+export function buildAttachedPaneArgs(spec: CreateAttachedPaneSpec): string[] {
+  const cwdArgs = spec.cwd !== undefined ? ['-c', spec.cwd] : [];
+  switch (spec.placement) {
+    case 'pane':
+      return ['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', spec.attachPane, ...cwdArgs];
+    case 'tab':
+    case 'window':
+      return [
+        'new-window',
+        '-d',
+        '-P',
+        '-F',
+        '#{pane_id}',
+        '-t',
+        `=${spec.targetSession}:`,
+        '-n',
+        spec.session,
+        ...cwdArgs,
+      ];
+  }
+}
+
 /**
  * Per-pane buffer name for multiline paste delivery. Deriving it from the pane
  * id (e.g. `%3` → `conductor-paste-3`) keeps concurrent deliveries to different

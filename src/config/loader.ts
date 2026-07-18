@@ -26,7 +26,21 @@ function formatZodError(err: ZodError): string {
   return err.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ');
 }
 
-export function loadSupervisorConfig(baseDir: string): SupervisorConfig {
+/**
+ * Default terminal backend when the config doesn't name one: stay in the
+ * environment the conductor was launched from. Inside tmux ($TMUX set) →
+ * tmux; otherwise iTerm on macOS, tmux elsewhere. Daemons (launchd/systemd)
+ * have no $TMUX, so daemon fleets should set `terminal.backend` explicitly.
+ */
+export function detectBackend(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): 'iterm' | 'tmux' {
+  if (env.TMUX !== undefined && env.TMUX !== '') return 'tmux';
+  return platform === 'darwin' ? 'iterm' : 'tmux';
+}
+
+export function loadSupervisorConfig(baseDir: string, env: NodeJS.ProcessEnv = process.env): SupervisorConfig {
   const file = join(baseDir, 'config', 'supervisor.yaml');
   let raw: unknown = {};
   if (existsSync(file)) {
@@ -43,6 +57,7 @@ export function loadSupervisorConfig(baseDir: string): SupervisorConfig {
   const config = parsed.data;
   const derived = deriveInstanceDefaults(baseDir);
   config.mcp.port ??= derived.port;
+  config.terminal.backend ??= detectBackend(env);
   config.terminal.windowName ??= derived.windowName;
   config.terminal.tmux.sessionName ??= derived.tmuxSessionName;
   return config as SupervisorConfig;

@@ -5,6 +5,7 @@ import type { Store } from '../../store/index.js';
 import { log } from '../../logger.js';
 import {
   SESSION_OPTION,
+  buildAttachedPaneArgs,
   buildCreatePaneArgs,
   buildCreateSessionArgs,
   buildDeliveryCommands,
@@ -28,6 +29,14 @@ export interface TmuxBackendConfig {
   windowName: string;
   /** Scopes pane identity markers so rediscovery never adopts another fleet's panes. */
   fleetId: string;
+  /**
+   * Pane id of the conductor console's own tmux pane ($TMUX_PANE), set when
+   * the conductor was launched from inside tmux and attachToCurrent is on.
+   * Session panes then join the operator's session (split the console's
+   * window / add windows to its session) instead of the detached
+   * `sessionName` session. Falls back to detached if that pane is gone.
+   */
+  attachPane?: string;
 }
 
 export interface TmuxBackendOptions {
@@ -38,11 +47,14 @@ export interface TmuxBackendOptions {
 /**
  * tmux implementation of TerminalBackend.
  *
- * All panes live in a single detached tmux session (config.sessionName).
- * Placement notes: tmux has no separate OS windows, so both 'tab' and
- * 'window' placements create a new tmux window; 'pane' splits the session's
- * first window. Focus tracking is not supported (headless backend), so
- * getFocusedSession/focusWindow are intentionally not implemented.
+ * Two modes: with `attachPane` set (conductor launched from inside tmux),
+ * panes join the operator's own session; otherwise all panes live in a
+ * single detached tmux session (config.sessionName). Placement notes: tmux
+ * has no separate OS windows, so both 'tab' and 'window' placements create
+ * a new tmux window; 'pane' splits the console's window (attached) or the
+ * session's first window (detached). Focus tracking is not supported
+ * (headless backend), so getFocusedSession/focusWindow are intentionally
+ * not implemented.
  */
 export class TmuxBackend implements TerminalBackend {
   readonly name = 'tmux';
@@ -52,12 +64,14 @@ export class TmuxBackend implements TerminalBackend {
   private readonly sessionName: string;
   private readonly windowName: string;
   private readonly fleetId: string;
+  private readonly attachPane: string | undefined;
 
   constructor(opts: TmuxBackendOptions) {
     this.store = opts.store;
     this.sessionName = opts.config.sessionName;
     this.windowName = opts.config.windowName;
     this.fleetId = opts.config.fleetId;
+    this.attachPane = opts.config.attachPane;
   }
 
   async init(): Promise<void> {
@@ -67,6 +81,47 @@ export class TmuxBackend implements TerminalBackend {
   }
 
   async createPane(session: string, placement: Placement, cwd?: string): Promise<PaneRef> {
+    let paneId = this.attachPane !== undefined ? await this.createAttachedPane(placement, session, cwd) : null;
+    paneId ??= await this.createDetachedPane(placement, session, cwd);
+    if (!paneId.startsWith('%')) {
+      throw new Error(`tmux returned an unexpected pane id for session '${session}': '${paneId}'`);
+    }
+    // Pane-scoped identity marker so rediscover() can map panes back to sessions.
+    await tmux(['set-option', '-p', '-t', paneId, SESSION_OPTION, encodeSessionOption(this.fleetId, session)]);
+    const map = this.readPaneMap();
+    map[session] = paneId;
+    this.writePaneMap(map);
+    log().info('tmux', `created pane ${paneId} for '${session}' (placement=${placement})`);
+    return { backend: this.name, id: paneId };
+  }
+
+  /**
+   * Attached mode: join the operator's own tmux session (the one the
+   * conductor was launched from). Returns null when the console pane no
+   * longer exists — the caller falls back to the detached session.
+   */
+  private async createAttachedPane(placement: Placement, session: string, cwd?: string): Promise<string | null> {
+    if (this.attachPane === undefined) return null;
+    try {
+      const targetSession = (await tmux(['display-message', '-p', '-t', this.attachPane, '#{session_name}'])).trim();
+      const args = buildAttachedPaneArgs({
+        placement,
+        attachPane: this.attachPane,
+        targetSession,
+        session,
+        ...(cwd !== undefined ? { cwd } : {}),
+      });
+      return (await tmux(args)).trim();
+    } catch (error) {
+      log().warn(
+        'tmux',
+        `attach to current tmux window failed (${String(error)}) — falling back to detached session '${this.sessionName}'`,
+      );
+      return null;
+    }
+  }
+
+  private async createDetachedPane(placement: Placement, session: string, cwd?: string): Promise<string> {
     // `=name` forces an EXACT session match. Without it, tmux prefix-matches, so
     // `has-session -t conductor` would find a user's `conductor-dev` session and
     // we'd inject session panes into it.
@@ -86,16 +141,7 @@ export class TmuxBackend implements TerminalBackend {
       paneId = (await tmux(buildCreateSessionArgs(spec))).trim();
       log().info('tmux', `created detached session '${this.sessionName}'`);
     }
-    if (!paneId.startsWith('%')) {
-      throw new Error(`tmux returned an unexpected pane id for session '${session}': '${paneId}'`);
-    }
-    // Pane-scoped identity marker so rediscover() can map panes back to sessions.
-    await tmux(['set-option', '-p', '-t', paneId, SESSION_OPTION, encodeSessionOption(this.fleetId, session)]);
-    const map = this.readPaneMap();
-    map[session] = paneId;
-    this.writePaneMap(map);
-    log().info('tmux', `created pane ${paneId} for '${session}' (placement=${placement})`);
-    return { backend: this.name, id: paneId };
+    return paneId;
   }
 
   /** Wait for the fresh pane's shell prompt, then deliver the first command. */
