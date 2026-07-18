@@ -63,8 +63,10 @@ reference config with every knob lives in `examples/supervisor.yaml`.
 terminal into the operator console. Closing the console stops the conductor. At the
 `conductor>` prompt, type `/help`. `/start alpha` opens a pane running Claude Code —
 in this same window on iTerm2 — wired to the conductor; `/tell alpha <message>` talks
-to it; `/status` shows the fleet. Session YAMLs hot-reload — drop a new file in
-`config/sessions/` and it registers itself, no restart.
+to it; `/status` shows the fleet. Messages sessions send you (`send_to_operator`,
+stall reports) print live above the prompt with a cyan `[Message from <name>]`
+signature. Session YAMLs hot-reload — drop a new file in `config/sessions/` and it
+registers itself, no restart.
 
 Two variants: `conductor console` attaches a second console to a running conductor
 (exiting it does NOT stop anything), and `conductor start --foreground` runs the
