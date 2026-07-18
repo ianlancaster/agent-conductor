@@ -85,7 +85,7 @@ export class Messaging {
   }
 
   async sendToOperator(from: string, message: string): Promise<string> {
-    const sent = await this.deps.channelSend(`*${from}:* ${message}`);
+    const sent = await this.deps.channelSend(messageEnvelope(from, message));
     return sent
       ? 'Sent to the operator.'
       : 'NOT delivered: no operator is connected (no console attached, no channel configured). The message was only written to the conductor log — repeat it when an operator connects.';

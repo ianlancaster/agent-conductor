@@ -138,7 +138,9 @@ function runConsole(): Promise<void> {
     void subscribeFeed(
       cmdUrl(),
       (text) => {
-        process.stdout.write(`\r[2K${text}\n`);
+        // Cyan so operator-bound messages stand out from command replies.
+        const line = process.stdout.isTTY ? `[36m${text}[39m` : text;
+        process.stdout.write(`\r[2K${line}\n`);
         rl.prompt(true);
       },
       feedAbort.signal,
