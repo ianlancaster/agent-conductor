@@ -5,6 +5,17 @@ import type { PaneRef } from './types.js';
 
 export type DeliveryResult = 'delivered' | 'queued' | 'no-pane';
 
+/**
+ * What the pane tells us about typing into it right now.
+ * - `clear`  — the runtime's input line is visibly empty (or unknowable but the
+ *   session has proven it is up); typing is safe.
+ * - `busy`   — the runtime is on screen but its input line has content.
+ * - `not-up` — no runtime chrome visible AND no lifecycle event yet: the pane
+ *   may still be a shell executing the launch command, where typed text
+ *   splices into the command line and corrupts it. Never type, even overdue.
+ */
+type TypingState = 'clear' | 'busy' | 'not-up';
+
 interface QueuedMessage {
   text: string;
   queuedAt: number;
@@ -30,7 +41,13 @@ export interface DeliveryDeps {
  * Typing-aware message delivery. If the session's input line has content (the
  * operator is mid-composition, or another message is queued in the TUI), the
  * message is held and retried every `queueDrainMs`, force-delivered after
- * `queueMaxAgeMs` so nothing is silently lost.
+ * `queueMaxAgeMs` so nothing is silently lost. Two hard rules:
+ *
+ * - Queued messages drain ONE per pass, not as a burst — back-to-back
+ *   paste+Enter sequences have been observed to leave the later messages
+ *   concatenated and UNSUBMITTED in the runtime's composer.
+ * - Overdue force-delivery overrides a busy input line, never a booting pane
+ *   (`not-up`): typing over the launch command corrupts it.
  */
 export class DeliveryQueue {
   private readonly queues = new Map<string, QueuedMessage[]>();
@@ -44,7 +61,7 @@ export class DeliveryQueue {
     if (pane === undefined) return 'no-pane';
 
     const existing = this.queues.get(session);
-    if ((existing === undefined || existing.length === 0) && (await this.isSafeToType(session, pane))) {
+    if ((existing === undefined || existing.length === 0) && (await this.typingState(session, pane)) === 'clear') {
       try {
         await this.deps.backend.run(pane, text);
         return 'delivered';
@@ -99,17 +116,25 @@ export class DeliveryQueue {
         continue;
       }
       const oldest = queue[0];
-      const overdue = oldest !== undefined && Date.now() - oldest.queuedAt >= this.deps.config.queueMaxAgeMs;
-      if (overdue || (await this.isSafeToType(session, pane))) {
-        if (overdue) log().debug('delivery', `${session}: force-delivering ${queue.length} overdue message(s)`);
-        for (const message of queue) {
-          try {
-            await this.deps.backend.run(pane, message.text);
-          } catch (err) {
-            log().warn('delivery', `${session}: delivery failed: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        }
+      if (oldest === undefined) {
         this.queues.delete(session);
+        continue;
+      }
+      const state = await this.typingState(session, pane);
+      if (state === 'not-up') continue;
+      const overdue = Date.now() - oldest.queuedAt >= this.deps.config.queueMaxAgeMs;
+      if (state === 'clear' || overdue) {
+        if (state !== 'clear') log().debug('delivery', `${session}: force-delivering overdue message`);
+        // One message per pass: each submit gets a full drain interval to be
+        // processed before the next one is typed.
+        queue.shift();
+        try {
+          await this.deps.backend.run(pane, oldest.text);
+        } catch (err) {
+          log().warn('delivery', `${session}: delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        if (queue.length === 0) this.queues.delete(session);
+        else this.ensureTimer();
       }
     }
     if (this.queues.size === 0) this.stop();
@@ -124,22 +149,22 @@ export class DeliveryQueue {
   }
 
   /**
-   * Whether it is safe to type into the pane.
-   *
-   * Visible runtime chrome (parseInputClear returns a boolean) proves the
-   * process is up — its input state decides. NO chrome (null) means the pane
-   * may still be a shell executing the launch command, where typed text
-   * splices into the command line and corrupts it — then only the event-based
-   * ready flag (first lifecycle event received) makes typing safe.
+   * Classify the pane for typing. Visible runtime chrome (parseInputClear
+   * returns a boolean) proves the process is up — its input state decides
+   * clear vs busy. NO chrome (null, or capture failure) falls back to the
+   * event-based ready flag: ready → clear, otherwise `not-up`.
    */
-  private async isSafeToType(session: string, pane: PaneRef): Promise<boolean> {
+  private async typingState(session: string, pane: PaneRef): Promise<TypingState> {
     const runtime = this.deps.runtimeFor(session);
-    if (runtime === undefined) return this.deps.isReady(session);
+    const fallback = (): TypingState => (this.deps.isReady(session) ? 'clear' : 'not-up');
+    if (runtime === undefined) return fallback();
     try {
       const capture = await this.deps.backend.capture(pane, 10);
-      return runtime.parseInputClear(capture, session) ?? this.deps.isReady(session);
+      const clear = runtime.parseInputClear(capture, session);
+      if (clear === null) return fallback();
+      return clear ? 'clear' : 'busy';
     } catch {
-      return this.deps.isReady(session);
+      return fallback();
     }
   }
 

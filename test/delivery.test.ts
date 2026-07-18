@@ -54,8 +54,12 @@ describe('DeliveryQueue', () => {
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual([]);
 
-    // Input clears — next drain delivers both, in order.
+    // Input clears — messages drain ONE per pass (back-to-back paste+Enter
+    // bursts leave later messages concatenated and unsubmitted in the composer).
     runtime.inputClear = true;
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['one']);
+    expect(queue.pendingCount('alpha')).toBe(1);
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['one', 'two']);
     expect(queue.pendingCount('alpha')).toBe(0);
@@ -67,6 +71,7 @@ describe('DeliveryQueue', () => {
     // Input clears, but a queued message exists — new sends must not jump the queue.
     runtime.inputClear = true;
     expect(await queue.deliverOrQueue('alpha', 'second')).toBe('queued');
+    await queue.drainNow();
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['first', 'second']);
   });
@@ -80,6 +85,35 @@ describe('DeliveryQueue', () => {
     vi.advanceTimersByTime(CONFIG.queueMaxAgeMs + 1);
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['stuck']);
+  });
+
+  it('never force-delivers into a booting pane, even when overdue', async () => {
+    // helper1-restart regression: notify envelopes went overdue while the pane
+    // was relaunching, got typed over the boot sequence, and piled up
+    // concatenated + unsubmitted in the composer. Overdue overrides busy, not not-up.
+    runtime.inputClear = null;
+    ready = false;
+    await queue.deliverOrQueue('alpha', 'patient');
+    vi.advanceTimersByTime(CONFIG.queueMaxAgeMs + 1);
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    expect(queue.pendingCount('alpha')).toBe(1);
+
+    // Runtime comes up → delivery proceeds.
+    ready = true;
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['patient']);
+  });
+
+  it('force-delivers overdue messages one per pass, not as a burst', async () => {
+    runtime.inputClear = false;
+    await queue.deliverOrQueue('alpha', 'old-one');
+    await queue.deliverOrQueue('alpha', 'old-two');
+    vi.advanceTimersByTime(CONFIG.queueMaxAgeMs + 1);
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['old-one']);
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['old-one', 'old-two']);
   });
 
   it('drains automatically on the timer', async () => {
