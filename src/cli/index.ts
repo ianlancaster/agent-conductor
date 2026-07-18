@@ -138,8 +138,9 @@ function runConsole(): Promise<void> {
     void subscribeFeed(
       cmdUrl(),
       (text) => {
-        // Cyan so operator-bound messages stand out from command replies.
-        const line = process.stdout.isTTY ? `[36m${text}[39m` : text;
+        // Cyan signature (the leading [Message from x] envelope) so operator-bound
+        // messages stand out from command replies without drowning the text.
+        const line = process.stdout.isTTY ? text.replace(/^\[[^\]]+\]/, (sig) => `[36m${sig}[39m`) : text;
         process.stdout.write(`\r[2K${line}\n`);
         rl.prompt(true);
       },
