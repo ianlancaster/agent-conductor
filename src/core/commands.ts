@@ -30,13 +30,15 @@ export function tokenize(line: string): string[] {
   return tokens;
 }
 
+// Placement shorts are capitalized (-P/-T/-W) so they can never collide with
+// /spawn's value-flag shorts (-p prompt, -w worktree).
 function parsePlacement(args: string[]): { placement: Placement | undefined; rest: string[] } {
   let placement: Placement | undefined;
   const rest: string[] = [];
   for (const arg of args) {
-    if (arg === '--pane') placement = 'pane';
-    else if (arg === '--tab') placement = 'tab';
-    else if (arg === '--window') placement = 'window';
+    if (arg === '--pane' || arg === '-P') placement = 'pane';
+    else if (arg === '--tab' || arg === '-T') placement = 'tab';
+    else if (arg === '--window' || arg === '-W') placement = 'window';
     else rest.push(arg);
   }
   return { placement, rest };
@@ -45,7 +47,7 @@ function parsePlacement(args: string[]): { placement: Placement | undefined; res
 const HELP = [
   '*Sessions*',
   '`/status [session]` — fleet overview or one session as JSON',
-  '`/start <session|all> [--tab|--window|--pane]` — start session(s)',
+  '`/start <session|all> [placement]` — start session(s)',
   '`/continue <session|all> [placement]` — resume the last session',
   '`/stop <session|all>` — stop session(s)',
   '`/tail <session> [lines]` — read trailing pane output',
@@ -64,8 +66,13 @@ const HELP = [
   '`/tag <session> [text]` — set/clear a status label',
   '',
   '*Lifecycle*',
-  '`/spawn <name> [--runtime claude-code|codex] [--path p] [--model m] [--prompt "…"] [--worktree repo] [--branch b] [placement]`',
-  '`/teardown <name> [--delete]`',
+  '`/spawn <name> [flags] [placement]` — create + start a new session:',
+  '  `-r/--runtime claude-code|codex` · `-m/--model <model>` · `-p/--prompt "…"`',
+  '  `-d/--path <dir>` · `-w/--worktree <repo>` · `-b/--branch <name>`',
+  '`/teardown <name> [-D/--delete]` — deregister (and optionally delete its directory)',
+  '',
+  '*Placement* (accepted wherever `[placement]` appears)',
+  '`-P/--pane` (default) · `-T/--tab` · `-W/--window`',
   '',
   '*Console*',
   '`/clear` (or `/c`) — clear the console screen (console-only)',
@@ -162,8 +169,8 @@ export class CommandRouter {
         return this.spawnCommand(args);
       case 'teardown': {
         const target = args[0];
-        if (target === undefined) return 'Usage: /teardown <name> [--delete]';
-        return this.deps.lifecycle.teardown(target, args.includes('--delete'));
+        if (target === undefined) return 'Usage: /teardown <name> [-D|--delete]';
+        return this.deps.lifecycle.teardown(target, args.includes('--delete') || args.includes('-D'));
       }
       default: {
         // /<codename> [message] shortcut
@@ -233,7 +240,7 @@ export class CommandRouter {
     const { placement, rest } = parsePlacement(args);
     const codename = rest[0];
     if (codename === undefined) {
-      return 'Usage: /spawn <name> [--runtime claude-code|codex] [--path p] [--model m] [--prompt "…"] [--worktree repo] [--branch b] [placement]';
+      return 'Usage: /spawn <name> [-r|--runtime claude-code|codex] [-d|--path p] [-m|--model m] [-p|--prompt "…"] [-w|--worktree repo] [-b|--branch b] [-P|-T|-W placement]';
     }
     let path: string | undefined;
     let runtime: string | undefined;
@@ -245,12 +252,12 @@ export class CommandRouter {
       const flag = rest[i];
       const value = rest[i + 1];
       if (value === undefined) break;
-      if (flag === '--path') path = value;
-      else if (flag === '--runtime') runtime = value;
-      else if (flag === '--model') model = value;
-      else if (flag === '--prompt') prompt = value;
-      else if (flag === '--worktree') worktreeRepo = value;
-      else if (flag === '--branch') branch = value;
+      if (flag === '--path' || flag === '-d') path = value;
+      else if (flag === '--runtime' || flag === '-r') runtime = value;
+      else if (flag === '--model' || flag === '-m') model = value;
+      else if (flag === '--prompt' || flag === '-p') prompt = value;
+      else if (flag === '--worktree' || flag === '-w') worktreeRepo = value;
+      else if (flag === '--branch' || flag === '-b') branch = value;
       else continue;
       i += 1;
     }

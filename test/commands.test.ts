@@ -242,6 +242,20 @@ describe('spawn and teardown', () => {
     await router.route('/teardown codexer --delete');
   });
 
+  it('accepts shorthand flags (-r, -p, -D)', async () => {
+    const reply = await router.route('/spawn shorty -p "short flags"');
+    expect(reply).toContain('Spawned shorty');
+    expect(backend.paneFor('shorty')?.launched[0]).toContain('short flags');
+    const teardown = await router.route('/teardown shorty -D');
+    expect(teardown).toContain('Directory deleted');
+
+    // -r is the runtime short; the harness only wires claude-code, so verify via config.
+    await router.route('/spawn shortr -r codex');
+    const config = readFileSync(join(baseDir, 'config', 'sessions', 'shortr.yaml'), 'utf8');
+    expect(config).toContain('runtime: codex');
+    await router.route('/teardown shortr -D');
+  });
+
   it('refuses an unknown runtime without creating anything', async () => {
     const reply = await router.route('/spawn oops --runtime banana');
     expect(reply).toContain("Unknown runtime 'banana'");

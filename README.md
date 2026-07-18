@@ -94,18 +94,25 @@ problems early.
 Same language everywhere (`conductor console`, `conductor cmd`, Telegram):
 
 ```
-/status [session]            /start <session|all> [--tab|--window]
-/talk <session>              /continue <session|all>
+/status [session]            /start <session|all> [placement]
+/talk <session>              /continue <session|all> [placement]
 /tell <session> <msg>        /stop <session|all>
 /broadcast <msg>             /tail <session> [lines]
 /auto <session|all>          /pause | /resume <session|all>
 /facilitated <session|all>   /tag <session> [text]
-/spawn <name> [--runtime claude-code|codex] [--worktree <repo>] [--branch <b>]
-              [--model m] [--prompt "…"]
-                             # dir: spawn.dirPattern, default ./<name> inside the
-                             # fleet dir ('../{codename}' makes them siblings)
-/teardown <name> [--delete]
+/spawn <name> [flags] [placement]
+    -r/--runtime <claude-code|codex>   runtime (default claude-code)
+    -m/--model <model>                 model override
+    -p/--prompt "…"                    initial prompt
+    -d/--path <dir>                    working dir (default spawn.dirPattern —
+                                       ./<name> inside the fleet dir; set
+                                       '../{codename}' for siblings)
+    -w/--worktree <repo>               create the dir as a git worktree of repo
+    -b/--branch <name>                 worktree branch (default: the codename)
+/teardown <name> [-D/--delete]
 /autopause [on|off]
+
+placement (anywhere it appears): -P/--pane (default) · -T/--tab · -W/--window
 ```
 
 ## Session-facing MCP tools

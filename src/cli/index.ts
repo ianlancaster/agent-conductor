@@ -204,8 +204,8 @@ async function runForeground(startAll: boolean): Promise<void> {
 program
   .command('init')
   .description('Scaffold a fleet directory (config/supervisor.yaml + config/sessions/)')
-  .option('--session <codename>', 'Also create the first session config')
-  .option('--repo <path>', "The session's project directory (required with --session)")
+  .option('-s, --session <codename>', 'Also create the first session config')
+  .option('-r, --repo <path>', "The session's project directory (required with --session)")
   .action((opts: { session?: string; repo?: string }) => {
     for (const line of initFleet(baseDir(), opts)) process.stdout.write(`${line}\n`);
   });
@@ -213,8 +213,8 @@ program
 program
   .command('start')
   .description('Launch the conductor and turn this terminal into the operator console')
-  .option('--start-all', 'Start every configured session immediately')
-  .option('--foreground', 'Run the conductor process in this terminal instead (visible log feed, no console)')
+  .option('-a, --start-all', 'Start every configured session immediately')
+  .option('-f, --foreground', 'Run the conductor process in this terminal instead (visible log feed, no console)')
   .action(async (opts: { startAll?: boolean; foreground?: boolean }) => {
     if (opts.foreground === true) {
       await runForeground(opts.startAll ?? false);
