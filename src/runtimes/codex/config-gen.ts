@@ -28,6 +28,8 @@ export interface CodexOverrideOptions {
   notifyCommand: readonly string[];
   /** Per-tool timeout for conductor MCP calls (Codex default is 60s — too low for long consults). */
   toolTimeoutSec: number;
+  /** Strip UI chrome and non-essential traffic (update check, analytics, tips, animations, title writes). */
+  bareUi: boolean;
 }
 
 /** Escape a string for use as a TOML basic (double-quoted) string. */
@@ -52,7 +54,7 @@ export function shellQuote(value: string): string {
  */
 export function buildConfigOverrides(opts: CodexOverrideOptions): string[] {
   const notifyArray = `[${opts.notifyCommand.map(tomlString).join(',')}]`;
-  return [
+  const overrides = [
     `mcp_servers.${MCP_SERVER_NAME}.url=${tomlString(opts.mcpUrl)}`,
     `mcp_servers.${MCP_SERVER_NAME}.tool_timeout_sec=${opts.toolTimeoutSec}`,
     `notify=${notifyArray}`,
@@ -61,7 +63,30 @@ export function buildConfigOverrides(opts: CodexOverrideOptions): string[] {
     // while -c overrides apply on every invocation.
     `approval_policy="never"`,
     `sandbox_mode="danger-full-access"`,
+    // Codex's paste-burst heuristic swallows the Enter the conductor sends
+    // right after a bracketed paste, leaving delivered messages sitting
+    // UNSUBMITTED in the composer (verified against 0.144.3). Multiline safety
+    // still rides on bracketed-paste markers; only the timing heuristic goes.
+    `disable_paste_burst=true`,
+    // NOTE: folder trust cannot ride on -c overrides — Codex only honors
+    // trust from the config FILE. prepareCodexHome() appends the trust entry
+    // to the per-session config.toml copy instead.
   ];
+  if (opts.bareUi) {
+    overrides.push(
+      // The update check renders a BLOCKING interactive prompt at startup
+      // (verified against 0.144.3) — it would hang every spawned pane.
+      'check_for_update_on_startup=false',
+      'analytics.enabled=false',
+      // Startup tip banner ("Tip: Our most capable model yet…").
+      'tui.show_tooltips=false',
+      'tui.animations=false',
+      // Codex writes terminal titles by default, clobbering the conductor's
+      // "codename — tag" pane titles.
+      'tui.terminal_title=[]',
+    );
+  }
+  return overrides;
 }
 
 /**

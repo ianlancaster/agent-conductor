@@ -1,4 +1,4 @@
-import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
@@ -11,6 +11,7 @@ import {
   renderAgentsOverride,
   renderNotifyScript,
   shellQuote,
+  tomlString,
 } from './config-gen.js';
 
 export type CodexRuntimeSettings = SupervisorConfig['runtimes']['codex'];
@@ -32,9 +33,6 @@ const NOTIFY_SCRIPT_NAME = 'notify.sh';
 /** Per-session CODEX_HOME lives here (isolates sessions/); auth is symlinked in from the shared home. */
 const CODEX_HOME_DIR = 'codex-home';
 
-/** Files symlinked from the shared codex home so a per-session home still authenticates and inherits config. */
-const SHARED_CODEX_FILES = ['auth.json', 'config.toml'] as const;
-
 /**
  * TUI chrome patterns (Codex CLI, ratatui-based). The composer prompt row
  * starts with `›`; below it Codex renders shortcut hints (`⏎ send`,
@@ -51,8 +49,27 @@ const CHROME_PATTERNS: readonly RegExp[] = [
   /messages to be submitted after next tool call/iu, // steering-queue hint
 ];
 
-/** Composer placeholder texts shown when the input is empty. */
-const COMPOSER_PLACEHOLDERS: readonly RegExp[] = [/^ask codex/iu, /^type a message/iu, /^implement, fix, or explain/iu];
+/**
+ * Envelope prefixes the conductor itself types into sessions. Codex echoes
+ * submitted messages into the transcript with the same `›` prefix as the
+ * composer, so a ›-row carrying one of OUR envelopes is delivery history, not
+ * operator typing. These prefixes are conductor constants — not Codex UI text.
+ */
+const DELIVERED_ENVELOPE = /^\[(?:Message|Broadcast) from /u;
+
+/**
+ * Rows that may legitimately render BELOW the composer: the status footer
+ * ("<model> <effort> · <cwd>"), shortcut hints, spinner, context meter. The
+ * composer is only identifiable as the bottom-most content row above these —
+ * any other content row at the bottom means the composer is not visible.
+ */
+const BELOW_COMPOSER_CHROME: readonly RegExp[] = [
+  / · /u, // status footer separator
+  /[⏎⌃↑↓⇧]/u, // shortcut hint rows (⏎ send, ⌃J newline, …)
+  /esc to interrupt/iu,
+  /\d+%\s+context\s+left/iu,
+  /messages to be submitted after next tool call/iu, // steering-queue hint
+];
 
 interface ParsedNotifyPayload {
   readonly type: string;
@@ -131,12 +148,14 @@ export class CodexRuntime implements SessionRuntime {
   }
 
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
+    // A relaunch rolls a fresh composer ghost hint — forget the old one.
+    this.ghostText.delete(session.codename);
+    const repo = this.resolvePath(session.repo);
     await mkdir(identity.configDir, { recursive: true });
     await writeFile(this.notifyScriptPath(identity), renderNotifyScript(identity.eventsUrl), { mode: 0o755 });
-    await this.prepareCodexHome(identity);
+    await this.prepareCodexHome(identity, repo);
 
     const protocolText = await this.readProtocolText();
-    const repo = this.resolvePath(session.repo);
     const overridePath = path.join(repo, 'AGENTS.override.md');
 
     const existingOverride = await this.readIfExists(overridePath);
@@ -170,6 +189,7 @@ export class CodexRuntime implements SessionRuntime {
       mcpUrl: identity.mcpUrl,
       notifyCommand: ['/bin/sh', this.notifyScriptPath(identity)],
       toolTimeoutSec: this.settings.toolTimeoutSec,
+      bareUi: this.settings.bareUi,
     });
     for (const override of overrides) parts.push('-c', shellQuote(override));
 
@@ -187,22 +207,42 @@ export class CodexRuntime implements SessionRuntime {
   }
 
   /**
-   * The Codex composer is the row starting with `›`. Empty (or showing only a
-   * placeholder like "Ask Codex …") means clear; any other trailing text means
-   * the operator is typing. No composer row in the capture → null (cannot
-   * determine — e.g. an overlay or transcript view owns the screen).
+   * An EMPTY Codex composer shows ghost-text hints ("Use /skills to list
+   * available skills", …) drawn from a pool that is hardcoded upstream — no
+   * config disables it, and the pool drifts across versions, so pattern-matching
+   * it is a losing game. Instead: Codex picks ONE hint per launch and never
+   * changes it, so the first non-empty composer content seen for a session IS
+   * that session's ghost text. Learn it, then treat only *different* content as
+   * operator typing. prepare() resets the memory on every (re)launch.
    */
-  parseInputClear(capture: string): boolean | null {
-    const lines = capture.split('\n');
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-      const line = lines[i];
-      if (line === undefined) continue;
+  private readonly ghostText = new Map<string, string>();
+
+  /**
+   * The composer is the `›` row sitting directly above the footer/hint chrome.
+   * Empty, or showing this session's learned ghost hint, means clear; other
+   * content means the operator is typing. A ›-row echoing one of the
+   * conductor's own delivery envelopes is transcript history, and a bottom
+   * content row that is not a ›-row means the composer is not visible — both
+   * are null (cannot determine; delivery falls back to the readiness gate).
+   */
+  parseInputClear(capture: string, session?: string): boolean | null {
+    for (const line of capture.split('\n').reverse()) {
       const trimmed = line.trim();
-      if (!trimmed.startsWith('›')) continue;
+      if (trimmed.length === 0) continue;
+      if (!trimmed.startsWith('›')) {
+        if (BELOW_COMPOSER_CHROME.some((pattern) => pattern.test(trimmed))) continue;
+        return null;
+      }
       const content = trimmed.slice('›'.length).trim();
       if (content.length === 0) return true;
-      if (COMPOSER_PLACEHOLDERS.some((pattern) => pattern.test(content))) return true;
-      return false;
+      if (DELIVERED_ENVELOPE.test(content)) return null;
+      if (session === undefined) return false;
+      const known = this.ghostText.get(session);
+      if (known === undefined) {
+        this.ghostText.set(session, content);
+        return true;
+      }
+      return content === known;
     }
     return null;
   }
@@ -214,14 +254,15 @@ export class CodexRuntime implements SessionRuntime {
   }
 
   /**
-   * Codex notify currently emits a single event type, `session-turn-complete`
+   * Codex notify currently emits a single event type, `agent-turn-complete`
+   * (an EXTERNAL protocol constant — "agent" is Codex's word, never rename it)
    * (fields are kebab-case: `turn-id`, `input-messages`, `last-assistant-message`).
    * It maps to a normalized `stop`; anything else is unrecognized.
    */
   parseEvent(body: unknown): Omit<RuntimeEvent, 'session' | 'receivedAt'> | null {
     const payload = parseNotifyPayload(body);
     if (payload === null) return null;
-    if (payload.type !== 'session-turn-complete') return null;
+    if (payload.type !== 'agent-turn-complete') return null;
     return {
       type: 'stop',
       reason: stringField(payload.record, 'last-assistant-message', 'last_assistant_message'),
@@ -277,22 +318,36 @@ export class CodexRuntime implements SessionRuntime {
    * keeping its own isolated `sessions/`. Symlink failures are non-fatal: a
    * missing shared auth.json just means the session relies on env-var auth.
    */
-  private async prepareCodexHome(identity: IdentityEndpoints): Promise<void> {
+  private async prepareCodexHome(identity: IdentityEndpoints, repo: string): Promise<void> {
     const home = this.codexHomePath(identity);
     await mkdir(home, { recursive: true });
     const sharedHome = process.env.CODEX_HOME ?? path.join(homedir(), '.codex');
-    for (const file of SHARED_CODEX_FILES) {
-      const src = path.join(sharedHome, file);
-      const dest = path.join(home, file);
-      try {
-        await symlink(src, dest);
-      } catch (err) {
-        // EEXIST (already linked from a prior prepare) is fine and silent.
-        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
-          log().debug('codex', `could not link ${file} into per-session CODEX_HOME: ${(err as Error).message}`);
-        }
+
+    // auth.json stays a SYMLINK so token refreshes keep hitting the shared home.
+    try {
+      await symlink(path.join(sharedHome, 'auth.json'), path.join(home, 'auth.json'));
+    } catch (err) {
+      // EEXIST (already linked from a prior prepare) is fine and silent.
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+        log().debug('codex', `could not link auth.json into per-session CODEX_HOME: ${(err as Error).message}`);
       }
     }
+
+    // config.toml is a per-launch COPY of the shared config with the session's
+    // working directory pre-trusted. Codex only honors trust from the config
+    // FILE (the -c override is ignored for the startup trust gate, which would
+    // otherwise BLOCK the pane on an interactive prompt), and writing through a
+    // symlink would mutate the operator's real config. Regenerated on every
+    // launch, so shared-config edits are picked up on the next (re)start.
+    const sharedConfig = (await this.readIfExists(path.join(sharedHome, 'config.toml'))) ?? '';
+    const trustHeader = `[projects.${tomlString(repo)}]`;
+    const trustEntry = sharedConfig.includes(trustHeader)
+      ? ''
+      : `\n# ${GENERATED_MARKER}: pre-trust the session working directory\n${trustHeader}\ntrust_level = "trusted"\n`;
+    const configDest = path.join(home, 'config.toml');
+    // May be a symlink from an earlier conductor version — remove, never write through it.
+    await rm(configDest, { force: true });
+    await writeFile(configDest, `${sharedConfig}${trustEntry}`);
   }
 
   private async readProtocolText(): Promise<string> {
