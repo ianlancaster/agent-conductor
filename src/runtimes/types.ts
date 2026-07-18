@@ -6,6 +6,13 @@ export interface RuntimeCapabilities {
   lifecycleEvents: boolean;
   /** Runtime supports an interactive context probe (e.g. Claude's /context). */
   contextProbe: boolean;
+  /**
+   * parseInputState understands ANSI-styled captures and prefers them (e.g.
+   * Codex marks ghost hints dim — deterministic where plain text must guess).
+   * When true and the backend implements captureStyled, delivery feeds the
+   * styled capture instead of the plain one.
+   */
+  styledCapture: boolean;
 }
 
 /** Per-session endpoints the runtime wires its identity into. */

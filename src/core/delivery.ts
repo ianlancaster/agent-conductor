@@ -172,7 +172,10 @@ export class DeliveryQueue {
     const fallback = (): TypingState => (this.deps.isReady(session) ? 'clear' : 'not-up');
     if (runtime === undefined) return fallback();
     try {
-      const capture = await this.deps.backend.capture(pane, 10);
+      const capture =
+        runtime.capabilities.styledCapture && this.deps.backend.captureStyled !== undefined
+          ? await this.deps.backend.captureStyled(pane, 10)
+          : await this.deps.backend.capture(pane, 10);
       const state = runtime.parseInputState(capture, session);
       if (state === null) return fallback();
       if (state === 'clear') return 'clear';

@@ -62,7 +62,7 @@ export async function seedFolderTrust(claudeJsonPath: string, repo: string): Pro
 
 export class ClaudeCodeRuntime implements SessionRuntime {
   readonly name = 'claude-code';
-  readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: true };
+  readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: true, styledCapture: false };
 
   private readonly config: ClaudeCodeConfig;
   private readonly protocolPath: string | undefined;

@@ -98,6 +98,16 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       expect(await backend.isAlive(pane)).toBe(false);
     });
 
+    it('captureStyled retains ANSI styling that plain capture drops', async () => {
+      const pane = await backend.createPane('theta', 'pane', workDir);
+      await backend.launch(pane, String.raw`printf '\033[2mDIM_MARKER\033[0m\n'`);
+      await until(async () => (await backend.capture(pane, 20)).includes('DIM_MARKER'));
+      const plain = await backend.capture(pane, 20);
+      expect(plain).not.toContain('\u001b[');
+      const styled = await backend.captureStyled(pane, 20);
+      expect(styled).toContain('\u001b[2mDIM_MARKER');
+    });
+
     it('attach mode: joins the window that contains the console pane', async () => {
       // Simulate an operator session: a pre-existing tmux session whose first
       // pane stands in for the conductor console ($TMUX_PANE).
