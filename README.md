@@ -62,8 +62,10 @@ reference config with every knob lives in `examples/supervisor.yaml`.
 `data/conductor.out.log`, structured log in `data/conductor.log`) and turns the current
 terminal into the operator console. Closing the console stops the conductor. At the
 `conductor>` prompt, type `/help`. `/start alpha` opens a pane running Claude Code —
-in this same window on iTerm2 — wired to the conductor; `/tell alpha <message>` talks
-to it; `/status` shows the fleet. Messages sessions send you (`send_to_operator`,
+split into this same window, on iTerm2 and tmux alike — wired to the conductor;
+`/tell alpha <message>` talks to it; `/status` shows the fleet. The terminal backend
+is auto-detected: run `conductor start` inside tmux and you get tmux panes in your
+window; run it in iTerm2 and you get iTerm panes (`terminal.backend` overrides). Messages sessions send you (`send_to_operator`,
 stall reports) print live above the prompt with a cyan `[Message from <name>]`
 signature. Session YAMLs hot-reload — drop a new file in `config/sessions/` and it
 registers itself, no restart.
@@ -83,7 +85,7 @@ problems early.
 | **Session**          | The managed unit: a codename + a working directory + a runtime, living in a pane. Defined by a YAML in `config/sessions/` or created on the fly with `/spawn`.                                                                    |
 | **Run**              | One launch of a session's CLI (start → stop). A session accumulates many runs; `continue` resumes the previous run's conversation.                                                                                                |
 | **Runtime**          | The agent CLI: `claude-code` or `codex`. Owns launch flags, identity wiring, lifecycle-event parsing.                                                                                                                             |
-| **Terminal backend** | Where panes live: `iterm` (macOS, focus tracking) or `tmux` (headless, SSH, Linux).                                                                                                                                               |
+| **Terminal backend** | Where panes live: `iterm` (macOS, focus tracking) or `tmux` (headless, SSH, Linux). Auto-detected: starting the conductor inside tmux selects tmux and panes join your window; otherwise iterm on macOS.                          |
 | **Channel**          | An operator surface: the built-in console, Telegram, more via `ChannelAdapter`.                                                                                                                                                   |
 | **Autonomy**         | `facilitated` — you drive; stalls are ignored. `autonomous` — stalls route to the sentinel.                                                                                                                                       |
 | **Sentinel**         | The session designated in `sentinel.codename`. Receives every stall with pane capture + last message; resolves with `nudge` / `suppress` / `escalate`. The conductor watches the watcher: a stalled sentinel alerts you directly. |
@@ -157,8 +159,12 @@ that repo's `.gitignore`.**
 
 ## Running headless
 
-`terminal.backend: tmux` runs the whole fleet detached — a Linux box over SSH works.
-`conductor daemon install` sets up launchd (macOS) or a systemd user unit (Linux).
+The tmux backend has two modes: started from **inside tmux**, panes join your own
+session (the window you launched from — set `terminal.tmux.attachToCurrent: false` to
+opt out); started outside tmux, the fleet lives in a **detached** tmux session — a
+Linux box over SSH works. `conductor daemon install` sets up launchd (macOS) or a
+systemd user unit (Linux); daemons have no `$TMUX`, so set `terminal.backend`
+explicitly for daemon fleets.
 
 ## Running multiple fleets
 

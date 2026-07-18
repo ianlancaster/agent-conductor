@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildAttachedPaneArgs,
   buildCreatePaneArgs,
   buildCreateSessionArgs,
   buildDeliveryCommands,
@@ -97,6 +98,46 @@ describe('buildCreatePaneArgs', () => {
     expect(args.slice(-2)).toEqual(['-c', '/tmp/repo']);
     const noCwd = buildCreatePaneArgs({ placement: 'pane', sessionName: 's', session: 'alpha' });
     expect(noCwd).not.toContain('-c');
+  });
+});
+
+describe('buildAttachedPaneArgs', () => {
+  it("maps 'pane' to a split of the console's own pane (the iTerm-style default)", () => {
+    const args = buildAttachedPaneArgs({
+      placement: 'pane',
+      attachPane: '%7',
+      targetSession: 'main',
+      session: 'alpha',
+    });
+    expect(args).toEqual(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', '%7']);
+  });
+
+  it("maps 'tab' and 'window' to a new window in the console's session, exact-matched", () => {
+    const tabArgs = buildAttachedPaneArgs({
+      placement: 'tab',
+      attachPane: '%7',
+      targetSession: 'main',
+      session: 'alpha',
+    });
+    expect(tabArgs).toEqual(['new-window', '-d', '-P', '-F', '#{pane_id}', '-t', '=main:', '-n', 'alpha']);
+    const windowArgs = buildAttachedPaneArgs({
+      placement: 'window',
+      attachPane: '%7',
+      targetSession: 'main',
+      session: 'alpha',
+    });
+    expect(windowArgs).toEqual(tabArgs);
+  });
+
+  it('appends -c <cwd> when provided', () => {
+    const args = buildAttachedPaneArgs({
+      placement: 'pane',
+      attachPane: '%7',
+      targetSession: 'main',
+      session: 'alpha',
+      cwd: '/tmp/repo',
+    });
+    expect(args.slice(-2)).toEqual(['-c', '/tmp/repo']);
   });
 });
 

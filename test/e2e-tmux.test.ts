@@ -97,6 +97,57 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       await backend.kill(pane);
       expect(await backend.isAlive(pane)).toBe(false);
     });
+
+    it('attach mode: joins the window that contains the console pane', async () => {
+      // Simulate an operator session: a pre-existing tmux session whose first
+      // pane stands in for the conductor console ($TMUX_PANE).
+      const operatorSession = `${SESSION}-op`;
+      const consolePane = execFileSync(
+        'tmux',
+        ['new-session', '-d', '-P', '-F', '#{pane_id}', '-s', operatorSession, '-n', 'console'],
+        { encoding: 'utf8' },
+      ).trim();
+      try {
+        const attached = new TmuxBackend({
+          store,
+          config: { sessionName: SESSION, windowName: 'e2e', fleetId: 'e2e', attachPane: consolePane },
+        });
+        const pane = await attached.createPane('epsilon', 'pane', workDir);
+        const where = execFileSync('tmux', ['display-message', '-p', '-t', pane.id, '#{session_name} #{window_id}'], {
+          encoding: 'utf8',
+        }).trim();
+        const consoleWhere = execFileSync(
+          'tmux',
+          ['display-message', '-p', '-t', consolePane, '#{session_name} #{window_id}'],
+          { encoding: 'utf8' },
+        ).trim();
+        // Same session AND same window — a split next to the console, not a
+        // pane in the detached conductor session.
+        expect(where).toBe(consoleWhere);
+        expect(where.startsWith(operatorSession)).toBe(true);
+
+        // 'tab' lands as a new window in the operator's session.
+        const tabPane = await attached.createPane('zeta', 'tab', workDir);
+        const tabSession = execFileSync('tmux', ['display-message', '-p', '-t', tabPane.id, '#{session_name}'], {
+          encoding: 'utf8',
+        }).trim();
+        expect(tabSession).toBe(operatorSession);
+      } finally {
+        execFileSync('tmux', ['kill-session', '-t', operatorSession], { stdio: 'pipe' });
+      }
+    });
+
+    it('attach mode: falls back to the detached session when the console pane is gone', async () => {
+      const attached = new TmuxBackend({
+        store,
+        config: { sessionName: SESSION, windowName: 'e2e', fleetId: 'e2e', attachPane: '%99999' },
+      });
+      const pane = await attached.createPane('eta', 'pane', workDir);
+      const sessionName = execFileSync('tmux', ['display-message', '-p', '-t', pane.id, '#{session_name}'], {
+        encoding: 'utf8',
+      }).trim();
+      expect(sessionName).toBe(SESSION);
+    });
   });
 
   describe('full stack: Supervisor + tmux + fake session binary', () => {
@@ -116,6 +167,9 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
           '  backend: tmux',
           '  tmux:',
           `    sessionName: ${SESSION}`,
+          // Keep e2e panes out of the developer's own tmux window when the
+          // test suite itself runs inside tmux.
+          '    attachToCurrent: false',
           'mcp:',
           '  port: 43399',
           'runtimes:',

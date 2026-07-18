@@ -78,6 +78,13 @@ export class Supervisor {
               sessionName: this.config.terminal.tmux.sessionName,
               windowName: this.config.terminal.windowName,
               fleetId,
+              // Launched from inside tmux → panes join the operator's own
+              // session/window (like iTerm splitting the conductor window).
+              ...(this.config.terminal.tmux.attachToCurrent &&
+              process.env.TMUX !== undefined &&
+              process.env.TMUX_PANE !== undefined
+                ? { attachPane: process.env.TMUX_PANE }
+                : {}),
             },
           })
         : new ITermBackend({

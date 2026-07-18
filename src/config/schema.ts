@@ -89,7 +89,8 @@ export const supervisorConfigSchema = z.object({
     .default({}),
   terminal: z
     .object({
-      backend: z.enum(['iterm', 'tmux']).default('iterm'),
+      /** Default: auto-detected — tmux when the conductor is launched inside tmux ($TMUX), else iterm on macOS, tmux elsewhere. */
+      backend: z.enum(['iterm', 'tmux']).optional(),
       /** Default: "Agent Conductor (<fleet dir name>)" so multiple fleets are distinguishable. */
       windowName: z.string().optional(),
       iterm: z
@@ -108,6 +109,13 @@ export const supervisorConfigSchema = z.object({
         .object({
           /** Default: "conductor-<fleet slug>" so multiple fleets don't share one tmux session. */
           sessionName: z.string().optional(),
+          /**
+           * When the conductor is launched from inside tmux, put session panes in
+           * the launching window (splits/new windows in YOUR tmux session), like
+           * the iTerm backend does. Set false to always use the detached
+           * `sessionName` session instead.
+           */
+          attachToCurrent: z.boolean().default(true),
         })
         .default({}),
     })
@@ -181,10 +189,11 @@ export type SessionConfig = z.infer<typeof sessionConfigSchema>;
 /** Raw parse output — instance-scoped fields may be absent (loader derives them per fleet dir). */
 export type SupervisorConfigInput = z.infer<typeof supervisorConfigSchema>;
 
-/** Fully-resolved config: the loader fills port/windowName/sessionName from per-fleet derivation. */
+/** Fully-resolved config: the loader fills port/windowName/sessionName/backend from per-fleet derivation. */
 export type SupervisorConfig = Omit<SupervisorConfigInput, 'mcp' | 'terminal'> & {
   mcp: SupervisorConfigInput['mcp'] & { port: number };
-  terminal: Omit<SupervisorConfigInput['terminal'], 'windowName' | 'tmux'> & {
+  terminal: Omit<SupervisorConfigInput['terminal'], 'backend' | 'windowName' | 'tmux'> & {
+    backend: 'iterm' | 'tmux';
     windowName: string;
     tmux: SupervisorConfigInput['terminal']['tmux'] & { sessionName: string };
   };

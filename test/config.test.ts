@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { deriveInstanceDefaults, PORT_RANGE_SIZE, PORT_RANGE_START } from '../src/config/instance.js';
-import { loadSessionConfigs, loadConfig, loadSupervisorConfig, validateConfig } from '../src/config/loader.js';
+import {
+  detectBackend,
+  loadSessionConfigs,
+  loadConfig,
+  loadSupervisorConfig,
+  validateConfig,
+} from '../src/config/loader.js';
 import { ConfigWatcher } from '../src/config/watcher.js';
 
 let baseDir: string;
@@ -29,7 +35,6 @@ describe('loadSupervisorConfig', () => {
     expect(config.health.captureLines).toBe(40);
     expect(config.messaging.queueDrainMs).toBe(2000);
     expect(config.defaults.autonomy).toBe('facilitated');
-    expect(config.terminal.backend).toBe('iterm');
     expect(config.runtimes.claudeCode.binary).toBe('claude');
     expect(config.runtimes.codex.toolTimeoutSec).toBe(600);
     expect(config.spawn.markerFile).toBe('.conductor-agent');
@@ -64,6 +69,29 @@ describe('loadSupervisorConfig', () => {
   it('rejects invalid values with a readable error', () => {
     writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'mcp:\n  port: -1\n');
     expect(() => loadSupervisorConfig(baseDir)).toThrow(/mcp\.port/);
+  });
+});
+
+describe('backend auto-detection', () => {
+  it('stays in tmux when launched inside tmux, on any platform', () => {
+    expect(detectBackend({ TMUX: '/tmp/tmux-501/default,123,0' }, 'darwin')).toBe('tmux');
+    expect(detectBackend({ TMUX: '/tmp/tmux-501/default,123,0' }, 'linux')).toBe('tmux');
+  });
+
+  it('falls back to the platform default outside tmux: iterm on macOS, tmux elsewhere', () => {
+    expect(detectBackend({}, 'darwin')).toBe('iterm');
+    expect(detectBackend({}, 'linux')).toBe('tmux');
+    // An empty TMUX var is not "inside tmux".
+    expect(detectBackend({ TMUX: '' }, 'darwin')).toBe('iterm');
+  });
+
+  it('loader resolves an unset backend from the environment', () => {
+    expect(loadSupervisorConfig(baseDir, { TMUX: 'socket,1,0' }).terminal.backend).toBe('tmux');
+  });
+
+  it('explicit config beats detection', () => {
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'terminal:\n  backend: iterm\n');
+    expect(loadSupervisorConfig(baseDir, { TMUX: 'socket,1,0' }).terminal.backend).toBe('iterm');
   });
 });
 

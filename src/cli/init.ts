@@ -8,7 +8,9 @@ const SUPERVISOR_TEMPLATE = `# agent-conductor supervisor config.
 # Full reference with every knob: examples/supervisor.yaml in the agent-conductor repo.
 
 # terminal:
-#   backend: iterm              # or: tmux (headless, Linux/SSH)
+#   backend: iterm              # or: tmux. Default auto-detects: tmux when the
+#                               # conductor is started inside tmux, else iterm on
+#                               # macOS. Daemons should set this explicitly.
 
 # Designate a stall sentinel — a session (defined in config/sessions/) that receives
 # every stall from autonomous sessions and decides: nudge, dismiss, or escalate.
