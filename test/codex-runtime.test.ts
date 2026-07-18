@@ -309,55 +309,55 @@ describe('parseEvent', () => {
   });
 });
 
-describe('parseInputClear', () => {
+describe('parseInputState', () => {
   const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
 
   it('reports clear for an empty composer row', () => {
-    expect(runtime.parseInputClear('some output\n\n› \n  ⏎ send   Ctrl+J newline')).toBe(true);
+    expect(runtime.parseInputState('some output\n\n› \n  ⏎ send   Ctrl+J newline')).toBe('clear');
   });
 
   it('learns the first composer content as the session ghost hint', () => {
     const fresh = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
     // First sighting: Codex's per-session placeholder hint — learned, clear.
-    expect(fresh.parseInputClear('› Use /skills to list available skills', 'alpha')).toBe(true);
+    expect(fresh.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
     // Same hint again: still clear.
-    expect(fresh.parseInputClear('› Use /skills to list available skills', 'alpha')).toBe(true);
-    // Different content: operator is typing.
-    expect(fresh.parseInputClear('› refactor the parser', 'alpha')).toBe(false);
+    expect(fresh.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
+    // Different content: the operator is typing — an operator draft.
+    expect(fresh.parseInputState('› refactor the parser', 'alpha')).toBe('operator-draft');
     // Empty is always clear, and does not overwrite the learned hint.
-    expect(fresh.parseInputClear('› ', 'alpha')).toBe(true);
-    expect(fresh.parseInputClear('› Use /skills to list available skills', 'alpha')).toBe(true);
+    expect(fresh.parseInputState('› ', 'alpha')).toBe('clear');
+    expect(fresh.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
     // A different session learns its own hint independently.
-    expect(fresh.parseInputClear('› Explain this codebase', 'beta')).toBe(true);
-    expect(fresh.parseInputClear('› Use /skills to list available skills', 'beta')).toBe(false);
+    expect(fresh.parseInputState('› Explain this codebase', 'beta')).toBe('clear');
+    expect(fresh.parseInputState('› Use /skills to list available skills', 'beta')).toBe('operator-draft');
   });
 
-  it('reports not-clear for non-empty content when no session is given', () => {
-    expect(runtime.parseInputClear('output\n› refactor the parser\n⏎ send')).toBe(false);
+  it('reports an operator draft for non-empty content when no session is given', () => {
+    expect(runtime.parseInputState('output\n› refactor the parser\n⏎ send')).toBe('operator-draft');
   });
 
   it('returns null when no composer row is visible', () => {
-    expect(runtime.parseInputClear('plain shell output\n$ ')).toBeNull();
-    expect(runtime.parseInputClear('')).toBeNull();
+    expect(runtime.parseInputState('plain shell output\n$ ')).toBeNull();
+    expect(runtime.parseInputState('')).toBeNull();
   });
 
   it('treats a transcript echo of a delivered envelope as history, not typing', () => {
     // Codex renders submitted messages with the same › prefix as the composer;
     // while working, the composer row itself is hidden.
-    expect(runtime.parseInputClear('output\n› [Message from operator] MSG-ONE-111\n\n  model med · /repo')).toBeNull();
-    expect(runtime.parseInputClear('› [Broadcast from alpha] heads up', 'x')).toBeNull();
+    expect(runtime.parseInputState('output\n› [Message from operator] MSG-ONE-111\n\n  model med · /repo')).toBeNull();
+    expect(runtime.parseInputState('› [Broadcast from alpha] heads up', 'x')).toBeNull();
   });
 
   it('sees the composer through footer and hint chrome below it', () => {
     const capture = '› \n  ⏎ send   ⌃J newline\n  gpt-5.6 medium · /repo\n';
-    expect(runtime.parseInputClear(capture)).toBe(true);
+    expect(runtime.parseInputState(capture)).toBe('clear');
   });
 
   it('returns null when the bottom content row is transcript, not the composer', () => {
     // A delivered-but-unechoed message line sits between the last ›-row and
     // the footer — the composer is not visible in this state.
     const capture = '› [Message from operator] one\n  [Message from operator] two\n\n  gpt-5.6 medium · /repo\n';
-    expect(runtime.parseInputClear(capture, 'y')).toBeNull();
+    expect(runtime.parseInputState(capture, 'y')).toBeNull();
   });
 });
 

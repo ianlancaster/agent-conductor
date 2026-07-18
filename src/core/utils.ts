@@ -21,6 +21,14 @@ export function contentSimilarity(a: string, b: string): number {
   return overlap / Math.max(linesA.size, linesB.size);
 }
 
+/**
+ * Matches the signature prefix of any conductor-delivered text ([Message
+ * from x], [Broadcast from x], [Stall] …). Runtimes use it to tell a stuck,
+ * unsubmitted conductor delivery apart from operator-typed input: every
+ * conductor delivery is signed, so an UNSIGNED draft is a human's.
+ */
+export const ENVELOPE_SIGNATURE = /^\[(?:Message from [^\]]+|Broadcast from [^\]]+|Stall)\]/u;
+
 export function messageEnvelope(from: string, message: string): string {
   return `[Message from ${from}] ${message}`;
 }

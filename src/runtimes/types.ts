@@ -24,6 +24,18 @@ export interface LaunchOptions {
 }
 
 /**
+ * What the runtime's visible input line holds.
+ * - `'clear'`           — empty (or only the runtime's own placeholder hint): safe to type.
+ * - `'operator-draft'`  — UNSIGNED, unsubmitted content: a human is composing.
+ *   Delivery must never type over it — our deliveries end with Enter, which
+ *   would submit the operator's half-typed message.
+ * - `'conductor-draft'` — an unsubmitted conductor delivery (starts with an
+ *   envelope signature); ours to manage.
+ * - `null`              — cannot be determined from this capture (no input chrome visible).
+ */
+export type InputState = 'clear' | 'operator-draft' | 'conductor-draft' | null;
+
+/**
  * The seam between the conductor and a specific agent CLI (Claude Code, Codex).
  *
  * Owns everything runtime-specific: launch command construction, identity/hook
@@ -44,16 +56,11 @@ export interface SessionRuntime {
   buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, opts: LaunchOptions): string;
 
   /**
-   * Whether the session's input line is empty (safe to deliver a message).
-   * Returns null when it cannot be determined from the capture.
+   * Classify the runtime's input line from a pane capture. `session` (the
+   * codename) lets runtimes keep per-session state (e.g. Codex learns each
+   * session's composer ghost text).
    */
-  /**
-   * Whether the runtime's input line is clear to type into, from a pane
-   * capture. `session` (the codename) lets runtimes keep per-session state
-   * (e.g. Codex learns each session's composer ghost text). null = cannot
-   * determine from this capture.
-   */
-  parseInputClear(capture: string, session?: string): boolean | null;
+  parseInputState(capture: string, session?: string): InputState;
 
   /** Strip runtime-specific terminal chrome from a pane capture. */
   stripChrome(capture: string): string;

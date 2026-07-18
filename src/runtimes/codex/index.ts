@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import type { RuntimeEvent } from '../../core/types.js';
-import type { SessionRuntime, IdentityEndpoints, LaunchOptions, RuntimeCapabilities } from '../types.js';
+import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
 import { log } from '../../logger.js';
 import {
   GENERATED_MARKER,
@@ -220,12 +220,14 @@ export class CodexRuntime implements SessionRuntime {
   /**
    * The composer is the `›` row sitting directly above the footer/hint chrome.
    * Empty, or showing this session's learned ghost hint, means clear; other
-   * content means the operator is typing. A ›-row echoing one of the
-   * conductor's own delivery envelopes is transcript history, and a bottom
-   * content row that is not a ›-row means the composer is not visible — both
-   * are null (cannot determine; delivery falls back to the readiness gate).
+   * content means the operator is typing (never type over it — our deliveries
+   * end with Enter and would submit the operator's draft). A ›-row bearing a
+   * conductor envelope signature is indistinguishable from a TRANSCRIPT echo
+   * of a past delivery (Codex renders both with `›`), and a bottom content row
+   * that is not a ›-row means the composer is not visible — both are null
+   * (cannot determine; delivery falls back to the readiness gate).
    */
-  parseInputClear(capture: string, session?: string): boolean | null {
+  parseInputState(capture: string, session?: string): InputState {
     for (const line of capture.split('\n').reverse()) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
@@ -234,15 +236,15 @@ export class CodexRuntime implements SessionRuntime {
         return null;
       }
       const content = trimmed.slice('›'.length).trim();
-      if (content.length === 0) return true;
+      if (content.length === 0) return 'clear';
       if (DELIVERED_ENVELOPE.test(content)) return null;
-      if (session === undefined) return false;
+      if (session === undefined) return 'operator-draft';
       const known = this.ghostText.get(session);
       if (known === undefined) {
         this.ghostText.set(session, content);
-        return true;
+        return 'clear';
       }
-      return content === known;
+      return content === known ? 'clear' : 'operator-draft';
     }
     return null;
   }

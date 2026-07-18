@@ -44,7 +44,7 @@ describe('DeliveryQueue', () => {
   });
 
   it('queues when the input line is busy and drains when it clears', async () => {
-    runtime.inputClear = false;
+    runtime.inputState = 'operator-draft';
     expect(await queue.deliverOrQueue('alpha', 'one')).toBe('queued');
     expect(await queue.deliverOrQueue('alpha', 'two')).toBe('queued');
     expect(queue.pendingCount('alpha')).toBe(2);
@@ -56,7 +56,7 @@ describe('DeliveryQueue', () => {
 
     // Input clears — messages drain ONE per pass (back-to-back paste+Enter
     // bursts leave later messages concatenated and unsubmitted in the composer).
-    runtime.inputClear = true;
+    runtime.inputState = 'clear';
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['one']);
     expect(queue.pendingCount('alpha')).toBe(1);
@@ -66,18 +66,19 @@ describe('DeliveryQueue', () => {
   });
 
   it('preserves FIFO order across queued and later messages', async () => {
-    runtime.inputClear = false;
+    runtime.inputState = 'operator-draft';
     await queue.deliverOrQueue('alpha', 'first');
     // Input clears, but a queued message exists — new sends must not jump the queue.
-    runtime.inputClear = true;
+    runtime.inputState = 'clear';
     expect(await queue.deliverOrQueue('alpha', 'second')).toBe('queued');
     await queue.drainNow();
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['first', 'second']);
   });
 
-  it('force-delivers after queueMaxAgeMs even if input stays busy', async () => {
-    runtime.inputClear = false;
+  it('force-delivers after queueMaxAgeMs when a CONDUCTOR draft is stuck in the composer', async () => {
+    // A stuck conductor envelope is ours to manage — the max-age valve applies.
+    runtime.inputState = 'conductor-draft';
     await queue.deliverOrQueue('alpha', 'stuck');
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual([]);
@@ -87,11 +88,44 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['stuck']);
   });
 
+  it('NEVER force-delivers over an operator draft, no matter how overdue', async () => {
+    // Unsigned composer content is a human mid-composition. Our deliveries end
+    // with Enter — typing would submit the operator's half-typed message.
+    runtime.inputState = 'operator-draft';
+    await queue.deliverOrQueue('alpha', 'polite-one');
+    await queue.deliverOrQueue('alpha', 'polite-two');
+
+    vi.advanceTimersByTime(CONFIG.queueMaxAgeMs * 10);
+    await queue.drainNow();
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    expect(queue.pendingCount('alpha')).toBe(2);
+
+    // Operator submits (or deletes) their draft — the queue releases in order.
+    runtime.inputState = 'clear';
+    await queue.drainNow();
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['polite-one', 'polite-two']);
+    expect(queue.pendingCount('alpha')).toBe(0);
+  });
+
+  it('releases held messages on the timer as soon as the operator input clears', async () => {
+    runtime.inputState = 'operator-draft';
+    await queue.deliverOrQueue('alpha', 'waiting');
+    vi.advanceTimersByTime(CONFIG.queueMaxAgeMs * 2);
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+
+    runtime.inputState = 'clear';
+    await vi.advanceTimersByTimeAsync(CONFIG.queueDrainMs + 1);
+    expect(backend.panes.get(pane.id)?.received).toEqual(['waiting']);
+  });
+
   it('never force-delivers into a booting pane, even when overdue', async () => {
     // helper1-restart regression: notify envelopes went overdue while the pane
     // was relaunching, got typed over the boot sequence, and piled up
     // concatenated + unsubmitted in the composer. Overdue overrides busy, not not-up.
-    runtime.inputClear = null;
+    runtime.inputState = null;
     ready = false;
     await queue.deliverOrQueue('alpha', 'patient');
     vi.advanceTimersByTime(CONFIG.queueMaxAgeMs + 1);
@@ -106,7 +140,7 @@ describe('DeliveryQueue', () => {
   });
 
   it('force-delivers overdue messages one per pass, not as a burst', async () => {
-    runtime.inputClear = false;
+    runtime.inputState = 'conductor-draft';
     await queue.deliverOrQueue('alpha', 'old-one');
     await queue.deliverOrQueue('alpha', 'old-two');
     vi.advanceTimersByTime(CONFIG.queueMaxAgeMs + 1);
@@ -117,15 +151,15 @@ describe('DeliveryQueue', () => {
   });
 
   it('drains automatically on the timer', async () => {
-    runtime.inputClear = false;
+    runtime.inputState = 'operator-draft';
     await queue.deliverOrQueue('alpha', 'later');
-    runtime.inputClear = true;
+    runtime.inputState = 'clear';
     await vi.advanceTimersByTimeAsync(CONFIG.queueDrainMs + 1);
     expect(backend.panes.get(pane.id)?.received).toEqual(['later']);
   });
 
   it('drops queued messages when the pane dies', async () => {
-    runtime.inputClear = false;
+    runtime.inputState = 'operator-draft';
     await queue.deliverOrQueue('alpha', 'doomed');
     await backend.kill(pane);
     await queue.drainNow();
@@ -133,7 +167,7 @@ describe('DeliveryQueue', () => {
   });
 
   it('treats unknown input state (null) as clear once the session is ready', async () => {
-    runtime.inputClear = null;
+    runtime.inputState = null;
     expect(await queue.deliverOrQueue('alpha', 'go')).toBe('delivered');
   });
 
@@ -141,7 +175,7 @@ describe('DeliveryQueue', () => {
     // The launch-corruption bug: a message typed while the pane still shows a
     // shell executing the launch command splices into it. No chrome (null) +
     // no lifecycle event yet must queue, not type.
-    runtime.inputClear = null;
+    runtime.inputState = null;
     ready = false;
     expect(await queue.deliverOrQueue('alpha', 'PING-42')).toBe('queued');
     await queue.drainNow();
@@ -155,7 +189,7 @@ describe('DeliveryQueue', () => {
 
   it('visible runtime chrome proves the process is up even before any event', async () => {
     // Codex sends no start event — a visible, empty input line must unblock delivery.
-    runtime.inputClear = true;
+    runtime.inputState = 'clear';
     ready = false;
     expect(await queue.deliverOrQueue('alpha', 'go')).toBe('delivered');
   });

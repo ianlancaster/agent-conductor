@@ -46,7 +46,11 @@ health:
   suppressSimilarity: 0.8
 
 messaging:
-  queueDrainMs: 2000
+  queueDrainMs: 2000 # how often held messages retry; also the release latency after input clears
+  # Safety valve for a conductor delivery stuck unsubmitted in a composer.
+  # Applies ONLY to the conductor's own drafts — text the OPERATOR is typing
+  # (any unsigned input) is never typed over, no matter how old the queue is;
+  # messages wait behind it and release when the input clears.
   queueMaxAgeMs: 60000
 
 runtimes:
