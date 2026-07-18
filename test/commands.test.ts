@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -232,6 +232,21 @@ describe('spawn and teardown', () => {
     expect(teardown).toContain('Directory deleted');
     expect(existsSync(spawnedDir)).toBe(false);
     expect(sessions.has('newbie')).toBe(false);
+  });
+
+  it('spawns a codex session via --runtime and records it in the config', async () => {
+    const reply = await router.route('/spawn codexer --runtime codex');
+    expect(reply).toContain('Spawned codexer');
+    const config = readFileSync(join(baseDir, 'config', 'sessions', 'codexer.yaml'), 'utf8');
+    expect(config).toContain('runtime: codex');
+    await router.route('/teardown codexer --delete');
+  });
+
+  it('refuses an unknown runtime without creating anything', async () => {
+    const reply = await router.route('/spawn oops --runtime banana');
+    expect(reply).toContain("Unknown runtime 'banana'");
+    expect(sessions.has('oops')).toBe(false);
+    expect(existsSync(join(baseDir, 'spawned', 'oops'))).toBe(false);
   });
 
   it('rejects a traversal codename before writing any files (H7)', async () => {

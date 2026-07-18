@@ -165,6 +165,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
         properties: {
           codename: { type: 'string' },
           path: { type: 'string', description: 'Working directory (default: spawn.dirPattern)' },
+          runtime: { type: 'string', enum: ['claude-code', 'codex'], description: 'Runtime (default: claude-code)' },
           model: { type: 'string' },
           prompt: { type: 'string' },
           placement: placementSchema,
@@ -174,6 +175,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       handler: (args, _caller) =>
         deps.lifecycle.spawn(requireString(args, 'codename'), {
           path: optionalString(args, 'path'),
+          runtime: optionalString(args, 'runtime'),
           model: optionalString(args, 'model'),
           prompt: optionalString(args, 'prompt'),
           placement: optionalPlacement(args),
@@ -188,6 +190,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
           codename: { type: 'string', description: 'New session codename' },
           repo: { type: 'string', description: 'Path to the existing git repository' },
           branch: { type: 'string', description: 'Branch to create/check out (default: the codename)' },
+          runtime: { type: 'string', enum: ['claude-code', 'codex'], description: 'Runtime (default: claude-code)' },
           model: { type: 'string' },
           prompt: { type: 'string' },
           placement: placementSchema,
@@ -198,6 +201,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
         deps.lifecycle.spawn(requireString(args, 'codename'), {
           worktreeRepo: requireString(args, 'repo'),
           branch: optionalString(args, 'branch'),
+          runtime: optionalString(args, 'runtime'),
           model: optionalString(args, 'model'),
           prompt: optionalString(args, 'prompt'),
           placement: optionalPlacement(args),

@@ -23,11 +23,15 @@ export interface SpawnOptions {
   model?: string;
   prompt?: string;
   placement?: Placement;
+  /** Runtime for the new session (default: claude-code). */
+  runtime?: string;
   /** Create the session's directory as a git worktree of this repository. */
   worktreeRepo?: string;
   /** Branch for the worktree (default: the codename). */
   branch?: string;
 }
+
+const SPAWNABLE_RUNTIMES = ['claude-code', 'codex'];
 
 export interface LifecycleDeps {
   store: Store;
@@ -191,6 +195,9 @@ export class Lifecycle {
       return `Invalid codename '${codename}': must be alphanumeric with dashes/underscores.`;
     }
     if (this.deps.sessions().has(codename)) return `Session '${codename}' already exists.`;
+    if (opts.runtime !== undefined && !SPAWNABLE_RUNTIMES.includes(opts.runtime)) {
+      return `Unknown runtime '${opts.runtime}'. Available: ${SPAWNABLE_RUNTIMES.join(', ')}.`;
+    }
 
     const rawDir = opts.path ?? this.deps.config.spawnDirPattern.replace('{codename}', codename);
     const dir = isAbsolute(rawDir) ? rawDir : resolve(this.deps.baseDir, rawDir);
@@ -204,6 +211,7 @@ export class Lifecycle {
     // Serialize with js-yaml, never string interpolation: a model/prompt value
     // containing a newline would otherwise inject arbitrary YAML keys.
     const config: Record<string, string> = { codename, repo: dir };
+    if (opts.runtime !== undefined) config.runtime = opts.runtime;
     if (opts.model !== undefined) config.model = opts.model;
     mkdirSync(this.deps.sessionConfigDir, { recursive: true });
     writeFileSync(join(this.deps.sessionConfigDir, `${codename}.yaml`), yaml.dump(config));
