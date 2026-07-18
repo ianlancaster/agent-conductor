@@ -15,12 +15,12 @@ export interface StatusDeps {
 }
 
 export function formatSessionLine(codename: string, state: SessionState | undefined, isSentinel: boolean): string {
-  if (state === undefined) return `⚪ unregistered · ${codename}`;
   const name = `${codename}${isSentinel ? ' 🛡' : ''}`;
+  if (state === undefined) return `${name} · ⚪ unregistered`;
   const tag = state.tag !== undefined ? ` · ${state.tag}` : '';
-  if (state.pause !== undefined) return `⏸ paused · ${name}${tag}`;
+  if (state.pause !== undefined) return `${name} · ⏸ paused${tag}`;
   const activity = state.running ? state.activity : 'stopped';
-  return `${ACTIVITY_ICONS[activity]} ${activity} · ${name}${tag}`;
+  return `${name} · ${ACTIVITY_ICONS[activity]} ${activity}${tag}`;
 }
 
 export function statusReport(deps: StatusDeps, codename?: string): string {
@@ -63,7 +63,7 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
     if (lines.length > 0) lines.push('');
     lines.push(header);
     for (const name of group) {
-      lines.push(formatSessionLine(name, deps.getState(name), name === sentinel));
+      lines.push(`  ${formatSessionLine(name, deps.getState(name), name === sentinel)}`);
     }
   }
   return lines.join('\n');

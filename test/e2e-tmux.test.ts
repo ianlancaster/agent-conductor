@@ -149,10 +149,10 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       await until(async () => (await tail()).includes('GOT: [Message from operator] hello from the operator'));
 
       const status = supervisor.statusReport();
-      expect(status).toContain('🟢 working · alpha');
+      expect(status).toContain('  alpha · 🟢 working');
 
       expect(await supervisor.command('/stop alpha')).toBe('alpha stopped.');
-      expect(supervisor.statusReport()).toContain('⚪ stopped · alpha');
+      expect(supervisor.statusReport()).toContain('  alpha · ⚪ stopped');
     }, 30_000);
 
     it('delivers a piped initial prompt through the runtime launch command', async () => {
