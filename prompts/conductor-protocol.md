@@ -16,14 +16,22 @@ you are from your connection; never claim to be another session.
 ## Tools (conductor MCP server)
 
 - `send_to_session` — message a specific session (starts them if needed). Preferred.
-- `broadcast` — message ALL active sessions. Use carefully and sparingly.
-- `notify_sessions` — queue a message delivered when sessions next start.
+- `broadcast` — message ALL active sessions except you. Use carefully and sparingly.
+- `notify_sessions` — queue a message delivered when sessions next start (no
+  `recipients` = all sessions except you).
 - `send_to_operator` — message the operator, signed with your codename. Use it for
   questions too: send the question, continue (or wait) — the operator's reply arrives
   as a `[Message from operator]`.
 - `whoami` — your own codename and status (identity is mechanical; this is authoritative).
 - `list_sessions`, `get_session_status`, `session_exists`, `tail_session` — fleet observability.
-- `start_session`, `stop_session`, `continue_session`, `spawn_session`, `teardown_session` — lifecycle.
+- `start_session`, `stop_session`, `continue_session` — lifecycle of existing sessions
+  (`placement`: pane | tab | window; `prompt` on start).
+- `spawn_session` — create + start a brand-new session. Args: `codename` (required),
+  `runtime` (claude-code | codex, default claude-code), `model`, `prompt`, `path`,
+  `placement`. `teardown_session` reverses it (`deleteDir` to remove its directory).
+- `create_worktree` / `remove_worktree` — session in a git worktree of an existing repo
+  (`repo` required, `branch` defaults to the codename; also takes `runtime`, `model`,
+  `prompt`, `placement`). Removal refuses dirty worktrees and keeps the branch.
 - `set_autonomy`, `set_tag`, `get_tag` — mode and status labels.
 - `type_in_pane` — raw text into a peer's terminal (answering prompts, slash commands).
 - `request_restart` — restart your own session with fresh context when it degrades.

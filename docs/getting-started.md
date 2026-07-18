@@ -162,6 +162,9 @@ tool — the conductor protocol prompt tells it to.)
   [examples/sessions/example-claude.yaml](../examples/sessions/example-claude.yaml)).
 - **Spawn a throwaway session**: `/spawn scratch --prompt "investigate X"` — makes a
   directory, registers a config, starts it. `/teardown scratch --delete` reverses it.
+  Every flag has a short alias (`-p` prompt, `-r` runtime, `-m` model, `-d` path,
+  `-w` worktree, `-b` branch, `-D` delete; placement `-P`/`-T`/`-W`) — `/help` lists them.
+  `--runtime codex` spawns a Codex session instead of Claude Code.
 - **Worktree sessions** (parallel work on one repo): `/spawn reviewer --worktree
 /path/to/repo --branch review-pass`. Full file isolation, shared git history.
   `remove_worktree` / `--delete` refuses a dirty worktree.
