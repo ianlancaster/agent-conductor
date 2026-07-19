@@ -28,6 +28,8 @@ export interface CodexOverrideOptions {
   notifyCommand: readonly string[];
   /** Per-tool timeout for conductor MCP calls (Codex default is 60s — too low for long consults). */
   toolTimeoutSec: number;
+  /** Run without approval prompts or sandbox (the Claude Code skipPermissions analog). */
+  skipPermissions: boolean;
   /** Strip UI chrome and non-essential traffic (update check, analytics, tips, animations, title writes). */
   bareUi: boolean;
 }
@@ -58,11 +60,6 @@ export function buildConfigOverrides(opts: CodexOverrideOptions): string[] {
     `mcp_servers.${MCP_SERVER_NAME}.url=${tomlString(opts.mcpUrl)}`,
     `mcp_servers.${MCP_SERVER_NAME}.tool_timeout_sec=${opts.toolTimeoutSec}`,
     `notify=${notifyArray}`,
-    // Belt and braces alongside --dangerously-bypass-approvals-and-sandbox:
-    // `codex resume` has been observed to drop the bypass *flag* (openai/codex#9144),
-    // while -c overrides apply on every invocation.
-    `approval_policy="never"`,
-    `sandbox_mode="danger-full-access"`,
     // Codex's paste-burst heuristic swallows the Enter the conductor sends
     // right after a bracketed paste, leaving delivered messages sitting
     // UNSUBMITTED in the composer (verified against 0.144.3). Multiline safety
@@ -72,6 +69,15 @@ export function buildConfigOverrides(opts: CodexOverrideOptions): string[] {
     // trust from the config FILE. prepareCodexHome() appends the trust entry
     // to the per-session config.toml copy instead.
   ];
+  if (opts.skipPermissions) {
+    overrides.push(
+      // Belt and braces alongside --dangerously-bypass-approvals-and-sandbox:
+      // `codex resume` has been observed to drop the bypass *flag* (openai/codex#9144),
+      // while -c overrides apply on every invocation.
+      `approval_policy="never"`,
+      `sandbox_mode="danger-full-access"`,
+    );
+  }
   if (opts.bareUi) {
     overrides.push(
       // The update check renders a BLOCKING interactive prompt at startup

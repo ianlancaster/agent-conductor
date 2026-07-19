@@ -48,9 +48,12 @@ export class StallSentinelRouter {
   async handleStall(session: string, kind: StallKind, info: StallInfo): Promise<void> {
     this.deps.logEvent(session, `stall_${kind}`, info.reason);
 
-    // Watchdog-over-sentinel: if the watcher itself stalls, go straight to the operator.
+    // The sentinel spends its life idle between stalls — that is its normal
+    // state, not an emergency. Its own stalls are logged and otherwise
+    // ignored; the meaningful "watcher is down" signal is a queued stall that
+    // cannot be DELIVERED because the sentinel is not running (below).
     if (this.isSentinel(session)) {
-      await this.deps.notifyOperator(`⚠️ Sentinel *${session}* itself stalled (${kind}). The fleet is unsupervised.`);
+      log().debug('sentinel', `${session}: ${kind} stall ignored (the sentinel idles by design)`);
       return;
     }
 
