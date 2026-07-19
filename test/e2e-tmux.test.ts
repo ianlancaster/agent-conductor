@@ -167,7 +167,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       }
     });
 
-    it('headless create → summon → dismiss round-trips a pane between fleet session and operator window', async () => {
+    it('headless create → summon → banish round-trips a pane between fleet session and operator window', async () => {
       const operatorSession = `${SESSION}-sum`;
       const consolePane = execFileSync(
         'tmux',
@@ -200,11 +200,11 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
         // Summoning again just focuses it.
         expect(await attached.summon(pane, 'omega')).toContain('already in your window');
 
-        // Dismiss sends it back to the fleet session (recreated on demand —
+        // Banish sends it back to the fleet session (recreated on demand —
         // tmux killed it when its last pane was summoned out).
-        expect(await attached.dismiss(pane, 'omega')).toContain('dismissed');
+        expect(await attached.banish(pane, 'omega')).toContain('banished');
         expect(sessionOf(pane.id)).toBe(SESSION);
-        expect(await attached.dismiss(pane, 'omega')).toContain('already dismissed');
+        expect(await attached.banish(pane, 'omega')).toContain('already banished');
         expect(await attached.isAlive(pane)).toBe(true);
       } finally {
         execFileSync('tmux', ['kill-session', '-t', operatorSession], { stdio: 'pipe' });

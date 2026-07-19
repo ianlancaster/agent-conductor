@@ -187,11 +187,11 @@ export class TmuxBackend implements TerminalBackend {
    * The inverse of summon: move the pane into the detached fleet session as
    * its own window (created on demand). The session keeps running headless.
    */
-  async dismiss(pane: PaneRef, session: string): Promise<string> {
+  async banish(pane: PaneRef, session: string): Promise<string> {
     this.assertRef(pane);
     const paneSession = (await tmux(['display-message', '-p', '-t', pane.id, '#{session_name}'])).trim();
     if (paneSession === this.sessionName) {
-      return `${session} is already dismissed (running in '${this.sessionName}').`;
+      return `${session} is already banished (running in '${this.sessionName}').`;
     }
     const exists = await tmuxSucceeds(['has-session', '-t', `=${this.sessionName}`]);
     if (exists) {
@@ -205,7 +205,7 @@ export class TmuxBackend implements TerminalBackend {
       await tmux(['join-pane', '-d', '-s', pane.id, '-t', placeholder]);
       await tmux(['kill-pane', '-t', placeholder]);
     }
-    return `${session} dismissed to detached session '${this.sessionName}' — /summon ${session} brings it back.`;
+    return `${session} banished to detached session '${this.sessionName}' — /summon ${session} brings it back.`;
   }
 
   /**

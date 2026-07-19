@@ -98,7 +98,7 @@ beforeEach(() => {
     autoPause: undefined,
     retitle: async () => undefined,
     summon: async (codename) => `summoned:${codename}`,
-    dismiss: async (codename) => `dismissed:${codename}`,
+    banish: async (codename) => `banished:${codename}`,
   });
 });
 
@@ -139,9 +139,9 @@ describe('session commands', () => {
     expect(backend.paneFor('alpha')?.headless).toBe(false);
   });
 
-  it('routes /summon and /dismiss with an unknown-session guard', async () => {
+  it('routes /summon and /banish with an unknown-session guard', async () => {
     expect(await router.route('/summon alpha')).toBe('summoned:alpha');
-    expect(await router.route('/dismiss alpha')).toBe('dismissed:alpha');
+    expect(await router.route('/banish alpha')).toBe('banished:alpha');
     expect(await router.route('/summon nope')).toBe('Unknown session: nope');
     expect(await router.route('/summon')).toBe('Usage: /summon <session>');
   });

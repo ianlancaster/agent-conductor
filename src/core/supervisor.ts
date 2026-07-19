@@ -206,7 +206,7 @@ export class Supervisor {
       autoPause: this.autoPause,
       retitle: (session) => this.retitle(session),
       summon: (session) => this.paneAction(session, 'summon'),
-      dismiss: (session) => this.paneAction(session, 'dismiss'),
+      banish: (session) => this.paneAction(session, 'banish'),
     });
 
     this.scheduler = new Scheduler({
@@ -392,8 +392,8 @@ export class Supervisor {
     void this.delivery.drainNow();
   }
 
-  /** Route /summon and /dismiss to the backend, with capability + liveness checks. */
-  private async paneAction(session: string, action: 'summon' | 'dismiss'): Promise<string> {
+  /** Route /summon and /banish to the backend, with capability + liveness checks. */
+  private async paneAction(session: string, action: 'summon' | 'banish'): Promise<string> {
     const pane = this.lifecycle.getPane(session);
     if (pane === undefined) return `${session} has no pane — it is not running.`;
     try {
@@ -401,10 +401,10 @@ export class Supervisor {
         if (this.backend.summon === undefined) return `Summon is not supported on the ${this.backend.name} backend.`;
         return await this.backend.summon(pane, session);
       }
-      if (this.backend.dismiss === undefined) {
-        return `Dismiss needs detachable panes — not supported on the ${this.backend.name} backend.`;
+      if (this.backend.banish === undefined) {
+        return `Banish needs detachable panes — not supported on the ${this.backend.name} backend.`;
       }
-      return await this.backend.dismiss(pane, session);
+      return await this.backend.banish(pane, session);
     } catch (err) {
       return `${action} failed: ${err instanceof Error ? err.message : String(err)}`;
     }
