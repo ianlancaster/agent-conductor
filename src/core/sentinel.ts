@@ -26,8 +26,9 @@ export interface SentinelDeps {
 
 /**
  * Routes ALL stalls of autonomous sessions to the designated sentinel session,
- * which decides what to do (nudge / suppress / escalate). The conductor's only
- * judgments are mechanical: dedup suppression and watchdog-over-sentinel.
+ * which decides what to do (nudge / suppress — and anything else, like asking
+ * the operator, via the ordinary messaging primitives). The conductor's only
+ * judgments are mechanical: dedup suppression and undeliverable-stall alerts.
  */
 export class StallSentinelRouter {
   private queue: StallEvent[] = [];
@@ -140,11 +141,6 @@ export class StallSentinelRouter {
           `#${id} by ${resolver}${resolution.note !== undefined ? `: ${resolution.note}` : ''}`,
         );
         return `Stall #${id} dismissed.`;
-      case 'escalate': {
-        await this.deps.notifyOperator(`❓ *${event.session}* (stall #${id}, via ${resolver}): ${resolution.question}`);
-        this.deps.logEvent(event.session, 'stall_escalated', `#${id}: ${truncate(resolution.question, 200)}`);
-        return `Escalated stall #${id} to the operator.`;
-      }
     }
   }
 

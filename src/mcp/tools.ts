@@ -429,16 +429,15 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
     {
       name: 'resolve_stall',
       description:
-        "SENTINEL: resolve a stall. action 'nudge' types text into the stalled session's session; 'suppress' dismisses it; 'escalate' asks the operator.",
+        "SENTINEL: resolve a stall. action 'nudge' types text into the stalled session; 'suppress' dismisses it. To involve the operator, use send_to_operator and suppress or hold the stall.",
       sentinelOnly: true,
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'number' },
-          action: { type: 'string', enum: ['nudge', 'suppress', 'escalate'] },
+          action: { type: 'string', enum: ['nudge', 'suppress'] },
           text: { type: 'string', description: "Nudge text (action 'nudge')" },
           note: { type: 'string', description: "Optional note (action 'suppress')" },
-          question: { type: 'string', description: "Question for the operator (action 'escalate')" },
         },
         required: ['id', 'action'],
       },
@@ -453,11 +452,8 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
           case 'suppress':
             resolution = { action: 'suppress', note: optionalString(args, 'note') };
             break;
-          case 'escalate':
-            resolution = { action: 'escalate', question: requireString(args, 'question') };
-            break;
           default:
-            throw new Error("action must be 'nudge', 'suppress', or 'escalate'");
+            throw new Error("action must be 'nudge' or 'suppress'");
         }
         return deps.sentinel.resolve(id, resolution, caller);
       },

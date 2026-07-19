@@ -138,13 +138,6 @@ describe('resolution', () => {
     expect(router.pendingStalls()).toEqual([]);
   });
 
-  it('escalate forwards the question to the operator', async () => {
-    const id = router.pendingStalls()[0]?.id ?? 0;
-    await router.resolve(id, { action: 'escalate', question: 'Should alpha force-push?' }, 'watch');
-    expect(operatorMessages[0]).toContain('Should alpha force-push?');
-    expect(router.pendingStalls()).toEqual([]);
-  });
-
   it('rejects unknown stall ids', async () => {
     expect(await router.resolve(999, { action: 'suppress' }, 'watch')).toContain('No pending stall');
   });

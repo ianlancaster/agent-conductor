@@ -89,7 +89,7 @@ doesn't exist, or iTerm2 automation permission (macOS will prompt the first time
 
 Autonomous sessions run unattended. When one stalls (finishes a turn, blocks on a prompt,
 compacts, or wedges), the conductor routes the stall to the **sentinel** — a session you
-designate — which decides whether to nudge, dismiss, or escalate to you. Without a
+designate — which decides whether to nudge, dismiss, or ask you (plain send_to_operator). Without a
 sentinel, stall reports go straight to you instead. (The sentinel itself idles between
 stalls — that's normal; the conductor only alerts you if a stall can't be delivered
 because the sentinel is not running.)
@@ -128,7 +128,7 @@ because the sentinel is not running.)
    When `alpha` finishes a turn or gets stuck, the conductor sends the sentinel a
    `[Stall]` message; the sentinel calls `get_stall_queue`, reads alpha's pane and last
    message, and either nudges alpha (`resolve_stall` with an instruction), dismisses it,
-   or escalates to you. Watch both panes to see it happen. `conductor logs alpha` shows
+   or messages you. Watch both panes to see it happen. `conductor logs alpha` shows
    the `stall_routed` / `stall_nudged` trail.
 
 **Key idea:** the conductor never uses an LLM itself — all judgment lives in the sentinel

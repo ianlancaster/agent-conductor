@@ -58,5 +58,4 @@ export interface StallEvent {
   createdAt: number;
 }
 
-export type StallResolution =
-  { action: 'nudge'; text: string } | { action: 'suppress'; note?: string } | { action: 'escalate'; question: string };
+export type StallResolution = { action: 'nudge'; text: string } | { action: 'suppress'; note?: string };

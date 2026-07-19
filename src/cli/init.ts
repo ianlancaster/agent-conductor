@@ -13,7 +13,7 @@ const SUPERVISOR_TEMPLATE = `# agent-conductor supervisor config.
 #                               # macOS. Daemons should set this explicitly.
 
 # Designate a stall sentinel — a session (defined in config/sessions/) that receives
-# every stall from autonomous sessions and decides: nudge, dismiss, or escalate.
+# every stall from autonomous sessions and decides: nudge, dismiss, or ask you.
 # Launch it with prompts/sentinel.md as its instructions.
 # sentinel:
 #   codename: watch
