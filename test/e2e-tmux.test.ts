@@ -239,6 +239,21 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       expect(supervisor.statusReport()).toContain('  alpha · ⚪ stopped');
     }, 30_000);
 
+    it('marks sessions stopped when their panes died while the conductor was down', async () => {
+      // Operator closes the whole tmux window/terminal: panes die with it.
+      // A restarted conductor must reconcile the persisted "running" state to
+      // stopped — not report ghosts as working/stalled.
+      await supervisor.start();
+      await supervisor.command('/start alpha');
+      expect(supervisor.statusReport()).toContain('alpha · 🟢 working');
+      await supervisor.stop();
+      killSession();
+
+      supervisor = new Supervisor(baseDir);
+      await supervisor.start();
+      expect(supervisor.statusReport()).toContain('alpha · ⚪ stopped');
+    }, 30_000);
+
     it('delivers a piped initial prompt through the runtime launch command', async () => {
       await supervisor.start();
       await supervisor.command('/tell alpha do the morning checklist');

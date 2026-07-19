@@ -275,7 +275,18 @@ export class Supervisor {
           void this.retitle(codename);
         }
       }
+      // Persisted state can say "running" for sessions whose panes did NOT
+      // survive (window closed, tmux server gone, reboot). Those are dead —
+      // reconcile to stopped, or status reports ghosts as stalled/working.
+      for (const codename of this.states.activeSessions()) {
+        if (this.lifecycle.getPane(codename) === undefined) {
+          log().info('supervisor', `${codename}: no surviving pane — marking stopped`);
+          this.lifecycle.handleSessionEnd(codename);
+        }
+      }
     } catch (err) {
+      // Rediscovery itself failed — pane liveness is UNKNOWN, so leave the
+      // persisted state alone rather than declaring live sessions dead.
       log().warn('supervisor', `Pane rediscovery failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
