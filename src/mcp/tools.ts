@@ -4,7 +4,7 @@ import type { Lifecycle } from '../core/lifecycle.js';
 import type { Messaging } from '../core/messaging.js';
 import type { StallSentinelRouter } from '../core/sentinel.js';
 import type { SessionStateManager } from '../core/state.js';
-import type { Placement, StallResolution } from '../core/types.js';
+import type { Placement } from '../core/types.js';
 import { sleep } from '../core/utils.js';
 import { isWorktree } from '../core/worktree.js';
 import type { McpToolDefinition } from './server.js';
@@ -416,46 +416,6 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
           await deps.lifecycle.restart(caller, {});
         })();
         return Promise.resolve(`Restart scheduled (${reason}). Wrap up now — your session restarts shortly.`);
-      },
-    },
-    // ── sentinel-gated ────────────────────────────────────────────────────────
-    {
-      name: 'get_stall_queue',
-      description: 'SENTINEL: list unresolved stall events with pane captures and transcript excerpts.',
-      sentinelOnly: true,
-      inputSchema: { type: 'object', properties: {} },
-      handler: (_args, _caller) => Promise.resolve(JSON.stringify(deps.sentinel.pendingStalls(), null, 2)),
-    },
-    {
-      name: 'resolve_stall',
-      description:
-        "SENTINEL: resolve a stall. action 'nudge' types text into the stalled session; 'suppress' dismisses it. To involve the operator, use send_to_operator and suppress or hold the stall.",
-      sentinelOnly: true,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          id: { type: 'number' },
-          action: { type: 'string', enum: ['nudge', 'suppress'] },
-          text: { type: 'string', description: "Nudge text (action 'nudge')" },
-          note: { type: 'string', description: "Optional note (action 'suppress')" },
-        },
-        required: ['id', 'action'],
-      },
-      handler: (args, caller) => {
-        const id = typeof args.id === 'number' ? args.id : Number.NaN;
-        if (!Number.isInteger(id)) throw new Error("'id' must be an integer");
-        let resolution: StallResolution;
-        switch (args.action) {
-          case 'nudge':
-            resolution = { action: 'nudge', text: requireString(args, 'text') };
-            break;
-          case 'suppress':
-            resolution = { action: 'suppress', note: optionalString(args, 'note') };
-            break;
-          default:
-            throw new Error("action must be 'nudge' or 'suppress'");
-        }
-        return deps.sentinel.resolve(id, resolution, caller);
       },
     },
   ];

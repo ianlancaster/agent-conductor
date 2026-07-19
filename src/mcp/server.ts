@@ -5,8 +5,6 @@ export interface McpToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  /** Tool is visible/callable only by the designated stall sentinel. */
-  sentinelOnly?: boolean;
   handler(args: Record<string, unknown>, caller: string): Promise<string>;
 }
 
@@ -15,8 +13,6 @@ export interface McpServerOptions {
   host: string;
   keepAliveTimeoutMs: number;
   tools: McpToolDefinition[];
-  /** Whether this caller is the designated sentinel (gates sentinelOnly tools). */
-  isSentinel(caller: string): boolean;
   /** Lifecycle event pushed by a session's runtime hooks. */
   onEvent(session: string, body: unknown): void;
   /** CLI command line (from the interactive client via POST /cmd). */
@@ -217,10 +213,11 @@ export class ConductorMcpServer {
         return;
       }
       case 'tools/list': {
-        const sentinel = this.opts.isSentinel(caller);
-        const tools = [...this.tools.values()]
-          .filter((tool) => sentinel || tool.sentinelOnly !== true)
-          .map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema }));
+        const tools = [...this.tools.values()].map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+        }));
         this.respondRpc(res, id, { tools });
         return;
       }
@@ -231,7 +228,7 @@ export class ConductorMcpServer {
             ? (params.arguments as Record<string, unknown>)
             : {};
         const tool = this.tools.get(name);
-        if (tool === undefined || (tool.sentinelOnly === true && !this.opts.isSentinel(caller))) {
+        if (tool === undefined) {
           this.respondRpcError(res, id, -32602, `Unknown tool: ${name}`);
           return;
         }
