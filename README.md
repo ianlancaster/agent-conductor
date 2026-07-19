@@ -103,7 +103,7 @@ Same language everywhere (`conductor console`, `conductor cmd`, Telegram):
 /auto <session|all>          /pause | /resume <session|all>
 /facilitated <session|all>   /tag <session> [text]
 /summon <session>            bring its pane into your window (tmux) / focus it (iTerm)
-/dismiss <session>           move its pane to the detached fleet session (tmux; keeps running)
+/banish <session>            move its pane to the detached fleet session (tmux; keeps running)
 /spawn <name> [flags] [placement]
     -r/--runtime <claude-code|codex>   runtime (default claude-code)
     -m/--model <model>                 model override
@@ -173,7 +173,7 @@ Panes move freely between the two: `-H/--headless` on `/spawn`, `/start`, or
 `/continue` creates the pane in the detached fleet session (out of sight, fully
 functional — messaging, health, and stall detection don't care about visibility);
 `/summon <session>` pulls a pane into your current window from wherever it lives;
-`/dismiss <session>` sends it back to the detached session. Closing a terminal
+`/banish <session>` sends it back to the detached session. Closing a terminal
 only detaches — everything keeps running (`tmux attach` or `conductor console`
 to get back in). `conductor daemon install` sets up launchd (macOS) or a
 systemd user unit (Linux); daemons have no `$TMUX`, so set `terminal.backend`

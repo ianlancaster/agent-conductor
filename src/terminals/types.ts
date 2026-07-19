@@ -45,7 +45,7 @@ export interface TerminalBackend {
    * detached fleet session, where it keeps running headless (tmux only —
    * iTerm panes cannot run detached).
    */
-  dismiss?(pane: PaneRef, session: string): Promise<string>;
+  banish?(pane: PaneRef, session: string): Promise<string>;
 
   /**
    * Run the FIRST command in a fresh pane. Implementations must handle the

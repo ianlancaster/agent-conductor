@@ -20,7 +20,7 @@ export interface CommandDeps {
   /** Bring a session's pane to the operator (tmux: move it here; iTerm: focus it). */
   summon(codename: string): Promise<string>;
   /** Move a session's pane into the detached fleet session (tmux only). */
-  dismiss(codename: string): Promise<string>;
+  banish(codename: string): Promise<string>;
 }
 
 /** Tokenize a command line, honoring double quotes. */
@@ -58,7 +58,7 @@ const HELP = [
   '`/stop <session|all>` — stop session(s)',
   '`/tail <session> [lines]` — read trailing pane output',
   '`/summon <session>` — bring its pane into your window (tmux) / focus it (iTerm)',
-  '`/dismiss <session>` — move its pane to the detached fleet session; it keeps running (tmux only)',
+  '`/banish <session>` — move its pane to the detached fleet session; it keeps running (tmux only)',
   '',
   '*Conversation*',
   '`/talk <session>` — set the talk target (bare text routes there)',
@@ -179,11 +179,11 @@ export class CommandRouter {
         if (!this.deps.states.has(target)) return `Unknown session: ${target}`;
         return this.deps.summon(target);
       }
-      case 'dismiss': {
+      case 'banish': {
         const target = args[0];
-        if (target === undefined) return 'Usage: /dismiss <session>';
+        if (target === undefined) return 'Usage: /banish <session>';
         if (!this.deps.states.has(target)) return `Unknown session: ${target}`;
-        return this.deps.dismiss(target);
+        return this.deps.banish(target);
       }
       case 'spawn':
         return this.spawnCommand(args);
