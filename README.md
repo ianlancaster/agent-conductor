@@ -16,7 +16,8 @@ together:
 2. **Who's stuck?** Runtimes push lifecycle events (Claude Code hooks, Codex `notify`) to the
    conductor; a pane-diff watchdog catches what events miss. Every stall of an autonomous
    session is routed to a **stall sentinel** — a session you designate — which reads the pane and
-   decides: nudge with a precise instruction, dismiss, or escalate to you.
+   decides: nudge with a precise instruction, dismiss, or ask you (via the same
+   `send_to_operator` primitive every session has — no separate escalation machinery).
 3. **Where's the operator?** Channel adapters (Telegram today; the interface is small) give
    you full fleet control from anywhere: status, start/stop, messaging, and mode changes.
    Sessions message you with `send_to_operator`; you reply with `/tell` — no ceremony.
@@ -80,16 +81,16 @@ problems early.
 
 ## Concepts
 
-| Term                 | Meaning                                                                                                                                                                                                                           |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Session**          | The managed unit: a codename + a working directory + a runtime, living in a pane. Defined by a YAML in `config/sessions/` or created on the fly with `/spawn`.                                                                    |
-| **Run**              | One launch of a session's CLI (start → stop). A session accumulates many runs; `continue` resumes the previous run's conversation.                                                                                                |
-| **Runtime**          | The agent CLI: `claude-code` or `codex`. Owns launch flags, identity wiring, lifecycle-event parsing.                                                                                                                             |
-| **Terminal backend** | Where panes live: `iterm` (macOS, focus tracking) or `tmux` (headless, SSH, Linux). Auto-detected: starting the conductor inside tmux selects tmux and panes join your window; otherwise iterm on macOS.                          |
-| **Channel**          | An operator surface: the built-in console, Telegram, more via `ChannelAdapter`.                                                                                                                                                   |
-| **Autonomy**         | `facilitated` — you drive; stalls are ignored. `autonomous` — stalls route to the sentinel.                                                                                                                                       |
-| **Sentinel**         | The session designated in `sentinel.codename`. Receives every stall with pane capture + last message; resolves with `nudge` / `suppress` / `escalate`. The conductor watches the watcher: a stalled sentinel alerts you directly. |
-| **Agent project**    | A repo containing the marker file (`.conductor-agent`) — flagged 🤖 in status. Distinguishes purpose-built agents from sessions doing ordinary work in ordinary repos. Display-only.                                              |
+| Term                 | Meaning                                                                                                                                                                                                                                                                                 |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Session**          | The managed unit: a codename + a working directory + a runtime, living in a pane. Defined by a YAML in `config/sessions/` or created on the fly with `/spawn`.                                                                                                                          |
+| **Run**              | One launch of a session's CLI (start → stop). A session accumulates many runs; `continue` resumes the previous run's conversation.                                                                                                                                                      |
+| **Runtime**          | The agent CLI: `claude-code` or `codex`. Owns launch flags, identity wiring, lifecycle-event parsing.                                                                                                                                                                                   |
+| **Terminal backend** | Where panes live: `iterm` (macOS, focus tracking) or `tmux` (headless, SSH, Linux). Auto-detected: starting the conductor inside tmux selects tmux and panes join your window; otherwise iterm on macOS.                                                                                |
+| **Channel**          | An operator surface: the built-in console, Telegram, more via `ChannelAdapter`.                                                                                                                                                                                                         |
+| **Autonomy**         | `facilitated` — you drive; stalls are ignored. `autonomous` — stalls route to the sentinel.                                                                                                                                                                                             |
+| **Sentinel**         | The session designated in `sentinel.codename`. Receives every stall with pane capture + last message; resolves with `nudge` / `suppress`, and asks you things with plain `send_to_operator`. If a stall can't be delivered because the sentinel isn't running, you're alerted directly. |
+| **Agent project**    | A repo containing the marker file (`.conductor-agent`) — flagged 🤖 in status. Distinguishes purpose-built agents from sessions doing ordinary work in ordinary repos. Display-only.                                                                                                    |
 
 ## Operator commands
 
@@ -141,8 +142,8 @@ dirty worktrees.
 ## Telegram
 
 Set `CONDUCTOR_TELEGRAM_TOKEN` and `CONDUCTOR_TELEGRAM_CHAT_ID` (create a bot with
-@BotFather). Every command above works remotely; sentinel escalations and
-`send_to_operator` messages arrive as signed messages.
+@BotFather). Every command above works remotely; `send_to_operator`
+messages (including the sentinel's questions) arrive as signed messages.
 
 ## Security posture
 
