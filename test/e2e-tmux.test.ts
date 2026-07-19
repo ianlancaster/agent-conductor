@@ -196,6 +196,12 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
         // Summon pulls it into the operator's window.
         expect(await attached.summon(pane, 'omega')).toContain('summoned');
         expect(sessionOf(pane.id)).toBe(operatorSession);
+        // …and makes the title visible there: the operator's window never
+        // hosted a conductor-created pane, so border status was off.
+        const borders = execFileSync('tmux', ['show-options', '-w', '-t', pane.id, 'pane-border-status'], {
+          encoding: 'utf8',
+        }).trim();
+        expect(borders).toBe('pane-border-status top');
 
         // Summoning again just focuses it.
         expect(await attached.summon(pane, 'omega')).toContain('already in your window');

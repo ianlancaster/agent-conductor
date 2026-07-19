@@ -97,16 +97,7 @@ export class TmuxBackend implements TerminalBackend {
     }
     // Pane-scoped identity marker so rediscover() can map panes back to sessions.
     await tmux(['set-option', '-p', '-t', paneId, SESSION_OPTION, encodeSessionOption(this.fleetId, session)]);
-    if (this.paneBorders) {
-      // Make pane titles ("codename — tag", set via rename()) actually visible:
-      // tmux hides them unless the window shows pane border status lines.
-      // Window-scoped and best-effort — display chrome must never fail a spawn.
-      try {
-        await tmux(['set-option', '-w', '-t', paneId, 'pane-border-status', 'top']);
-      } catch (error) {
-        log().debug('tmux', `could not enable pane border titles: ${String(error)}`);
-      }
-    }
+    await this.ensurePaneBorders(paneId);
     const map = this.readPaneMap();
     map[session] = paneId;
     this.writePaneMap(map);
@@ -180,6 +171,9 @@ export class TmuxBackend implements TerminalBackend {
       return `${session} is already in your window — focused it.`;
     }
     await tmux(['join-pane', '-d', '-s', pane.id, '-t', anchor]);
+    // The destination window may never have hosted a conductor pane —
+    // without this the summoned pane arrives with its title invisible.
+    await this.ensurePaneBorders(pane.id);
     return `${session} summoned into your window.`;
   }
 
@@ -205,6 +199,7 @@ export class TmuxBackend implements TerminalBackend {
       await tmux(['join-pane', '-d', '-s', pane.id, '-t', placeholder]);
       await tmux(['kill-pane', '-t', placeholder]);
     }
+    await this.ensurePaneBorders(pane.id);
     return `${session} banished to detached session '${this.sessionName}' — /summon ${session} brings it back.`;
   }
 
@@ -297,6 +292,26 @@ export class TmuxBackend implements TerminalBackend {
   async rename(pane: PaneRef, name: string): Promise<void> {
     this.assertRef(pane);
     await tmux(['select-pane', '-t', pane.id, '-T', name]);
+    // Titles are invisible unless the pane's CURRENT window shows border
+    // status lines. Re-ensuring here covers panes that arrived by adoption
+    // (created before this feature, or by another conductor) — rename runs
+    // on adoption and whenever a tag changes.
+    await this.ensurePaneBorders(pane.id);
+  }
+
+  /**
+   * Make pane titles ("codename — tag") visible in the window that currently
+   * holds the pane: tmux hides them unless the window shows pane border
+   * status lines. Window-scoped, idempotent, and best-effort — display
+   * chrome must never fail a spawn, summon, or rename.
+   */
+  private async ensurePaneBorders(paneId: string): Promise<void> {
+    if (!this.paneBorders) return;
+    try {
+      await tmux(['set-option', '-w', '-t', paneId, 'pane-border-status', 'top']);
+    } catch (error) {
+      log().debug('tmux', `could not enable pane border titles: ${String(error)}`);
+    }
   }
 
   /** Find surviving marked panes after a conductor restart; refresh the store. */
