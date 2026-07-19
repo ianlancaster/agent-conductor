@@ -37,6 +37,12 @@ export interface TmuxBackendConfig {
    * `sessionName` session. Falls back to detached if that pane is gone.
    */
   attachPane?: string;
+  /**
+   * Enable tmux's pane-border-status on windows the conductor creates panes
+   * in, so each pane shows its title ("codename — tag") — tmux hides pane
+   * titles by default.
+   */
+  paneBorders: boolean;
 }
 
 export interface TmuxBackendOptions {
@@ -65,6 +71,7 @@ export class TmuxBackend implements TerminalBackend {
   private readonly windowName: string;
   private readonly fleetId: string;
   private readonly attachPane: string | undefined;
+  private readonly paneBorders: boolean;
 
   constructor(opts: TmuxBackendOptions) {
     this.store = opts.store;
@@ -72,6 +79,7 @@ export class TmuxBackend implements TerminalBackend {
     this.windowName = opts.config.windowName;
     this.fleetId = opts.config.fleetId;
     this.attachPane = opts.config.attachPane;
+    this.paneBorders = opts.config.paneBorders;
   }
 
   async init(): Promise<void> {
@@ -88,6 +96,16 @@ export class TmuxBackend implements TerminalBackend {
     }
     // Pane-scoped identity marker so rediscover() can map panes back to sessions.
     await tmux(['set-option', '-p', '-t', paneId, SESSION_OPTION, encodeSessionOption(this.fleetId, session)]);
+    if (this.paneBorders) {
+      // Make pane titles ("codename — tag", set via rename()) actually visible:
+      // tmux hides them unless the window shows pane border status lines.
+      // Window-scoped and best-effort — display chrome must never fail a spawn.
+      try {
+        await tmux(['set-option', '-w', '-t', paneId, 'pane-border-status', 'top']);
+      } catch (error) {
+        log().debug('tmux', `could not enable pane border titles: ${String(error)}`);
+      }
+    }
     const map = this.readPaneMap();
     map[session] = paneId;
     this.writePaneMap(map);
