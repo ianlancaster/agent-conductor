@@ -16,7 +16,7 @@ import {
   tomlString,
 } from '../src/runtimes/codex/config-gen.js';
 
-const SETTINGS: CodexRuntimeSettings = { binary: 'codex', toolTimeoutSec: 600 };
+const SETTINGS: CodexRuntimeSettings = { binary: 'codex', toolTimeoutSec: 600, skipPermissions: true };
 
 function makeSession(overrides: Partial<SessionConfig> = {}): SessionConfig {
   return sessionConfigSchema.parse({ codename: 'midgard', repo: '/repos/midgard', runtime: 'codex', ...overrides });
@@ -36,6 +36,7 @@ describe('config generation', () => {
       mcpUrl: 'http://127.0.0.1:3456/mcp/midgard',
       notifyCommand: ['/bin/sh', '/cfg/notify.sh'],
       toolTimeoutSec: 600,
+      skipPermissions: true,
       bareUi: false,
     });
     expect(overrides).toContain('mcp_servers.conductor.url="http://127.0.0.1:3456/mcp/midgard"');
@@ -51,6 +52,7 @@ describe('config generation', () => {
       mcpUrl: 'http://127.0.0.1:3456/mcp/midgard',
       notifyCommand: ['/bin/sh', '/cfg/notify.sh'],
       toolTimeoutSec: 600,
+      skipPermissions: true,
       bareUi: true,
     });
     expect(overrides).toContain('check_for_update_on_startup=false');
@@ -58,6 +60,21 @@ describe('config generation', () => {
     expect(overrides).toContain('tui.show_tooltips=false');
     expect(overrides).toContain('tui.animations=false');
     expect(overrides).toContain('tui.terminal_title=[]');
+  });
+
+  it('skipPermissions: false drops the approval/sandbox overrides but keeps the correctness ones', () => {
+    const overrides = buildConfigOverrides({
+      mcpUrl: 'http://127.0.0.1:3456/mcp/midgard',
+      notifyCommand: ['/bin/sh', '/cfg/notify.sh'],
+      toolTimeoutSec: 600,
+      skipPermissions: false,
+      bareUi: true,
+    });
+    expect(overrides.join(' ')).not.toContain('approval_policy');
+    expect(overrides.join(' ')).not.toContain('sandbox_mode');
+    // Identity + delivery correctness are not permission settings — always on.
+    expect(overrides).toContain('disable_paste_burst=true');
+    expect(overrides.join(' ')).toContain('mcp_servers.conductor.url');
   });
 
   it('escapes TOML strings', () => {
@@ -123,6 +140,17 @@ describe('buildLaunchCommand', () => {
     // Config overrides still apply on resume (the bypass flag alone is not honored there).
     expect(cmd).toContain(`-c 'approval_policy="never"'`);
     expect(cmd).toContain(`-c 'sandbox_mode="danger-full-access"'`);
+  });
+
+  it('skipPermissions: false omits the bypass flag and the approval overrides', () => {
+    const guarded = new CodexRuntime({
+      config: { ...SETTINGS, skipPermissions: false },
+      baseDir: '/base',
+    });
+    const cmd = guarded.buildLaunchCommand(makeSession(), identity, {});
+    expect(cmd).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(cmd).not.toContain('approval_policy');
+    expect(cmd).not.toContain('sandbox_mode');
   });
 
   it('exports a per-session CODEX_HOME so resume --last only sees this session (H4)', () => {

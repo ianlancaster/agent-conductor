@@ -241,11 +241,12 @@ export class CodexRuntime implements SessionRuntime {
       mcpUrl: identity.mcpUrl,
       notifyCommand: ['/bin/sh', this.notifyScriptPath(identity)],
       toolTimeoutSec: this.settings.toolTimeoutSec,
+      skipPermissions: this.settings.skipPermissions,
       bareUi: this.settings.bareUi,
     });
     for (const override of overrides) parts.push('-c', shellQuote(override));
 
-    parts.push('--dangerously-bypass-approvals-and-sandbox');
+    if (this.settings.skipPermissions) parts.push('--dangerously-bypass-approvals-and-sandbox');
 
     const model = session.model ?? this.settings.defaultModel;
     if (model !== undefined) parts.push('--model', shellQuote(model));

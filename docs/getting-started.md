@@ -90,7 +90,9 @@ doesn't exist, or iTerm2 automation permission (macOS will prompt the first time
 Autonomous sessions run unattended. When one stalls (finishes a turn, blocks on a prompt,
 compacts, or wedges), the conductor routes the stall to the **sentinel** — a session you
 designate — which decides whether to nudge, dismiss, or escalate to you. Without a
-sentinel, autonomous sessions are unsupervised (and the conductor warns you).
+sentinel, stall reports go straight to you instead. (The sentinel itself idles between
+stalls — that's normal; the conductor only alerts you if a stall can't be delivered
+because the sentinel is not running.)
 
 1. Give the sentinel its instructions. Copy the shipped prompt into your fleet:
 

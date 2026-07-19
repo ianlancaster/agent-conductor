@@ -68,6 +68,10 @@ runtimes:
   codex:
     binary: codex
     toolTimeoutSec: 600 # Codex default is 60s — too low for long conductor tools
+    # Launch with --dangerously-bypass-approvals-and-sandbox (the claudeCode.skipPermissions
+    # analog). Set false to let your own config.toml approval/sandbox settings govern —
+    # unattended sessions will then hang on approval prompts until nudged.
+    skipPermissions: true
     bareUi: true # bare-bones panes: no startup update prompt (it BLOCKS spawned panes), analytics, tips, animations, or terminal-title writes. Set false for stock Codex behavior.
 
 channels:

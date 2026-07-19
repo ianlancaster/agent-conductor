@@ -165,6 +165,15 @@ export const supervisorConfigSchema = z.object({
           /** MCP tool timeout — Codex defaults to 60s, far too low for long consults. */
           toolTimeoutSec: z.number().int().positive().default(600),
           /**
+           * Launch with --dangerously-bypass-approvals-and-sandbox (plus the
+           * approval_policy/sandbox_mode -c overrides, since resume drops the
+           * flag — openai/codex#9144). The Codex analog of claudeCode.
+           * skipPermissions. Set false to let your own config.toml approval
+           * and sandbox settings govern — unattended sessions will then hang
+           * on approval prompts until nudged.
+           */
+          skipPermissions: z.boolean().default(true),
+          /**
            * Strip Codex's optional UI chrome and non-essential traffic: startup
            * update check (an interactive prompt that would hang a spawned pane),
            * analytics, startup tips, animations, and terminal-title writes

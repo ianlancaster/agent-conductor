@@ -74,10 +74,12 @@ describe('stall routing', () => {
     expect(router.pendingStalls()).toEqual([]);
   });
 
-  it('alerts the operator when the sentinel itself stalls', async () => {
+  it("ignores the sentinel's own stalls — idle is its normal state, not an emergency", async () => {
+    await router.handleStall('watch', 'idle', {});
     await router.handleStall('watch', 'silent', {});
-    expect(operatorMessages[0]).toContain('Sentinel *watch* itself stalled');
+    expect(operatorMessages).toEqual([]);
     expect(delivered).toEqual([]);
+    expect(router.pendingStalls()).toEqual([]);
   });
 
   it('suppresses a repeat stall with similar pane content', async () => {
