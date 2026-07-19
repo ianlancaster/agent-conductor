@@ -162,7 +162,9 @@ that repo's `.gitignore`.**
 The tmux backend has two modes: started from **inside tmux**, panes join your own
 session (the window you launched from — set `terminal.tmux.attachToCurrent: false` to
 opt out); started outside tmux, the fleet lives in a **detached** tmux session — a
-Linux box over SSH works. `conductor daemon install` sets up launchd (macOS) or a
+Linux box over SSH works. Either way each pane is labeled with its session name
+(`codename — tag`) in a border line above it (`terminal.tmux.paneBorders: false`
+turns that off). `conductor daemon install` sets up launchd (macOS) or a
 systemd user unit (Linux); daemons have no `$TMUX`, so set `terminal.backend`
 explicitly for daemon fleets.
 

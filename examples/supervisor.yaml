@@ -21,6 +21,10 @@ terminal:
     # tmux window (splits / new windows in the session you launched from), just
     # like the iTerm backend. Set false to always use the detached session below.
     attachToCurrent: true
+    # Show each pane's title ("codename — tag") in a border line above it.
+    # tmux hides pane titles by default, which makes a fleet unidentifiable.
+    # Set false to leave your window's border style untouched.
+    paneBorders: true
     # sessionName: my-fleet       # detached-mode session name; default: conductor-<fleet slug>, unique per fleet dir
 
 # The stall sentinel: a session (configured like any other in config/sessions/) that

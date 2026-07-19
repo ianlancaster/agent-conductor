@@ -116,6 +116,13 @@ export const supervisorConfigSchema = z.object({
            * `sessionName` session instead.
            */
           attachToCurrent: z.boolean().default(true),
+          /**
+           * Show each pane's title ("codename — tag") in a border line above it,
+           * by enabling tmux's pane-border-status on windows the conductor puts
+           * panes into. tmux hides pane titles by default, which makes a fleet
+           * unidentifiable. Set false to leave the window's border style alone.
+           */
+          paneBorders: z.boolean().default(true),
         })
         .default({}),
     })

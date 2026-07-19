@@ -54,7 +54,10 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
     beforeEach(async () => {
       workDir = mkdtempSync(join(tmpdir(), 'conductor-e2e-'));
       store = new Store(':memory:');
-      backend = new TmuxBackend({ store, config: { sessionName: SESSION, windowName: 'e2e', fleetId: 'e2e' } });
+      backend = new TmuxBackend({
+        store,
+        config: { sessionName: SESSION, windowName: 'e2e', fleetId: 'e2e', paneBorders: true },
+      });
       await backend.init();
     });
 
@@ -86,9 +89,20 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
 
     it('rediscovers panes from a fresh backend instance via pane options', async () => {
       const pane = await backend.createPane('gamma', 'tab', workDir);
-      const fresh = new TmuxBackend({ store, config: { sessionName: SESSION, windowName: 'e2e', fleetId: 'e2e' } });
+      const fresh = new TmuxBackend({
+        store,
+        config: { sessionName: SESSION, windowName: 'e2e', fleetId: 'e2e', paneBorders: true },
+      });
       const found = await fresh.rediscover();
       expect(found.get('gamma')?.id).toBe(pane.id);
+    });
+
+    it('enables pane border titles on the window it creates panes in', async () => {
+      const pane = await backend.createPane('iota', 'pane', workDir);
+      const status = execFileSync('tmux', ['show-options', '-w', '-t', pane.id, 'pane-border-status'], {
+        encoding: 'utf8',
+      }).trim();
+      expect(status).toBe('pane-border-status top');
     });
 
     it('kills panes and reports death', async () => {
@@ -120,7 +134,13 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       try {
         const attached = new TmuxBackend({
           store,
-          config: { sessionName: SESSION, windowName: 'e2e', fleetId: 'e2e', attachPane: consolePane },
+          config: {
+            sessionName: SESSION,
+            windowName: 'e2e',
+            fleetId: 'e2e',
+            paneBorders: true,
+            attachPane: consolePane,
+          },
         });
         const pane = await attached.createPane('epsilon', 'pane', workDir);
         const where = execFileSync('tmux', ['display-message', '-p', '-t', pane.id, '#{session_name} #{window_id}'], {
@@ -150,7 +170,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
     it('attach mode: falls back to the detached session when the console pane is gone', async () => {
       const attached = new TmuxBackend({
         store,
-        config: { sessionName: SESSION, windowName: 'e2e', fleetId: 'e2e', attachPane: '%99999' },
+        config: { sessionName: SESSION, windowName: 'e2e', fleetId: 'e2e', paneBorders: true, attachPane: '%99999' },
       });
       const pane = await attached.createPane('eta', 'pane', workDir);
       const sessionName = execFileSync('tmux', ['display-message', '-p', '-t', pane.id, '#{session_name}'], {
