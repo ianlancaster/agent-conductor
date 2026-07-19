@@ -125,11 +125,12 @@ because the sentinel is not running.)
    /tell alpha <a real, multi-step task>
    ```
 
-   When `alpha` finishes a turn or gets stuck, the conductor sends the sentinel a
-   `[Stall]` message; the sentinel calls `get_stall_queue`, reads alpha's pane and last
-   message, and either nudges alpha (`resolve_stall` with an instruction), dismisses it,
-   or messages you. Watch both panes to see it happen. `conductor logs alpha` shows
-   the `stall_routed` / `stall_nudged` trail.
+   When `alpha` finishes a turn or gets stuck, the conductor sends the sentinel ONE
+   `[Stall]` message carrying the session, the stall kind, and the (truncated) last
+   message alpha stalled on. The sentinel acts with ordinary tools: `tail_session` to
+   look deeper, `send_to_session` to nudge, `send_to_operator` to ask you — or does
+   nothing if the stall is fine. Watch both panes to see it happen. `conductor logs
+alpha` shows the `stall_routed` trail.
 
 **Key idea:** the conductor never uses an LLM itself — all judgment lives in the sentinel
 session. If the sentinel itself stalls or isn't running, the conductor alerts you directly.

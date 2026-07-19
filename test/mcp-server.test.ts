@@ -21,13 +21,6 @@ const tools: McpToolDefinition[] = [
     inputSchema: { type: 'object', properties: {} },
     handler: () => Promise.reject(new Error('kapow')),
   },
-  {
-    name: 'sentinel_secret',
-    description: 'sentinel only',
-    sentinelOnly: true,
-    inputSchema: { type: 'object', properties: {} },
-    handler: () => Promise.resolve('the queue'),
-  },
 ];
 
 async function rpc(path: string, method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -47,7 +40,6 @@ beforeEach(async () => {
     host: '127.0.0.1',
     keepAliveTimeoutMs: 1000,
     tools,
-    isSentinel: (caller) => caller === 'watch',
     onEvent: (session, body) => events.push({ session, body }),
     onCommand: (line) => {
       commands.push(line);
@@ -132,26 +124,12 @@ describe('JSON-RPC surface', () => {
     expect(payload.serverInfo.name).toBe('agent-conductor');
   });
 
-  it('hides sentinel-only tools from regular sessions but shows them to the sentinel', async () => {
+  it('exposes the same tool surface to every session — no per-caller gating', async () => {
     const regular = await rpc('/mcp/alpha', 'tools/list');
     const regularNames = (regular.result as { tools: { name: string }[] }).tools.map((t) => t.name);
-    expect(regularNames).toContain('echo_caller');
-    expect(regularNames).not.toContain('sentinel_secret');
-
     const sentinel = await rpc('/mcp/watch', 'tools/list');
     const sentinelNames = (sentinel.result as { tools: { name: string }[] }).tools.map((t) => t.name);
-    expect(sentinelNames).toContain('sentinel_secret');
-  });
-
-  it('rejects sentinel-only tool calls from non-sentinel callers', async () => {
-    const result = await rpc('/mcp/alpha', 'tools/call', { name: 'sentinel_secret', arguments: {} });
-    expect((result.error as { message: string }).message).toContain('Unknown tool');
-  });
-
-  it('allows sentinel-only tool calls from the sentinel', async () => {
-    const result = await rpc('/mcp/watch', 'tools/call', { name: 'sentinel_secret', arguments: {} });
-    const content = (result.result as { content: { text: string }[] }).content;
-    expect(content[0]?.text).toBe('the queue');
+    expect(sentinelNames).toEqual(regularNames);
   });
 
   it('maps handler errors to isError results, not transport failures', async () => {
@@ -237,7 +215,6 @@ describe('port conflicts', () => {
       host: '127.0.0.1',
       keepAliveTimeoutMs: 1000,
       tools: [],
-      isSentinel: () => false,
       onEvent: () => undefined,
     });
     await expect(second.start()).rejects.toThrow(

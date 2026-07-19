@@ -46,16 +46,3 @@ export interface RuntimeEvent {
 }
 
 export type StallKind = 'idle' | 'blocked' | 'compaction' | 'silent' | 'session-end';
-
-/** A stall surfaced to the sentinel. Carries everything needed to judge it. */
-export interface StallEvent {
-  id: number;
-  session: string;
-  kind: StallKind;
-  reason?: string;
-  paneCapture: string;
-  lastAssistantMessage?: string;
-  createdAt: number;
-}
-
-export type StallResolution = { action: 'nudge'; text: string } | { action: 'suppress'; note?: string };

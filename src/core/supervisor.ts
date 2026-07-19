@@ -222,7 +222,6 @@ export class Supervisor {
       port: this.config.mcp.port,
       host: this.config.mcp.host,
       keepAliveTimeoutMs: this.config.mcp.keepAliveTimeoutMs,
-      isSentinel: (caller) => this.sentinel.isSentinel(caller),
       onEvent: (session, body) => {
         this.handleRuntimeEvent(session, body);
       },

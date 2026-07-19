@@ -53,25 +53,38 @@ beforeEach(async () => {
 });
 
 describe('stall routing', () => {
-  it('routes an autonomous session stall to the sentinel with a queue entry', async () => {
+  it('routes a stall as ONE self-contained message with the truncated last message', async () => {
     runtime.transcripts.set('/tmp/transcript.jsonl', 'I finished the refactor.');
     await router.handleStall('alpha', 'idle', { transcriptPath: '/tmp/transcript.jsonl' });
 
     expect(delivered.length).toBe(1);
     expect(delivered[0]?.session).toBe('watch');
     expect(delivered[0]?.text).toContain('[Stall] session=alpha kind=idle');
+    expect(delivered[0]?.text).toContain('I finished the refactor.');
+    // No follow-up tool calls required: the message IS the whole surface.
+    expect(delivered[0]?.text).not.toContain('get_stall_queue');
+    expect(delivered[0]?.text).not.toContain('resolve_stall');
+  });
 
-    const queue = router.pendingStalls();
-    expect(queue.length).toBe(1);
-    expect(queue[0]?.paneCapture).toContain('some terminal output');
-    expect(queue[0]?.lastAssistantMessage).toBe('I finished the refactor.');
+  it('falls back to the stall reason, then a placeholder, when no transcript is available', async () => {
+    await router.handleStall('alpha', 'blocked', { reason: 'permission prompt' });
+    expect(delivered[0]?.text).toContain('permission prompt');
+
+    backend.setPaneContent(panes.get('alpha') ?? '', 'entirely new pane content');
+    await router.handleStall('alpha', 'silent', {});
+    expect(delivered[1]?.text).toContain('(no last message available)');
+  });
+
+  it('truncates a huge last message', async () => {
+    runtime.transcripts.set('/tmp/t.jsonl', 'x'.repeat(5000));
+    await router.handleStall('alpha', 'idle', { transcriptPath: '/tmp/t.jsonl' });
+    expect((delivered[0]?.text ?? '').length).toBeLessThan(600);
   });
 
   it('ignores stalls from facilitated sessions', async () => {
     autonomies.set('alpha', 'facilitated');
     await router.handleStall('alpha', 'idle', {});
     expect(delivered).toEqual([]);
-    expect(router.pendingStalls()).toEqual([]);
   });
 
   it("ignores the sentinel's own stalls — idle is its normal state, not an emergency", async () => {
@@ -79,13 +92,11 @@ describe('stall routing', () => {
     await router.handleStall('watch', 'silent', {});
     expect(operatorMessages).toEqual([]);
     expect(delivered).toEqual([]);
-    expect(router.pendingStalls()).toEqual([]);
   });
 
   it('suppresses a repeat stall with similar pane content', async () => {
     await router.handleStall('alpha', 'idle', {});
     await router.handleStall('alpha', 'idle', {});
-    expect(router.pendingStalls().length).toBe(1);
     expect(delivered.length).toBe(1);
   });
 
@@ -95,9 +106,8 @@ describe('stall routing', () => {
     expect(operatorMessages.length).toBe(1);
     expect(operatorMessages[0]).toContain('*alpha* stalled (blocked)');
     expect(operatorMessages[0]).toContain('permission prompt');
-    // No preaching about configuring one, and no queue nobody will drain.
+    // No preaching about configuring one.
     expect(operatorMessages[0]).not.toContain('sentinel');
-    expect(router.pendingStalls().length).toBe(0);
     // Every distinct stall is reported — these are real reports, not nags.
     backend.setPaneContent(panes.get('alpha') ?? '', 'completely different content now');
     await router.handleStall('alpha', 'idle', {});
@@ -108,38 +118,11 @@ describe('stall routing', () => {
     activeSessions.delete('watch');
     await router.handleStall('alpha', 'idle', {});
     expect(operatorMessages[0]).toContain('sentinel *watch* is not running');
-    expect(router.pendingStalls().length).toBe(1); // queued for the sentinel to drain on start
-    // Second distinct stall inside the warn window: queued but not re-warned.
+    expect(delivered).toEqual([]);
+    // Second distinct stall inside the warn window: not re-warned.
     backend.setPaneContent(panes.get('alpha') ?? '', 'completely different content now');
     await router.handleStall('alpha', 'blocked', {});
     expect(operatorMessages.length).toBe(1);
-    expect(router.pendingStalls().length).toBe(2);
-  });
-});
-
-describe('resolution', () => {
-  beforeEach(async () => {
-    await router.handleStall('alpha', 'idle', {});
-    delivered = [];
-  });
-
-  it('nudge types sentinel-prefixed text into the stalled session', async () => {
-    const id = router.pendingStalls()[0]?.id ?? 0;
-    const reply = await router.resolve(id, { action: 'nudge', text: 'Fix the failing tests first.' }, 'watch');
-    expect(delivered[0]).toEqual({ session: 'alpha', text: '[Sentinel] Fix the failing tests first.' });
-    expect(reply).toContain('alpha');
-    expect(router.pendingStalls()).toEqual([]);
-  });
-
-  it('suppress dismisses without action', async () => {
-    const id = router.pendingStalls()[0]?.id ?? 0;
-    await router.resolve(id, { action: 'suppress', note: 'session legitimately done' }, 'watch');
-    expect(delivered).toEqual([]);
-    expect(router.pendingStalls()).toEqual([]);
-  });
-
-  it('rejects unknown stall ids', async () => {
-    expect(await router.resolve(999, { action: 'suppress' }, 'watch')).toContain('No pending stall');
   });
 });
 
