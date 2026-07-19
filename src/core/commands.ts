@@ -17,6 +17,10 @@ export interface CommandDeps {
   autoPause: { enabled(): boolean; setEnabled(on: boolean): void } | undefined;
   /** Re-apply a session's pane title (codename — tag). */
   retitle(codename: string): Promise<void>;
+  /** Bring a session's pane to the operator (tmux: move it here; iTerm: focus it). */
+  summon(codename: string): Promise<string>;
+  /** Move a session's pane into the detached fleet session (tmux only). */
+  dismiss(codename: string): Promise<string>;
 }
 
 /** Tokenize a command line, honoring double quotes. */
@@ -30,18 +34,20 @@ export function tokenize(line: string): string[] {
   return tokens;
 }
 
-// Placement shorts are capitalized (-P/-T/-W) so they can never collide with
-// /spawn's value-flag shorts (-p prompt, -w worktree).
-function parsePlacement(args: string[]): { placement: Placement | undefined; rest: string[] } {
+// Placement shorts are capitalized (-P/-T/-W/-H) so they can never collide
+// with /spawn's value-flag shorts (-p prompt, -w worktree).
+function parsePlacement(args: string[]): { placement: Placement | undefined; headless: boolean; rest: string[] } {
   let placement: Placement | undefined;
+  let headless = false;
   const rest: string[] = [];
   for (const arg of args) {
     if (arg === '--pane' || arg === '-P') placement = 'pane';
     else if (arg === '--tab' || arg === '-T') placement = 'tab';
     else if (arg === '--window' || arg === '-W') placement = 'window';
+    else if (arg === '--headless' || arg === '-H') headless = true;
     else rest.push(arg);
   }
-  return { placement, rest };
+  return { placement, headless, rest };
 }
 
 const HELP = [
@@ -51,6 +57,8 @@ const HELP = [
   '`/continue <session|all> [placement]` — resume the last session',
   '`/stop <session|all>` — stop session(s)',
   '`/tail <session> [lines]` — read trailing pane output',
+  '`/summon <session>` — bring its pane into your window (tmux) / focus it (iTerm)',
+  '`/dismiss <session>` — move its pane to the detached fleet session; it keeps running (tmux only)',
   '',
   '*Conversation*',
   '`/talk <session>` — set the talk target (bare text routes there)',
@@ -72,7 +80,7 @@ const HELP = [
   '`/teardown <name> [-D/--delete]` — deregister (and optionally delete its directory)',
   '',
   '*Placement* (accepted wherever `[placement]` appears)',
-  '`-P/--pane` (default) · `-T/--tab` · `-W/--window`',
+  '`-P/--pane` (default) · `-T/--tab` · `-W/--window` · `-H/--headless` (detached fleet session, tmux only)',
   '',
   '*Console*',
   '`/clear` (or `/c`) — clear the console screen (console-only)',
@@ -165,6 +173,18 @@ export class CommandRouter {
         );
         return this.deps.tail(target, lines);
       }
+      case 'summon': {
+        const target = args[0];
+        if (target === undefined) return 'Usage: /summon <session>';
+        if (!this.deps.states.has(target)) return `Unknown session: ${target}`;
+        return this.deps.summon(target);
+      }
+      case 'dismiss': {
+        const target = args[0];
+        if (target === undefined) return 'Usage: /dismiss <session>';
+        if (!this.deps.states.has(target)) return `Unknown session: ${target}`;
+        return this.deps.dismiss(target);
+      }
       case 'spawn':
         return this.spawnCommand(args);
       case 'teardown': {
@@ -193,15 +213,15 @@ export class CommandRouter {
   }
 
   private async sessionCommand(verb: 'start' | 'continue' | 'stop', rawArgs: string[]): Promise<string> {
-    const { placement, rest } = parsePlacement(rawArgs);
+    const { placement, headless, rest } = parsePlacement(rawArgs);
     const target = rest[0];
     if (target === undefined) return `Usage: /${verb} <session|all>`;
     const run = (session: string): Promise<string> => {
       switch (verb) {
         case 'start':
-          return this.deps.lifecycle.start(session, { placement });
+          return this.deps.lifecycle.start(session, { placement, headless });
         case 'continue':
-          return this.deps.lifecycle.continue(session, { placement });
+          return this.deps.lifecycle.continue(session, { placement, headless });
         case 'stop':
           return this.deps.lifecycle.stop(session);
       }
@@ -237,7 +257,7 @@ export class CommandRouter {
   }
 
   private async spawnCommand(args: string[]): Promise<string> {
-    const { placement, rest } = parsePlacement(args);
+    const { placement, headless, rest } = parsePlacement(args);
     const codename = rest[0];
     if (codename === undefined) {
       return 'Usage: /spawn <name> [-r|--runtime claude-code|codex] [-d|--path p] [-m|--model m] [-p|--prompt "…"] [-w|--worktree repo] [-b|--branch b] [-P|-T|-W placement]';
@@ -261,6 +281,15 @@ export class CommandRouter {
       else continue;
       i += 1;
     }
-    return this.deps.lifecycle.spawn(codename, { path, runtime, model, prompt, placement, worktreeRepo, branch });
+    return this.deps.lifecycle.spawn(codename, {
+      path,
+      runtime,
+      model,
+      prompt,
+      placement,
+      headless,
+      worktreeRepo,
+      branch,
+    });
   }
 }

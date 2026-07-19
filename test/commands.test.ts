@@ -97,6 +97,8 @@ beforeEach(() => {
     tailLimits: { defaultLines: 30, maxLines: 500 },
     autoPause: undefined,
     retitle: async () => undefined,
+    summon: async (codename) => `summoned:${codename}`,
+    dismiss: async (codename) => `dismissed:${codename}`,
   });
 });
 
@@ -126,6 +128,22 @@ describe('session commands', () => {
     expect(await router.route('/start alpha')).toBe('alpha is already running.');
     expect(await router.route('/stop alpha')).toBe('alpha stopped.');
     expect(states.get('alpha')?.running).toBe(false);
+  });
+
+  it('starts a session headless with -H and plumbs it to the backend', async () => {
+    expect(await router.route('/start alpha -H')).toBe('alpha started.');
+    expect(backend.paneFor('alpha')?.headless).toBe(true);
+    // Default start is NOT headless.
+    await router.route('/stop alpha');
+    expect(await router.route('/start alpha')).toBe('alpha started.');
+    expect(backend.paneFor('alpha')?.headless).toBe(false);
+  });
+
+  it('routes /summon and /dismiss with an unknown-session guard', async () => {
+    expect(await router.route('/summon alpha')).toBe('summoned:alpha');
+    expect(await router.route('/dismiss alpha')).toBe('dismissed:alpha');
+    expect(await router.route('/summon nope')).toBe('Unknown session: nope');
+    expect(await router.route('/summon')).toBe('Usage: /summon <session>');
   });
 
   it('starts all sessions with placement flags', async () => {

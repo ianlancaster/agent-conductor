@@ -205,6 +205,8 @@ export class Supervisor {
       },
       autoPause: this.autoPause,
       retitle: (session) => this.retitle(session),
+      summon: (session) => this.paneAction(session, 'summon'),
+      dismiss: (session) => this.paneAction(session, 'dismiss'),
     });
 
     this.scheduler = new Scheduler({
@@ -388,6 +390,24 @@ export class Supervisor {
     }
     this.health.handleEvent({ ...parsed, session, receivedAt: Date.now() });
     void this.delivery.drainNow();
+  }
+
+  /** Route /summon and /dismiss to the backend, with capability + liveness checks. */
+  private async paneAction(session: string, action: 'summon' | 'dismiss'): Promise<string> {
+    const pane = this.lifecycle.getPane(session);
+    if (pane === undefined) return `${session} has no pane — it is not running.`;
+    try {
+      if (action === 'summon') {
+        if (this.backend.summon === undefined) return `Summon is not supported on the ${this.backend.name} backend.`;
+        return await this.backend.summon(pane, session);
+      }
+      if (this.backend.dismiss === undefined) {
+        return `Dismiss needs detachable panes — not supported on the ${this.backend.name} backend.`;
+      }
+      return await this.backend.dismiss(pane, session);
+    } catch (err) {
+      return `${action} failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 
   /** Re-apply a session's pane title: `codename` or `codename — tag`. */

@@ -25,13 +25,14 @@ you are from your connection; never claim to be another session.
 - `whoami` — your own codename and status (identity is mechanical; this is authoritative).
 - `list_sessions`, `get_session_status`, `session_exists`, `tail_session` — fleet observability.
 - `start_session`, `stop_session`, `continue_session` — lifecycle of existing sessions
-  (`placement`: pane | tab | window; `prompt` on start).
+  (`placement`: pane | tab | window; `prompt` on start; `headless: true` puts the pane
+  in the detached fleet session, out of the operator's view — tmux backend only).
 - `spawn_session` — create + start a brand-new session. Args: `codename` (required),
   `runtime` (claude-code | codex, default claude-code), `model`, `prompt`, `path`,
-  `placement`. `teardown_session` reverses it (`deleteDir` to remove its directory).
+  `placement`, `headless`. `teardown_session` reverses it (`deleteDir` to remove its directory).
 - `create_worktree` / `remove_worktree` — session in a git worktree of an existing repo
   (`repo` required, `branch` defaults to the codename; also takes `runtime`, `model`,
-  `prompt`, `placement`). Removal refuses dirty worktrees and keeps the branch.
+  `prompt`, `placement`, `headless`). Removal refuses dirty worktrees and keeps the branch.
 - `set_autonomy`, `set_tag`, `get_tag` — mode and status labels.
 - `type_in_pane` — raw text into a peer's terminal (answering prompts, slash commands).
 - `request_restart` — restart your own session with fresh context when it degrades.

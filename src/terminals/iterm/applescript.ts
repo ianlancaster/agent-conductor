@@ -311,6 +311,28 @@ export function buildInSessionScript(sessionId: string, operations: string, retu
   `;
 }
 
+/** Bring a session's window to the front and select its tab + pane. */
+export function buildRevealSessionScript(sessionId: string): string {
+  return `
+    tell application "iTerm2"
+      activate
+      repeat with w in windows
+        repeat with t in tabs of w
+          repeat with s in sessions of t
+            if (id of s) is "${escapeAppleScript(sessionId)}" then
+              select w
+              select t
+              select s
+              return "OK"
+            end if
+          end repeat
+        end repeat
+      end repeat
+      return "NOT_FOUND"
+    end tell
+  `;
+}
+
 /** All live session UUIDs across all windows, one per line. */
 export function buildListSessionIdsScript(): string {
   return `
