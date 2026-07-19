@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { PaneRef, Placement } from '../../core/types.js';
-import type { TerminalBackend, TerminalCapabilities } from '../types.js';
+import type { CreatePaneOptions, TerminalBackend, TerminalCapabilities } from '../types.js';
 import type { Store } from '../../store/index.js';
 import { log } from '../../logger.js';
 import {
@@ -88,8 +88,9 @@ export class TmuxBackend implements TerminalBackend {
     // tmux session cannot exist without one.
   }
 
-  async createPane(session: string, placement: Placement, cwd?: string): Promise<PaneRef> {
-    let paneId = this.attachPane !== undefined ? await this.createAttachedPane(placement, session, cwd) : null;
+  async createPane(session: string, placement: Placement, cwd?: string, opts?: CreatePaneOptions): Promise<PaneRef> {
+    const attach = opts?.headless !== true && this.attachPane !== undefined;
+    let paneId = attach ? await this.createAttachedPane(placement, session, cwd) : null;
     paneId ??= await this.createDetachedPane(placement, session, cwd);
     if (!paneId.startsWith('%')) {
       throw new Error(`tmux returned an unexpected pane id for session '${session}': '${paneId}'`);
@@ -160,6 +161,78 @@ export class TmuxBackend implements TerminalBackend {
       log().info('tmux', `created detached session '${this.sessionName}'`);
     }
     return paneId;
+  }
+
+  /**
+   * Move a session's pane into the operator's window, wherever it currently
+   * lives (detached fleet session, another window). Already there → focus it.
+   */
+  async summon(pane: PaneRef, session: string): Promise<string> {
+    this.assertRef(pane);
+    const anchor = await this.resolveAnchorPane();
+    if (anchor === null) {
+      return `Cannot summon: no attached tmux window to summon into.`;
+    }
+    const paneWindow = (await tmux(['display-message', '-p', '-t', pane.id, '#{window_id}'])).trim();
+    const anchorWindow = (await tmux(['display-message', '-p', '-t', anchor, '#{window_id}'])).trim();
+    if (paneWindow === anchorWindow) {
+      await tmux(['select-pane', '-t', pane.id]);
+      return `${session} is already in your window — focused it.`;
+    }
+    await tmux(['join-pane', '-d', '-s', pane.id, '-t', anchor]);
+    return `${session} summoned into your window.`;
+  }
+
+  /**
+   * The inverse of summon: move the pane into the detached fleet session as
+   * its own window (created on demand). The session keeps running headless.
+   */
+  async dismiss(pane: PaneRef, session: string): Promise<string> {
+    this.assertRef(pane);
+    const paneSession = (await tmux(['display-message', '-p', '-t', pane.id, '#{session_name}'])).trim();
+    if (paneSession === this.sessionName) {
+      return `${session} is already dismissed (running in '${this.sessionName}').`;
+    }
+    const exists = await tmuxSucceeds(['has-session', '-t', `=${this.sessionName}`]);
+    if (exists) {
+      await tmux(['break-pane', '-d', '-s', pane.id, '-t', `=${this.sessionName}:`, '-n', session]);
+    } else {
+      // A tmux session cannot exist without a pane: create it with a
+      // placeholder, join the real pane in, then drop the placeholder.
+      const placeholder = (
+        await tmux(['new-session', '-d', '-P', '-F', '#{pane_id}', '-s', this.sessionName, '-n', session])
+      ).trim();
+      await tmux(['join-pane', '-d', '-s', pane.id, '-t', placeholder]);
+      await tmux(['kill-pane', '-t', placeholder]);
+    }
+    return `${session} dismissed to detached session '${this.sessionName}' — /summon ${session} brings it back.`;
+  }
+
+  /**
+   * The pane summoned panes join: the console's own pane when the conductor
+   * was launched inside tmux, else the active pane of the most recently
+   * active tmux client. Null when nothing is attached anywhere.
+   */
+  private async resolveAnchorPane(): Promise<string | null> {
+    if (this.attachPane !== undefined && (await this.isAlive({ backend: this.name, id: this.attachPane }))) {
+      return this.attachPane;
+    }
+    try {
+      const clients = (await tmux(['list-clients', '-F', '#{client_activity} #{session_name}']))
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .map((line) => {
+          const idx = line.indexOf(' ');
+          return { activity: Number(line.slice(0, idx)), session: line.slice(idx + 1) };
+        })
+        .sort((a, b) => b.activity - a.activity);
+      const latest = clients[0];
+      if (latest === undefined) return null;
+      return (await tmux(['display-message', '-p', '-t', `=${latest.session}`, '#{pane_id}'])).trim();
+    } catch {
+      return null;
+    }
   }
 
   /** Wait for the fresh pane's shell prompt, then deliver the first command. */

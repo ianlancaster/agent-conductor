@@ -19,6 +19,7 @@ import {
   buildInSessionScript,
   buildListSessionIdsScript,
   buildRediscoverScript,
+  buildRevealSessionScript,
   buildSplitPaneScript,
   buildTitleShellPrefix,
   buildWindowExistsScript,
@@ -125,6 +126,15 @@ export class ITermBackend implements TerminalBackend {
         // Not running inside iTerm — nothing to label.
       }
     }
+  }
+
+  /**
+   * iTerm has no detached panes to pull from, so summon = reveal: bring the
+   * pane's window to the front and select its tab + pane.
+   */
+  async summon(pane: PaneRef, session: string): Promise<string> {
+    const result = (await runOsa(buildRevealSessionScript(pane.id))).trim();
+    return result === 'OK' ? `Focused ${session}'s pane.` : `${session}'s pane was not found in any iTerm window.`;
   }
 
   async focusWindow(): Promise<void> {

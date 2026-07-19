@@ -167,6 +167,50 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       }
     });
 
+    it('headless create → summon → dismiss round-trips a pane between fleet session and operator window', async () => {
+      const operatorSession = `${SESSION}-sum`;
+      const consolePane = execFileSync(
+        'tmux',
+        ['new-session', '-d', '-P', '-F', '#{pane_id}', '-s', operatorSession, '-n', 'console'],
+        { encoding: 'utf8' },
+      ).trim();
+      const sessionOf = (paneId: string): string =>
+        execFileSync('tmux', ['display-message', '-p', '-t', paneId, '#{session_name}'], {
+          encoding: 'utf8',
+        }).trim();
+      try {
+        const attached = new TmuxBackend({
+          store,
+          config: {
+            sessionName: SESSION,
+            windowName: 'e2e',
+            fleetId: 'e2e',
+            paneBorders: true,
+            attachPane: consolePane,
+          },
+        });
+        // --headless overrides attach mode: pane lands in the detached fleet session.
+        const pane = await attached.createPane('omega', 'pane', workDir, { headless: true });
+        expect(sessionOf(pane.id)).toBe(SESSION);
+
+        // Summon pulls it into the operator's window.
+        expect(await attached.summon(pane, 'omega')).toContain('summoned');
+        expect(sessionOf(pane.id)).toBe(operatorSession);
+
+        // Summoning again just focuses it.
+        expect(await attached.summon(pane, 'omega')).toContain('already in your window');
+
+        // Dismiss sends it back to the fleet session (recreated on demand —
+        // tmux killed it when its last pane was summoned out).
+        expect(await attached.dismiss(pane, 'omega')).toContain('dismissed');
+        expect(sessionOf(pane.id)).toBe(SESSION);
+        expect(await attached.dismiss(pane, 'omega')).toContain('already dismissed');
+        expect(await attached.isAlive(pane)).toBe(true);
+      } finally {
+        execFileSync('tmux', ['kill-session', '-t', operatorSession], { stdio: 'pipe' });
+      }
+    });
+
     it('attach mode: falls back to the detached session when the console pane is gone', async () => {
       const attached = new TmuxBackend({
         store,

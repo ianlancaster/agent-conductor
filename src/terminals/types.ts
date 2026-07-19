@@ -7,6 +7,15 @@ export interface TerminalCapabilities {
   headless: boolean;
 }
 
+export interface CreatePaneOptions {
+  /**
+   * Create the pane in the detached fleet session instead of the operator's
+   * window — the session runs out of sight (`/summon` brings it in). Only
+   * meaningful on backends with `capabilities.headless`.
+   */
+  headless?: boolean;
+}
+
 /**
  * The seam between the conductor and a terminal multiplexer/emulator.
  *
@@ -22,7 +31,21 @@ export interface TerminalBackend {
   init(): Promise<void>;
 
   /** Create a pane for a session. `cwd` is the directory the shell should start in. */
-  createPane(session: string, placement: Placement, cwd?: string): Promise<PaneRef>;
+  createPane(session: string, placement: Placement, cwd?: string, opts?: CreatePaneOptions): Promise<PaneRef>;
+
+  /**
+   * Bring a session's pane to the operator. tmux moves the pane into the
+   * operator's current window (out of a detached session or another window);
+   * iTerm reveals/focuses the pane's window. Returns a human-readable outcome.
+   */
+  summon?(pane: PaneRef, session: string): Promise<string>;
+
+  /**
+   * The inverse of summon: move the pane out of the operator's view into the
+   * detached fleet session, where it keeps running headless (tmux only —
+   * iTerm panes cannot run detached).
+   */
+  dismiss?(pane: PaneRef, session: string): Promise<string>;
 
   /**
    * Run the FIRST command in a fresh pane. Implementations must handle the

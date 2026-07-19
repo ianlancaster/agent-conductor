@@ -1,9 +1,10 @@
 import type { PaneRef, Placement } from '../../src/core/types.js';
-import type { TerminalBackend, TerminalCapabilities } from '../../src/terminals/types.js';
+import type { CreatePaneOptions, TerminalBackend, TerminalCapabilities } from '../../src/terminals/types.js';
 
 export interface FakePane {
   session: string;
   placement: Placement;
+  headless: boolean;
   cwd: string | undefined;
   lines: string[];
   alive: boolean;
@@ -26,12 +27,13 @@ export class FakeTerminalBackend implements TerminalBackend {
     // no-op
   }
 
-  async createPane(session: string, placement: Placement, cwd?: string): Promise<PaneRef> {
+  async createPane(session: string, placement: Placement, cwd?: string, opts?: CreatePaneOptions): Promise<PaneRef> {
     this.counter += 1;
     const id = `pane-${this.counter}`;
     this.panes.set(id, {
       session,
       placement,
+      headless: opts?.headless === true,
       cwd,
       lines: [],
       alive: true,

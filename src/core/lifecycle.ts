@@ -16,6 +16,8 @@ export interface StartOptions {
   prompt?: string;
   placement?: Placement;
   continueSession?: boolean;
+  /** Create the pane in the detached fleet session (tmux only) — see CreatePaneOptions.headless. */
+  headless?: boolean;
 }
 
 export interface SpawnOptions {
@@ -29,6 +31,8 @@ export interface SpawnOptions {
   worktreeRepo?: string;
   /** Branch for the worktree (default: the codename). */
   branch?: string;
+  /** Create the pane in the detached fleet session (tmux only). */
+  headless?: boolean;
 }
 
 const SPAWNABLE_RUNTIMES = ['claude-code', 'codex'];
@@ -114,8 +118,14 @@ export class Lifecycle {
 
     this.deps.states.register(codename, this.isAgentProject(session));
 
+    if (opts.headless === true && !this.deps.backend.capabilities.headless) {
+      return `Headless sessions need a headless-capable backend (tmux) — the ${this.deps.backend.name} backend cannot detach panes.`;
+    }
+
     const placement = opts.placement ?? this.deps.config.defaultPlacement;
-    const pane = await this.deps.backend.createPane(codename, placement, session.repo);
+    const pane = await this.deps.backend.createPane(codename, placement, session.repo, {
+      headless: opts.headless === true,
+    });
     this.panes.set(codename, pane);
 
     try {
@@ -217,7 +227,11 @@ export class Lifecycle {
     writeFileSync(join(this.deps.sessionConfigDir, `${codename}.yaml`), yaml.dump(config));
 
     this.deps.reloadSessions();
-    const started = await this.start(codename, { prompt: opts.prompt, placement: opts.placement });
+    const started = await this.start(codename, {
+      prompt: opts.prompt,
+      placement: opts.placement,
+      headless: opts.headless,
+    });
     return `Spawned ${codename} at ${dir}. ${started}`;
   }
 

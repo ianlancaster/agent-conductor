@@ -50,6 +50,15 @@ const placementSchema = {
   description: 'Where to place the session (default: pane)',
 };
 
+const headlessSchema = {
+  type: 'boolean',
+  description: 'Create the pane in the detached fleet session, out of the operator view (tmux backend only)',
+};
+
+function optionalHeadless(args: Record<string, unknown>): boolean {
+  return args.headless === true;
+}
+
 export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
   const noSelf = (caller: string, target: string, verb: string): void => {
     if (caller === target) throw new Error(`You cannot ${verb} yourself.`);
@@ -117,6 +126,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
           codename: { type: 'string' },
           prompt: { type: 'string', description: 'Optional initial prompt' },
           placement: placementSchema,
+          headless: headlessSchema,
         },
         required: ['codename'],
       },
@@ -126,6 +136,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
         return deps.lifecycle.start(codename, {
           prompt: optionalString(args, 'prompt'),
           placement: optionalPlacement(args),
+          headless: optionalHeadless(args),
         });
       },
     },
@@ -148,13 +159,16 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
       description: `Resume another session's most recent run (continues its conversation). ${IDENTITY_NOTE}`,
       inputSchema: {
         type: 'object',
-        properties: { codename: { type: 'string' }, placement: placementSchema },
+        properties: { codename: { type: 'string' }, placement: placementSchema, headless: headlessSchema },
         required: ['codename'],
       },
       handler: (args, caller) => {
         const codename = requireString(args, 'codename');
         noSelf(caller, codename, 'continue');
-        return deps.lifecycle.continue(codename, { placement: optionalPlacement(args) });
+        return deps.lifecycle.continue(codename, {
+          placement: optionalPlacement(args),
+          headless: optionalHeadless(args),
+        });
       },
     },
     {
@@ -169,6 +183,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
           model: { type: 'string' },
           prompt: { type: 'string' },
           placement: placementSchema,
+          headless: headlessSchema,
         },
         required: ['codename'],
       },
@@ -179,6 +194,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
           model: optionalString(args, 'model'),
           prompt: optionalString(args, 'prompt'),
           placement: optionalPlacement(args),
+          headless: optionalHeadless(args),
         }),
     },
     {
@@ -194,6 +210,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
           model: { type: 'string' },
           prompt: { type: 'string' },
           placement: placementSchema,
+          headless: headlessSchema,
         },
         required: ['codename', 'repo'],
       },
@@ -205,6 +222,7 @@ export function buildMcpTools(deps: McpToolDeps): McpToolDefinition[] {
           model: optionalString(args, 'model'),
           prompt: optionalString(args, 'prompt'),
           placement: optionalPlacement(args),
+          headless: optionalHeadless(args),
         }),
     },
     {
