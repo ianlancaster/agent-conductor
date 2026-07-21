@@ -8,19 +8,31 @@ const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
   stopped: '⚪',
 };
 
+const RUNTIME_LABELS: Record<SessionConfig['runtime'], string> = {
+  'claude-code': 'CC',
+  'codex': 'codex',
+};
+
 export interface StatusDeps {
   sessions(): Map<string, SessionConfig>;
   getState(codename: string): SessionState | undefined;
+  runtimeFor(codename: string): SessionConfig['runtime'] | undefined;
   sentinelCodename(): string | undefined;
 }
 
-export function formatSessionLine(codename: string, state: SessionState | undefined, isSentinel: boolean): string {
-  const name = `${codename}${isSentinel ? ' 🛡' : ''}`;
+export function formatSessionLine(
+  codename: string,
+  runtime: SessionConfig['runtime'],
+  state: SessionState | undefined,
+  isSentinel: boolean,
+): string {
+  const name = `${codename} - ${RUNTIME_LABELS[runtime]}${isSentinel ? ' 🛡' : ''}`;
   if (state === undefined) return `${name} · ⚪ unregistered`;
   const tag = state.tag !== undefined ? ` · ${state.tag}` : '';
-  if (state.pause !== undefined) return `${name} · ⏸ paused${tag}`;
   const activity = state.running ? state.activity : 'stopped';
-  return `${name} · ${ACTIVITY_ICONS[activity]} ${activity}${tag}`;
+  const mode = state.auto ? ' - auto' : '';
+  const paused = state.paused ? ' (paused)' : '';
+  return `${name} · ${ACTIVITY_ICONS[activity]} ${activity}${mode}${paused}${tag}`;
 }
 
 export function statusReport(deps: StatusDeps, codename?: string): string {
@@ -32,9 +44,9 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
     return JSON.stringify(
       {
         codename,
-        runtime: deps.sessions().get(codename)?.runtime ?? null,
-        autonomy: state.autonomy,
-        paused: state.pause !== undefined,
+        runtime: deps.runtimeFor(codename) ?? null,
+        auto: state.auto,
+        paused: state.paused,
         tag: state.tag ?? null,
         running: state.running,
         ready: state.ready,
@@ -63,7 +75,9 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
     if (lines.length > 0) lines.push('');
     lines.push(header);
     for (const name of group) {
-      lines.push(`  ${formatSessionLine(name, deps.getState(name), name === sentinel)}`);
+      const runtime = deps.runtimeFor(name);
+      if (runtime !== undefined)
+        lines.push(`  ${formatSessionLine(name, runtime, deps.getState(name), name === sentinel)}`);
     }
   }
   return lines.join('\n');

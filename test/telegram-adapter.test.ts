@@ -78,6 +78,13 @@ function commandUpdate(id: number, text: string, chatId = CHAT_ID): TelegramUpda
   return { update_id: id, message: { chat: { id: chatId }, text } };
 }
 
+function callbackUpdate(id: number, data: string, chatId = CHAT_ID): TelegramUpdate {
+  return {
+    update_id: id,
+    callback_query: { id: `callback-${String(id)}`, data, message: { chat: { id: chatId } } },
+  };
+}
+
 let mock: TelegramFetchMock;
 let adapter: TelegramAdapter;
 let handled: { kind: string; value: string }[];
@@ -106,6 +113,15 @@ afterEach(async () => {
 });
 
 describe('poll loop', () => {
+  it('does not write configured credential values to logs', async () => {
+    const infoSpy = vi.spyOn(log(), 'info').mockImplementation(() => undefined);
+    await adapter.start(handlers);
+    await until(() => mock.callsFor('getUpdates').length === 1);
+    expect(infoSpy.mock.calls.flat().join(' ')).not.toContain(String(CHAT_ID));
+    expect(infoSpy.mock.calls.flat().join(' ')).not.toContain('test-token');
+    infoSpy.mockRestore();
+  });
+
   it('routes commands from the configured chat and sends the reply back', async () => {
     mock.queueUpdates([commandUpdate(10, '/status alpha')]);
     await adapter.start(handlers);
@@ -156,6 +172,33 @@ describe('poll loop', () => {
     expect(handled).toEqual([{ kind: 'command', value: 'status' }]);
   });
 
+  it('acknowledges an authorized callback before routing its canonical command', async () => {
+    let acknowledgedBeforeHandler = false;
+    handlers.onCommand = async (command, args, context) => {
+      acknowledgedBeforeHandler = mock.callsFor('answerCallbackQuery').length === 1;
+      handled.push({ kind: 'command', value: `${command} ${args.join(',')} ${context.conversationId}` });
+      return 'recorded';
+    };
+    mock.queueUpdates([callbackUpdate(7, '/respond 42 2')]);
+    await adapter.start(handlers);
+    await until(() => mock.callsFor('sendMessage').length === 1);
+
+    expect(acknowledgedBeforeHandler).toBe(true);
+    expect(mock.callsFor('answerCallbackQuery')[0]?.payload).toEqual({ callback_query_id: 'callback-7' });
+    expect(handled).toEqual([{ kind: 'command', value: `respond 42,2 ${String(CHAT_ID)}` }]);
+    expect(mock.callsFor('sendMessage')[0]?.payload.text).toBe('recorded');
+  });
+
+  it('ignores and does not acknowledge callbacks from unauthorized chats', async () => {
+    mock.queueUpdates([callbackUpdate(8, '/respond 42 1', 999)]);
+    mock.queueUpdates([commandUpdate(9, '/help')]);
+    await adapter.start(handlers);
+    await until(() => handled.length === 1);
+
+    expect(handled).toEqual([{ kind: 'command', value: 'help' }]);
+    expect(mock.callsFor('answerCallbackQuery')).toEqual([]);
+  });
+
   it('stops promptly while a long-poll is pending', async () => {
     await adapter.start(handlers);
     await until(() => mock.callsFor('getUpdates').length === 1);
@@ -177,7 +220,7 @@ describe('poll loop', () => {
 describe('send', () => {
   it('retries as plain text when Markdown parsing fails with a 400', async () => {
     mock.sendMessageResponses.push({ ok: false, error_code: 400, description: 'cannot parse entities' });
-    await adapter.send('*unbalanced markdown');
+    await adapter.send({ text: '*unbalanced markdown' });
 
     const sends = mock.callsFor('sendMessage');
     expect(sends.length).toBe(2);
@@ -188,15 +231,55 @@ describe('send', () => {
 
   it('splits long messages into multiple sends', async () => {
     const long = `${'a'.repeat(5000)}\n\ntail section`;
-    await adapter.send(long);
+    await adapter.send({ text: long });
 
     const sends = mock.callsFor('sendMessage');
     expect(sends.length).toBeGreaterThan(1);
     expect(sends[sends.length - 1]?.payload.text).toContain('tail section');
   });
 
+  it('attaches action buttons only to the final chunk', async () => {
+    await adapter.send({
+      text: `${'a'.repeat(5000)}\n\ntail`,
+      actions: [
+        { label: 'Staging', command: '/respond 42 1' },
+        { label: 'Production', command: '/respond 42 2' },
+      ],
+    });
+
+    const sends = mock.callsFor('sendMessage');
+    expect(sends.length).toBeGreaterThan(1);
+    expect(sends[0]?.payload.reply_markup).toBeUndefined();
+    expect(sends[sends.length - 1]?.payload.reply_markup).toEqual({
+      inline_keyboard: [
+        [
+          { text: 'Staging', callback_data: '/respond 42 1' },
+          { text: 'Production', callback_data: '/respond 42 2' },
+        ],
+      ],
+    });
+  });
+
+  it('preserves the inline keyboard when Markdown falls back to plain text', async () => {
+    mock.sendMessageResponses.push({ ok: false, error_code: 400, description: 'cannot parse entities' });
+    await adapter.send({ text: '*broken', actions: [{ label: 'Yes', command: '/respond 1 1' }] });
+
+    const sends = mock.callsFor('sendMessage');
+    expect(sends[1]?.payload.parse_mode).toBeUndefined();
+    expect(sends[1]?.payload.reply_markup).toEqual({
+      inline_keyboard: [[{ text: 'Yes', callback_data: '/respond 1 1' }]],
+    });
+  });
+
+  it('rejects callback data over Telegram’s 64-byte limit before sending', async () => {
+    await expect(
+      adapter.send({ text: 'choose', actions: [{ label: 'Too long', command: `/${'é'.repeat(32)}` }] }),
+    ).rejects.toThrow(/64 UTF-8 bytes/);
+    expect(mock.callsFor('sendMessage')).toEqual([]);
+  });
+
   it('skips empty messages without calling the API', async () => {
-    await adapter.send('   ');
+    await adapter.send({ text: '   ' });
     expect(mock.callsFor('sendMessage')).toEqual([]);
   });
 });

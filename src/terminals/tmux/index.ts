@@ -3,6 +3,7 @@ import type { PaneRef, Placement } from '../../core/types.js';
 import type { CreatePaneOptions, TerminalBackend, TerminalCapabilities } from '../types.js';
 import type { Store } from '../../store/index.js';
 import { log } from '../../logger.js';
+import { shellHasForegroundJob } from '../process.js';
 import {
   SESSION_OPTION,
   buildAttachedPaneArgs,
@@ -58,13 +59,11 @@ export interface TmuxBackendOptions {
  * single detached tmux session (config.sessionName). Placement notes: tmux
  * has no separate OS windows, so both 'tab' and 'window' placements create
  * a new tmux window; 'pane' splits the console's window (attached) or the
- * session's first window (detached). Focus tracking is not supported
- * (headless backend), so getFocusedSession/focusWindow are intentionally
- * not implemented.
+ * session's first window (detached).
  */
 export class TmuxBackend implements TerminalBackend {
   readonly name = 'tmux';
-  readonly capabilities: TerminalCapabilities = { focusTracking: false, headless: true };
+  readonly capabilities: TerminalCapabilities = { headless: true };
 
   private readonly store: Store;
   private readonly sessionName: string;
@@ -230,7 +229,7 @@ export class TmuxBackend implements TerminalBackend {
     }
   }
 
-  /** Wait for the fresh pane's shell prompt, then deliver the first command. */
+  /** Wait for the pane's shell prompt, then deliver the launch command. */
   async launch(pane: PaneRef, command: string): Promise<void> {
     this.assertRef(pane);
     const deadline = Date.now() + LAUNCH_TIMEOUT_MS;
@@ -276,6 +275,16 @@ export class TmuxBackend implements TerminalBackend {
       // tmux server not running -> no pane is alive.
       return false;
     }
+  }
+
+  async isSessionActive(pane: PaneRef): Promise<boolean> {
+    this.assertRef(pane);
+    const rawPid = (await tmux(['display-message', '-p', '-t', pane.id, '#{pane_pid}'])).trim();
+    const shellPid = Number.parseInt(rawPid, 10);
+    if (!Number.isSafeInteger(shellPid) || shellPid <= 0) {
+      throw new Error(`tmux returned an invalid shell PID for pane ${pane.id}: ${JSON.stringify(rawPid)}`);
+    }
+    return shellHasForegroundJob(shellPid);
   }
 
   async kill(pane: PaneRef): Promise<void> {

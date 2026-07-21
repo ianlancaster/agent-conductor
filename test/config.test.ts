@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -34,10 +34,15 @@ describe('loadSupervisorConfig', () => {
     expect(config.mcp.host).toBe('127.0.0.1');
     expect(config.health.captureLines).toBe(40);
     expect(config.messaging.queueDrainMs).toBe(2000);
-    expect(config.defaults.autonomy).toBe('facilitated');
+    expect(config.defaults.auto).toBe(false);
+    expect(config.defaults.runtime).toBe('claude-code');
+    expect(config.defaults.bypassPermissions).toBe(true);
+    expect(config.health.fleetStallConfirmMs).toBe(300_000);
+    expect(config.terminal.iterm.badge).toBe(true);
     expect(config.runtimes.claudeCode.binary).toBe('claude');
     expect(config.runtimes.codex.toolTimeoutSec).toBe(600);
-    expect(config.spawn.markerFile).toBe('.conductor-agent');
+    expect(config.spawn.markerFile).toBe('.agent-marker');
+    expect(config.channels.telegram.enabled).toBe(false);
   });
 
   it('derives per-fleet instance defaults so two fleets never collide', () => {
@@ -55,7 +60,7 @@ describe('loadSupervisorConfig', () => {
   it('merges partial config over defaults, explicit values beating derivation', () => {
     writeFileSync(
       join(baseDir, 'config', 'supervisor.yaml'),
-      'mcp:\n  port: 9999\nhealth:\n  captureLines: 80\nterminal:\n  windowName: Fleet One\n  tmux:\n    sessionName: fleet-one\n',
+      'mcp:\n  port: 9999\nhealth:\n  captureLines: 80\nterminal:\n  windowName: Fleet One\n  iterm:\n    badge: false\n  tmux:\n    sessionName: fleet-one\n',
     );
     const config = loadSupervisorConfig(baseDir);
     expect(config.mcp.port).toBe(9999);
@@ -63,12 +68,26 @@ describe('loadSupervisorConfig', () => {
     expect(config.health.captureLines).toBe(80);
     expect(config.health.suppressSimilarity).toBe(0.8);
     expect(config.terminal.windowName).toBe('Fleet One');
+    expect(config.terminal.iterm.badge).toBe(false);
     expect(config.terminal.tmux.sessionName).toBe('fleet-one');
+  });
+
+  it('allows the fleet permission bypass default to be disabled', () => {
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'defaults:\n  bypassPermissions: false\n');
+    expect(loadSupervisorConfig(baseDir).defaults.bypassPermissions).toBe(false);
   });
 
   it('rejects invalid values with a readable error', () => {
     writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'mcp:\n  port: -1\n');
     expect(() => loadSupervisorConfig(baseDir)).toThrow(/mcp\.port/);
+  });
+
+  it('rejects unknown supervisor keys instead of silently ignoring stale or misspelled settings', () => {
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'defaults:\n  autonomy: automatic\n');
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/defaults/);
+
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'scheduler:\n  reloadIntervalBeats: 10\n');
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/scheduler/);
   });
 });
 
@@ -111,6 +130,14 @@ describe('loadSessionConfigs', () => {
     expect(loadSessionConfigs(baseDir).get('alpha')?.repo).toBe('/tmp/alpha');
   });
 
+  it('uses the configured default runtime while preserving per-session overrides', () => {
+    writeSession('alpha', 'codename: alpha\nrepo: /tmp/alpha\n');
+    writeSession('beta', 'codename: beta\nrepo: /tmp/beta\nruntime: claude-code\n');
+    const sessions = loadSessionConfigs(baseDir, { defaultRuntime: 'codex' });
+    expect(sessions.get('alpha')?.runtime).toBe('codex');
+    expect(sessions.get('beta')?.runtime).toBe('claude-code');
+  });
+
   it('parses codex runtime and schedules', () => {
     writeSession(
       'beta',
@@ -127,6 +154,13 @@ describe('loadSessionConfigs', () => {
     expect(beta?.runtime).toBe('codex');
     expect(beta?.schedules[0]?.cron).toBe('0 9 * * *');
     expect(beta?.schedules[0]?.paused).toBe(false);
+  });
+
+  it('parses a per-session permission override without forcing one onto every session', () => {
+    writeSession('alpha', 'codename: alpha\nrepo: /tmp/alpha\nbypassPermissions: false\n');
+    writeSession('beta', 'codename: beta\nrepo: /tmp/beta\n');
+    expect(loadSessionConfigs(baseDir).get('alpha')?.bypassPermissions).toBe(false);
+    expect(loadSessionConfigs(baseDir).get('beta')?.bypassPermissions).toBeUndefined();
   });
 
   it('throws on malformed config by default', () => {
@@ -151,6 +185,17 @@ describe('loadSessionConfigs', () => {
     writeSession('bad', 'codename: "has space"\nrepo: /tmp/x\n');
     expect(() => loadSessionConfigs(baseDir)).toThrow(/codename/);
   });
+
+  it('rejects unknown session and schedule keys', () => {
+    writeSession('alpha', 'codename: alpha\nrepo: /tmp/alpha\nautonomy: autonomous\n');
+    expect(() => loadSessionConfigs(baseDir)).toThrow(/autonomy/);
+
+    writeSession(
+      'alpha',
+      'codename: alpha\nrepo: /tmp/alpha\nschedules:\n  - cron: "0 9 * * *"\n    prompt: work\n    backfill: true\n',
+    );
+    expect(() => loadSessionConfigs(baseDir)).toThrow(/backfill/);
+  });
 });
 
 describe('validateConfig', () => {
@@ -173,6 +218,23 @@ describe('loadConfig', () => {
     const config = loadConfig(baseDir);
     expect(config.sessions.has('alpha')).toBe(true);
     expect(config.baseDir).toBe(baseDir);
+  });
+
+  it('applies supervisor defaults.runtime to session files that omit runtime', () => {
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'defaults:\n  runtime: codex\n');
+    writeSession('alpha', 'codename: alpha\nrepo: /tmp/alpha\n');
+    expect(loadConfig(baseDir).sessions.get('alpha')?.runtime).toBe('codex');
+  });
+
+  it('keeps every published configuration example valid', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      readFileSync(new URL('../examples/supervisor.yaml', import.meta.url), 'utf8'),
+    );
+    for (const name of ['example-claude', 'example-codex', 'example-sentinel']) {
+      writeSession(name, readFileSync(new URL(`../examples/sessions/${name}.yaml`, import.meta.url), 'utf8'));
+    }
+    expect(loadConfig(baseDir).sessions.size).toBe(3);
   });
 });
 

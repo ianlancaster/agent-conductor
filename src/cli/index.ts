@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, openSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
@@ -12,17 +13,24 @@ import { Supervisor } from '../core/supervisor.js';
 import { Store } from '../store/index.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
 import { initFleet } from './init.js';
+import { configureStatusLines } from './statusline.js';
+import { formatFeedPayload, formatTerminalReply } from './terminal-format.js';
 
 const packageJson = JSON.parse(
   readFileSync(join(fileURLToPath(import.meta.url), '..', '..', '..', 'package.json'), 'utf8'),
 ) as { version: string };
 
 const program = new Command();
+const interactionId = randomUUID();
 program
   .name('conductor')
   .description('Lightweight supervisor for terminal coding agents')
   .version(packageJson.version)
-  .option('-C, --dir <path>', 'Fleet directory containing config/ (default: current directory)');
+  .option('-C, --dir <path>', 'Fleet directory containing config/ (default: current directory)')
+  .addHelpText(
+    'after',
+    '\nFleet controls use the shared operator command language. Run conductor start or conductor console, then /help; for one-shot use, run conductor cmd /help.',
+  );
 
 /** Resolve the fleet directory from --dir, else the current directory. */
 function baseDir(): string {
@@ -75,7 +83,7 @@ async function sendCommand(line: string): Promise<string> {
     response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command: line }),
+      body: JSON.stringify({ command: line, interactionId }),
     });
   } catch {
     throw new Error(
@@ -108,7 +116,9 @@ async function subscribeFeed(base: string, onMessage: (text: string) => void, si
           for (const line of buffer.slice(0, frameEnd).split('\n')) {
             if (!line.startsWith('data: ')) continue;
             try {
-              onMessage(JSON.parse(line.slice('data: '.length)) as string);
+              const payload = JSON.parse(line.slice('data: '.length)) as unknown;
+              const formatted = formatFeedPayload(payload);
+              if (formatted !== undefined) onMessage(formatted);
             } catch {
               // Malformed frame — skip it rather than kill the stream.
             }
@@ -162,7 +172,9 @@ function runConsole(): Promise<void> {
       }
       sendCommand(line)
         .then((reply) => {
-          if (reply.length > 0) process.stdout.write(`${reply}\n`);
+          if (reply.length > 0) {
+            process.stdout.write(`${formatTerminalReply(trimmed, reply, process.stdout.isTTY === true)}\n`);
+          }
           rl.prompt();
         })
         .catch((err: unknown) => {
@@ -203,11 +215,18 @@ async function runForeground(startAll: boolean): Promise<void> {
 
 program
   .command('init')
-  .description('Scaffold a fleet directory (config/supervisor.yaml + config/sessions/)')
+  .description('Scaffold a fleet directory (config, sessions, and env.template)')
   .option('-s, --session <codename>', 'Also create the first session config')
   .option('-r, --repo <path>', "The session's project directory (required with --session)")
   .action((opts: { session?: string; repo?: string }) => {
     for (const line of initFleet(baseDir(), opts)) process.stdout.write(`${line}\n`);
+  });
+
+program
+  .command('statusline')
+  .description('Configure richer status lines for Claude Code and Codex (optional)')
+  .action(() => {
+    for (const line of configureStatusLines()) process.stdout.write(`${line}\n`);
   });
 
 program
@@ -297,24 +316,16 @@ program
   .command('cmd <line...>')
   .description('Send a single command to a running conductor')
   .action(async (line: string[]) => {
-    process.stdout.write(`${await sendCommand(line.join(' '))}\n`);
+    const command = line.join(' ');
+    const reply = await sendCommand(command);
+    process.stdout.write(`${formatTerminalReply(command, reply, process.stdout.isTTY === true)}\n`);
   });
 
 program
-  .command('status')
-  .description('Show active runs from the local store')
-  .action(() => {
-    const config = loadSupervisorConfig(baseDir());
-    const store = new Store(join(baseDir(), config.paths.dataDir, 'conductor.db'));
-    const runs = store.getActiveRuns();
-    if (runs.length === 0) {
-      process.stdout.write('No active runs.\n');
-    } else {
-      for (const run of runs) {
-        process.stdout.write(`${run.session}  since ${run.started_at}  (${run.id.slice(0, 8)})\n`);
-      }
-    }
-    store.close();
+  .command('status [session]')
+  .description('Show fleet status from the running conductor')
+  .action(async (session: string | undefined) => {
+    process.stdout.write(`${await sendCommand(session === undefined ? '/status' : `/status ${session}`)}\n`);
   });
 
 program

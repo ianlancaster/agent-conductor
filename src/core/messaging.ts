@@ -11,8 +11,6 @@ export interface MessagingDeps {
   states: SessionStateManager;
   sessions(): Map<string, SessionConfig>;
   startSession(codename: string, opts: { prompt?: string }): Promise<string>;
-  /** Send to the operator; resolves false when no channel is connected. */
-  channelSend(text: string): Promise<boolean>;
 }
 
 /** Inter-session and session-to-operator messaging primitives behind the MCP tools. */
@@ -56,38 +54,5 @@ export class Messaging {
     }
     this.deps.store.insertMessage(from, '*', 'broadcast', message);
     return `Broadcast delivered to ${delivered} session(s).`;
-  }
-
-  notify(from: string, message: string, recipients?: string[]): string {
-    const targets = (recipients ?? [...this.deps.sessions().keys()]).filter(
-      (codename) => codename !== from && this.deps.sessions().has(codename),
-    );
-    for (const target of targets) {
-      this.deps.store.insertMessage(from, target, 'notification', message);
-    }
-    return `Notification queued for ${targets.length} session(s) — delivered when they next start.`;
-  }
-
-  /** Deliver any queued notifications to a freshly started session. */
-  async deliverPendingNotifications(codename: string): Promise<void> {
-    for (const row of this.deps.store.getPendingMessages(codename)) {
-      if (row.type !== 'notification') continue;
-      try {
-        await this.deps.delivery.deliverOrQueue(codename, messageEnvelope(row.sender, row.content));
-        this.deps.store.markMessageDelivered(row.id);
-      } catch (err) {
-        log().warn(
-          'messaging',
-          `notification delivery to ${codename} failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-  }
-
-  async sendToOperator(from: string, message: string): Promise<string> {
-    const sent = await this.deps.channelSend(messageEnvelope(from, message));
-    return sent
-      ? 'Sent to the operator.'
-      : 'NOT delivered: no operator is connected (no console attached, no channel configured). The message was only written to the conductor log — repeat it when an operator connects.';
   }
 }

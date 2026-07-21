@@ -4,3 +4,4 @@
 codename: codex-1
 repo: ../my-other-project
 runtime: codex
+# bypassPermissions: false # optional override of defaults.bypassPermissions

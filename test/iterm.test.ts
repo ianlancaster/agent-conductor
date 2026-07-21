@@ -5,11 +5,10 @@ import {
   buildCreateSessionWindowScript,
   buildCreateTabScript,
   buildCreateWindowScript,
-  buildFocusWindowScript,
-  buildFocusedSessionScript,
   buildInSessionScript,
   buildListSessionIdsScript,
   buildRediscoverScript,
+  buildSessionTtyScript,
   buildSplitPaneScript,
   buildTitleShellPrefix,
   buildWindowExistsScript,
@@ -174,11 +173,10 @@ describe('buildTitleShellPrefix', () => {
   });
 
   it('adds the base64 badge printf when the badge is enabled', () => {
-    const prefix = buildTitleShellPrefix('tester — self-test', true);
+    const prefix = buildTitleShellPrefix('tester — self-test', true, 'tester');
     expect(prefix).toContain(`printf '\\033]0;tester — self-test\\a'`);
-    expect(prefix).toContain(
-      `printf '\\033]1337;SetBadgeFormat=${Buffer.from('tester — self-test').toString('base64')}\\a'`,
-    );
+    expect(prefix).toContain(`printf '\\033]1337;SetBadgeFormat=${Buffer.from('tester').toString('base64')}\\a'`);
+    expect(prefix).not.toContain(Buffer.from('tester — self-test').toString('base64'));
   });
 
   it('escapes single quotes in the display name', () => {
@@ -253,8 +251,7 @@ describe('script builders', () => {
   it('buildCreateSessionWindowScript sets name and the conductor_session user var', () => {
     const script = buildCreateSessionWindowScript('alpha', encodeSessionVar('f1', 'alpha'));
     expect(script).toContain('set name to "alpha"');
-    // No badge at creation: the badge (iTerm's big watermark text) is opt-in
-    // via terminal.iterm.badge and applied by rename() once the runtime is up.
+    // No badge at creation: rename() applies the configured badge once the runtime is up.
     expect(script).not.toContain('set badge');
     expect(script).toContain(`set variable named "${SESSION_USER_VAR}" to "${encodeSessionVar('f1', 'alpha')}"`);
   });
@@ -298,6 +295,12 @@ describe('script builders', () => {
     expect(script).toContain('repeat with w in windows');
   });
 
+  it('buildSessionTtyScript reads the tty from the selected iTerm session', () => {
+    const script = buildSessionTtyScript('SESSION-X');
+    expect(script).toContain('if (id of s) is "SESSION-X" then');
+    expect(script).toContain('return (tty as string)');
+  });
+
   it('buildCloseSessionScript escapes the session id and searches all windows', () => {
     const script = buildCloseSessionScript('evil" -- injection');
     expect(script).toContain('"evil\\" -- injection"');
@@ -314,11 +317,5 @@ describe('script builders', () => {
   it('buildListSessionIdsScript emits one id per line', () => {
     const script = buildListSessionIdsScript();
     expect(script).toContain('(id of s) & linefeed');
-  });
-
-  it('focus scripts target the conductor window', () => {
-    expect(buildFocusWindowScript(9)).toContain('select window id 9');
-    expect(buildFocusedSessionScript(9)).toContain('tell window id 9');
-    expect(buildFocusedSessionScript(9)).toContain('id of current session of current tab');
   });
 });

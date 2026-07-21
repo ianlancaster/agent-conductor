@@ -7,7 +7,7 @@ const FRESH_SESSION_SETTLE_MS = 3000;
 
 export interface SchedulerDeps {
   sessions(): Map<string, SessionConfig>;
-  isActive(session: string): boolean;
+  isActive(session: string): boolean | Promise<boolean>;
   isPaused(session: string): boolean;
   startSession(session: string, opts: { prompt?: string }): Promise<string>;
   stopSession(session: string): Promise<string>;
@@ -17,6 +17,8 @@ export interface SchedulerDeps {
 /** Cron scheduling of session prompts, on croner. Rebuilt whenever configs reload. */
 export class Scheduler {
   private jobs: Cron[] = [];
+  /** Serialize all schedules targeting one session, not merely each Cron job. */
+  private readonly sessionRuns = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: SchedulerDeps) {}
 
@@ -31,7 +33,7 @@ export class Scheduler {
           // croner's `protect` clears the moment the sync fn returns and overlap
           // protection never engages.
           const job = new Cron(entry.cron, { catch: true, protect: true }, async () => {
-            await this.fire(codename, entry);
+            await this.enqueue(codename, entry);
           });
           this.jobs.push(job);
         } catch (err) {
@@ -43,6 +45,18 @@ export class Scheduler {
       }
     }
     log().debug('scheduler', `${this.jobs.length} schedule(s) armed`);
+  }
+
+  private enqueue(codename: string, entry: ScheduleEntry): Promise<void> {
+    const previous = this.sessionRuns.get(codename) ?? Promise.resolve();
+    const run = previous.then(
+      () => this.fire(codename, entry),
+      () => this.fire(codename, entry),
+    );
+    this.sessionRuns.set(codename, run);
+    return run.finally(() => {
+      if (this.sessionRuns.get(codename) === run) this.sessionRuns.delete(codename);
+    });
   }
 
   stop(): void {
@@ -58,7 +72,7 @@ export class Scheduler {
         return;
       }
       if (entry.freshContext) {
-        if (this.deps.isActive(codename)) {
+        if (await this.deps.isActive(codename)) {
           await this.deps.stopSession(codename);
           await sleep(FRESH_SESSION_SETTLE_MS);
         }
@@ -66,7 +80,7 @@ export class Scheduler {
         log().info('scheduler', `${codename}: '${label}' fired (fresh session)`);
         return;
       }
-      if (this.deps.isActive(codename)) {
+      if (await this.deps.isActive(codename)) {
         await this.deps.deliver(codename, entry.prompt);
       } else {
         await this.deps.startSession(codename, { prompt: entry.prompt });

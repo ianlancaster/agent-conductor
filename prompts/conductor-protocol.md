@@ -17,25 +17,32 @@ you are from your connection; never claim to be another session.
 
 - `send_to_session` — message a specific session (starts them if needed). Preferred.
 - `broadcast` — message ALL active sessions except you. Use carefully and sparingly.
-- `notify_sessions` — queue a message delivered when sessions next start (no
-  `recipients` = all sessions except you).
-- `send_to_operator` — message the operator, signed with your codename. Use it for
-  questions too: send the question, continue (or wait) — the operator's reply arrives
-  as a `[Message from operator]`.
+- `send_to_operator` — message the operator, signed with your codename. For a question,
+  optionally pass `options` with 1–8 short, unique choices. The call returns a request ID;
+  continue useful work or wait. The selected choice arrives asynchronously as a
+  `[Message from operator] Response to request #…` message. Choices communicate the
+  operator's answer only; they do not approve or execute another action.
 - `whoami` — your own codename and status (identity is mechanical; this is authoritative).
-- `list_sessions`, `get_session_status`, `session_exists`, `tail_session` — fleet observability.
+- `list_sessions`, `get_session_status`, `tail_session` — fleet observability.
 - `start_session`, `stop_session`, `continue_session` — lifecycle of existing sessions
-  (`placement`: pane | tab | window; `prompt` on start; `headless: true` puts the pane
-  in the detached fleet session, out of the operator's view — tmux backend only).
+  (`codename` may be a session or `all`; for an agent caller, `all` means every other session).
+  Optional `runtime`: cc | claude-code | codex overrides the session default for that run
+  (`cc` means `claude-code`); `placement`: pane | tab | window; `headless: true` puts the pane
+  in the detached fleet session, out of the operator's view — tmux backend only.
 - `spawn_session` — create + start a brand-new session. Args: `codename` (required),
-  `runtime` (claude-code | codex, default claude-code), `model`, `prompt`, `path`,
-  `placement`, `headless`. `teardown_session` reverses it (`deleteDir` to remove its directory).
-- `create_worktree` / `remove_worktree` — session in a git worktree of an existing repo
-  (`repo` required, `branch` defaults to the codename; also takes `runtime`, `model`,
-  `prompt`, `placement`, `headless`). Removal refuses dirty worktrees and keeps the branch.
-- `set_autonomy`, `set_tag`, `get_tag` — mode and status labels.
+  `runtime` (cc | claude-code | codex, default from supervisor config), `model`, `path`,
+  `placement`, `headless`, and optional `bypassPermissions`. Set `worktreeRepo` to create its
+  directory as a git worktree (`branch` defaults to the codename). `teardown_session` reverses
+  it; `deleteDir` removes safe directories. Dirty worktrees are left registered and untouched.
+- `toggle_auto` — toggle automatic stall routing for a session.
+- `pause_session`, `resume_session` — temporarily suppress a session's schedules and
+  stall routing without changing its auto setting.
+- `set_sentinel` — designate a registered session as the fleet stall sentinel, or
+  clear the designation. The target should already have the sentinel instructions.
+- `arm_fleet_watch`, `disarm_fleet_watch`, `list_fleet_watches` — watch an explicit
+  group of sessions and escalate when every member remains stalled together.
+- `set_tag` — set or clear a status label; status results include the current label.
 - `type_in_pane` — raw text into a peer's terminal (answering prompts, slash commands).
-- `request_restart` — restart your own session with fresh context when it degrades.
 
 ## Conventions
 
@@ -45,6 +52,5 @@ you are from your connection; never claim to be another session.
 2. Finish your current step before acting on non-urgent messages.
 3. When the operator contacts you through a remote channel, answer with
    `send_to_operator` — text you print in the terminal does not reach them.
-4. Keep your tag up to date (`set_tag` on yourself via the operator or peers) so the
-   fleet status stays readable.
+4. Keep your tag up to date with `set_tag` so the fleet status stays readable.
 5. Never impersonate other sessions or fabricate messages from them.

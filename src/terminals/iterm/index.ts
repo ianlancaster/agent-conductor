@@ -7,6 +7,7 @@ import { sleep } from '../../core/utils.js';
 import { log } from '../../logger.js';
 import type { Store } from '../../store/index.js';
 import type { TerminalBackend, TerminalCapabilities } from '../types.js';
+import { ttyHasForegroundJob } from '../process.js';
 import {
   buildCloseSessionScript,
   buildCreateSessionWindowScript,
@@ -14,12 +15,11 @@ import {
   buildCreateWindowScript,
   buildFindTtyWindowScript,
   buildNameTtySessionScript,
-  buildFocusWindowScript,
-  buildFocusedSessionScript,
   buildInSessionScript,
   buildListSessionIdsScript,
   buildRediscoverScript,
   buildRevealSessionScript,
+  buildSessionTtyScript,
   buildSplitPaneScript,
   buildTitleShellPrefix,
   buildWindowExistsScript,
@@ -40,11 +40,8 @@ export interface ITermBackendConfig {
   windowName: string;
   /** Scopes pane identity markers so rediscovery never adopts another fleet's panes. */
   fleetId: string;
-  /** Watermark the session name as an iTerm badge (the big red text). Off by default. */
+  /** Watermark the session name as an iTerm badge (the big red text). On by default. */
   badge: boolean;
-  autoPauseOnFocus: boolean;
-  autoPauseResumeDelaySeconds: number;
-  focusCheckMs: number;
   bracketedPasteThreshold: number;
   launchTimeoutSec: number;
   pollIntervalSec: number;
@@ -53,6 +50,8 @@ export interface ITermBackendConfig {
 export interface ITermBackendOptions {
   store: Store;
   config: ITermBackendConfig;
+  /** Resolved fleet environment; used only for console-window attachment. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** Store keys replacing the old workspace.json. */
@@ -80,10 +79,11 @@ const PANES_KEY = 'iterm.panes';
  */
 export class ITermBackend implements TerminalBackend {
   readonly name = 'iterm';
-  readonly capabilities: TerminalCapabilities = { focusTracking: true, headless: false };
+  readonly capabilities: TerminalCapabilities = { headless: false };
 
   private readonly store: Store;
   private readonly config: ITermBackendConfig;
+  private readonly env: NodeJS.ProcessEnv;
   private windowId: number | null = null;
   /** session codename -> iTerm2 session UUID */
   private readonly panes = new Map<string, string>();
@@ -92,6 +92,7 @@ export class ITermBackend implements TerminalBackend {
   constructor(options: ITermBackendOptions) {
     this.store = options.store;
     this.config = options.config;
+    this.env = options.env ?? process.env;
   }
 
   // ── Workspace lifecycle ─────────────────────────────────────────────────────
@@ -135,15 +136,6 @@ export class ITermBackend implements TerminalBackend {
   async summon(pane: PaneRef, session: string): Promise<string> {
     const result = (await runOsa(buildRevealSessionScript(pane.id))).trim();
     return result === 'OK' ? `Focused ${session}'s pane.` : `${session}'s pane was not found in any iTerm window.`;
-  }
-
-  async focusWindow(): Promise<void> {
-    if (this.windowId === null) return;
-    try {
-      await runOsa(buildFocusWindowScript(this.windowId));
-    } catch (err) {
-      log().debug('iterm', `Focus failed: ${String(err)}`);
-    }
   }
 
   // ── Pane lifecycle ──────────────────────────────────────────────────────────
@@ -226,6 +218,12 @@ export class ITermBackend implements TerminalBackend {
     return alive;
   }
 
+  async isSessionActive(pane: PaneRef): Promise<boolean> {
+    const tty = (await runOsa(buildSessionTtyScript(pane.id))).trim();
+    if (tty.length === 0) throw new Error(`iTerm session ${pane.id} has no tty`);
+    return ttyHasForegroundJob(tty);
+  }
+
   async kill(pane: PaneRef): Promise<void> {
     log().info('iterm', `Closing pane ${pane.id.slice(0, 8)}`);
     try {
@@ -236,16 +234,17 @@ export class ITermBackend implements TerminalBackend {
     this.forgetSession(pane.id);
   }
 
-  titleShellPrefix(displayName: string): string {
-    return buildTitleShellPrefix(displayName, this.config.badge);
+  titleShellPrefix(displayName: string, inlineName = displayName): string {
+    return buildTitleShellPrefix(displayName, this.config.badge, inlineName);
   }
 
-  async rename(pane: PaneRef, name: string): Promise<void> {
+  async rename(pane: PaneRef, name: string, inlineName = name): Promise<void> {
     const escaped = escapeAppleScript(name);
-    // The badge is iTerm's big watermark text — opt-in (config), off by default.
+    const escapedInline = escapeAppleScript(inlineName);
+    // The badge is iTerm's big watermark text — enabled by default, with a config opt-out.
     const operations = this.config.badge
       ? `set name to "${escaped}"
-         set badge to "${escaped}"`
+         set badge to "${escapedInline}"`
       : `set name to "${escaped}"`;
     try {
       await this.inSession(pane.id, operations);
@@ -270,19 +269,6 @@ export class ITermBackend implements TerminalBackend {
       log().warn('iterm', `Rediscovery failed: ${String(err)}`);
     }
     return result;
-  }
-
-  async getFocusedSession(): Promise<string | null> {
-    if (this.windowId === null) return null;
-    try {
-      const sessionId = (await runOsa(buildFocusedSessionScript(this.windowId))).trim();
-      for (const [session, paneSessionId] of this.panes) {
-        if (paneSessionId === sessionId) return session;
-      }
-      return null;
-    } catch {
-      return null;
-    }
   }
 
   // ── Internals ───────────────────────────────────────────────────────────────
@@ -331,7 +317,7 @@ export class ITermBackend implements TerminalBackend {
   private processTty(): string | null {
     // Console-first mode: the supervisor runs as a hidden child of `conductor
     // start`, which passes ITS terminal here so panes join the console window.
-    const consoleTty = process.env.CONDUCTOR_CONSOLE_TTY;
+    const consoleTty = this.env.CONDUCTOR_CONSOLE_TTY;
     if (consoleTty?.startsWith('/dev/') === true) return consoleTty;
     try {
       // --foreground mode: `tty` reads fd 0 — the terminal we were started in.

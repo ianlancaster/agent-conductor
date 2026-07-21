@@ -3,22 +3,38 @@
   "version": "0.1.0",
   "description": "Lightweight supervisor for terminal coding agents (Claude Code, Codex): pane orchestration, MCP messaging with mechanical identity, event-driven health, stall sentinel, operator channels.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ianlancaster/agent-conductor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ianlancaster/agent-conductor/issues"
+  },
+  "homepage": "https://github.com/ianlancaster/agent-conductor#readme",
   "type": "module",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "conductor": "dist/cli/index.js"
   },
   "files": [
     "dist",
+    "docs",
+    "examples",
     "prompts",
+    "env.template",
     "README.md",
+    "CONTRIBUTING.md",
+    "CLAUDE.md",
     "LICENSE"
   ],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "pnpm clean && tsc",
+    "prepack": "pnpm build",
     "dev": "tsx src/index.ts",
     "cli": "tsx src/cli/index.ts",
     "test": "vitest run",

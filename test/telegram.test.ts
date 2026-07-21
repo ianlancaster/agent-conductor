@@ -79,4 +79,19 @@ describe('classifyUpdate', () => {
     expect(classifyUpdate(message(undefined))).toBeUndefined();
     expect(classifyUpdate({ update_id: 3 })).toBeUndefined();
   });
+
+  it('classifies callback data only when it is a slash command', () => {
+    expect(
+      classifyUpdate({
+        update_id: 4,
+        callback_query: { id: 'cb', data: '/respond 42 2', message: { chat: { id: 123 } } },
+      }),
+    ).toEqual({ kind: 'command', command: 'respond', args: ['42', '2'] });
+    expect(
+      classifyUpdate({
+        update_id: 5,
+        callback_query: { id: 'cb', data: 'not a command', message: { chat: { id: 123 } } },
+      }),
+    ).toBeUndefined();
+  });
 });

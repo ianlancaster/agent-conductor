@@ -1,207 +1,534 @@
-# agent-conductor
+# Agent Conductor
 
-A lightweight supervisor for terminal coding agents — Claude Code and OpenAI Codex — that
-gives them powerful communication primitives: authenticated inter-session messaging, an
-event-driven health system with a session-based stall sentinel, remote operator channels,
-and cron scheduling. One process, panes in iTerm2 or tmux.
+Agent Conductor is a lightweight supervisor for fleets of terminal coding agents. It lets
+Claude Code and OpenAI Codex sessions communicate with each other and with an operator,
+while a designated agent watches auto sessions for stalls.
 
-## Why
+It is deliberately small. The conductor provides lifecycle, messaging, observability,
+and stall-routing primitives; the agents decide how to use them. There is no workflow
+engine, dashboard, task graph, or LLM hidden inside the supervisor.
 
-Running one coding agent is easy. Running a fleet surfaces three problems nothing else solves
-together:
+> **Project status:** Agent Conductor is under active development and has not yet been
+> published to npm. Interfaces may change before the first stable release.
 
-1. **Who said what?** Sessions coordinating over keystrokes or self-declared names can
-   impersonate each other. Here, every session gets its own MCP URL (`/mcp/<codename>`) —
-   the conductor derives identity from the connection, so identity is unforgeable.
-2. **Who's stuck?** Runtimes push lifecycle events (Claude Code hooks, Codex `notify`) to the
-   conductor; a pane-diff watchdog catches what events miss. Every stall of an autonomous
-   session is routed to a **stall sentinel** — a session you designate — which reads the pane and
-   decides: nudge with a precise instruction, dismiss, or ask you (via the same
-   `send_to_operator` primitive every session has — no separate escalation machinery).
-3. **Where's the operator?** Channel adapters (Telegram today; the interface is small) give
-   you full fleet control from anywhere: status, start/stop, messaging, and mode changes.
-   Sessions message you with `send_to_operator`; you reply with `/tell` — no ceremony.
+## Why Agent Conductor?
 
-## Prerequisites
+Running one coding agent is simple. Running several introduces a few practical problems:
 
-- **Node.js 22+** and **pnpm**
-- At least one agent CLI on your `PATH`: **`claude`** (Claude Code) and/or **`codex`** (OpenAI Codex)
-- A terminal backend: **iTerm2** (macOS) or **tmux** (macOS/Linux, headless-capable)
-- **`curl`** (used by the lifecycle hooks that drive health monitoring)
-- Optional: a **Telegram** bot token + chat id for remote control
+- **Identity:** messages need a trustworthy sender. Each managed session gets its own MCP
+  endpoint, and the conductor derives the sender from that connection rather than accepting
+  a caller-supplied name.
+- **Coordination:** sessions need direct, signed communication without scraping terminals or
+  sharing a chat transcript.
+- **Supervision:** an auto session that stops, blocks, compacts, or wedges needs
+  attention without requiring a human to watch every pane.
+- **Operator access:** the same fleet controls should work in a local console, Telegram,
+  and future operator adapters.
 
-## Install
+Agent Conductor handles those mechanics and leaves judgment to the agents and operator.
 
-Not yet published to npm — run from a checkout. From the `agent-conductor` repo:
+## How it works
 
-```bash
-pnpm install
-pnpm build            # compiles to dist/
-pnpm link --global    # puts `conductor` on your PATH
+```text
+ Claude Code ─┐                          ┌─ iTerm2 panes
+              ├─ session-facing MCP ─┐  ├─ tmux panes
+ Codex ───────┘                      │  │
+                                    ▼  ▼
+                              ConductorOperations
+                              canonical control plane
+                                    ▲  ▲
+                                    │  │
+ Operator console ─┐                │  └─ lifecycle events + pane watchdog
+ Telegram ─────────┼─ operator adapter
+ Future channels ──┘
 ```
 
-Now `conductor` works anywhere. (Prefer not to link? Use
-`pnpm --dir <repo> cli -- <args>`, or `npx tsx <repo>/src/cli/index.ts <args>`. Every command
-also accepts `-C, --dir <fleet-dir>` so you needn't be inside the fleet directory.)
+The canonical operation registry owns behavior, validation, descriptions, and MCP schemas.
+MCP and operator commands are adapters over that registry, so shared capabilities cannot
+quietly develop different implementations.
+
+The conductor itself never calls an LLM. When an auto session stalls, the conductor
+sends one self-contained message to the configured **stall sentinel**. The sentinel is a
+normal Claude Code or Codex session that inspects the situation and acts with ordinary
+tools: message the session, ask the operator, or do nothing.
+
+## Requirements
+
+- Node.js 22 or newer
+- pnpm
+- Claude Code (`claude`) and/or OpenAI Codex (`codex`)
+- iTerm2 on macOS, or tmux on macOS/Linux
+- `curl` for runtime lifecycle hooks
+
+Telegram is optional.
+
+## Install from source
+
+```bash
+git clone https://github.com/ianlancaster/agent-conductor.git
+cd agent-conductor
+pnpm install
+pnpm build
+pnpm link --global
+```
+
+This installs the `conductor` command globally. Until the npm package is published, you can
+also run the CLI from the repository with `pnpm cli <arguments>`.
 
 ## Quick start
 
-A "fleet directory" holds your `config/`. Scaffold one:
+Create a fleet directory and register a project:
 
 ```bash
-mkdir ~/fleet && cd ~/fleet
-conductor init --session alpha --repo ~/code/my-project   # any project dir the session will work in
-conductor validate                  # catches config mistakes before launch
-conductor start                     # this terminal becomes the conductor> console
+mkdir ~/my-fleet
+cd ~/my-fleet
+
+conductor init --session alpha --repo ~/code/my-project
+conductor validate
+conductor start
 ```
 
-`init` writes a minimal commented `config/supervisor.yaml` (every setting is optional —
-ports and names are derived per fleet dir) and `config/sessions/alpha.yaml`. The full
-reference config with every knob lives in `examples/supervisor.yaml`.
+`conductor start` launches the supervisor and turns the current terminal into an operator
+console. At the `conductor>` prompt:
 
-`start` boots the conductor as a hidden background process (terminal output in
-`data/conductor.out.log`, structured log in `data/conductor.log`) and turns the current
-terminal into the operator console. Closing the console stops the conductor. At the
-`conductor>` prompt, type `/help`. `/start alpha` opens a pane running Claude Code —
-split into this same window, on iTerm2 and tmux alike — wired to the conductor;
-`/tell alpha <message>` talks to it; `/status` shows the fleet. The terminal backend
-is auto-detected: run `conductor start` inside tmux and you get tmux panes in your
-window; run it in iTerm2 and you get iTerm panes (`terminal.backend` overrides). Messages sessions send you (`send_to_operator`,
-stall reports) print live above the prompt with a cyan `[Message from <name>]`
-signature. Session YAMLs hot-reload — drop a new file in `config/sessions/` and it
-registers itself, no restart.
-
-Two variants: `conductor console` attaches a second console to a running conductor
-(exiting it does NOT stop anything), and `conductor start --foreground` runs the
-supervisor visibly in the current terminal (the log feed — what daemons use).
-
-**New here? Follow [docs/getting-started.md](docs/getting-started.md)** — a step-by-step
-first run (single session → sentinel → Telegram) with the shakedown order that surfaces
-problems early.
-
-## Concepts
-
-| Term                 | Meaning                                                                                                                                                                                                                                                                                                                                          |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Session**          | The managed unit: a codename + a working directory + a runtime, living in a pane. Defined by a YAML in `config/sessions/` or created on the fly with `/spawn`.                                                                                                                                                                                   |
-| **Run**              | One launch of a session's CLI (start → stop). A session accumulates many runs; `continue` resumes the previous run's conversation.                                                                                                                                                                                                               |
-| **Runtime**          | The agent CLI: `claude-code` or `codex`. Owns launch flags, identity wiring, lifecycle-event parsing.                                                                                                                                                                                                                                            |
-| **Terminal backend** | Where panes live: `iterm` (macOS, focus tracking) or `tmux` (headless, SSH, Linux). Auto-detected: starting the conductor inside tmux selects tmux and panes join your window; otherwise iterm on macOS.                                                                                                                                         |
-| **Channel**          | An operator surface: the built-in console, Telegram, more via `ChannelAdapter`.                                                                                                                                                                                                                                                                  |
-| **Autonomy**         | `facilitated` — you drive; stalls are ignored. `autonomous` — stalls route to the sentinel.                                                                                                                                                                                                                                                      |
-| **Sentinel**         | The session designated in `sentinel.codename`. Receives each stall as one `[Stall]` message (session, kind, truncated last message) and acts with ordinary primitives: `send_to_session` to nudge, `send_to_operator` to ask you, nothing to dismiss. If a stall can't be delivered because the sentinel isn't running, you're alerted directly. |
-| **Agent project**    | A repo containing the marker file (`.conductor-agent`) — flagged 🤖 in status. Distinguishes purpose-built agents from sessions doing ordinary work in ordinary repos. Display-only.                                                                                                                                                             |
-
-## Operator commands
-
-Same language everywhere (`conductor console`, `conductor cmd`, Telegram):
-
+```text
+/start alpha
+/tell alpha inspect this repository and summarize its architecture
+/status
+/tail alpha 40
+/stop alpha
 ```
-/status [session]            /start <session|all> [placement]
-/talk <session>              /continue <session|all> [placement]
-/tell <session> <msg>        /stop <session|all>
-/broadcast <msg>             /tail <session> [lines]
-/auto <session|all>          /pause | /resume <session|all>
-/facilitated <session|all>   /tag <session> [text]
-/summon <session>            bring its pane into your window (tmux) / focus it (iTerm)
-/banish <session>            move its pane to the detached fleet session (tmux; keeps running)
-/spawn <name> [flags] [placement]
-    -r/--runtime <claude-code|codex>   runtime (default claude-code)
-    -m/--model <model>                 model override
-    -p/--prompt "…"                    initial prompt
-    -d/--path <dir>                    working dir (default spawn.dirPattern —
-                                       ./<name> inside the fleet dir; set
-                                       '../{codename}' for siblings)
-    -w/--worktree <repo>               create the dir as a git worktree of repo
-    -b/--branch <name>                 worktree branch (default: the codename)
-/teardown <name> [-D/--delete]
-/autopause [on|off]
 
-placement (anywhere it appears): -P/--pane (default) · -T/--tab · -W/--window
-                                 -H/--headless (detached fleet session, tmux only)
+Session configuration lives in `config/sessions/alpha.yaml`:
+
+```yaml
+codename: alpha
+repo: /absolute/path/to/my-project
+runtime: claude-code # or codex
+# bypassPermissions: false # optional override of the fleet default
+# model: claude-opus-4-6
 ```
+
+Sessions that omit `runtime` use `defaults.runtime` from `config/supervisor.yaml`:
+
+```yaml
+defaults:
+  runtime: codex # default: claude-code
+  bypassPermissions: true # default: true
+```
+
+`bypassPermissions` controls Claude Code's permission bypass and Codex's approval/sandbox
+bypass through one runtime-neutral setting. Set it under `defaults` for the fleet, or in a
+session file for an override. `/spawn` also accepts `--bypass-permissions` or
+`--require-permissions`; `spawn_session` exposes the same `bypassPermissions` boolean.
+
+See [examples/supervisor.yaml](examples/supervisor.yaml) for the complete user-facing
+supervisor configuration.
+
+An explicit `runtime` in a session file becomes that session's default. `/start`, `/continue`,
+`start_session`, and `continue_session` accept a per-run runtime override without modifying
+the session file; command and tool arguments accept `cc` as shorthand for `claude-code`.
+`/spawn` and `spawn_session` use the fleet default when runtime is omitted.
+Claude Code and Codex keep separate conversation histories: a runtime-overridden `continue`
+resumes the selected runtime's latest conversation, not a conversation created by the other runtime.
+
+Session files hot-reload. Add, edit, or remove a YAML file under `config/sessions/` without
+restarting the conductor. Unknown configuration keys are validation errors, so stale or
+misspelled settings never fail silently.
+
+The terminal backend is selected automatically: starting inside tmux uses tmux; starting in
+iTerm2 on macOS uses iTerm2. Set `terminal.backend` explicitly when running as a daemon.
+
+For a guided first fleet, including a sentinel and Telegram, see
+[Getting Started](docs/getting-started.md).
+
+## Optional runtime status lines
+
+For a richer terminal footer, run this once:
+
+```bash
+conductor statusline
+```
+
+This optional setup is separate from `conductor init`. It configures the user-level
+Claude Code and Codex settings used by newly started sessions; restart an existing managed
+session to pick it up.
+
+Claude Code receives a conductor-supplied status-line command showing model, context used,
+cost, project, worktree, Git branch, and staged/modified counts. Codex uses its native
+`tui.status_line` with the closest supported fields: model and reasoning, context used,
+tokens used, project, and Git branch. Codex does not currently expose dollar cost, worktree
+name, or working-tree change counts as native status-line items. You can further customize
+Codex interactively with `/statusline` inside Codex.
+
+## The operator console
+
+Run `/help` in any connected operator interface for the authoritative command reference.
+The same command language works in:
+
+- the console opened by `conductor start`
+- an additional console opened by `conductor console`
+- one-shot commands such as `conductor cmd /status`
+- Telegram
+- injected `ChannelAdapter` implementations
+
+Common examples:
+
+```text
+/status [session]
+/start <session|all> [-r|--runtime cc|claude-code|codex] [placement]
+/continue <session|all> [-r|--runtime cc|claude-code|codex] [placement]
+/stop <session|all>
+
+/tell <session> <message>
+/talk <session>
+/broadcast <message>
+/respond <request-id> <option-number>
+/tail <session> [lines]
+/type <session> <text>
+
+/auto <session|all>
+/pause <session|all>
+/resume <session|all>
+/sentinel [session]
+/fleet-watch <arm|disarm|list> ...
+/tag <session> [text]
+
+/spawn <name> [--runtime <runtime>] [--path <dir>] [--model <model>]
+              [--worktree <repo>] [--branch <name>]
+              [--bypass-permissions|--require-permissions] [placement]
+/teardown <name> [--delete]
+```
+
+Placement flags are `-P/--pane`, `-T/--tab`, and `-W/--window`. `-H/--headless` places the
+session in the detached fleet tmux session.
+
+`/auto` toggles stall supervision for a session. `/pause` temporarily suppresses its
+schedules and stall routing without changing that auto setting; `/resume` removes the pause.
+
+`/sentinel watch` changes the stall sentinel immediately and persists the selection.
+Running `/sentinel` with no session clears it.
+
+Fleet watches cover autonomous campaigns where individual stalls are normal but every
+worker being stalled at once is not. Arm a named watch over an explicit subset; do not
+include the sentinel:
+
+```text
+/fleet-watch arm release alpha,beta,gamma
+/fleet-watch list
+/fleet-watch disarm release
+```
+
+Each member first passes through ordinary stall detection. Once all members are stalled,
+the watch waits `health.fleetStallConfirmMs` (five minutes by default) and sends one
+`[Fleet Stall]` alert to the sentinel. The optional final argument overrides that interval
+in seconds, including `0` for immediate escalation. A submitted message, restart, or later
+completed turn from any member rearms the watch. Watches are process-local and are removed
+when disarmed, when a member is deregistered, or when the conductor stops.
 
 ## Session-facing MCP tools
 
-`send_to_session` · `broadcast` (sparingly) · `notify_sessions` · `send_to_operator` ·
-`start_session` / `stop_session` / `continue_session` ·
-`spawn_session` / `teardown_session` · `create_worktree` / `remove_worktree` ·
-`set_autonomy` · `set_tag` / `get_tag` · `whoami` · `list_sessions` / `get_session_status` /
-`session_exists` · `tail_session` · `type_in_pane` · `request_restart`
+Every managed session receives the same session-facing MCP surface. `tools/list` is the
+authoritative machine-readable reference, including argument schemas.
 
-## Worktrees
+### Shared fleet primitives
 
-`/spawn reviewer --worktree ../my-project --branch review-pass` gives a session a git
-worktree of an existing repo: instant, fully isolated working directory, same object store,
-branches visible across the fleet without pushing. Separate clones work exactly as well —
-worktrees are the fast path, not a requirement. `remove_worktree` / `--delete` refuses
-dirty worktrees.
+These operations are available through both MCP and operator adapters:
+
+| MCP operation        | Operator command      | Purpose                                                        |
+| -------------------- | --------------------- | -------------------------------------------------------------- |
+| `send_to_session`    | `/tell`               | Send a signed message; starts a stopped recipient when needed  |
+| `broadcast`          | `/broadcast`          | Message every active session except the sender                 |
+| `start_session`      | `/start`              | Start sessions, optionally overriding their runtime            |
+| `stop_session`       | `/stop`               | Stop one session or all sessions                               |
+| `continue_session`   | `/continue`           | Continue sessions, optionally overriding their runtime         |
+| `spawn_session`      | `/spawn`              | Create, register, and start a session or worktree session      |
+| `teardown_session`   | `/teardown`           | Stop and deregister a session; optionally remove its directory |
+| `toggle_auto`        | `/auto`               | Toggle automatic stall routing                                 |
+| `pause_session`      | `/pause`              | Suppress schedules and stall routing temporarily               |
+| `resume_session`     | `/resume`             | Resume schedules and configured stall routing                  |
+| `set_sentinel`       | `/sentinel`           | Set or clear the fleet sentinel                                |
+| `arm_fleet_watch`    | `/fleet-watch arm`    | Alert when every watched session remains stalled               |
+| `disarm_fleet_watch` | `/fleet-watch disarm` | Remove a fleet stall watch                                     |
+| `list_fleet_watches` | `/fleet-watch list`   | Inspect fleet stall watches                                    |
+| `set_tag`            | `/tag`                | Set or clear a status label                                    |
+| `list_sessions`      | `/status`             | Show fleet status                                              |
+| `get_session_status` | `/status <session>`   | Show detailed status for one session                           |
+| `tail_session`       | `/tail`               | Read trailing pane output                                      |
+| `type_in_pane`       | `/type`               | Type raw text without a message envelope                       |
+
+### Session-only tools
+
+- `whoami` returns the caller identity derived from its MCP connection.
+- `send_to_operator` sends a signed message to connected operator adapters. Its optional
+  `options` array carries 1–8 short, unique choices and returns a request ID.
+
+Operator-only conveniences such as `/talk`, `/respond`, `/summon`, and `/banish` are
+intentionally not exposed as agent tools. `/respond <request-id> <option-number>` sends the
+first selected response back to the requesting session; it does not approve or execute an
+action.
+
+## Auto sessions and the stall sentinel
+
+Auto is off by default. Run `/auto <session>` to turn it on or off. When auto is on,
+detected stalls are routed to the sentinel; otherwise the operator drives the session.
+
+Runtime lifecycle events are the primary signal. Claude Code hooks and Codex notifications
+report session starts, stops, blocked prompts, compaction, and termination. A pane-diff
+watchdog catches silent or wedged sessions when events stop flowing.
+
+To configure a sentinel, copy the shipped `prompts/sentinel.md` into your fleet's
+`prompts/` directory, then:
+
+1. Create a normal session with the supplied sentinel instructions:
+
+   ```yaml
+   # config/sessions/watch.yaml
+   codename: watch
+   repo: /absolute/path/to/a/scratch-directory
+   runtime: claude-code
+   systemPromptFile: ./prompts/sentinel.md
+   ```
+
+2. Set the initial designation in `config/supervisor.yaml`:
+
+   ```yaml
+   sentinel:
+     codename: watch
+   ```
+
+3. Start the sentinel before turning auto on for other sessions:
+
+   ```text
+   /start watch
+   /auto alpha
+   /tell alpha complete the requested implementation and verify it
+   ```
+
+If no sentinel is configured, stalls are reported directly to the operator. If a sentinel is
+configured but not running, the conductor alerts the operator that the stall could not be
+delivered.
+
+## Scheduling
+
+Sessions can receive cron-driven prompts:
+
+```yaml
+codename: reviewer
+repo: /absolute/path/to/project
+runtime: codex
+schedules:
+  - label: weekday review
+    cron: '0 9 * * 1-5'
+    prompt: Review open pull requests and report important findings to the operator.
+    freshContext: false
+```
+
+An active session receives the prompt as a message. An inactive session — including one whose
+runtime was ended with Ctrl-C but whose pane remains open — restarts with the prompt internally.
+Schedules targeting the same session are serialized so simultaneous jobs do not lose prompts.
+Public lifecycle tools do not expose a start-with-prompt option; this is an internal composition
+of scheduling and lifecycle primitives.
+
+Pausing the session suppresses all of its schedules until it is resumed. Individual schedule
+entries can also be disabled with `paused: true`. Set `freshContext: true` to stop an active
+session and start a new run with the scheduled prompt. Missed triggers are never backfilled:
+the conductor only runs cron events reached while it is running.
+
+## Worktrees and spawned sessions
+
+Create an isolated worktree session without cloning the repository again:
+
+```text
+/spawn reviewer --worktree /path/to/project --branch review-pass
+/tell reviewer review the current changes for correctness
+```
+
+The equivalent MCP call is `spawn_session` with `worktreeRepo` and an optional `branch`.
+
+Remove the session with `/teardown reviewer --delete`, or `teardown_session` with
+`deleteDir: true`. The conductor refuses to remove a dirty worktree, leaves the stopped session
+registered so cleanup can be retried, and keeps its branch in the main repository after a
+successful removal.
 
 ## Telegram
 
-Set `CONDUCTOR_TELEGRAM_TOKEN` and `CONDUCTOR_TELEGRAM_CHAT_ID` (create a bot with
-@BotFather). Every command above works remotely; `send_to_operator`
-messages (including the sentinel's questions) arrive as signed messages.
+Telegram is bundled but disabled by default. Enable it in `config/supervisor.yaml`:
 
-## Security posture
+```yaml
+channels:
+  telegram:
+    enabled: true
+```
 
-The MCP/events/command surface binds to `127.0.0.1` only and rejects any request
-carrying a browser `Origin`/`Referer` header, so a web page you visit cannot drive your
-fleet. Identity is mechanical (the codename comes from the URL path the session was
-configured with). There is no per-session bearer auth yet — a _different_ local process
-could still assume a codename; hardening that is planned alongside the cross-machine relay.
-Run the conductor only on a trusted machine.
+`conductor init` creates `env.template` without overwriting an existing file. Copy it to the
+fleet's gitignored `.env`, restrict access, and fill in the credentials:
 
-Codex sessions each get an isolated `CODEX_HOME` (under the conductor's data dir) so
-`resume` only ever sees that session's own history; your shared `auth.json` is symlinked
-in (login and token refresh still work) and `config.toml` is copied per launch with the
-session's working directory pre-trusted — your real config is never written. Codex
-protocol injection writes `AGENTS.override.md` into each session's repo — **add it to
-that repo's `.gitignore`.**
+```bash
+cp env.template .env
+chmod 600 .env
+conductor start
+```
+
+```dotenv
+CONDUCTOR_TELEGRAM_TOKEN=123456:token
+CONDUCTOR_TELEGRAM_CHAT_ID=987654321
+```
+
+You may instead export those variables globally from `.bashrc`, `.zshrc`, CI, or a service
+environment. Inherited variables override fleet `.env` values. The conductor does not source
+shell startup files itself; launchd and systemd normally do not source interactive shell files,
+so a fleet `.env` is the reliable daemon fallback. Enabling Telegram without both non-blank
+credentials fails clearly before the adapter starts, without printing secret values.
+
+Telegram accepts the same operator commands as the local console. Messages sent with
+`send_to_operator`, including sentinel questions and undeliverable-stall warnings, are sent
+to every connected operator adapter. When a session includes `options`, Telegram renders
+inline buttons and text-only consoles render exact `/respond` commands. The first response
+from any interface wins and returns to the requesting session as an ordinary operator message.
+This records an answer only; it is not an approval or escalation queue.
+
+Telegram permits only one long-polling process per bot token. Use a separate bot token for
+each concurrently running fleet.
+
+## Adding an operator adapter
+
+Operator transports implement the small `ChannelAdapter` interface:
+
+```ts
+interface ChannelAdapter {
+  readonly name: string;
+  start(handlers: ChannelHandlers): Promise<void>;
+  send(message: ChannelMessage): Promise<void>;
+  stop(): Promise<void>;
+}
+
+interface ChannelMessage {
+  text: string;
+  actions?: readonly { label: string; command: string }[];
+}
+```
+
+Inject adapters when embedding the supervisor:
+
+```ts
+import { Supervisor } from 'agent-conductor';
+
+const supervisor = new Supervisor('/path/to/fleet', {
+  channels: [mySlackAdapter],
+});
+
+await supervisor.start();
+```
+
+Each incoming command includes a conversation ID, so stateful operator conveniences such as
+`/talk` remain isolated between adapters and users. The operation registry is audience-aware,
+leaving a clean path for future agent-facing adapters without duplicating command handlers.
+
+`ChannelAdapter` is specifically the external operator-transport seam. The local console is a
+native client of the conductor's `/cmd` endpoint and `/feed` event stream, while session-facing
+MCP is rendered directly from `ConductorOperations`. A channel should authenticate or allowlist
+callers from trusted transport metadata, translate inbound input into `ChannelHandlers`, and
+own only service-specific concerns such as formatting, message limits, retries, and shutdown.
+Core lifecycle and messaging policy stays in the canonical operations.
+
+Semantic actions contain canonical commands such as `/respond 42 2`. Rich adapters may render
+native controls; text-only adapters can use the exported `renderChannelMessage` fallback.
+`TelegramAdapter`, its configuration type, and all channel contract types are exported for
+embedding.
+
+Bundled channels are opt-in integrations whose configuration and credential discovery ship
+with the package. Injected channels are constructed by the embedding application and may use
+its own configuration and secret provider. See [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[developer guide](CLAUDE.md#extension-taxonomy) for the adapter checklist and test layers.
 
 ## Running headless
 
-The tmux backend has two modes: started from **inside tmux**, panes join your own
-session (the window you launched from — set `terminal.tmux.attachToCurrent: false` to
-opt out); started outside tmux, the fleet lives in a **detached** tmux session — a
-Linux box over SSH works. Either way each pane is labeled with its session name
-(`codename — tag`) in a border line above it (`terminal.tmux.paneBorders: false`
-turns that off).
+The tmux backend works without a GUI and is suitable for SSH hosts and Linux servers.
 
-Panes move freely between the two: `-H/--headless` on `/spawn`, `/start`, or
-`/continue` creates the pane in the detached fleet session (out of sight, fully
-functional — messaging, health, and stall detection don't care about visibility);
-`/summon <session>` pulls a pane into your current window from wherever it lives;
-`/banish <session>` sends it back to the detached session. Closing a terminal
-only detaches — everything keeps running (`tmux attach` or `conductor console`
-to get back in). `conductor daemon install` sets up launchd (macOS) or a
-systemd user unit (Linux); daemons have no `$TMUX`, so set `terminal.backend`
-explicitly for daemon fleets.
+```yaml
+terminal:
+  backend: tmux
+  tmux:
+    attachToCurrent: false
+```
 
-## Running multiple fleets
+`--headless` starts a session in the detached fleet tmux session. `/summon` moves its pane
+into the operator's current tmux window, and `/banish` moves it back without stopping it.
 
-Each fleet directory is a fully independent conductor — run as many as you like at once.
-The instance-scoped defaults (MCP port, tmux session name, window title, daemon service
-name) are derived from the fleet directory path, so two fleets never collide and the
-values stay stable across restarts. Set `mcp: port:` / `terminal: tmux: sessionName:`
-explicitly only if you want specific values. Two things to know:
+For a long-running service:
 
-- **One conductor per fleet directory** — a pid lockfile (`data/conductor.lock`) makes a
-  second `conductor start` in the same fleet dir refuse with a clear error.
-- **Telegram needs one bot token per fleet.** Telegram allows a single poller per token;
-  a second conductor on the same token logs a 409 conflict until you give it its own
-  token (or disable telegram for that fleet).
+```bash
+conductor daemon install
+conductor daemon uninstall
+```
+
+The daemon uses the compiled package, so run `pnpm build` and ensure `conductor` is on the
+service user's `PATH` first.
+
+## CLI reference
+
+```text
+conductor init                 scaffold a fleet directory
+conductor statusline           configure optional Claude Code and Codex status lines
+conductor start                start the supervisor and operator console
+conductor start --start-all    start the supervisor and every configured session
+conductor start --foreground   run the supervisor in the current process
+conductor console              attach another operator console
+conductor cmd /status          send one operator command
+conductor status [session]     show fleet status
+conductor logs [session]       show recent health events
+conductor validate             validate configuration
+conductor daemon install       install a user service
+conductor daemon uninstall     remove the user service
+```
+
+All commands accept `-C, --dir <fleet-directory>`.
+
+## Security model
+
+The HTTP control surface binds to `127.0.0.1` by default and rejects requests carrying
+browser `Origin` or `Referer` headers, which blocks drive-by browser access to localhost.
+
+Session identity is mechanical within the conductor: the codename comes from the MCP URL
+wired into that session, not from tool arguments. There is not yet per-session bearer
+authentication, so another trusted local process could call a session endpoint directly.
+Run the conductor only on a trusted machine and do not expose its HTTP port publicly.
+
+Codex sessions receive isolated `CODEX_HOME` directories so `resume --last` cannot select
+another managed session's history. Before every start or continue, the conductor ensures an
+`AGENTS.override.md` injects its protocol. If the file is tracked, its existing instructions are
+preserved and the conductor section is appended; otherwise the file is created and added to the
+working directory's `.gitignore` automatically.
 
 ## Development
 
 ```bash
 pnpm install
-pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
+pnpm typecheck
+pnpm lint
+pnpm format:check
+pnpm test
 ```
 
-Architecture and design history live in `docs/`. The three seams (`TerminalBackend`,
-`SessionRuntime`, `ChannelAdapter`) have in-memory fakes under `test/fakes/` — new backends,
-runtimes, and channels get the whole core test suite for free.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for extension boundaries, testing expectations,
+configuration and migration rules, and the pull-request workflow. The canonical architecture
+and invariants are documented in [CLAUDE.md](CLAUDE.md).
+
+The test suite uses in-memory terminal, runtime, and channel adapters, plus real HTTP and
+tmux integration tests. Contract tests ensure every shared operation appears through both
+MCP and operator adapters and remains documented.
+
+For black-box verification with real Claude Code and Codex sessions, use the
+[basic agent messaging test](test/manual/primitives/PRIMITIVE-TEST-SCRIPT.md) and its
+accompanying kickoff and results template.
+
+When adding a shared fleet primitive:
+
+1. Add its schema, audiences, description, and handler to `ConductorOperations`.
+2. Add its operator syntax to `buildOperatorCommands`.
+3. Update this README and the conductor protocol prompt.
+4. Add behavior and contract tests.
 
 ## License
 

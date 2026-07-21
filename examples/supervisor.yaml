@@ -5,6 +5,9 @@ supervisor:
   heartbeatIntervalSeconds: 30
   logLevel: info
 
+paths:
+  dataDir: ./data
+
 terminal:
   # backend: iterm | tmux. Default auto-detects: tmux when the conductor is started
   # inside tmux ($TMUX set), otherwise iterm on macOS and tmux elsewhere. Daemons
@@ -12,10 +15,10 @@ terminal:
   # backend: iterm
   # windowName: My Fleet          # default: "Agent Conductor (<fleet dir name>)"
   iterm:
-    badge: false # watermark the session codename on the pane (iTerm's big red badge text)
-    autoPauseOnFocus: false # pause an autonomous session while you interact with its pane
-    autoPauseResumeDelaySeconds: 60
+    badge: true # watermark the session codename on the pane; set false to disable
     bracketedPasteThreshold: 512
+    launchTimeoutSec: 8
+    pollIntervalSec: 0.25
   tmux:
     # When the conductor is started from inside tmux, session panes join YOUR
     # tmux window (splits / new windows in the session you launched from), just
@@ -27,27 +30,35 @@ terminal:
     paneBorders: true
     # sessionName: my-fleet       # detached-mode session name; default: conductor-<fleet slug>, unique per fleet dir
 
-# The stall sentinel: a session (configured like any other in config/sessions/) that
-# receives ALL stalls from autonomous sessions and decides what to do.
+# The initial stall sentinel: a session (configured like any other in
+# config/sessions/) that receives ALL stalls from auto sessions and decides
+# what to do. The set_sentinel MCP tool can change or clear it at runtime; that
+# choice persists in the fleet database and overrides this initial value.
 # Launch it with prompts/sentinel.md as its instructions. Leave unset until you
 # have defined that session — a dangling codename only earns you a startup warning.
 # sentinel:
 #   codename: watch
 
 defaults:
-  autonomy: facilitated # facilitated | autonomous
+  auto: false
+  runtime: claude-code # claude-code | codex; session files can override this
+  # Bypass runtime approval prompts and sandbox restrictions. Session files can override.
+  bypassPermissions: true
   placement: pane # pane | tab | window
 
 mcp:
   # port: 3456                    # default: derived per fleet dir (3456–3955), stable across restarts
   host: 127.0.0.1
+  keepAliveTimeoutMs: 60000
 
 health:
   captureLines: 40
   idleConfirmMs: 15000 # quiet period after a Stop event before it becomes an idle stall
+  fleetStallConfirmMs: 300000 # after every member of a fleet watch stalls; default 5 minutes
   stallBeatsThreshold: 2 # fallback watchdog: unchanged heartbeats before a silent stall
   suppressWindowMs: 300000
   suppressSimilarity: 0.8
+  eventSilenceMs: 120000 # wait this long without lifecycle events before pane-diff fallback begins
 
 messaging:
   queueDrainMs: 2000 # how often held messages retry; also the release latency after input clears
@@ -56,28 +67,26 @@ messaging:
   # (any unsigned input) is never typed over, no matter how old the queue is;
   # messages wait behind it and release when the input clears.
   queueMaxAgeMs: 60000
+  tailDefaultLines: 30
+  tailMaxLines: 500
 
 runtimes:
   claudeCode:
     binary: claude
     # defaultModel: claude-opus-4-6
     autocompactPct: 70
-    skipPermissions: true
     disableNonessentialTraffic: true # exports CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; disable if it breaks tools you rely on
     bareUi: true # bare-bones panes: no spinner tips, prompt suggestions, or onboarding/startup hints. Set false for the full Claude Code UI.
+    env: {} # extra environment variables; values here override built-in conductor defaults
   codex:
     binary: codex
+    # defaultModel: gpt-5.4
     toolTimeoutSec: 600 # Codex default is 60s — too low for long conductor tools
-    # Launch with --dangerously-bypass-approvals-and-sandbox (the claudeCode.skipPermissions
-    # analog). Set false to let your own config.toml approval/sandbox settings govern —
-    # unattended sessions will then hang on approval prompts until nudged.
-    skipPermissions: true
     bareUi: true # bare-bones panes: no startup update prompt (it BLOCKS spawned panes), analytics, tips, animations, or terminal-title writes. Set false for stock Codex behavior.
 
 channels:
   telegram:
-    enabled: true # requires CONDUCTOR_TELEGRAM_TOKEN + CONDUCTOR_TELEGRAM_CHAT_ID in the env
-    panePreviewLines: 20
+    enabled: false # opt in; credentials come from fleet .env or the inherited environment
 
 spawn:
   # Where /spawn and spawn_session create a session's working directory,
@@ -85,4 +94,4 @@ spawn:
   #   './{codename}'  → inside the fleet dir (default)
   #   '../{codename}' → sibling of the fleet dir (keeps the fleet dir config-only)
   dirPattern: './{codename}'
-  markerFile: .conductor-agent # presence marks a repo as an agent project (🤖) in status
+  markerFile: .agent-marker # presence marks a repo as an agent project (🤖) in status

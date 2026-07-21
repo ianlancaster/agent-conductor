@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isValidCodename } from '../config/schema.js';
 
 const SUPERVISOR_TEMPLATE = `# agent-conductor supervisor config.
@@ -7,26 +8,34 @@ const SUPERVISOR_TEMPLATE = `# agent-conductor supervisor config.
 # derived per fleet directory, so multiple fleets never collide.
 # Full reference with every knob: examples/supervisor.yaml in the agent-conductor repo.
 
+# defaults:
+#   runtime: codex              # default: claude-code; session files can override
+#   bypassPermissions: false    # default: true; session files can override
+
 # terminal:
 #   backend: iterm              # or: tmux. Default auto-detects: tmux when the
 #                               # conductor is started inside tmux, else iterm on
 #                               # macOS. Daemons should set this explicitly.
 
-# Designate a stall sentinel — a session (defined in config/sessions/) that receives
-# every stall from autonomous sessions and decides: nudge, dismiss, or ask you.
+# Designate the initial stall sentinel — a session (defined in config/sessions/)
+# that receives every stall from auto sessions and decides what to do.
+# The set_sentinel MCP tool can change or clear it later, with persistence.
 # Launch it with prompts/sentinel.md as its instructions.
 # sentinel:
 #   codename: watch
 
 # channels:
 #   telegram:
-#     enabled: true             # needs CONDUCTOR_TELEGRAM_TOKEN + CONDUCTOR_TELEGRAM_CHAT_ID
+#     enabled: true             # opt in; credentials come from .env or inherited env
 `;
+
+const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 
 function sessionTemplate(codename: string, repo: string): string {
   return `codename: ${codename}
 repo: ${repo}
-# runtime: claude-code          # or: codex
+# runtime: codex                # optional override of defaults.runtime
+# bypassPermissions: false      # optional override of defaults.bypassPermissions
 # model: claude-opus-4-6
 # systemPromptFile: ./prompts/${codename}.md
 # schedules:
@@ -57,6 +66,14 @@ export function initFleet(baseDir: string, opts: InitOptions = {}): string[] {
   } else {
     writeFileSync(supervisorFile, SUPERVISOR_TEMPLATE);
     lines.push(`created ${supervisorFile}`);
+  }
+
+  const environmentTemplate = join(baseDir, 'env.template');
+  if (existsSync(environmentTemplate)) {
+    lines.push(`kept    ${environmentTemplate} (already exists)`);
+  } else {
+    writeFileSync(environmentTemplate, readFileSync(join(PACKAGE_ROOT, 'env.template'), 'utf8'));
+    lines.push(`created ${environmentTemplate}`);
   }
 
   let sessionCreated: string | undefined;

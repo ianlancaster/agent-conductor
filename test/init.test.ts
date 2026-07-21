@@ -22,6 +22,7 @@ describe('initFleet', () => {
   it('scaffolds a fleet dir that immediately validates and starts warning-free', () => {
     const lines = initFleet(baseDir);
     expect(lines[0]).toMatch(/^created .*supervisor\.yaml$/);
+    expect(existsSync(join(baseDir, 'env.template'))).toBe(true);
     expect(existsSync(join(baseDir, 'config', 'sessions'))).toBe(true);
     expect(validateConfig(baseDir)).toEqual([]);
     // The template must not preconfigure a dangling sentinel (startup warning).
@@ -52,14 +53,18 @@ describe('initFleet', () => {
   it('never overwrites existing files', () => {
     const supervisorFile = join(baseDir, 'config', 'supervisor.yaml');
     mkdirSync(join(baseDir, 'config'), { recursive: true });
-    writeFileSync(supervisorFile, 'defaults:\n  autonomy: autonomous\n');
+    writeFileSync(supervisorFile, 'defaults:\n  auto: true\n');
     const sessionFile = join(baseDir, 'config', 'sessions', 'tester.yaml');
     mkdirSync(join(baseDir, 'config', 'sessions'), { recursive: true });
     writeFileSync(sessionFile, `codename: tester\nrepo: ${repoDir}\n`);
+    const environmentTemplate = join(baseDir, 'env.template');
+    writeFileSync(environmentTemplate, 'KEEP_ME=yes\n');
 
     const lines = initFleet(baseDir, { session: 'tester', repo: repoDir });
-    expect(lines.filter((l) => l.startsWith('kept')).length).toBe(2);
-    expect(readFileSync(supervisorFile, 'utf8')).toContain('autonomous');
+
+    expect(lines.filter((l) => l.startsWith('kept')).length).toBe(3);
+    expect(readFileSync(supervisorFile, 'utf8')).toContain('auto: true');
+    expect(readFileSync(environmentTemplate, 'utf8')).toBe('KEEP_ME=yes\n');
   });
 
   it('rejects an invalid codename', () => {

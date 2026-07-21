@@ -11,18 +11,21 @@ let runtime: FakeRuntime;
 let queue: DeliveryQueue;
 let pane: PaneRef;
 let ready: boolean;
+let deliveryEvents: string[];
 
 beforeEach(async () => {
   vi.useFakeTimers();
   backend = new FakeTerminalBackend();
   runtime = new FakeRuntime();
   ready = true;
+  deliveryEvents = [];
   pane = await backend.createPane('alpha', 'pane');
   queue = new DeliveryQueue({
     backend,
     runtimeFor: () => runtime,
     getPane: (session) => (session === 'alpha' ? pane : undefined),
     isReady: () => ready,
+    onDelivered: (session) => deliveryEvents.push(session),
     config: CONFIG,
   });
 });
@@ -37,6 +40,7 @@ describe('DeliveryQueue', () => {
     const result = await queue.deliverOrQueue('alpha', 'hello');
     expect(result).toBe('delivered');
     expect(backend.panes.get(pane.id)?.received).toEqual(['hello']);
+    expect(deliveryEvents).toEqual(['alpha']);
   });
 
   it('returns no-pane for sessions without a pane', async () => {
@@ -49,6 +53,7 @@ describe('DeliveryQueue', () => {
     expect(await queue.deliverOrQueue('alpha', 'two')).toBe('queued');
     expect(queue.pendingCount('alpha')).toBe(2);
     expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    expect(deliveryEvents).toEqual([]);
 
     // Still busy — drain does nothing.
     await queue.drainNow();
@@ -63,6 +68,7 @@ describe('DeliveryQueue', () => {
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['one', 'two']);
     expect(queue.pendingCount('alpha')).toBe(0);
+    expect(deliveryEvents).toEqual(['alpha', 'alpha']);
   });
 
   it('preserves FIFO order across queued and later messages', async () => {

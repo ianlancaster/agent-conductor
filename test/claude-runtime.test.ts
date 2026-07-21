@@ -29,7 +29,8 @@ beforeEach(() => {
     configDir,
   };
   runtime = new ClaudeCodeRuntime({
-    config: { ...defaults.runtimes.claudeCode, claudeJsonPath: join(configDir, '.claude.json') },
+    config: defaults.runtimes.claudeCode,
+    claudeJsonPath: join(configDir, '.claude.json'),
   });
 });
 
@@ -39,7 +40,10 @@ afterEach(() => {
 
 describe('buildLaunchCommand', () => {
   it('builds a fresh launch with cd, env exports, flags, and piped prompt', () => {
-    const command = runtime.buildLaunchCommand(session, identity, { prompt: 'do the thing' });
+    const command = runtime.buildLaunchCommand(session, identity, {
+      prompt: 'do the thing',
+      bypassPermissions: true,
+    });
     expect(command).toContain(`cd '/tmp/alpha repo'`);
     expect(command).toContain('export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=');
     expect(command).toContain(`echo 'do the thing' | claude`);
@@ -103,11 +107,10 @@ describe('buildLaunchCommand', () => {
     expect(command).not.toContain('echo');
   });
 
-  it('respects env overrides and skipPermissions=false', () => {
+  it('keeps env overrides independent from the launch permission policy', () => {
     const custom = new ClaudeCodeRuntime({
       config: {
         ...defaults.runtimes.claudeCode,
-        skipPermissions: false,
         env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0', EXTRA: 'yes' },
       },
     });
@@ -115,6 +118,15 @@ describe('buildLaunchCommand', () => {
     expect(command).not.toContain('--dangerously-skip-permissions');
     expect(command).toContain(`export CLAUDE_CODE_DISABLE_AUTO_MEMORY='0'`);
     expect(command).toContain(`export EXTRA='yes'`);
+  });
+
+  it('applies permission bypass only when requested by the launch', () => {
+    expect(runtime.buildLaunchCommand(session, identity, { bypassPermissions: true })).toContain(
+      '--dangerously-skip-permissions',
+    );
+    expect(runtime.buildLaunchCommand(session, identity, { bypassPermissions: false })).not.toContain(
+      '--dangerously-skip-permissions',
+    );
   });
 
   it('shell-quotes hostile prompts', () => {
@@ -149,8 +161,8 @@ describe('prepare', () => {
       config: {
         ...defaults.runtimes.claudeCode,
         bareUi: false,
-        claudeJsonPath: join(configDir, '.claude.json'),
       },
+      claudeJsonPath: join(configDir, '.claude.json'),
     });
     await custom.prepare(session, identity);
     const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as {

@@ -1,18 +1,18 @@
-import type { ChannelAdapter, ChannelHandlers } from '../../src/channels/types.js';
+import type { ChannelAdapter, ChannelHandlers, ChannelMessage } from '../../src/channels/types.js';
 
 /** In-memory ChannelAdapter for tests. Drive it with command()/freeText(). */
 export class FakeChannel implements ChannelAdapter {
   readonly name = 'fake';
 
-  readonly sent: string[] = [];
+  readonly sent: ChannelMessage[] = [];
   private handlers: ChannelHandlers | undefined;
 
   async start(handlers: ChannelHandlers): Promise<void> {
     this.handlers = handlers;
   }
 
-  async send(text: string): Promise<void> {
-    this.sent.push(text);
+  async send(message: ChannelMessage): Promise<void> {
+    this.sent.push(message);
   }
 
   async stop(): Promise<void> {
@@ -21,15 +21,15 @@ export class FakeChannel implements ChannelAdapter {
 
   // ── test drivers ──────────────────────────────────────────────────────────
 
-  command(command: string, args: string[] = []): Promise<string> {
-    return this.mustHandlers().onCommand(command, args);
+  command(command: string, args: string[] = [], conversationId = 'test'): Promise<string> {
+    return this.mustHandlers().onCommand(command, args, { conversationId });
   }
 
-  freeText(text: string): Promise<string | undefined> {
-    return this.mustHandlers().onFreeText(text);
+  freeText(text: string, conversationId = 'test'): Promise<string | undefined> {
+    return this.mustHandlers().onFreeText(text, { conversationId });
   }
 
-  lastSent(): string | undefined {
+  lastSent(): ChannelMessage | undefined {
     return this.sent[this.sent.length - 1];
   }
 

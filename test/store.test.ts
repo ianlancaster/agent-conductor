@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Store } from '../src/store/index.js';
 
@@ -35,11 +39,50 @@ describe('runs', () => {
 });
 
 describe('messages', () => {
-  it('tracks pending and delivered messages', () => {
-    const id = store.insertMessage('alpha', 'beta', 'notification', 'heads up');
-    expect(store.getPendingMessages('beta').map((m) => m.id)).toEqual([id]);
+  it('records and marks delivered messages', () => {
+    const id = store.insertMessage('alpha', 'beta', 'message', 'heads up');
     store.markMessageDelivered(id);
-    expect(store.getPendingMessages('beta')).toEqual([]);
+  });
+});
+
+describe('operator requests', () => {
+  it('round-trips requests and enforces atomic claim/finalize transitions', () => {
+    const id = store.insertOperatorRequest('alpha', 'Deploy?', ['Staging', 'Production']);
+    expect(store.getOperatorRequest(id)).toMatchObject({
+      session: 'alpha',
+      options: ['Staging', 'Production'],
+      status: 'pending',
+    });
+    expect(store.claimOperatorRequest(id)).toBe(true);
+    expect(store.claimOperatorRequest(id)).toBe(false);
+    expect(store.finalizeOperatorRequest(id, 1)).toBe(true);
+    expect(store.getOperatorRequest(id)).toMatchObject({ status: 'responded', selectedIndex: 1 });
+  });
+
+  it('resets stale responding claims during recovery', () => {
+    const id = store.insertOperatorRequest('alpha', 'Deploy?', ['Yes']);
+    store.claimOperatorRequest(id);
+    expect(store.resetRespondingOperatorRequests()).toBe(1);
+    expect(store.getOperatorRequest(id)?.status).toBe('pending');
+  });
+
+  it('guards against malformed stored option JSON', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conductor-request-corrupt-'));
+    const dbPath = join(dir, 'conductor.db');
+    const persisted = new Store(dbPath);
+    const id = persisted.insertOperatorRequest('alpha', 'Choose', ['one']);
+    persisted.close();
+
+    const raw = new Database(dbPath);
+    raw.prepare('UPDATE operator_requests SET options_json = ? WHERE id = ?').run('{secret-looking-bad-json', id);
+    raw.close();
+
+    const reopened = new Store(dbPath);
+    expect(() => reopened.getOperatorRequest(id)).toThrow(
+      `Operator request #${String(id)} has invalid stored options.`,
+    );
+    reopened.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -57,39 +100,83 @@ describe('session state', () => {
   it('upserts and reads back state including pause JSON', () => {
     store.upsertSessionState({
       session: 'alpha',
-      autonomy: 'autonomous',
+      auto: true,
       tag: 'refactor',
-      pause: { previousAutonomy: 'autonomous', pausedBy: 'manual' },
+      paused: true,
+      activeRuntime: 'codex',
       activity: 'working',
     });
     const state = store.getSessionState('alpha');
-    expect(state?.autonomy).toBe('autonomous');
+    expect(state?.auto).toBe(true);
     expect(state?.tag).toBe('refactor');
-    expect(state?.pause?.pausedBy).toBe('manual');
+    expect(state?.paused).toBe(true);
+    expect(state?.activeRuntime).toBe('codex');
 
     store.upsertSessionState({
       session: 'alpha',
-      autonomy: 'facilitated',
+      auto: false,
       tag: null,
-      pause: null,
+      paused: false,
+      activeRuntime: null,
       activity: 'stopped',
     });
     const updated = store.getSessionState('alpha');
-    expect(updated?.autonomy).toBe('facilitated');
-    expect(updated?.pause).toBeNull();
+    expect(updated?.auto).toBe(false);
+    expect(updated?.paused).toBe(false);
     expect(store.getAllSessionStates().length).toBe(1);
   });
 
   it('deletes state', () => {
     store.upsertSessionState({
       session: 'alpha',
-      autonomy: 'facilitated',
+      auto: false,
       tag: null,
-      pause: null,
+      paused: false,
+      activeRuntime: null,
       activity: 'stopped',
     });
     store.deleteSessionState('alpha');
     expect(store.getSessionState('alpha')).toBeUndefined();
+  });
+
+  it('migrates existing mode and pause state to auto booleans without legacy columns', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conductor-store-migration-'));
+    const dbPath = join(dir, 'conductor.db');
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE session_state (
+        session TEXT PRIMARY KEY,
+        autonomy TEXT NOT NULL DEFAULT 'facilitated',
+        tag TEXT,
+        pause_json TEXT,
+        activity TEXT NOT NULL DEFAULT 'stopped',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO session_state (session, autonomy, tag, pause_json, activity)
+      VALUES ('alpha', 'facilitated', 'legacy', '{"previousAutonomy":"autonomous"}', 'working');
+      PRAGMA user_version = 1;
+    `);
+    legacy.close();
+
+    const migrated = new Store(dbPath);
+    expect(migrated.getSessionState('alpha')).toMatchObject({ auto: true, paused: true, tag: 'legacy' });
+    const requestId = migrated.insertOperatorRequest('alpha', 'Still there?', ['Yes']);
+    expect(migrated.getOperatorRequest(requestId)?.options).toEqual(['Yes']);
+    migrated.close();
+
+    const inspected = new Database(dbPath);
+    const columns = inspected.prepare('PRAGMA table_info(session_state)').all() as { name: string }[];
+    inspected.close();
+    rmSync(dir, { recursive: true, force: true });
+    expect(columns.map((column) => column.name)).toEqual([
+      'session',
+      'auto',
+      'tag',
+      'is_paused',
+      'activity',
+      'updated_at',
+      'active_runtime',
+    ]);
   });
 });
 

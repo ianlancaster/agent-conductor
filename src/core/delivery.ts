@@ -36,6 +36,8 @@ export interface DeliveryDeps {
    * command splices into the shell line and corrupts it.
    */
   isReady(session: string): boolean;
+  /** Called only after text has actually been submitted to a live runtime pane. */
+  onDelivered?(session: string): void;
   config: {
     queueDrainMs: number;
     queueMaxAgeMs: number;
@@ -72,6 +74,7 @@ export class DeliveryQueue {
     if ((existing === undefined || existing.length === 0) && (await this.typingState(session, pane)) === 'clear') {
       try {
         await this.deps.backend.run(pane, text);
+        this.deps.onDelivered?.(session);
         return 'delivered';
       } catch (err) {
         // The pane errored on write (closed window, dead tmux). Queue for retry
@@ -142,6 +145,7 @@ export class DeliveryQueue {
         queue.shift();
         try {
           await this.deps.backend.run(pane, oldest.text);
+          this.deps.onDelivered?.(session);
         } catch (err) {
           log().warn('delivery', `${session}: delivery failed: ${err instanceof Error ? err.message : String(err)}`);
         }

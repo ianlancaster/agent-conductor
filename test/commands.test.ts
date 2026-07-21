@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +9,10 @@ import { CommandRouter, tokenize } from '../src/core/commands.js';
 import { DeliveryQueue } from '../src/core/delivery.js';
 import { Lifecycle } from '../src/core/lifecycle.js';
 import { Messaging } from '../src/core/messaging.js';
+import { ConductorOperations } from '../src/core/operations.js';
+import { OperatorRequests } from '../src/core/operator-requests.js';
+import type { ChannelMessage } from '../src/channels/types.js';
+import { StallSentinelRouter } from '../src/core/sentinel.js';
 import { SessionStateManager } from '../src/core/state.js';
 import { Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
@@ -17,10 +22,11 @@ let baseDir: string;
 let store: Store;
 let backend: FakeTerminalBackend;
 let runtime: FakeRuntime;
+let codexRuntime: FakeRuntime;
 let states: SessionStateManager;
 let lifecycle: Lifecycle;
 let router: CommandRouter;
-let operatorMessages: string[];
+let operatorMessages: ChannelMessage[];
 let sessions: Map<string, SessionConfig>;
 
 function writeSessionConfig(codename: string): void {
@@ -38,7 +44,8 @@ beforeEach(() => {
   store = new Store(':memory:');
   backend = new FakeTerminalBackend();
   runtime = new FakeRuntime();
-  states = new SessionStateManager(store, 'facilitated');
+  codexRuntime = new FakeRuntime();
+  states = new SessionStateManager(store, false);
   operatorMessages = [];
   sessions = loadSessionConfigs(baseDir);
 
@@ -54,22 +61,30 @@ beforeEach(() => {
     store,
     backend,
     states,
-    runtimes: new Map([['claude-code', runtime]]),
+    runtimes: new Map([
+      ['claude-code', runtime],
+      ['codex', codexRuntime],
+    ]),
     sessions: () => sessions,
     identityFor: (codename) => ({
       mcpUrl: `http://127.0.0.1:1/mcp/${codename}`,
       eventsUrl: `http://127.0.0.1:1/events/${codename}`,
       configDir: join(baseDir, 'data', 'sessions', codename),
     }),
-    config: { defaultPlacement: 'pane', markerFile: '.conductor-agent', spawnDirPattern: './spawned/{codename}' },
+    config: {
+      defaultPlacement: 'pane',
+      defaultRuntime: 'claude-code',
+      defaultBypassPermissions: true,
+      markerFile: '.agent-marker',
+      spawnDirPattern: './spawned/{codename}',
+    },
     baseDir,
     sessionConfigDir: join(baseDir, 'config', 'sessions'),
     reloadSessions: () => {
       sessions = loadSessionConfigs(baseDir, { tolerant: true });
       for (const codename of sessions.keys()) states.register(codename, false);
     },
-    healthReset: () => undefined,
-    onStarted: async () => undefined,
+    supervisionReset: () => undefined,
   });
 
   const messaging = new Messaging({
@@ -78,28 +93,51 @@ beforeEach(() => {
     states,
     sessions: () => sessions,
     startSession: (codename, opts) => lifecycle.start(codename, opts),
-    channelSend: async (text) => {
-      operatorMessages.push(text);
+  });
+  const operatorRequests = new OperatorRequests({
+    store,
+    messaging,
+    channelSend: async (message) => {
+      operatorMessages.push(message);
       return true;
     },
   });
 
   for (const codename of sessions.keys()) states.register(codename, false);
 
-  router = new CommandRouter({
+  const sentinel = new StallSentinelRouter({
+    config: { captureLines: 40, suppressWindowMs: 300_000, suppressSimilarity: 0.8, sentinelCodename: undefined },
+    backend,
+    runtimeFor: () => runtime,
+    getPane: (codename) => lifecycle.getPane(codename),
+    isAuto: (codename) => states.isAuto(codename),
+    isPaused: (codename) => states.isPaused(codename),
+    isActive: (codename) => states.get(codename)?.running === true,
+    deliver: (codename, text) => delivery.deliverOrQueue(codename, text),
+    notifyOperator: async () => undefined,
+    logEvent: () => undefined,
+  });
+  const operations = new ConductorOperations({
     lifecycle,
     messaging,
+    operatorRequests,
+    sentinel,
     states,
     delivery,
     sessions: () => sessions,
     statusReport: (codename) => (codename !== undefined ? `status:${codename}` : 'status:all'),
     tail: async (codename, lines) => `tail:${codename}:${lines}`,
     tailLimits: { defaultLines: 30, maxLines: 500 },
-    autoPause: undefined,
+    fleetStallDefaultSeconds: 300,
     retitle: async () => undefined,
     summon: async (codename) => `summoned:${codename}`,
     banish: async (codename) => `banished:${codename}`,
+    setSentinel: (codename) => {
+      if (codename !== undefined && !states.has(codename)) throw new Error(`Unknown session: ${codename}`);
+      sentinel.setSentinel(codename);
+    },
   });
+  router = new CommandRouter(operations);
 });
 
 afterEach(() => {
@@ -158,12 +196,50 @@ describe('session commands', () => {
     expect(backend.paneFor('alpha')?.launched[0]).toContain('--continue');
   });
 
+  it('starts and continues with a runtime override', async () => {
+    expect(await router.route('/start alpha --runtime codex')).toBe('alpha started.');
+    expect(codexRuntime.prepared.at(-1)?.session.runtime).toBe('codex');
+    expect(states.get('alpha')?.runtime).toBe('codex');
+
+    await router.route('/stop alpha');
+    expect(await router.route('/continue alpha -r codex')).toBe('alpha continued.');
+    expect(codexRuntime.prepared.at(-1)?.session.runtime).toBe('codex');
+    expect(backend.paneFor('alpha')?.launched.at(-1)).toContain('--continue');
+  });
+
+  it('normalizes cc to claude-code for start and continue', async () => {
+    expect(await router.route('/start alpha -r cc')).toBe('alpha started.');
+    expect(runtime.prepared.at(-1)?.session.runtime).toBe('claude-code');
+    expect(states.get('alpha')?.runtime).toBe('claude-code');
+
+    await router.route('/stop alpha');
+    expect(await router.route('/continue alpha --runtime cc')).toBe('alpha continued.');
+    expect(runtime.prepared.at(-1)?.session.runtime).toBe('claude-code');
+    expect(states.get('alpha')?.runtime).toBe('claude-code');
+  });
+
+  it('rejects an invalid runtime override through canonical validation', async () => {
+    expect(await router.route('/start alpha --runtime other')).toContain(
+      "'runtime' must be one of: claude-code, cc, codex",
+    );
+    expect(states.get('alpha')?.running).toBe(false);
+  });
+
   it('rejects unknown sessions', async () => {
     expect(await router.route('/start ghost')).toBe('Unknown session: ghost');
   });
 });
 
 describe('conversation commands', () => {
+  it('routes /respond through the canonical operator request operation', async () => {
+    store.insertOperatorRequest('alpha', 'Deploy?', ['Staging', 'Production']);
+    expect(await router.route('/respond 1 2')).toContain('Response recorded: Production');
+    expect(backend.paneFor('alpha')?.launched[0]).toContain('[Message from operator] Response to request #1');
+    expect(backend.paneFor('alpha')?.launched[0]).toContain('Production');
+    expect(await router.route('/respond 1 1')).toBe('Operator request #1 was already answered: Production');
+    expect(await router.route('/respond nope 1')).toBe('Usage: /respond <request-id> <option-number>');
+  });
+
   it('tell starts a stopped session with the message as prompt', async () => {
     const reply = await router.route('/tell beta check the build');
     expect(reply).toContain('started with your message');
@@ -175,6 +251,17 @@ describe('conversation commands', () => {
     expect(await router.route('/talk alpha')).toContain('Talking to alpha');
     await router.route('please review the PR');
     expect(backend.paneFor('alpha')?.received).toContain('[Message from operator] please review the PR');
+  });
+
+  it('isolates talk targets by operator conversation', async () => {
+    await router.route('/start alpha');
+    await router.route('/start beta');
+    await router.route('/talk alpha', 'console-a');
+    await router.route('/talk beta', 'telegram-chat');
+    await router.route('from console', 'console-a');
+    await router.route('from telegram', 'telegram-chat');
+    expect(backend.paneFor('alpha')?.received).toContain('[Message from operator] from console');
+    expect(backend.paneFor('beta')?.received).toContain('[Message from operator] from telegram');
   });
 
   it('free text without a talk target explains itself', async () => {
@@ -196,20 +283,33 @@ describe('conversation commands', () => {
 });
 
 describe('mode commands', () => {
-  it('sets autonomy for one or all sessions', async () => {
-    expect(await router.route('/auto alpha')).toBe('alpha set to autonomous.');
-    expect(states.getAutonomy('alpha')).toBe('autonomous');
-    await router.route('/facilitated all');
-    expect(states.getAutonomy('alpha')).toBe('facilitated');
+  it('toggles auto for one or all sessions', async () => {
+    expect(await router.route('/auto alpha')).toBe('alpha: auto on');
+    expect(states.isAuto('alpha')).toBe(true);
+    expect(await router.route('/auto alpha')).toBe('alpha: auto off');
+    expect(states.isAuto('alpha')).toBe(false);
+    await router.route('/auto all');
+    expect(states.isAuto('alpha')).toBe(true);
+    expect(states.isAuto('beta')).toBe(true);
   });
 
-  it('pauses and resumes with mode memory', async () => {
+  it('pauses and resumes without changing the auto setting', async () => {
     await router.route('/auto alpha');
     expect(await router.route('/pause alpha')).toBe('alpha: paused');
-    expect(states.getAutonomy('alpha')).toBe('facilitated');
-    expect(await router.route('/pause alpha')).toBe('alpha: already paused or facilitated');
+    expect(states.isAuto('alpha')).toBe(true);
+    expect(states.isPaused('alpha')).toBe(true);
+    expect(await router.route('/pause alpha')).toBe('alpha: already paused');
     expect(await router.route('/resume alpha')).toBe('alpha: resumed');
-    expect(states.getAutonomy('alpha')).toBe('autonomous');
+    expect(states.isAuto('alpha')).toBe(true);
+    expect(states.isPaused('alpha')).toBe(false);
+  });
+
+  it('pauses schedules when auto is off', async () => {
+    expect(states.isAuto('alpha')).toBe(false);
+    expect(await router.route('/pause alpha')).toBe('alpha: paused');
+    expect(states.isPaused('alpha')).toBe(true);
+    expect(await router.route('/resume alpha')).toBe('alpha: resumed');
+    expect(states.isAuto('alpha')).toBe(false);
   });
 
   it('sets and clears tags', async () => {
@@ -219,8 +319,38 @@ describe('mode commands', () => {
     expect(states.getTag('alpha')).toBeUndefined();
   });
 
-  it('reports autopause unsupported without a capable backend', async () => {
-    expect(await router.route('/autopause on')).toContain('not supported');
+  it('does not expose the removed focus auto-pause command', async () => {
+    expect(await router.route('/autopause on')).toContain('Unknown command');
+  });
+
+  it('does not expose the removed mode-setting commands', async () => {
+    expect(await router.route('/autonomy alpha autonomous')).toContain('Unknown command');
+    expect(await router.route('/facilitated alpha')).toContain('Unknown command');
+  });
+
+  it('does not expose a duplicate set_sentinel alias', async () => {
+    expect(await router.route('/set_sentinel alpha')).toBe('Unknown command: /set_sentinel. Try /help.');
+  });
+
+  it('does not expose an undocumented duplicate talk alias', async () => {
+    expect(await router.route('/speak alpha')).toBe('Unknown command: /speak. Try /help.');
+  });
+
+  it('does not expose status-derived exists or get-tag commands', async () => {
+    expect(await router.route('/exists alpha')).toBe('Unknown command: /exists. Try /help.');
+    expect(await router.route('/get-tag alpha')).toBe('Unknown command: /get-tag. Try /help.');
+  });
+
+  it('arms, lists, and disarms fleet stall watches', async () => {
+    expect(await router.route('/fleet-watch arm release alpha,beta 0')).toContain("'release' armed");
+    expect(await router.route('/fleet-watch list')).toContain('release · watching · sessions alpha,beta');
+    expect(await router.route('/fleet-watch disarm release')).toBe("Fleet watch 'release' disarmed.");
+    expect(await router.route('/fleet-watch list')).toBe('No fleet watches armed.');
+  });
+
+  it('validates fleet watch members through the canonical operation', async () => {
+    expect(await router.route('/fleet-watch arm bad alpha,ghost')).toContain('Unknown session: ghost');
+    expect(await router.route('/fleet-watch arm solo alpha')).toContain('at least two');
   });
 });
 
@@ -236,12 +366,26 @@ describe('tail and status', () => {
   });
 });
 
+describe('help', () => {
+  it('renders plain headers and indents commands without Markdown noise', async () => {
+    const help = await router.route('/help');
+    expect(help).toContain('Sessions:\n  /status [session] —');
+    expect(help).toContain('/start <session|all> [-r|--runtime cc|claude-code|codex]');
+    expect(help).toContain('/continue <session|all> [-r|--runtime cc|claude-code|codex]');
+    expect(help).toContain('Conversation:\n  /tell <session> <message> —');
+    expect(help).toContain('  -P/--pane · -T/--tab · -W/--window\n  -H/--headless — detached tmux pane');
+    expect(help).toContain('    -r/--runtime cc|claude-code|codex');
+    expect(help).toContain('/fleet-watch arm <name> <session,session> [confirmation-seconds]');
+    expect(help).not.toContain('*Sessions*');
+    expect(help).not.toContain('`/status');
+  });
+});
+
 describe('spawn and teardown', () => {
   it('spawns a new session end to end and tears it down with directory deletion', async () => {
-    const reply = await router.route('/spawn newbie --prompt "hello world"');
+    const reply = await router.route('/spawn newbie');
     expect(reply).toContain('Spawned newbie');
     expect(sessions.has('newbie')).toBe(true);
-    expect(backend.paneFor('newbie')?.launched[0]).toContain('hello world');
     const spawnedDir = join(baseDir, 'spawned', 'newbie');
     expect(existsSync(spawnedDir)).toBe(true);
 
@@ -260,10 +404,35 @@ describe('spawn and teardown', () => {
     await router.route('/teardown codexer --delete');
   });
 
-  it('accepts shorthand flags (-r, -p, -D)', async () => {
-    const reply = await router.route('/spawn shorty -p "short flags"');
+  it('normalizes cc to claude-code in spawned session configuration', async () => {
+    const reply = await router.route('/spawn cc-short --runtime cc');
+    expect(reply).toContain('Spawned cc-short');
+    const config = readFileSync(join(baseDir, 'config', 'sessions', 'cc-short.yaml'), 'utf8');
+    expect(config).toContain('runtime: claude-code');
+    expect(config).not.toContain('runtime: cc\n');
+    await router.route('/teardown cc-short --delete');
+  });
+
+  it('records an explicit per-session permission policy from either spawn flag', async () => {
+    await router.route('/spawn guarded --require-permissions');
+    expect(sessions.get('guarded')?.bypassPermissions).toBe(false);
+    expect(runtime.launches.at(-1)?.opts.bypassPermissions).toBe(false);
+    await router.route('/teardown guarded --delete');
+
+    await router.route('/spawn yolo --bypass-permissions');
+    expect(sessions.get('yolo')?.bypassPermissions).toBe(true);
+    expect(runtime.launches.at(-1)?.opts.bypassPermissions).toBe(true);
+    await router.route('/teardown yolo --delete');
+  });
+
+  it('rejects contradictory permission flags', async () => {
+    expect(await router.route('/spawn confused --bypass-permissions --require-permissions')).toContain('Usage:');
+    expect(sessions.has('confused')).toBe(false);
+  });
+
+  it('accepts shorthand flags (-r, -D)', async () => {
+    const reply = await router.route('/spawn shorty');
     expect(reply).toContain('Spawned shorty');
-    expect(backend.paneFor('shorty')?.launched[0]).toContain('short flags');
     const teardown = await router.route('/teardown shorty -D');
     expect(teardown).toContain('Directory deleted');
 
@@ -274,9 +443,14 @@ describe('spawn and teardown', () => {
     await router.route('/teardown shortr -D');
   });
 
+  it('rejects the removed public prompt flag', async () => {
+    expect(await router.route('/spawn prompted --prompt "do work"')).toContain('Usage: /spawn');
+    expect(sessions.has('prompted')).toBe(false);
+  });
+
   it('refuses an unknown runtime without creating anything', async () => {
     const reply = await router.route('/spawn oops --runtime banana');
-    expect(reply).toContain("Unknown runtime 'banana'");
+    expect(reply).toContain("'runtime' must be one of: claude-code, cc, codex");
     expect(sessions.has('oops')).toBe(false);
     expect(existsSync(join(baseDir, 'spawned', 'oops'))).toBe(false);
   });
@@ -303,5 +477,43 @@ describe('spawn and teardown', () => {
     const reply = await router.route('/teardown gitty --delete');
     expect(reply).toContain('Directory kept');
     expect(existsSync(join(baseDir, 'spawned', 'gitty'))).toBe(true);
+  });
+
+  it('keeps a dirty worktree registered, then removes it cleanly while retaining its branch', async () => {
+    const repo = join(baseDir, 'main-repo');
+    mkdirSync(repo);
+    const gitEnv = { ...process.env };
+    for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
+      delete gitEnv[key];
+    }
+    const git = (cwd: string, ...args: string[]): string =>
+      execFileSync('git', ['-C', cwd, '-c', 'user.name=test', '-c', 'user.email=test@example.com', ...args], {
+        encoding: 'utf8',
+        env: gitEnv,
+      });
+    git(repo, 'init', '-b', 'main');
+    writeFileSync(join(repo, 'README.md'), 'main\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-m', 'initial');
+
+    expect(await router.route(`/spawn worker --worktree ${repo} --branch worker-branch`)).toContain('Spawned worker');
+    const worktree = join(baseDir, 'spawned', 'worker');
+    expect(sessions.get('worker')?.repo).toBe(worktree);
+    expect(git(worktree, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('worker-branch');
+
+    writeFileSync(join(worktree, 'dirty.txt'), 'do not lose me\n');
+    const refused = await router.route('/teardown worker --delete');
+    expect(refused).toContain('NOT deregistered');
+    expect(sessions.has('worker')).toBe(true);
+    expect(existsSync(join(baseDir, 'config', 'sessions', 'worker.yaml'))).toBe(true);
+    expect(existsSync(join(worktree, 'dirty.txt'))).toBe(true);
+
+    rmSync(join(worktree, 'dirty.txt'));
+    const removed = await router.route('/teardown worker --delete');
+    expect(removed).toContain('Worktree removed');
+    expect(sessions.has('worker')).toBe(false);
+    expect(existsSync(worktree)).toBe(false);
+    expect(git(repo, 'show-ref', '--verify', 'refs/heads/worker-branch')).toContain('refs/heads/worker-branch');
+    expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 });

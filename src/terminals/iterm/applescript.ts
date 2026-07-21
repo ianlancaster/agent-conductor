@@ -56,11 +56,11 @@ export function shellQuote(s: string): string {
  * then these printfs, then the runtime (which never touches the title) — so
  * the last writer is us, by construction. No AppleScript, no timing.
  */
-export function buildTitleShellPrefix(displayName: string, badge: boolean): string {
+export function buildTitleShellPrefix(displayName: string, badge: boolean, badgeName = displayName): string {
   const title = displayName.replaceAll("'", `'\\''`);
   const parts = [`printf '\\033]0;${title}\\a'`];
   if (badge) {
-    const badgeB64 = Buffer.from(displayName, 'utf-8').toString('base64');
+    const badgeB64 = Buffer.from(badgeName, 'utf-8').toString('base64');
     parts.push(`printf '\\033]1337;SetBadgeFormat=${badgeB64}\\a'`);
   }
   return parts.join(' && ');
@@ -311,6 +311,11 @@ export function buildInSessionScript(sessionId: string, operations: string, retu
   `;
 }
 
+/** Return the tty path for an iTerm session UUID, or empty output if it is gone. */
+export function buildSessionTtyScript(sessionId: string): string {
+  return buildInSessionScript(sessionId, '', '(tty as string)');
+}
+
 /** Bring a session's window to the front and select its tab + pane. */
 export function buildRevealSessionScript(sessionId: string): string {
   return `
@@ -391,29 +396,6 @@ export function buildCloseSessionScript(sessionId: string): string {
           end repeat
         end repeat
       end repeat
-    end tell
-  `;
-}
-
-/** Session UUID of the focused pane in the conductor window. */
-export function buildFocusedSessionScript(windowId: number): string {
-  return `
-    tell application "iTerm2"
-      tell window id ${windowId}
-        return id of current session of current tab
-      end tell
-    end tell
-  `;
-}
-
-/** Bring the conductor window to the foreground. */
-export function buildFocusWindowScript(windowId: number): string {
-  return `
-    tell application "iTerm2"
-      activate
-      try
-        select window id ${windowId}
-      end try
     end tell
   `;
 }

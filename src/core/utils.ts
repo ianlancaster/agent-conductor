@@ -27,7 +27,7 @@ export function contentSimilarity(a: string, b: string): number {
  * unsubmitted conductor delivery apart from operator-typed input: every
  * conductor delivery is signed, so an UNSIGNED draft is a human's.
  */
-export const ENVELOPE_SIGNATURE = /^\[(?:Message from [^\]]+|Broadcast from [^\]]+|Stall)\]/u;
+export const ENVELOPE_SIGNATURE = /^\[(?:Message from [^\]]+|Broadcast from [^\]]+|Stall|Fleet Stall)\]/u;
 
 export function messageEnvelope(from: string, message: string): string {
   return `[Message from ${from}] ${message}`;
@@ -43,6 +43,10 @@ export function conductorEnvelope(message: string): string {
 
 export function stallEnvelope(session: string, kind: string, detail: string): string {
   return `[Stall] session=${session} kind=${kind} ${detail}`;
+}
+
+export function fleetStallEnvelope(name: string, sessions: readonly string[], seconds: number): string {
+  return `[Fleet Stall] watch=${name} sessions=${sessions.join(',')} all-stalled-for=${seconds}s Investigate immediately.`;
 }
 
 export function truncate(text: string, max: number): string {

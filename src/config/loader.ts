@@ -63,8 +63,17 @@ export function loadSupervisorConfig(baseDir: string, env: NodeJS.ProcessEnv = p
   return config as SupervisorConfig;
 }
 
-export function parseSessionConfig(raw: unknown, file: string, baseDir: string): SessionConfig {
-  const parsed = sessionConfigSchema.safeParse(raw);
+export function parseSessionConfig(
+  raw: unknown,
+  file: string,
+  baseDir: string,
+  defaultRuntime: SessionConfig['runtime'] = 'claude-code',
+): SessionConfig {
+  const source =
+    typeof raw === 'object' && raw !== null && !Array.isArray(raw) && !('runtime' in raw)
+      ? { ...raw, runtime: defaultRuntime }
+      : raw;
+  const parsed = sessionConfigSchema.safeParse(source);
   if (!parsed.success) {
     throw new ConfigError(`Invalid session config: ${formatZodError(parsed.error)}`, file);
   }
@@ -86,7 +95,10 @@ export function sessionConfigDir(baseDir: string): string {
  * Load all session configs. `tolerant` skips (and logs) malformed files instead of
  * throwing — used by hot-reload so one bad YAML can't take the fleet down.
  */
-export function loadSessionConfigs(baseDir: string, opts: { tolerant?: boolean } = {}): Map<string, SessionConfig> {
+export function loadSessionConfigs(
+  baseDir: string,
+  opts: { tolerant?: boolean; defaultRuntime?: SessionConfig['runtime'] } = {},
+): Map<string, SessionConfig> {
   const dir = sessionConfigDir(baseDir);
   const sessions = new Map<string, SessionConfig>();
   if (!existsSync(dir)) return sessions;
@@ -95,7 +107,7 @@ export function loadSessionConfigs(baseDir: string, opts: { tolerant?: boolean }
     const file = join(dir, entry);
     try {
       const raw = yaml.load(readFileSync(file, 'utf8'));
-      const session = parseSessionConfig(raw, file, baseDir);
+      const session = parseSessionConfig(raw, file, baseDir, opts.defaultRuntime);
       if (sessions.has(session.codename)) {
         throw new ConfigError(`Duplicate codename '${session.codename}'`, file);
       }
@@ -112,9 +124,10 @@ export function loadSessionConfigs(baseDir: string, opts: { tolerant?: boolean }
 }
 
 export function loadConfig(baseDir: string, opts: { tolerant?: boolean } = {}): LoadedConfig {
+  const supervisor = loadSupervisorConfig(baseDir);
   return {
-    supervisor: loadSupervisorConfig(baseDir),
-    sessions: loadSessionConfigs(baseDir, opts),
+    supervisor,
+    sessions: loadSessionConfigs(baseDir, { ...opts, defaultRuntime: supervisor.defaults.runtime }),
     baseDir,
   };
 }
@@ -122,8 +135,9 @@ export function loadConfig(baseDir: string, opts: { tolerant?: boolean } = {}): 
 /** Validate everything and return human-readable problems (for `conductor validate`). */
 export function validateConfig(baseDir: string): string[] {
   const problems: string[] = [];
+  let defaultRuntime: SessionConfig['runtime'] = 'claude-code';
   try {
-    loadSupervisorConfig(baseDir);
+    defaultRuntime = loadSupervisorConfig(baseDir).defaults.runtime;
   } catch (err) {
     problems.push(err instanceof Error ? err.message : String(err));
   }
@@ -135,7 +149,7 @@ export function validateConfig(baseDir: string): string[] {
       const file = join(dir, entry);
       try {
         const raw = yaml.load(readFileSync(file, 'utf8'));
-        const session = parseSessionConfig(raw, file, baseDir);
+        const session = parseSessionConfig(raw, file, baseDir, defaultRuntime);
         if (seen.has(session.codename)) problems.push(`${file}: duplicate codename '${session.codename}'`);
         seen.add(session.codename);
       } catch (err) {

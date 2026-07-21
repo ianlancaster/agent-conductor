@@ -16,6 +16,7 @@ export class FakeRuntime implements SessionRuntime {
   readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: false, styledCapture: false };
 
   readonly prepared: { session: SessionConfig; identity: IdentityEndpoints }[] = [];
+  readonly launches: { session: SessionConfig; opts: LaunchOptions }[] = [];
   /** Controls parseInputState; set to 'operator-draft' to simulate the operator typing. */
   inputState: InputState = 'clear';
   readonly transcripts = new Map<string, string>();
@@ -25,6 +26,7 @@ export class FakeRuntime implements SessionRuntime {
   }
 
   buildLaunchCommand(session: SessionConfig, _identity: IdentityEndpoints, opts: LaunchOptions): string {
+    this.launches.push({ session, opts: { ...opts } });
     const parts = [`fake-launch ${session.codename}`];
     if (opts.continueSession) parts.push('--continue');
     if (opts.prompt !== undefined) parts.push(`--prompt ${JSON.stringify(opts.prompt)}`);

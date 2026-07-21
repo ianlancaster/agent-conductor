@@ -6,7 +6,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 let server: ConductorMcpServer;
 let events: { session: string; body: unknown }[];
-let commands: string[];
+let commands: { line: string; interactionId: string }[];
 
 const tools: McpToolDefinition[] = [
   {
@@ -41,8 +41,8 @@ beforeEach(async () => {
     keepAliveTimeoutMs: 1000,
     tools,
     onEvent: (session, body) => events.push({ session, body }),
-    onCommand: (line) => {
-      commands.push(line);
+    onCommand: (line, commandInteractionId) => {
+      commands.push({ line, interactionId: commandInteractionId });
       return Promise.resolve(`ran: ${line}`);
     },
   });
@@ -56,7 +56,7 @@ afterEach(async () => {
 describe('operator feed', () => {
   it('reports no delivery when no console is attached', () => {
     expect(server.feedClientCount()).toBe(0);
-    expect(server.pushToFeed('hello?')).toBe(false);
+    expect(server.pushToFeed({ text: 'hello?' })).toBe(false);
   });
 
   it('streams pushed messages to an attached console and tracks disconnect', async () => {
@@ -66,7 +66,12 @@ describe('operator feed', () => {
     expect(response.headers.get('content-type')).toBe('text/event-stream');
     expect(server.feedClientCount()).toBe(1);
 
-    expect(server.pushToFeed('*alpha:* build is green\nsecond line')).toBe(true);
+    expect(
+      server.pushToFeed({
+        text: '*alpha:* build is green\nsecond line',
+        actions: [{ label: 'Ship', command: '/respond 7 1' }],
+      }),
+    ).toBe(true);
 
     const reader = response.body?.getReader() as ReadableStreamDefaultReader<Uint8Array> | undefined;
     if (reader === undefined) throw new Error('no stream body');
@@ -79,12 +84,15 @@ describe('operator feed', () => {
     }
     const dataLine = buffer.split('\n').find((line) => line.startsWith('data: '));
     expect(dataLine).toBeDefined();
-    expect(JSON.parse((dataLine ?? '').slice('data: '.length))).toBe('*alpha:* build is green\nsecond line');
+    expect(JSON.parse((dataLine ?? '').slice('data: '.length))).toEqual({
+      text: '*alpha:* build is green\nsecond line',
+      actions: [{ label: 'Ship', command: '/respond 7 1' }],
+    });
 
     abort.abort();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(server.feedClientCount()).toBe(0);
-    expect(server.pushToFeed('anyone?')).toBe(false);
+    expect(server.pushToFeed({ text: 'anyone?' })).toBe(false);
   });
 
   it('rejects cross-origin feed subscriptions', async () => {
@@ -196,7 +204,7 @@ describe('cmd and health endpoints', () => {
     });
     const payload = (await response.json()) as { reply: string };
     expect(payload.reply).toBe('ran: /status');
-    expect(commands).toEqual(['/status']);
+    expect(commands).toEqual([{ line: '/status', interactionId: 'cli' }]);
   });
 
   it('reports health with the tool list', async () => {
