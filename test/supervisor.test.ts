@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -83,6 +84,25 @@ describe('Supervisor construction', () => {
     supervisor = new Supervisor(baseDir);
     expect(supervisor.statusReport()).toContain('alpha - codex ·');
     expect(supervisor.statusReport('alpha')).toContain('"runtime": "codex"');
+  });
+
+  it('reports the configured path and current branch in detailed and fleet status', () => {
+    const repo = join(baseDir, 'session-repo');
+    mkdirSync(repo);
+    const gitEnv = { ...process.env };
+    for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
+      delete gitEnv[key];
+    }
+    execFileSync('git', ['-C', repo, 'init', '-b', 'main'], { stdio: 'ignore', env: gitEnv });
+    writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43390\n', {
+      alpha: `codename: alpha\nrepo: ${repo}\n`,
+    });
+    supervisor = new Supervisor(baseDir);
+
+    const detailed = JSON.parse(supervisor.statusReport('alpha')) as { path: unknown; branch: unknown };
+    expect(detailed.path).toBe(repo);
+    expect(detailed.branch).toBe('main');
+    expect(supervisor.statusReport()).toContain(`path: ${repo} · branch: main`);
   });
 
   it('routes operator commands through the shared router', async () => {

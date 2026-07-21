@@ -313,20 +313,25 @@ export class ConductorOperations {
       },
       {
         name: 'spawn_session',
-        description: 'Create, register, and start a session, optionally in a git worktree.',
+        description:
+          "Create, register, and start a session. The destination is path or spawn.dirPattern; relative destinations resolve from the fleet directory. A new worktree branch starts at the source repository's current HEAD; existing branches are checked out as-is.",
         audiences: BOTH,
         inputSchema: schema(
           {
             codename: stringProperty('New session codename'),
-            path: stringProperty('Working directory (default: spawn.dirPattern)'),
+            path: stringProperty(
+              'Destination working directory (default: spawn.dirPattern with {codename} substituted)',
+            ),
             runtime: {
               ...runtimeProperty,
               description: 'Agent runtime (default: supervisor defaults.runtime)',
             },
             bypassPermissions: bypassPermissionsProperty,
             model: stringProperty('Optional model override'),
-            worktreeRepo: stringProperty('Existing repository to create a worktree from'),
-            branch: stringProperty('Worktree branch (default: codename)'),
+            worktreeRepo: stringProperty('Existing source repository from which to create a linked worktree'),
+            branch: stringProperty(
+              "Worktree branch (default: codename); a missing branch is created at the source repository's current HEAD",
+            ),
             placement: placementProperty,
             headless: headlessProperty,
           },
@@ -540,7 +545,8 @@ export class ConductorOperations {
       },
       {
         name: 'list_sessions',
-        description: 'List all registered sessions with their status.',
+        description:
+          'List all registered sessions with runtime status, working-directory path, and current Git branch.',
         audiences: BOTH,
         inputSchema: schema(),
         handler: async () => {
@@ -550,7 +556,7 @@ export class ConductorOperations {
       },
       {
         name: 'get_session_status',
-        description: 'Return detailed status for one session as JSON.',
+        description: 'Return detailed status for one session as JSON, including its working-directory path and branch.',
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty('Session codename') }, ['codename']),
         handler: async (args) => {

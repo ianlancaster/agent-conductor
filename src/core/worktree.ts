@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -40,6 +40,38 @@ export function isWorktree(dir: string): boolean {
     return statSync(gitPath).isFile();
   } catch {
     return false;
+  }
+}
+
+/** Read the checked-out branch without spawning git. Returns null outside a repo or when detached. */
+export function currentBranch(dir: string): string | null {
+  let cursor = resolve(dir);
+  for (;;) {
+    const dotGit = join(cursor, '.git');
+    let stat: ReturnType<typeof statSync>;
+    try {
+      stat = statSync(dotGit);
+    } catch {
+      const parent = dirname(cursor);
+      if (parent === cursor) return null;
+      cursor = parent;
+      continue;
+    }
+
+    try {
+      let gitDir = dotGit;
+      if (stat.isFile()) {
+        const pointer = parseGitdirPointer(readFileSync(dotGit, 'utf8'));
+        if (pointer === null) return null;
+        gitDir = isAbsolute(pointer) ? pointer : resolve(cursor, pointer);
+      } else if (!stat.isDirectory()) {
+        return null;
+      }
+      const head = readFileSync(join(gitDir, 'HEAD'), 'utf8').trim();
+      return /^ref:\s+refs\/heads\/(.+)$/.exec(head)?.[1] ?? null;
+    } catch {
+      return null;
+    }
   }
 }
 

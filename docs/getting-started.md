@@ -235,6 +235,12 @@ primitive, not an approval or execution queue.
   conversation history; `continue` resumes the selected runtime's latest conversation.
 - **Worktree sessions** (parallel work on one repo): `/spawn reviewer --worktree
 /path/to/repo --branch review-pass`. Full file isolation, shared git history.
+  The destination follows `spawn.dirPattern` unless `--path` is supplied. A new branch starts
+  at the source repo's current `HEAD`; Conductor does not fetch first. Existing branches are
+  checked out as-is. Do not `git checkout main` when `main` is already checked out in the source
+  worktree—use `origin/main` as a comparison/rebase target instead. Gitignored and untracked
+  files (including local settings, secrets, and dependencies) are not copied, so run the repo's
+  setup/install steps before build work.
   `/teardown --delete` refuses a dirty worktree and keeps the stopped session registered so you
   can clean it and retry. Successful removal keeps the branch.
 - **Codex sessions**: set `runtime: codex`. Before every start or continue, the conductor

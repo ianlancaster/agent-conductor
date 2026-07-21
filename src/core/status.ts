@@ -1,5 +1,6 @@
 import type { SessionConfig } from '../config/schema.js';
 import type { SessionState } from './types.js';
+import { currentBranch } from './worktree.js';
 
 const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
   working: '🟢',
@@ -40,10 +41,13 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
 
   if (codename !== undefined) {
     const state = deps.getState(codename);
-    if (state === undefined || !deps.sessions().has(codename)) return `Unknown session: ${codename}`;
+    const session = deps.sessions().get(codename);
+    if (state === undefined || session === undefined) return `Unknown session: ${codename}`;
     return JSON.stringify(
       {
         codename,
+        path: session.repo,
+        branch: currentBranch(session.repo),
         runtime: deps.runtimeFor(codename) ?? null,
         auto: state.auto,
         paused: state.paused,
@@ -76,8 +80,14 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
     lines.push(header);
     for (const name of group) {
       const runtime = deps.runtimeFor(name);
-      if (runtime !== undefined)
+      if (runtime !== undefined) {
         lines.push(`  ${formatSessionLine(name, runtime, deps.getState(name), name === sentinel)}`);
+        const session = deps.sessions().get(name);
+        if (session !== undefined) {
+          const branch = currentBranch(session.repo);
+          lines.push(`    path: ${session.repo} · branch: ${branch ?? 'none'}`);
+        }
+      }
     }
   }
   return lines.join('\n');

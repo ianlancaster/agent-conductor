@@ -148,13 +148,16 @@ const used = Number(input?.context_window?.used_percentage);
 const usage = Number.isFinite(used) ? \`\${Math.round(used)}%\` : '0%';
 const cost = Number(input?.cost?.total_cost_usd);
 const costText = Number.isFinite(cost) ? \`$\${cost.toFixed(2)}\` : '$0.00';
-const worktree = input?.worktree?.name || 'no worktree';
 const cwd = input?.worktree?.original_cwd || input?.cwd || process.cwd();
 const root = runGit(cwd, ['rev-parse', '--show-toplevel']) || cwd;
 const directory = basename(root);
+const gitDir = runGit(cwd, ['rev-parse', '--absolute-git-dir']);
+const commonGitDir = runGit(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+const linkedWorktree = gitDir.length > 0 && commonGitDir.length > 0 && gitDir !== commonGitDir;
+const worktree = input?.worktree?.name || (linkedWorktree ? basename(root) : 'no worktree');
 
 let git = 'no branch';
-if (runGit(cwd, ['rev-parse', '--git-dir'])) {
+if (gitDir) {
   const branch = runGit(cwd, ['branch', '--show-current']) || runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const staged = countLines(runGit(cwd, ['diff', '--cached', '--numstat']));
   const modified = countLines(runGit(cwd, ['diff', '--numstat']));

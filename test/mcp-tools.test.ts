@@ -275,11 +275,16 @@ describe('surface contract', () => {
     );
     expect(states.get('watch')?.runtime).toBe('codex');
     expect(await tool('list_sessions').handler({}, 'alpha')).toContain('watch - codex');
+    expect(await tool('list_sessions').handler({}, 'alpha')).toContain('path: /tmp/watch');
     const status = JSON.parse(await tool('get_session_status').handler({ codename: 'watch' }, 'alpha')) as {
       runtime: unknown;
+      path: unknown;
+      branch: unknown;
     };
     const identity = JSON.parse(await tool('whoami').handler({}, 'watch')) as { runtime: unknown };
     expect(status.runtime).toBe('codex');
+    expect(status.path).toBe('/tmp/watch');
+    expect(status.branch).toBeNull();
     expect(identity.runtime).toBe('codex');
     await tool('stop_session').handler({ codename: 'watch' }, 'alpha');
     expect(await tool('continue_session').handler({ codename: 'watch', runtime: 'codex' }, 'alpha')).toBe(
@@ -291,6 +296,15 @@ describe('surface contract', () => {
   it('normalizes the cc runtime shorthand through MCP', async () => {
     expect(await tool('start_session').handler({ codename: 'watch', runtime: 'cc' }, 'alpha')).toBe('watch started.');
     expect(states.get('watch')?.runtime).toBe('claude-code');
+  });
+
+  it('documents worktree destination and new-branch base semantics on the MCP surface', () => {
+    const spawn = tool('spawn_session');
+    const properties = spawn.inputSchema.properties as Record<string, { description?: string }>;
+    expect(spawn.description).toContain('spawn.dirPattern');
+    expect(spawn.description).toContain('current HEAD');
+    expect(properties.path?.description).toContain('Destination');
+    expect(properties.branch?.description).toContain('current HEAD');
   });
 
   it('arms and inspects fleet watches through MCP', async () => {
