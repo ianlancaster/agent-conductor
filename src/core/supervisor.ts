@@ -172,6 +172,9 @@ export class Supervisor {
         this.health.reset(session);
         this.sentinel.reset(session);
       },
+      onRunning: (session) => {
+        void this.recoverPendingMessages(session);
+      },
     });
 
     this.messaging = new Messaging({
@@ -223,6 +226,10 @@ export class Supervisor {
         this.states.setActivity(session, kind === 'idle' ? 'idle' : 'stalled');
         void this.sentinel.handleStall(session, kind, info);
       },
+      onWorking: (session) => {
+        if (this.states.get(session)?.running === true) this.states.setActivity(session, 'working');
+        this.sentinel.noteWorking(session);
+      },
       onSessionEnd: (session) => {
         this.lifecycle.handleSessionEnd(session);
       },
@@ -237,10 +244,10 @@ export class Supervisor {
       operatorRequests: this.operatorRequests,
       sentinel: this.sentinel,
       states: this.states,
-      delivery: this.delivery,
       sessions: () => this.sessions,
       statusReport: (codename) => this.statusReport(codename),
       tail: (codename, lines) => this.tail(codename, lines),
+      typeInPane: (codename, text) => this.typeInPane(codename, text),
       tailLimits: {
         defaultLines: this.config.messaging.tailDefaultLines,
         maxLines: this.config.messaging.tailMaxLines,
@@ -332,6 +339,8 @@ export class Supervisor {
       log().warn('supervisor', `Pane rediscovery failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    await this.recoverPendingMessages();
+
     await this.mcpServer.start();
     await this.connectChannels();
 
@@ -405,6 +414,30 @@ export class Supervisor {
     const pane = this.lifecycle.getPane(codename);
     if (pane === undefined) return `${codename} has no active pane.`;
     return this.backend.capture(pane, lines);
+  }
+
+  /** Raw escape hatch: intentionally bypasses composer detection and queuing. */
+  private async typeInPane(codename: string, text: string): Promise<string> {
+    if (!this.sessions.has(codename)) return `Unknown session: ${codename}`;
+    const pane = this.lifecycle.getPane(codename);
+    if (pane === undefined) return `${codename} has no active pane.`;
+    try {
+      await this.backend.run(pane, text);
+      return `Typed into ${codename}'s pane.`;
+    } catch (err) {
+      return `Failed to type into ${codename}'s pane: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  private async recoverPendingMessages(codename?: string): Promise<void> {
+    try {
+      await this.messaging.recoverPendingMessages(codename);
+    } catch (err) {
+      log().error(
+        'delivery',
+        `${codename ?? 'fleet'}: pending-message recovery failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   private runtimeFor(session: string): SessionRuntime | undefined {

@@ -394,20 +394,15 @@ describe('parseInputState', () => {
     expect(runtime.parseInputState('some output\n\n› \n  ⏎ send   Ctrl+J newline')).toBe('clear');
   });
 
-  it('learns the first composer content as the session ghost hint', () => {
+  it('recognizes built-in plain-text ghost hints without learning arbitrary content', () => {
     const fresh = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
-    // First sighting: Codex's per-session placeholder hint — learned, clear.
+    // Known Codex placeholders are safe even though iTerm strips their dim style.
     expect(fresh.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
-    // Same hint again: still clear.
-    expect(fresh.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
-    // Different content: the operator is typing — an operator draft.
+    expect(fresh.parseInputState('› Explain this codebase', 'alpha')).toBe('clear');
+    // Arbitrary first-seen content is never learned as a placeholder.
     expect(fresh.parseInputState('› refactor the parser', 'alpha')).toBe('operator-draft');
-    // Empty is always clear, and does not overwrite the learned hint.
+    expect(fresh.parseInputState('› my half-typed operator draft', 'beta')).toBe('operator-draft');
     expect(fresh.parseInputState('› ', 'alpha')).toBe('clear');
-    expect(fresh.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
-    // A different session learns its own hint independently.
-    expect(fresh.parseInputState('› Explain this codebase', 'beta')).toBe('clear');
-    expect(fresh.parseInputState('› Use /skills to list available skills', 'beta')).toBe('operator-draft');
   });
 
   it('reports an operator draft for non-empty content when no session is given', () => {
@@ -484,46 +479,6 @@ describe('parseInputState — styled captures (tmux -e)', () => {
     // 38;5;2 is a green FOREGROUND, not dim — this is typed text.
     const capture = `${BOLD_GLYPH} \u001b[38;5;2mgreen typed text\u001b[0m`;
     expect(runtime.parseInputState(capture, 'alpha')).toBe('operator-draft');
-  });
-});
-
-describe('ghost-hint persistence (plain-capture fallback)', () => {
-  let baseDir: string;
-
-  beforeEach(async () => {
-    baseDir = await mkdtemp(path.join(tmpdir(), 'codex-ghosts-'));
-  });
-
-  afterEach(async () => {
-    await rm(baseDir, { recursive: true, force: true });
-  });
-
-  it('a learned hint survives a conductor restart (new runtime instance)', async () => {
-    const first = new CodexRuntime({ config: SETTINGS, baseDir });
-    expect(first.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
-
-    // "Restart": a fresh instance over the same fleet dir. Without persistence
-    // it would learn whatever it sees first — including an operator draft.
-    const restarted = new CodexRuntime({ config: SETTINGS, baseDir });
-    expect(restarted.parseInputState('› my half-typed operator draft', 'alpha')).toBe('operator-draft');
-    expect(restarted.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
-  });
-
-  it('prepare() forgets the hint on disk too — a relaunch rolls a new one', async () => {
-    const first = new CodexRuntime({ config: SETTINGS, baseDir });
-    expect(first.parseInputState('› Old hint text', 'alpha')).toBe('clear');
-
-    const repo = path.join(baseDir, 'repo');
-    await mkdir(repo, { recursive: true });
-    await first.prepare({ codename: 'alpha', repo, runtime: 'codex', additionalDirs: [], schedules: [] } as never, {
-      mcpUrl: 'http://x/mcp/alpha',
-      eventsUrl: 'http://x/events/alpha',
-      configDir: path.join(baseDir, 'cfg'),
-    });
-
-    const relaunched = new CodexRuntime({ config: SETTINGS, baseDir });
-    // Unknown again — the next non-empty content is learned as the NEW hint.
-    expect(relaunched.parseInputState('› New hint text', 'alpha')).toBe('clear');
   });
 });
 

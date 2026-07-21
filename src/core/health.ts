@@ -20,6 +20,7 @@ export interface HealthDeps {
   getPane(session: string): PaneRef | undefined;
   getActiveSessions(): string[];
   onStall(session: string, kind: StallKind, info: StallInfo): void;
+  onWorking(session: string): void;
   onSessionEnd(session: string): void;
   logEvent(session: string, event: string, detail?: string): void;
 }
@@ -51,6 +52,9 @@ export class HealthMonitor {
     this.clearIdleTimer(session);
 
     switch (event.type) {
+      case 'turn-start':
+        this.deps.onWorking(session);
+        return;
       case 'stop': {
         const info: StallInfo = { reason: event.reason, transcriptPath: event.transcriptPath };
         if (this.deps.config.idleConfirmMs <= 0) {
@@ -82,6 +86,7 @@ export class HealthMonitor {
       case 'session-start':
         this.reset(session);
         this.lastEventAt.set(session, event.receivedAt);
+        this.deps.onWorking(session);
         return;
     }
   }
@@ -148,7 +153,8 @@ export class HealthMonitor {
     }
 
     const capture = await this.deps.backend.capture(pane, this.deps.config.captureLines);
-    if (capture === this.lastCapture.get(session)) {
+    const previousCapture = this.lastCapture.get(session);
+    if (capture === previousCapture) {
       const beats = (this.stillBeats.get(session) ?? 0) + 1;
       this.stillBeats.set(session, beats);
       if (beats >= this.deps.config.stallBeatsThreshold && !this.silentNotified.has(session)) {
@@ -159,6 +165,9 @@ export class HealthMonitor {
       this.lastCapture.set(session, capture);
       this.stillBeats.set(session, 0);
       this.silentNotified.delete(session);
+      // The first capture is only a baseline; a subsequent visible change is
+      // evidence of work for runtimes without a turn-start event.
+      if (previousCapture !== undefined) this.deps.onWorking(session);
     }
   }
 

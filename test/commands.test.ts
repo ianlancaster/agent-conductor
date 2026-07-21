@@ -23,6 +23,7 @@ let store: Store;
 let backend: FakeTerminalBackend;
 let runtime: FakeRuntime;
 let codexRuntime: FakeRuntime;
+let delivery: DeliveryQueue;
 let states: SessionStateManager;
 let lifecycle: Lifecycle;
 let router: CommandRouter;
@@ -49,7 +50,7 @@ beforeEach(() => {
   operatorMessages = [];
   sessions = loadSessionConfigs(baseDir);
 
-  const delivery = new DeliveryQueue({
+  delivery = new DeliveryQueue({
     backend,
     runtimeFor: () => runtime,
     getPane: (session) => lifecycle.getPane(session),
@@ -123,10 +124,15 @@ beforeEach(() => {
     operatorRequests,
     sentinel,
     states,
-    delivery,
     sessions: () => sessions,
     statusReport: (codename) => (codename !== undefined ? `status:${codename}` : 'status:all'),
     tail: async (codename, lines) => `tail:${codename}:${lines}`,
+    typeInPane: async (codename, text) => {
+      const pane = lifecycle.getPane(codename);
+      if (pane === undefined) return `${codename} has no active pane.`;
+      await backend.run(pane, text);
+      return `Typed into ${codename}'s pane.`;
+    },
     tailLimits: { defaultLines: 30, maxLines: 500 },
     fleetStallDefaultSeconds: 300,
     retitle: async () => undefined,
@@ -141,6 +147,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delivery.stop();
   store.close();
   rmSync(baseDir, { recursive: true, force: true });
 });
@@ -166,6 +173,14 @@ describe('session commands', () => {
     expect(await router.route('/start alpha')).toBe('alpha is already running.');
     expect(await router.route('/stop alpha')).toBe('alpha stopped.');
     expect(states.get('alpha')?.running).toBe(false);
+  });
+
+  it('types raw text immediately without entering the protected delivery queue', async () => {
+    await router.route('/start alpha');
+    runtime.inputState = 'operator-draft';
+
+    expect(await router.route('/type alpha /model gpt-5.6')).toBe("Typed into alpha's pane.");
+    expect(backend.paneFor('alpha')?.received).toEqual(['/model gpt-5.6']);
   });
 
   it('starts a session headless with -H and plumbs it to the backend', async () => {
@@ -244,6 +259,28 @@ describe('conversation commands', () => {
     const reply = await router.route('/tell beta check the build');
     expect(reply).toContain('started with your message');
     expect(backend.paneFor('beta')?.launched[0]).toContain('[Message from operator] check the build');
+  });
+
+  it('returns durable queued receipts and exposes their delivery status', async () => {
+    await router.route('/start alpha');
+    runtime.inputState = 'operator-draft';
+
+    expect(await router.route('/tell alpha wait for the draft')).toBe(
+      'Queued message #1 for alpha (input is occupied; 1 pending).',
+    );
+    expect(JSON.parse(await router.route('/message-status 1'))).toMatchObject({
+      id: 1,
+      status: 'pending',
+      inMemoryPendingForRecipient: 1,
+    });
+
+    runtime.inputState = 'clear';
+    await delivery.drainNow();
+    expect(JSON.parse(await router.route('/message-status 1'))).toMatchObject({
+      id: 1,
+      status: 'delivered',
+      inMemoryPendingForRecipient: 0,
+    });
   });
 
   it('talk + free text routes to the talk target', async () => {

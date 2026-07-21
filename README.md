@@ -184,6 +184,7 @@ Common examples:
 /talk <session>
 /broadcast <message>
 /respond <request-id> <option-number>
+/message-status <message-id>
 /tail <session> [lines]
 /type <session> <text>
 
@@ -238,6 +239,7 @@ These operations are available through both MCP and operator adapters:
 | MCP operation        | Operator command      | Purpose                                                        |
 | -------------------- | --------------------- | -------------------------------------------------------------- |
 | `send_to_session`    | `/tell`               | Send a signed message; starts a stopped recipient when needed  |
+| `get_message_status` | `/message-status`     | Inspect a direct-message receipt as pending or delivered       |
 | `broadcast`          | `/broadcast`          | Message every active session except the sender                 |
 | `start_session`      | `/start`              | Start sessions, optionally overriding their runtime            |
 | `stop_session`       | `/stop`               | Stop one session or all sessions                               |
@@ -255,7 +257,7 @@ These operations are available through both MCP and operator adapters:
 | `list_sessions`      | `/status`             | Show fleet status                                              |
 | `get_session_status` | `/status <session>`   | Show detailed status for one session                           |
 | `tail_session`       | `/tail`               | Read trailing pane output                                      |
-| `type_in_pane`       | `/type`               | Type raw text without a message envelope                       |
+| `type_in_pane`       | `/type`               | Type raw text immediately, bypassing envelope and safety queue |
 
 ### Session-only tools
 
@@ -267,6 +269,12 @@ Operator-only conveniences such as `/talk`, `/respond`, `/summon`, and `/banish`
 intentionally not exposed as agent tools. `/respond <request-id> <option-number>` sends the
 first selected response back to the requesting session; it does not approve or execute an
 action.
+
+`send_to_session` returns a durable message receipt. A queued receipt remains pending across
+agent or conductor restarts and can be inspected with `get_message_status` or
+`/message-status`. `type_in_pane` is intentionally different: it writes immediately for
+interactive prompts and slash commands, so callers must avoid using it while the operator is
+composing in that pane.
 
 ## Auto sessions and the stall sentinel
 

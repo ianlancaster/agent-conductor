@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { appendFile, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -129,6 +128,27 @@ const BELOW_COMPOSER_CHROME: readonly RegExp[] = [
   /messages to be submitted after next tool call/iu, // steering-queue hint
 ];
 
+/**
+ * Codex's built-in empty-composer prompts (0.144.x). iTerm's AppleScript
+ * capture strips the dim style that identifies these as placeholders, so the
+ * plain-text fallback must recognize the finite built-in pool. Unknown text is
+ * always treated as an operator draft; learning arbitrary first-seen content
+ * caused the operator-clobber bug when a real draft was seen first.
+ */
+const PLAIN_GHOST_HINTS: readonly RegExp[] = [
+  /^Explain this codebase$/u,
+  /^Summarize recent commits$/u,
+  /^Implement \{feature\}$/u,
+  /^Find and fix a bug in @filename$/u,
+  /^Write tests for @filename$/u,
+  /^Improve documentation in @filename$/u,
+  /^Run \/review on my current changes$/u,
+  /^Use \/skills to list available skills(?: or ask Codex to use one\.)?$/u,
+  /^Check recently modified functions for compatibility$/u,
+  /^How many files have been modified\?$/u,
+  /^Will this algorithm scale well\?$/u,
+];
+
 interface ParsedNotifyPayload {
   readonly type: string;
   readonly record: Record<string, unknown>;
@@ -207,9 +227,6 @@ export class CodexRuntime implements SessionRuntime {
   }
 
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
-    // A relaunch rolls a fresh composer ghost hint — forget the old one
-    // (in memory AND on disk; a stale persisted hint would misread the new one).
-    this.forgetGhost(session.codename);
     const repo = this.resolvePath(session.repo);
     await mkdir(identity.configDir, { recursive: true });
     await writeFile(this.notifyScriptPath(identity), renderNotifyScript(identity.eventsUrl), { mode: 0o755 });
@@ -266,59 +283,6 @@ export class CodexRuntime implements SessionRuntime {
   }
 
   /**
-   * PLAIN-CAPTURE FALLBACK ONLY (iTerm — its AppleScript capture drops
-   * styling). An EMPTY Codex composer shows ghost-text hints ("Use /skills to
-   * list available skills", …) drawn from a pool that is hardcoded upstream —
-   * no config disables it. On styled captures (tmux) the hint is detected
-   * DETERMINISTICALLY by its dim rendering and this map is never consulted.
-   * Without styling: Codex picks ONE hint per launch and never changes it, so
-   * the first non-empty composer content seen for a session is taken as that
-   * session's ghost text. The map is persisted to disk so a conductor restart
-   * cannot re-learn — mis-learning an operator draft as the hint is exactly
-   * the clobber bug. prepare() resets the entry on every (re)launch.
-   */
-  private readonly ghostText = new Map<string, string>();
-  private ghostsLoaded = false;
-
-  private ghostFilePath(): string {
-    return path.join(this.baseDir, 'data', 'codex-ghost-hints.json');
-  }
-
-  private knownGhost(session: string): string | undefined {
-    if (!this.ghostsLoaded) {
-      this.ghostsLoaded = true;
-      try {
-        const raw = JSON.parse(readFileSync(this.ghostFilePath(), 'utf8')) as Record<string, unknown>;
-        for (const [codename, hint] of Object.entries(raw)) {
-          if (typeof hint === 'string' && !this.ghostText.has(codename)) this.ghostText.set(codename, hint);
-        }
-      } catch {
-        // No file yet (or unreadable) — nothing learned before.
-      }
-    }
-    return this.ghostText.get(session);
-  }
-
-  private learnGhost(session: string, hint: string): void {
-    this.ghostText.set(session, hint);
-    this.persistGhosts();
-  }
-
-  private forgetGhost(session: string): void {
-    this.ghostText.delete(session);
-    this.persistGhosts();
-  }
-
-  private persistGhosts(): void {
-    try {
-      mkdirSync(path.dirname(this.ghostFilePath()), { recursive: true });
-      writeFileSync(this.ghostFilePath(), `${JSON.stringify(Object.fromEntries(this.ghostText), null, 2)}\n`);
-    } catch (err) {
-      log().debug('codex', `could not persist ghost hints: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  /**
    * The composer is the `›` row sitting directly above the footer/hint chrome.
    * Styled captures (tmux `-e`) make classification DETERMINISTIC — Codex's
    * own rendering distinguishes every case (verified against 0.144.x):
@@ -328,7 +292,7 @@ export class CodexRuntime implements SessionRuntime {
    *   ghost hint       `ESC[2m…ESC[0m`      dim content   — EMPTY composer
    *   operator text    unstyled content                    — a human composing
    *
-   * Plain captures (iTerm) fall back to the learned-ghost heuristic; there a
+   * Plain captures (iTerm) fall back to the built-in ghost-hint pool; there a
    * ›-row bearing an envelope signature is indistinguishable from a transcript
    * echo (both plain `›` text), so it stays null.
    */
@@ -371,13 +335,8 @@ export class CodexRuntime implements SessionRuntime {
       const content = trimmed.slice('›'.length).trim();
       if (content.length === 0) return 'clear';
       if (ENVELOPE_SIGNATURE.test(content)) return null;
-      if (session === undefined) return 'operator-draft';
-      const known = this.knownGhost(session);
-      if (known === undefined) {
-        this.learnGhost(session, content);
-        return 'clear';
-      }
-      return content === known ? 'clear' : 'operator-draft';
+      if (session !== undefined && PLAIN_GHOST_HINTS.some((pattern) => pattern.test(content))) return 'clear';
+      return 'operator-draft';
     }
     return null;
   }

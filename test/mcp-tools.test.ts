@@ -101,7 +101,6 @@ beforeEach(() => {
     operatorRequests,
     sentinel,
     states,
-    delivery,
     sessions: () => sessions,
     statusReport: (c) =>
       statusReport(
@@ -114,6 +113,12 @@ beforeEach(() => {
         c,
       ),
     tail: async (c, n) => `tail:${c}:${n}`,
+    typeInPane: async (codename, text) => {
+      const pane = lifecycle.getPane(codename);
+      if (pane === undefined) return `${codename} has no active pane.`;
+      await backend.run(pane, text);
+      return `Typed into ${codename}'s pane.`;
+    },
     tailLimits: { defaultLines: 30, maxLines: 500 },
     fleetStallDefaultSeconds: 300,
     retitle: async () => undefined,
@@ -212,6 +217,23 @@ describe('surface contract', () => {
     await expect(send.handler({ message: 'Choose', options: [''] }, 'alpha')).rejects.toThrow(/non-empty/);
     await expect(send.handler({ message: 'Choose', options: ['x'.repeat(81)] }, 'alpha')).rejects.toThrow(/at most 80/);
     await expect(send.handler({ message: 'Choose', options: ['same', ' same '] }, 'alpha')).rejects.toThrow(/unique/);
+  });
+
+  it('returns inspectable direct-message receipts without exposing them to unrelated sessions', async () => {
+    await tool('start_session').handler({ codename: 'beta' }, 'alpha');
+    await expect(tool('send_to_session').handler({ codename: 'beta', message: 'hello' }, 'alpha')).resolves.toBe(
+      'Delivered message #1 to beta.',
+    );
+    expect(JSON.parse(await tool('get_message_status').handler({ messageId: 1 }, 'alpha'))).toMatchObject({
+      id: 1,
+      sender: 'alpha',
+      recipient: 'beta',
+      status: 'delivered',
+    });
+    await expect(tool('get_message_status').handler({ messageId: 1 }, 'watch')).resolves.toBe(
+      'Message #1 was not found.',
+    );
+    await expect(tool('get_message_status').handler({ messageId: 1.5 }, 'alpha')).rejects.toThrow(/positive integer/);
   });
 
   it('passes start and continue runtime overrides through MCP', async () => {

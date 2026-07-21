@@ -42,7 +42,9 @@ you are from your connection; never claim to be another session.
 - `arm_fleet_watch`, `disarm_fleet_watch`, `list_fleet_watches` — watch an explicit
   group of sessions and escalate when every member remains stalled together.
 - `set_tag` — set or clear a status label; status results include the current label.
-- `type_in_pane` — raw text into a peer's terminal (answering prompts, slash commands).
+- `get_message_status` — inspect whether a durable direct-message receipt is pending or delivered.
+- `type_in_pane` — raw immediate text into a peer's terminal (answering prompts, slash commands).
+  It deliberately bypasses the protected delivery queue and can overwrite an operator draft.
 
 ## Conventions
 

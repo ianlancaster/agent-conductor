@@ -147,7 +147,7 @@ describe('prepare', () => {
       hooks: Record<string, { hooks: { command: string }[] }[]>;
       spinnerTipsEnabled?: boolean;
     };
-    for (const event of ['Stop', 'Notification', 'PreCompact', 'SessionEnd', 'SessionStart']) {
+    for (const event of ['UserPromptSubmit', 'Stop', 'Notification', 'PreCompact', 'SessionEnd', 'SessionStart']) {
       const command = settings.hooks[event]?.[0]?.hooks[0]?.command;
       expect(command).toContain(identity.eventsUrl);
       expect(command).toContain('|| true');
@@ -183,6 +183,7 @@ describe('parseEvent', () => {
       'notification',
     );
     expect(runtime.parseEvent({ hook_event_name: 'PreCompact' })?.type).toBe('compaction');
+    expect(runtime.parseEvent({ hook_event_name: 'UserPromptSubmit' })?.type).toBe('turn-start');
     expect(runtime.parseEvent({ hook_event_name: 'SessionEnd' })?.type).toBe('session-end');
     expect(runtime.parseEvent({ hook_event_name: 'Whatever' })).toBeNull();
     expect(runtime.parseEvent('garbage')).toBeNull();

@@ -23,16 +23,17 @@ import {
   buildSplitPaneScript,
   buildTitleShellPrefix,
   buildWindowExistsScript,
+  bracketedPastePayload,
   containsPromptMarker,
   encodeSessionVar,
   escapeAppleScript,
   parseRediscoveryOutput,
   parseWindowCreateResult,
   runOsa,
+  SESSION_NOT_FOUND_RESULT,
   sessionSetup,
   shouldUseBracketedPaste,
   tailLines,
-  wrapBracketedPaste,
 } from './applescript.js';
 
 /** The `terminal.iterm` config slice plus the shared `terminal.windowName`. */
@@ -194,12 +195,16 @@ export class ITermBackend implements TerminalBackend {
         `${pane.id.slice(0, 8)}: no prompt within ${this.config.launchTimeoutSec}s — submitting anyway`,
       );
     }
-    await this.deliver(pane.id, command);
+    await this.deliver(pane.id, command, false);
   }
 
   async run(pane: PaneRef, text: string): Promise<void> {
     log().debug('iterm', `${pane.id.slice(0, 8)}: sending → ${text.slice(0, 80)}`);
-    await this.deliver(pane.id, text);
+    // The legacy conductor's always-bracketed input path was proven across
+    // long-running iTerm fleets. It prevents TUI paste/keystroke heuristics
+    // from swallowing the separately submitted carriage return, especially
+    // for Codex and slash commands.
+    await this.deliver(pane.id, text, true);
   }
 
   async capture(pane: PaneRef, lines: number): Promise<string> {
@@ -399,9 +404,11 @@ export class ITermBackend implements TerminalBackend {
    * through a temp file (`write contents of file`) because `write text`
    * truncates long strings; multi-line/long content is bracketed-paste wrapped.
    */
-  private async deliver(sessionId: string, text: string): Promise<void> {
-    const bracketed = shouldUseBracketedPaste(text, this.config.bracketedPasteThreshold);
-    const content = bracketed ? wrapBracketedPaste(text) : text;
+  private async deliver(sessionId: string, text: string, alwaysBracketed: boolean): Promise<void> {
+    const bracketed = alwaysBracketed || shouldUseBracketedPaste(text, this.config.bracketedPasteThreshold);
+    // A trailing newline inside bracketed paste is inert content; the separate
+    // CR below is the sole submit. This is the known-good cc-conductor path.
+    const content = bracketed ? bracketedPastePayload(text) : text;
     const path = await this.writeTempContent(content);
     try {
       await this.inSession(
@@ -428,7 +435,11 @@ export class ITermBackend implements TerminalBackend {
   }
 
   private async inSession(sessionId: string, operations: string, returnExpr = '"OK"'): Promise<string> {
-    return runOsa(buildInSessionScript(sessionId, operations, returnExpr));
+    const result = await runOsa(buildInSessionScript(sessionId, operations, returnExpr));
+    if (result.trim() === SESSION_NOT_FOUND_RESULT) {
+      throw new Error(`iTerm session ${sessionId} was not found`);
+    }
+    return result;
   }
 
   private forgetSession(sessionId: string): void {

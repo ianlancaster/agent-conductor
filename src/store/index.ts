@@ -215,6 +215,21 @@ export class Store {
     this.db.prepare("UPDATE messages SET status = 'delivered' WHERE id = ?").run(id);
   }
 
+  getMessage(id: number): MessageRow | undefined {
+    return this.db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as MessageRow | undefined;
+  }
+
+  getPendingMessages(recipient?: string): MessageRow[] {
+    if (recipient !== undefined) {
+      return this.db
+        .prepare("SELECT * FROM messages WHERE recipient = ? AND type = 'message' AND status = 'pending' ORDER BY id")
+        .all(recipient) as MessageRow[];
+    }
+    return this.db
+      .prepare("SELECT * FROM messages WHERE type = 'message' AND status = 'pending' ORDER BY id")
+      .all() as MessageRow[];
+  }
+
   // ── operator requests ────────────────────────────────────────────────────
 
   insertOperatorRequest(session: string, message: string, options: readonly string[]): number {

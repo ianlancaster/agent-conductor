@@ -30,7 +30,7 @@ export interface SessionState {
   isAgentProject: boolean;
 }
 
-export type RuntimeEventType = 'stop' | 'notification' | 'compaction' | 'session-start' | 'session-end';
+export type RuntimeEventType = 'turn-start' | 'stop' | 'notification' | 'compaction' | 'session-start' | 'session-end';
 
 /** A lifecycle event pushed by a session's runtime hooks (Claude hooks / Codex notify). */
 export interface RuntimeEvent {
