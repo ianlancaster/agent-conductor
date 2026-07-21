@@ -28,6 +28,8 @@ export interface IdentityEndpoints {
 export interface LaunchOptions {
   prompt?: string;
   continueSession?: boolean;
+  /** Runtime-specific reasoning effort resolved for this process launch. */
+  effort?: string;
   /** Runtime-neutral approval/sandbox bypass resolved from session + fleet config. */
   bypassPermissions?: boolean;
 }

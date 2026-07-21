@@ -64,7 +64,7 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    ```
 
    That writes `config/sessions/alpha.yaml` — open it to see the optional knobs
-   (`runtime: codex`, `model:`, `schedules:`).
+   (`runtime: codex`, `model:`, `effort:`, `schedules:`).
 
    To make Codex the fleet default, set `defaults.runtime: codex` in
    `config/supervisor.yaml`; a session-level `runtime` still overrides it.
@@ -224,7 +224,7 @@ primitive, not an approval or execution queue.
   runtime is restarted automatically; `/pause` suppresses its schedules until `/resume`.
 - **Spawn a throwaway session**: `/spawn scratch` makes a directory, registers a config,
   and starts it; then `/tell scratch investigate X` gives it work. `/teardown scratch
---delete` reverses it. Every flag has a short alias (`-r` runtime, `-m` model, `-d` path,
+--delete` reverses it. Every flag has a short alias (`-r` runtime, `-m` model, `-e` effort, `-d` path,
   `-w` worktree, `-b` branch, `-D` delete; placement `-P`/`-T`/`-W`) — `/help` lists them.
   `--runtime codex` spawns a Codex session instead of Claude Code; `--runtime cc` is shorthand
   for `--runtime claude-code` on spawn, start, and continue commands.
@@ -237,6 +237,13 @@ primitive, not an approval or execution queue.
   `runtimes.claudeCode.availableModels` and `runtimes.codex.availableModels`; unknown model
   strings remain valid for newly released or third-party models. Detailed session status reports
   the model Conductor resolved, or `null` when model selection belongs to the runtime.
+- **Pin reasoning effort**: use `/spawn scratch --effort xhigh` for a persisted session default,
+  or `/start alpha --effort low` and `/continue alpha --effort max` for one process. MCP callers
+  use the same `effort` argument on `spawn_session`, `start_session`, and `continue_session`.
+  Values are passed through without validation. Configure fleet defaults and schema hints with
+  `defaultEffort` and `availableEfforts` under each runtime. Precedence is per-run, session,
+  runtime default, then the CLI's own default; cross-runtime launches do not inherit the other
+  runtime's effort. Detailed status reports the resolved effort or `null`.
 - **Worktree sessions** (parallel work on one repo): `/spawn reviewer --worktree
 /path/to/repo --branch review-pass`. Full file isolation, shared git history.
   The destination follows `spawn.dirPattern` unless `--path` is supplied. A new branch starts

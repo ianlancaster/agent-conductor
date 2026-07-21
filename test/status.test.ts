@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatSessionLine, resolvedSessionModel } from '../src/core/status.js';
+import { formatSessionLine, resolvedSessionEffort, resolvedSessionModel } from '../src/core/status.js';
 import type { SessionState } from '../src/core/types.js';
 
 function sessionState(overrides: Partial<SessionState> = {}): SessionState {
@@ -56,5 +56,26 @@ describe('resolvedSessionModel', () => {
 
   it('leaves model selection to the runtime when no override is configured', () => {
     expect(resolvedSessionModel(session, 'codex', {})).toBeUndefined();
+  });
+});
+
+describe('resolvedSessionEffort', () => {
+  const session = {
+    codename: 'alpha',
+    repo: '/tmp/alpha',
+    runtime: 'claude-code',
+    effort: 'max',
+  } as const;
+
+  it('uses the session effort for its configured runtime', () => {
+    expect(resolvedSessionEffort(session, 'claude-code', { 'claude-code': 'high' })).toBe('max');
+  });
+
+  it('does not carry a configured effort across runtime families', () => {
+    expect(resolvedSessionEffort(session, 'codex', { codex: 'xhigh' })).toBe('xhigh');
+  });
+
+  it('leaves effort selection to the runtime when no override is configured', () => {
+    expect(resolvedSessionEffort(session, 'codex', {})).toBeUndefined();
   });
 });

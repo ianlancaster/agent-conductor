@@ -36,7 +36,8 @@ function sessionTemplate(codename: string, repo: string): string {
 repo: ${repo}
 # runtime: codex                # optional override of defaults.runtime
 # bypassPermissions: false      # optional override of defaults.bypassPermissions
-# model: claude-opus-4-6
+# model: claude-opus-4-8
+# effort: xhigh                  # optional per-session default; runtime/model dependent
 # systemPromptFile: ./prompts/${codename}.md
 # schedules:
 #   - cron: "0 9 * * 1-5"

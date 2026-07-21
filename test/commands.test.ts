@@ -75,6 +75,7 @@ beforeEach(() => {
     config: {
       defaultPlacement: 'pane',
       defaultRuntime: 'claude-code',
+      defaultEfforts: { 'claude-code': undefined, 'codex': undefined },
       defaultBypassPermissions: true,
       markerFile: '.agent-marker',
       spawnDirPattern: './spawned/{codename}',
@@ -126,6 +127,7 @@ beforeEach(() => {
     states,
     sessions: () => sessions,
     modelHints: { 'claude-code': [], 'codex': [] },
+    effortHints: { 'claude-code': [], 'codex': [] },
     statusReport: (codename) => (codename !== undefined ? `status:${codename}` : 'status:all'),
     tail: async (codename, lines) => `tail:${codename}:${lines}`,
     typeInPane: async (codename, text) => {
@@ -221,6 +223,17 @@ describe('session commands', () => {
     expect(await router.route('/continue alpha -r codex')).toBe('alpha continued.');
     expect(codexRuntime.prepared.at(-1)?.session.runtime).toBe('codex');
     expect(backend.paneFor('alpha')?.launched.at(-1)).toContain('--continue');
+  });
+
+  it('passes arbitrary effort levels through start and continue', async () => {
+    expect(await router.route('/start alpha --effort future-provider-level')).toBe('alpha started.');
+    expect(runtime.launches.at(-1)?.opts.effort).toBe('future-provider-level');
+    expect(states.get('alpha')?.effort).toBe('future-provider-level');
+
+    await router.route('/stop alpha');
+    expect(await router.route('/continue alpha -e max')).toBe('alpha continued.');
+    expect(runtime.launches.at(-1)?.opts.effort).toBe('max');
+    expect(states.get('alpha')?.effort).toBe('max');
   });
 
   it('normalizes cc to claude-code for start and continue', async () => {
@@ -408,9 +421,11 @@ describe('help', () => {
     expect(help).toContain('Sessions:\n  /status [session] —');
     expect(help).toContain('/start <session|all> [-r|--runtime cc|claude-code|codex]');
     expect(help).toContain('/continue <session|all> [-r|--runtime cc|claude-code|codex]');
+    expect(help.match(/-e\|--effort level/gu)).toHaveLength(2);
     expect(help).toContain('Conversation:\n  /tell <session> <message> —');
     expect(help).toContain('  -P/--pane · -T/--tab · -W/--window\n  -H/--headless — detached tmux pane');
     expect(help).toContain('    -r/--runtime cc|claude-code|codex');
+    expect(help).toContain('-e/--effort <level>');
     expect(help).toContain('/fleet-watch arm <name> <session,session> [confirmation-seconds]');
     expect(help).not.toContain('*Sessions*');
     expect(help).not.toContain('`/status');
@@ -438,6 +453,17 @@ describe('spawn and teardown', () => {
     const config = readFileSync(join(baseDir, 'config', 'sessions', 'codexer.yaml'), 'utf8');
     expect(config).toContain('runtime: codex');
     await router.route('/teardown codexer --delete');
+  });
+
+  it('spawns with a persisted arbitrary effort default and applies it immediately', async () => {
+    const reply = await router.route('/spawn thinker --effort future-provider-level');
+    expect(reply).toContain('Spawned thinker');
+    expect(sessions.get('thinker')?.effort).toBe('future-provider-level');
+    expect(runtime.launches.at(-1)?.opts.effort).toBe('future-provider-level');
+    expect(readFileSync(join(baseDir, 'config', 'sessions', 'thinker.yaml'), 'utf8')).toContain(
+      'effort: future-provider-level',
+    );
+    await router.route('/teardown thinker --delete');
   });
 
   it('normalizes cc to claude-code in spawned session configuration', async () => {
@@ -505,6 +531,13 @@ describe('spawn and teardown', () => {
     const spawned = sessions.get('injected');
     expect(spawned?.runtime).toBe('claude-code');
     expect(spawned?.model).toContain('sonnet');
+  });
+
+  it('serializes effort values as YAML data, not injectable config (H7)', async () => {
+    await router.route('/spawn injected-effort --effort "xhigh\nruntime: evil"');
+    const spawned = sessions.get('injected-effort');
+    expect(spawned?.runtime).toBe('claude-code');
+    expect(spawned?.effort).toContain('xhigh');
   });
 
   it('refuses to delete directories containing a git repo', async () => {

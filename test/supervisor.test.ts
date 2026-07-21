@@ -79,7 +79,7 @@ describe('Supervisor construction', () => {
 
   it('applies a Codex default runtime to sessions that omit runtime', () => {
     writeConfig(
-      'terminal:\n  backend: iterm\nmcp:\n  port: 43390\ndefaults:\n  runtime: codex\nruntimes:\n  codex:\n    defaultModel: gpt-5.6-sol\n',
+      'terminal:\n  backend: iterm\nmcp:\n  port: 43390\ndefaults:\n  runtime: codex\nruntimes:\n  codex:\n    defaultModel: gpt-5.6-sol\n    defaultEffort: xhigh\n',
       {
         alpha: `codename: alpha\nrepo: ${baseDir}\n`,
       },
@@ -88,6 +88,7 @@ describe('Supervisor construction', () => {
     expect(supervisor.statusReport()).toContain('alpha - codex ·');
     expect(supervisor.statusReport('alpha')).toContain('"runtime": "codex"');
     expect(supervisor.statusReport('alpha')).toContain('"model": "gpt-5.6-sol"');
+    expect(supervisor.statusReport('alpha')).toContain('"effort": "xhigh"');
   });
 
   it('reports the configured path and current branch in detailed and fleet status', () => {

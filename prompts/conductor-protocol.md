@@ -26,14 +26,16 @@ you are from your connection; never claim to be another session.
   operator's answer only; they do not approve or execute another action.
 - `whoami` — your own codename and status (identity is mechanical; this is authoritative).
 - `list_sessions`, `get_session_status`, `tail_session` — fleet observability. Session status
-  includes the configured working-directory path and current Git branch.
+  includes the configured working-directory path, current Git branch, and Conductor-resolved
+  model and effort.
 - `start_session`, `stop_session`, `continue_session` — lifecycle of existing sessions
   (`codename` may be a session or `all`; for an agent caller, `all` means every other session).
   Optional `runtime`: cc | claude-code | codex overrides the session default for that run
-  (`cc` means `claude-code`); `placement`: pane | tab | window; `headless: true` puts the pane
-  in the detached fleet session, out of the operator's view — tmux backend only.
+  (`cc` means `claude-code`); optional `effort` overrides reasoning effort for that process;
+  `placement`: pane | tab | window; `headless: true` puts the pane in the detached fleet session,
+  out of the operator's view — tmux backend only.
 - `spawn_session` — create + start a brand-new session. Args: `codename` (required),
-  `runtime` (cc | claude-code | codex, default from supervisor config), `model`, `path`,
+  `runtime` (cc | claude-code | codex, default from supervisor config), `model`, `effort`, `path`,
   `placement`, `headless`, and optional `bypassPermissions`. Set `worktreeRepo` to create its
   directory as a git worktree (`branch` defaults to the codename). The destination is `path` or
   the fleet's `spawn.dirPattern`; a new branch starts at the source repository's current HEAD,

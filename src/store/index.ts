@@ -45,6 +45,7 @@ export interface PersistedSessionState {
   tag: string | null;
   paused: boolean;
   activeRuntime: RuntimeName | null;
+  activeEffort: string | null;
   activity: Activity;
 }
 
@@ -152,6 +153,9 @@ const MIGRATIONS: string[] = [
   CREATE UNIQUE INDEX idx_messages_sender_idempotency
     ON messages(sender, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
+  `,
+  `
+  ALTER TABLE session_state ADD COLUMN active_effort TEXT;
   `,
 ];
 
@@ -383,6 +387,7 @@ export class Store {
           tag: string | null;
           is_paused: number;
           active_runtime: RuntimeName | null;
+          active_effort: string | null;
           activity: Activity;
         }
       | undefined;
@@ -393,6 +398,7 @@ export class Store {
       tag: row.tag,
       paused: row.is_paused === 1,
       activeRuntime: row.active_runtime,
+      activeEffort: row.active_effort,
       activity: row.activity,
     };
   }
@@ -407,10 +413,11 @@ export class Store {
   upsertSessionState(state: PersistedSessionState): void {
     this.db
       .prepare(
-        `INSERT INTO session_state (session, auto, tag, is_paused, active_runtime, activity, updated_at)
-         VALUES (@session, @auto, @tag, @paused, @activeRuntime, @activity, datetime('now'))
+        `INSERT INTO session_state (session, auto, tag, is_paused, active_runtime, active_effort, activity, updated_at)
+         VALUES (@session, @auto, @tag, @paused, @activeRuntime, @activeEffort, @activity, datetime('now'))
          ON CONFLICT(session) DO UPDATE SET
-           auto = @auto, tag = @tag, is_paused = @paused, active_runtime = @activeRuntime, activity = @activity,
+           auto = @auto, tag = @tag, is_paused = @paused, active_runtime = @activeRuntime,
+           active_effort = @activeEffort, activity = @activity,
            updated_at = datetime('now')`,
       )
       .run({
@@ -419,6 +426,7 @@ export class Store {
         tag: state.tag,
         paused: state.paused ? 1 : 0,
         activeRuntime: state.activeRuntime,
+        activeEffort: state.activeEffort,
         activity: state.activity,
       });
   }

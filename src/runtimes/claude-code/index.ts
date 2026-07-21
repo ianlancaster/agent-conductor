@@ -86,8 +86,14 @@ export class ClaudeCodeRuntime implements SessionRuntime {
 
   buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, opts: LaunchOptions): string {
     const parts: string[] = [`cd ${shellQuote(session.repo)}`];
+    const effort =
+      opts.effort ?? session.effort ?? this.config.defaultEffort ?? this.config.env.CLAUDE_CODE_EFFORT_LEVEL;
 
-    for (const [key, value] of Object.entries(this.envVars())) {
+    const env = this.envVars();
+    // Claude Code's native environment setting outranks --effort. Replace it
+    // with the resolved value so a generic runtime env cannot defeat a per-run pin.
+    if (effort !== undefined) env.CLAUDE_CODE_EFFORT_LEVEL = effort;
+    for (const [key, value] of Object.entries(env)) {
       parts.push(`export ${key}=${shellQuote(value)}`);
     }
 
@@ -96,6 +102,7 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     if (opts.bypassPermissions === true) flags.push('--dangerously-skip-permissions');
     const model = session.model ?? this.config.defaultModel;
     if (model !== undefined) flags.push('--model', shellQuote(model));
+    if (effort !== undefined) flags.push('--effort', shellQuote(effort));
     for (const dir of session.additionalDirs) {
       flags.push('--add-dir', shellQuote(dir));
     }

@@ -3,7 +3,8 @@ codename: alpha
 repo: ../my-project # absolute, or relative to the conductor directory
 runtime: claude-code # default
 # bypassPermissions: false # optional override of defaults.bypassPermissions
-model: claude-opus-4-6 # optional; falls back to runtimes.claudeCode.defaultModel, then the CLI default
+model: claude-opus-4-8 # optional; falls back to runtimes.claudeCode.defaultModel, then the CLI default
+# effort: xhigh # optional; falls back to runtimes.claudeCode.defaultEffort, then the CLI default
 additionalDirs:
   - ../shared-notes
 schedules:

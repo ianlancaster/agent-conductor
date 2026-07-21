@@ -260,12 +260,14 @@ export class CodexRuntime implements SessionRuntime {
     // operator's own) session.
     if (opts.continueSession === true) parts.push('resume', '--last');
 
+    const effort = opts.effort ?? session.effort ?? this.settings.defaultEffort;
     const overrides = buildConfigOverrides({
       mcpUrl: identity.mcpUrl,
       notifyCommand: ['/bin/sh', this.notifyScriptPath(identity)],
       toolTimeoutSec: this.settings.toolTimeoutSec,
       bypassPermissions: opts.bypassPermissions === true,
       bareUi: this.settings.bareUi,
+      effort,
     });
     for (const override of overrides) parts.push('-c', shellQuote(override));
 
