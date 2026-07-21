@@ -17,6 +17,7 @@ let runtime: FakeRuntime;
 let monitor: HealthMonitor;
 let stalls: Recorded[];
 let sessionEnds: string[];
+let working: string[];
 let paneId: string;
 
 beforeEach(async () => {
@@ -28,6 +29,7 @@ beforeEach(async () => {
   backend.panes.get(paneId)!.sessionActive = true;
   stalls = [];
   sessionEnds = [];
+  working = [];
   monitor = new HealthMonitor({
     config: CONFIG,
     backend,
@@ -35,6 +37,7 @@ beforeEach(async () => {
     getPane: (session) => (session === 'alpha' ? { backend: 'fake', id: paneId } : undefined),
     getActiveSessions: () => ['alpha'],
     onStall: (session, kind, info) => stalls.push({ session, kind, reason: info.reason }),
+    onWorking: (session) => working.push(session),
     onSessionEnd: (session) => sessionEnds.push(session),
     logEvent: () => undefined,
   });
@@ -45,7 +48,10 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function event(type: 'stop' | 'notification' | 'compaction' | 'session-start' | 'session-end', reason?: string): void {
+function event(
+  type: 'turn-start' | 'stop' | 'notification' | 'compaction' | 'session-start' | 'session-end',
+  reason?: string,
+): void {
   monitor.handleEvent({ session: 'alpha', type, reason, receivedAt: Date.now() });
 }
 
@@ -63,6 +69,15 @@ describe('event-driven signals', () => {
     event('session-start');
     vi.advanceTimersByTime(CONFIG.idleConfirmMs * 2);
     expect(stalls).toEqual([]);
+  });
+
+  it('marks direct operator input as working and cancels a stale idle transition', () => {
+    event('stop');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs / 2);
+    event('turn-start');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs * 2);
+    expect(stalls).toEqual([]);
+    expect(working).toEqual(['alpha']);
   });
 
   it('raises blocked stalls immediately on notification events', () => {
@@ -114,6 +129,7 @@ describe('fallback pane-diff watchdog', () => {
       getPane: () => ({ backend: 'fake', id: paneId }),
       getActiveSessions: () => ['alpha'],
       onStall: (session, kind, info) => stalls.push({ session, kind, reason: info.reason }),
+      onWorking: (session) => working.push(session),
       onSessionEnd: (session) => sessionEnds.push(session),
       logEvent: () => undefined,
     });

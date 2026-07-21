@@ -8,7 +8,7 @@ import type {
   RuntimeCapabilities,
 } from '../../src/runtimes/types.js';
 
-const EVENT_TYPES = new Set(['stop', 'notification', 'compaction', 'session-start', 'session-end']);
+const EVENT_TYPES = new Set(['turn-start', 'stop', 'notification', 'compaction', 'session-start', 'session-end']);
 
 /** In-memory SessionRuntime for tests. Events are accepted as plain JSON `{type, reason?, transcriptPath?}`. */
 export class FakeRuntime implements SessionRuntime {

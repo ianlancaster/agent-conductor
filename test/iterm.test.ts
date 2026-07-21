@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   SESSION_USER_VAR,
+  SESSION_NOT_FOUND_RESULT,
+  bracketedPastePayload,
   buildCloseSessionScript,
   buildCreateSessionWindowScript,
   buildCreateTabScript,
@@ -89,6 +91,13 @@ describe('wrapBracketedPaste', () => {
 
   it('wraps empty text', () => {
     expect(wrapBracketedPaste('')).toBe(`${ESC}[200~${ESC}[201~`);
+  });
+});
+
+describe('bracketedPastePayload', () => {
+  it('adds exactly one inert trailing newline inside the paste markers', () => {
+    expect(bracketedPastePayload('hello')).toBe(`${ESC}[200~hello\n${ESC}[201~`);
+    expect(bracketedPastePayload('hello\n')).toBe(`${ESC}[200~hello\n${ESC}[201~`);
   });
 });
 
@@ -240,6 +249,10 @@ describe('parseRediscoveryOutput', () => {
 describe('script builders', () => {
   it('buildWindowExistsScript targets the window id', () => {
     expect(buildWindowExistsScript(42)).toContain('exists window id 42');
+  });
+
+  it('reports a missing session instead of returning an ambiguous empty success', () => {
+    expect(buildInSessionScript('missing', 'write text "x"')).toContain(`return "${SESSION_NOT_FOUND_RESULT}"`);
   });
 
   it('buildCreateWindowScript escapes the window name', () => {

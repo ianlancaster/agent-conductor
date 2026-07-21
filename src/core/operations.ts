@@ -1,5 +1,4 @@
 import type { SessionConfig } from '../config/schema.js';
-import type { DeliveryQueue } from './delivery.js';
 import type { Lifecycle } from './lifecycle.js';
 import type { Messaging } from './messaging.js';
 import type { OperatorRequests } from './operator-requests.js';
@@ -50,10 +49,11 @@ export interface ConductorOperationDeps {
   operatorRequests: OperatorRequests;
   sentinel: StallSentinelRouter;
   states: SessionStateManager;
-  delivery: DeliveryQueue;
   sessions(): Map<string, SessionConfig>;
   statusReport(codename?: string): string;
   tail(codename: string, lines: number): Promise<string>;
+  /** Deliberately bypass the protected delivery queue for terminal control input. */
+  typeInPane(codename: string, text: string): Promise<string>;
   tailLimits: { defaultLines: number; maxLines: number };
   fleetStallDefaultSeconds: number;
   retitle(codename: string): Promise<void>;
@@ -353,6 +353,24 @@ export class ConductorOperations {
         },
       },
       {
+        name: 'get_message_status',
+        description: 'Inspect the durable pending/delivered status of a direct message by its receipt id.',
+        audiences: BOTH,
+        inputSchema: schema({ messageId: { type: 'number', minimum: 1, description: 'Message receipt id' } }, [
+          'messageId',
+        ]),
+        handler: async (args, actor) => {
+          const messageId = args.messageId;
+          if (typeof messageId !== 'number' || !Number.isInteger(messageId) || messageId < 1) {
+            throw new Error("'messageId' is required and must be a positive integer");
+          }
+          return this.deps.messaging.messageStatus(
+            messageId,
+            actor.audience === 'session' ? actor.codename : undefined,
+          );
+        },
+      },
+      {
         name: 'toggle_auto',
         description: 'Toggle auto stall handling for one session, or all sessions.',
         audiences: BOTH,
@@ -551,7 +569,8 @@ export class ConductorOperations {
       },
       {
         name: 'type_in_pane',
-        description: "Type raw text into a session's pane without a message envelope.",
+        description:
+          "Type raw text immediately into a session's pane without a message envelope or delivery queue. This can overwrite terminal input; use it deliberately for prompts and slash commands.",
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty('Session codename'), text: stringProperty('Raw text') }, [
           'codename',
@@ -559,8 +578,7 @@ export class ConductorOperations {
         ]),
         handler: async (args) => {
           const codename = requireString(args, 'codename');
-          const result = await this.deps.delivery.deliverOrQueue(codename, requireString(args, 'text'));
-          return result === 'no-pane' ? `${codename} has no active pane.` : `Text ${result}.`;
+          return this.deps.typeInPane(codename, requireString(args, 'text'));
         },
       },
       {

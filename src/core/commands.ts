@@ -231,6 +231,20 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       },
     },
     {
+      command: 'message-status',
+      operations: ['get_message_status'],
+      group: 'Conversation',
+      usage: '/message-status <message-id>',
+      description: operationDescription(operations, 'get_message_status'),
+      invoke: (args, actor) => {
+        const messageId = Number(args[0]);
+        if (args.length !== 1 || !Number.isInteger(messageId) || messageId < 1) {
+          usage('/message-status <message-id>');
+        }
+        return invoke('get_message_status', { messageId }, actor);
+      },
+    },
+    {
       command: 'auto',
       operations: ['toggle_auto'],
       group: 'Modes',

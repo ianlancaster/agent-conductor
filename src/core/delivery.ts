@@ -24,6 +24,12 @@ type TypingState = 'clear' | 'operator' | 'busy' | 'not-up';
 interface QueuedMessage {
   text: string;
   queuedAt: number;
+  onDelivered?: () => void;
+}
+
+export interface DeliveryOptions {
+  /** Receipt callback invoked exactly once, after the pane write succeeds. */
+  onDelivered?: () => void;
 }
 
 export interface DeliveryDeps {
@@ -66,7 +72,7 @@ export class DeliveryQueue {
 
   constructor(private readonly deps: DeliveryDeps) {}
 
-  async deliverOrQueue(session: string, text: string): Promise<DeliveryResult> {
+  async deliverOrQueue(session: string, text: string, options: DeliveryOptions = {}): Promise<DeliveryResult> {
     const pane = this.deps.getPane(session);
     if (pane === undefined) return 'no-pane';
 
@@ -74,7 +80,7 @@ export class DeliveryQueue {
     if ((existing === undefined || existing.length === 0) && (await this.typingState(session, pane)) === 'clear') {
       try {
         await this.deps.backend.run(pane, text);
-        this.deps.onDelivered?.(session);
+        this.recordDelivered(session, options.onDelivered);
         return 'delivered';
       } catch (err) {
         // The pane errored on write (closed window, dead tmux). Queue for retry
@@ -87,7 +93,7 @@ export class DeliveryQueue {
     }
 
     const queue = existing ?? [];
-    queue.push({ text, queuedAt: Date.now() });
+    queue.push({ text, queuedAt: Date.now(), onDelivered: options.onDelivered });
     this.queues.set(session, queue);
     this.ensureTimer();
     log().debug('delivery', `${session}: input busy — queued message (${queue.length} pending)`);
@@ -122,8 +128,11 @@ export class DeliveryQueue {
       }
       const pane = this.deps.getPane(session);
       if (pane === undefined || !(await this.safeIsAlive(pane))) {
-        log().warn('delivery', `${session}: pane gone — dropping ${queue.length} queued message(s)`);
-        this.queues.delete(session);
+        // A pane can disappear transiently during an agent restart. Keep the
+        // queue: the next drain resolves the replacement pane by codename.
+        // Durable direct messages are also recovered from SQLite after a
+        // conductor restart, so neither lifecycle boundary loses them.
+        log().debug('delivery', `${session}: no live pane — holding ${queue.length} queued message(s)`);
         continue;
       }
       const oldest = queue[0];
@@ -142,12 +151,17 @@ export class DeliveryQueue {
         if (state !== 'clear') log().debug('delivery', `${session}: force-delivering overdue message`);
         // One message per pass: each submit gets a full drain interval to be
         // processed before the next one is typed.
-        queue.shift();
         try {
           await this.deps.backend.run(pane, oldest.text);
-          this.deps.onDelivered?.(session);
+          // Remove only AFTER a successful write. Shifting first silently lost
+          // the message whenever iTerm/osascript failed during a drain.
+          queue.shift();
+          this.recordDelivered(session, oldest.onDelivered);
         } catch (err) {
-          log().warn('delivery', `${session}: delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+          log().warn(
+            'delivery',
+            `${session}: delivery failed; retaining for retry: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
         if (queue.length === 0) this.queues.delete(session);
         else this.ensureTimer();
@@ -194,6 +208,22 @@ export class DeliveryQueue {
       return await this.deps.backend.isAlive(pane);
     } catch {
       return false;
+    }
+  }
+
+  private recordDelivered(session: string, receipt?: () => void): void {
+    this.deps.onDelivered?.(session);
+    if (receipt === undefined) return;
+    try {
+      receipt();
+    } catch (err) {
+      // The pane write already succeeded, so retrying would duplicate the
+      // message. Surface the receipt failure without putting text back in the
+      // queue.
+      log().error(
+        'delivery',
+        `${session}: delivered but receipt update failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 }

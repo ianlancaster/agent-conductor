@@ -12,9 +12,10 @@ import { readLastAssistantMessage } from './transcript.js';
 type ClaudeCodeConfig = SupervisorConfig['runtimes']['claudeCode'];
 
 /** Hook events wired into every session. All POST their stdin JSON to the events endpoint. */
-const HOOK_EVENTS = ['Stop', 'Notification', 'PreCompact', 'SessionEnd', 'SessionStart'] as const;
+const HOOK_EVENTS = ['UserPromptSubmit', 'Stop', 'Notification', 'PreCompact', 'SessionEnd', 'SessionStart'] as const;
 
 const EVENT_MAP: Record<string, RuntimeEvent['type']> = {
+  UserPromptSubmit: 'turn-start',
   Stop: 'stop',
   Notification: 'notification',
   PreCompact: 'compaction',

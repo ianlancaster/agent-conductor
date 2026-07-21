@@ -61,6 +61,8 @@ export interface LifecycleDeps {
   reloadSessions(): void;
   /** Reset per-run health and stall-routing tracking on lifecycle boundaries. */
   supervisionReset(session: string): void;
+  /** Notify orchestration that a live pane is available (for durable delivery recovery). */
+  onRunning?(session: string): void;
 }
 
 /** Session lifecycle: start / continue / stop / restart / spawn / teardown. */
@@ -93,6 +95,7 @@ export class Lifecycle {
       // A surviving pane's runtime was already up before we restarted.
       this.deps.states.setReady(codename);
       this.deps.states.setActivity(codename, 'working');
+      this.deps.onRunning?.(codename);
       log().info('lifecycle', `${codename}: adopted surviving pane ${pane.id}`);
     }
   }
@@ -241,6 +244,7 @@ export class Lifecycle {
     this.deps.states.setSession(codename, pane.id);
     this.deps.states.setActivity(codename, 'working');
     this.deps.supervisionReset(codename);
+    this.deps.onRunning?.(codename);
     log().info('lifecycle', `${codename}: ${opts.continueSession === true ? 'continued' : 'started'} in ${pane.id}`);
     return `${codename} ${opts.continueSession === true ? 'continued' : 'started'}.`;
   }
@@ -397,6 +401,7 @@ export class Lifecycle {
     this.deps.states.setSession(codename, pane.id);
     this.deps.states.setReady(codename);
     this.deps.states.setActivity(codename, 'working');
+    this.deps.onRunning?.(codename);
   }
 
   /** Rediscover a marked pane if this lifecycle instance has not seen it yet. */

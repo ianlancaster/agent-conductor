@@ -41,7 +41,11 @@ describe('runs', () => {
 describe('messages', () => {
   it('records and marks delivered messages', () => {
     const id = store.insertMessage('alpha', 'beta', 'message', 'heads up');
+    expect(store.getPendingMessages('beta').map((row) => row.id)).toEqual([id]);
+    expect(store.getMessage(id)?.status).toBe('pending');
     store.markMessageDelivered(id);
+    expect(store.getMessage(id)?.status).toBe('delivered');
+    expect(store.getPendingMessages('beta')).toEqual([]);
   });
 });
 

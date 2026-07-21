@@ -16,6 +16,7 @@ const OSA_TIMEOUT_MS = 20_000;
 
 /** iTerm2 session user variable holding the base64-encoded session codename (used for restart rediscovery). */
 export const SESSION_USER_VAR = 'user.conductor_session';
+export const SESSION_NOT_FOUND_RESULT = '__CONDUCTOR_ITERM_SESSION_NOT_FOUND__';
 
 const ESC = '\u001b';
 
@@ -78,6 +79,11 @@ export function shouldUseBracketedPaste(text: string, threshold: number): boolea
 /** Wrap text in bracketed-paste markers (ESC[200~ ... ESC[201~). */
 export function wrapBracketedPaste(text: string): string {
   return `${ESC}[200~${text}${ESC}[201~`;
+}
+
+/** Known-good TUI delivery payload: inert pasted text plus one trailing newline. */
+export function bracketedPastePayload(text: string): string {
+  return wrapBracketedPaste(text.endsWith('\n') ? text : `${text}\n`);
 }
 
 /**
@@ -307,6 +313,7 @@ export function buildInSessionScript(sessionId: string, operations: string, retu
           end repeat
         end repeat
       end repeat
+      return "${SESSION_NOT_FOUND_RESULT}"
     end tell
   `;
 }

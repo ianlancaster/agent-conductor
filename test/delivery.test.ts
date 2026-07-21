@@ -164,11 +164,17 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['later']);
   });
 
-  it('drops queued messages when the pane dies', async () => {
+  it('retains queued messages across an agent pane restart', async () => {
     runtime.inputState = 'operator-draft';
     await queue.deliverOrQueue('alpha', 'doomed');
     await backend.kill(pane);
     await queue.drainNow();
+    expect(queue.pendingCount('alpha')).toBe(1);
+
+    pane = await backend.createPane('alpha', 'pane');
+    runtime.inputState = 'clear';
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['doomed']);
     expect(queue.pendingCount('alpha')).toBe(0);
   });
 
@@ -218,5 +224,29 @@ describe('DeliveryQueue', () => {
     expect(await queue.deliverOrQueue('alpha', 'important')).toBe('queued');
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['important']);
+  });
+
+  it('retains a queued item when its drain write throws, then retries it', async () => {
+    runtime.inputState = 'operator-draft';
+    const receipts: string[] = [];
+    await queue.deliverOrQueue('alpha', 'important', { onDelivered: () => receipts.push('done') });
+    runtime.inputState = 'clear';
+
+    let failNext = true;
+    backend.run = (targetPane, text) => {
+      if (failNext) {
+        failNext = false;
+        return Promise.reject(new Error('osascript timed out'));
+      }
+      return FakeTerminalBackend.prototype.run.call(backend, targetPane, text);
+    };
+
+    await queue.drainNow();
+    expect(queue.pendingCount('alpha')).toBe(1);
+    expect(receipts).toEqual([]);
+    await queue.drainNow();
+    expect(queue.pendingCount('alpha')).toBe(0);
+    expect(backend.panes.get(pane.id)?.received).toEqual(['important']);
+    expect(receipts).toEqual(['done']);
   });
 });
