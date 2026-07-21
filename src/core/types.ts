@@ -1,5 +1,4 @@
-/** Two modes only: the operator drives, or the sentinel supervises. */
-export type Autonomy = 'facilitated' | 'autonomous';
+import type { RuntimeName } from '../config/schema.js';
 
 export type Placement = 'pane' | 'tab' | 'window';
 
@@ -11,16 +10,13 @@ export interface PaneRef {
   id: string;
 }
 
-export interface PauseState {
-  previousAutonomy: Autonomy;
-  pausedBy: 'manual' | 'auto-focus';
-}
-
 /** Persisted + runtime state for one session. */
 export interface SessionState {
-  autonomy: Autonomy;
+  auto: boolean;
   tag?: string;
-  pause?: PauseState;
+  paused: boolean;
+  /** Runtime for the active run. Absent while stopped; the session config remains the default. */
+  runtime?: RuntimeName;
   running: boolean;
   /**
    * The runtime process has proven it is up (first lifecycle event received).

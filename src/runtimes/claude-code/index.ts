@@ -26,6 +26,8 @@ export interface ClaudeCodeRuntimeOptions {
   config: ClaudeCodeConfig;
   /** Path to the conductor protocol prompt appended to every session's system prompt. */
   protocolPath?: string;
+  /** Override Claude's state path when embedding the runtime (primarily for isolated tests). */
+  claudeJsonPath?: string;
 }
 
 /**
@@ -66,17 +68,19 @@ export class ClaudeCodeRuntime implements SessionRuntime {
 
   private readonly config: ClaudeCodeConfig;
   private readonly protocolPath: string | undefined;
+  private readonly claudeJsonPath: string;
 
   constructor(opts: ClaudeCodeRuntimeOptions) {
     this.config = opts.config;
     this.protocolPath = opts.protocolPath;
+    this.claudeJsonPath = opts.claudeJsonPath ?? join(homedir(), '.claude.json');
   }
 
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
     await mkdir(identity.configDir, { recursive: true });
     await writeFile(this.mcpConfigPath(identity), `${JSON.stringify(this.buildMcpConfig(identity), null, 2)}\n`);
     await writeFile(this.hooksSettingsPath(identity), `${JSON.stringify(this.buildHookSettings(identity), null, 2)}\n`);
-    await seedFolderTrust(this.config.claudeJsonPath ?? join(homedir(), '.claude.json'), session.repo);
+    await seedFolderTrust(this.claudeJsonPath, session.repo);
   }
 
   buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, opts: LaunchOptions): string {
@@ -88,7 +92,7 @@ export class ClaudeCodeRuntime implements SessionRuntime {
 
     const flags: string[] = [];
     if (opts.continueSession) flags.push('-c');
-    if (this.config.skipPermissions) flags.push('--dangerously-skip-permissions');
+    if (opts.bypassPermissions === true) flags.push('--dangerously-skip-permissions');
     const model = session.model ?? this.config.defaultModel;
     if (model !== undefined) flags.push('--model', shellQuote(model));
     for (const dir of session.additionalDirs) {
@@ -163,7 +167,7 @@ export class ClaudeCodeRuntime implements SessionRuntime {
   }
 
   private systemPromptPath(): string | undefined {
-    const path = this.config.systemPromptFile ?? this.protocolPath;
+    const path = this.protocolPath;
     return path !== undefined && existsSync(path) ? path : undefined;
   }
 

@@ -1,8 +1,10 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ChannelAdapter } from '../channels/types.js';
-import { TelegramAdapter } from '../channels/telegram/index.js';
+import type { ChannelAdapter, ChannelMessage } from '../channels/types.js';
+import { renderChannelMessage } from '../channels/render.js';
+import { buildConfiguredChannels } from '../channels/configured.js';
+import { resolveFleetEnvironment } from '../config/environment.js';
 import { fleetSlug } from '../config/instance.js';
 import { sessionConfigDir, loadSessionConfigs, loadSupervisorConfig } from '../config/loader.js';
 import type { SessionConfig, SupervisorConfig } from '../config/schema.js';
@@ -19,21 +21,34 @@ import { TmuxBackend } from '../terminals/tmux/index.js';
 import type { TerminalBackend } from '../terminals/types.js';
 import { CommandRouter } from './commands.js';
 import { DeliveryQueue } from './delivery.js';
-import { FocusAutoPause } from './focus-autopause.js';
 import { HealthMonitor } from './health.js';
 import { identityFor } from './identity.js';
 import { Lifecycle } from './lifecycle.js';
 import { FleetLock } from './lock.js';
 import { Messaging } from './messaging.js';
+import { ConductorOperations } from './operations.js';
+import { OperatorRequests } from './operator-requests.js';
 import { StallSentinelRouter } from './sentinel.js';
 import { SessionStateManager } from './state.js';
 import { statusReport } from './status.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
+const SENTINEL_WORKSPACE_KEY = 'sentinel.codename';
 import { Scheduler } from './scheduler.js';
 
 export interface SupervisorStartOptions {
   startAll?: boolean;
+}
+
+export interface SupervisorOptions {
+  /** Additional operator adapters. They receive the same canonical command surface as the built-ins. */
+  channels?: ChannelAdapter[];
+  /** Disable environment-configured built-in adapters, primarily for embedding and tests. */
+  includeConfiguredChannels?: boolean;
+  /** Override the inherited environment before merging the fleet's .env. */
+  env?: NodeJS.ProcessEnv;
+  /** Override Claude's state path when embedding the conductor (primarily for isolated tests). */
+  claudeJsonPath?: string;
 }
 
 /** Thin orchestrator: constructs the modules, wires the seams, owns the loops. */
@@ -50,24 +65,39 @@ export class Supervisor {
   private readonly health: HealthMonitor;
   private readonly sentinel: StallSentinelRouter;
   private readonly messaging: Messaging;
+  private readonly operations: ConductorOperations;
+  private readonly operatorRequests: OperatorRequests;
   private readonly commands: CommandRouter;
   private readonly mcpServer: ConductorMcpServer;
   private readonly scheduler: Scheduler;
   private readonly watcher: ConfigWatcher;
+  private readonly channelCandidates: ChannelAdapter[];
   private readonly channels: ChannelAdapter[] = [];
-  private readonly autoPause: FocusAutoPause | undefined;
+  private readonly env: NodeJS.ProcessEnv;
   private readonly lock: FleetLock;
   private heartbeatTimer: NodeJS.Timeout | undefined;
 
-  constructor(readonly baseDir: string) {
-    this.config = loadSupervisorConfig(baseDir);
+  constructor(
+    readonly baseDir: string,
+    options: SupervisorOptions = {},
+  ) {
+    this.env = resolveFleetEnvironment(baseDir, options.env ?? process.env);
+    this.config = loadSupervisorConfig(baseDir, this.env);
     const dataDir = join(baseDir, this.config.paths.dataDir);
     initLogger({ level: this.config.supervisor.logLevel, filePath: join(dataDir, 'conductor.log') });
     this.lock = new FleetLock(join(dataDir, 'conductor.lock'));
+    this.channelCandidates = [
+      ...(options.channels ?? []),
+      ...((options.includeConfiguredChannels ?? true) ? buildConfiguredChannels(this.config, this.env) : []),
+    ];
 
-    this.sessions = loadSessionConfigs(baseDir, { tolerant: true });
+    this.sessions = loadSessionConfigs(baseDir, {
+      tolerant: true,
+      defaultRuntime: this.config.defaults.runtime,
+    });
     this.store = new Store(join(dataDir, 'conductor.db'));
-    this.states = new SessionStateManager(this.store, this.config.defaults.autonomy);
+    this.states = new SessionStateManager(this.store, this.config.defaults.auto);
+    const storedSentinel = this.store.getWorkspaceValue<string | null>(SENTINEL_WORKSPACE_KEY);
 
     const fleetId = fleetSlug(baseDir);
     this.backend =
@@ -82,19 +112,27 @@ export class Supervisor {
               // Launched from inside tmux → panes join the operator's own
               // session/window (like iTerm splitting the conductor window).
               ...(this.config.terminal.tmux.attachToCurrent &&
-              process.env.TMUX !== undefined &&
-              process.env.TMUX_PANE !== undefined
-                ? { attachPane: process.env.TMUX_PANE }
+              this.env.TMUX !== undefined &&
+              this.env.TMUX_PANE !== undefined
+                ? { attachPane: this.env.TMUX_PANE }
                 : {}),
             },
           })
         : new ITermBackend({
             store: this.store,
             config: { ...this.config.terminal.iterm, windowName: this.config.terminal.windowName, fleetId },
+            env: this.env,
           });
 
     const protocolPath = this.resolveProtocolPath();
-    this.runtimes.set('claude-code', new ClaudeCodeRuntime({ config: this.config.runtimes.claudeCode, protocolPath }));
+    this.runtimes.set(
+      'claude-code',
+      new ClaudeCodeRuntime({
+        config: this.config.runtimes.claudeCode,
+        protocolPath,
+        claudeJsonPath: options.claudeJsonPath,
+      }),
+    );
     this.runtimes.set('codex', new CodexRuntime({ config: this.config.runtimes.codex, baseDir, protocolPath }));
 
     this.delivery = new DeliveryQueue({
@@ -102,6 +140,11 @@ export class Supervisor {
       runtimeFor: (session) => this.runtimeFor(session),
       getPane: (session) => this.lifecycle.getPane(session),
       isReady: (session) => this.states.isReady(session),
+      onDelivered: (session) => {
+        if (this.states.get(session)?.running === true) this.states.setActivity(session, 'working');
+        this.health.reset(session);
+        this.sentinel.noteWorking(session);
+      },
       config: this.config.messaging,
     });
 
@@ -115,6 +158,8 @@ export class Supervisor {
         identityFor(codename, { host: this.config.mcp.host, port: this.config.mcp.port, dataDir }),
       config: {
         defaultPlacement: this.config.defaults.placement,
+        defaultRuntime: this.config.defaults.runtime,
+        defaultBypassPermissions: this.config.defaults.bypassPermissions,
         markerFile: this.config.spawn.markerFile,
         spawnDirPattern: this.config.spawn.dirPattern,
       },
@@ -123,10 +168,10 @@ export class Supervisor {
       reloadSessions: () => {
         this.reloadSessions();
       },
-      healthReset: (session) => {
+      supervisionReset: (session) => {
         this.health.reset(session);
+        this.sentinel.reset(session);
       },
-      onStarted: (session) => this.messaging.deliverPendingNotifications(session),
     });
 
     this.messaging = new Messaging({
@@ -135,7 +180,11 @@ export class Supervisor {
       states: this.states,
       sessions: () => this.sessions,
       startSession: (codename, opts) => this.lifecycle.start(codename, opts),
-      channelSend: (text) => this.channelSend(text),
+    });
+    this.operatorRequests = new OperatorRequests({
+      store: this.store,
+      messaging: this.messaging,
+      channelSend: (message) => this.channelSend(message),
     });
 
     this.sentinel = new StallSentinelRouter({
@@ -143,15 +192,22 @@ export class Supervisor {
         captureLines: this.config.health.captureLines,
         suppressWindowMs: this.config.health.suppressWindowMs,
         suppressSimilarity: this.config.health.suppressSimilarity,
-        sentinelCodename: this.config.sentinel.codename,
+        sentinelCodename: storedSentinel === undefined ? this.config.sentinel.codename : (storedSentinel ?? undefined),
       },
       backend: this.backend,
       runtimeFor: (session) => this.runtimeFor(session),
       getPane: (session) => this.lifecycle.getPane(session),
-      getAutonomy: (session) => this.states.getAutonomy(session),
-      isActive: (session) => this.states.get(session)?.running === true,
+      isAuto: (session) => this.states.isAuto(session),
+      isPaused: (session) => this.states.isPaused(session),
+      isActive: async (session) => {
+        // State can lag behind reality after a runtime conversation boundary
+        // (notably Claude /clear). Route against authoritative terminal-process
+        // liveness, using the same reconciliation as /status.
+        await this.lifecycle.reconcile(session);
+        return this.states.get(session)?.running === true;
+      },
       deliver: (session, text) => this.delivery.deliverOrQueue(session, text),
-      notifyOperator: (text) => this.channelSend(text),
+      notifyOperator: (text) => this.channelSend({ text }),
       logEvent: (session, event, detail) => {
         this.store.logHealthEvent(session, event, detail);
       },
@@ -175,25 +231,11 @@ export class Supervisor {
       },
     });
 
-    this.autoPause =
-      this.backend.capabilities.focusTracking && this.backend.getFocusedSession !== undefined
-        ? new FocusAutoPause({
-            backend: this.backend,
-            states: this.states,
-            healthReset: (session) => {
-              this.health.reset(session);
-            },
-            config: {
-              checkMs: this.config.terminal.iterm.focusCheckMs,
-              resumeDelayMs: this.config.terminal.iterm.autoPauseResumeDelaySeconds * 1000,
-              startEnabled: this.config.terminal.iterm.autoPauseOnFocus,
-            },
-          })
-        : undefined;
-
-    this.commands = new CommandRouter({
+    this.operations = new ConductorOperations({
       lifecycle: this.lifecycle,
       messaging: this.messaging,
+      operatorRequests: this.operatorRequests,
+      sentinel: this.sentinel,
       states: this.states,
       delivery: this.delivery,
       sessions: () => this.sessions,
@@ -203,15 +245,23 @@ export class Supervisor {
         defaultLines: this.config.messaging.tailDefaultLines,
         maxLines: this.config.messaging.tailMaxLines,
       },
-      autoPause: this.autoPause,
+      fleetStallDefaultSeconds: Math.floor(this.config.health.fleetStallConfirmMs / 1000),
       retitle: (session) => this.retitle(session),
       summon: (session) => this.paneAction(session, 'summon'),
       banish: (session) => this.paneAction(session, 'banish'),
+      setSentinel: (session) => this.setSentinel(session),
     });
+    this.commands = new CommandRouter(this.operations);
 
     this.scheduler = new Scheduler({
       sessions: () => this.sessions,
-      isActive: (session) => this.states.get(session)?.running === true,
+      isActive: async (session) => {
+        // Cron may fire after Ctrl-C but before the next heartbeat/status call.
+        // Inspect the terminal process before deciding to type into an
+        // allegedly active session; an idle shell must be restarted instead.
+        await this.lifecycle.reconcile(session);
+        return this.states.get(session)?.running === true;
+      },
       isPaused: (session) => this.states.isPaused(session),
       startSession: (session, opts) => this.lifecycle.start(session, opts),
       stopSession: (session) => this.lifecycle.stop(session),
@@ -225,22 +275,8 @@ export class Supervisor {
       onEvent: (session, body) => {
         this.handleRuntimeEvent(session, body);
       },
-      onCommand: (line) => this.commands.route(line),
-      tools: buildMcpTools({
-        lifecycle: this.lifecycle,
-        messaging: this.messaging,
-        sentinel: this.sentinel,
-        states: this.states,
-        delivery: this.delivery,
-        sessions: () => this.sessions,
-        statusReport: (codename) => this.statusReport(codename),
-        tail: (codename, lines) => this.tail(codename, lines),
-        tailLimits: {
-          defaultLines: this.config.messaging.tailDefaultLines,
-          maxLines: this.config.messaging.tailMaxLines,
-        },
-        retitle: (session) => this.retitle(session),
-      }),
+      onCommand: (line, interactionId) => this.commands.route(line, `cli:${interactionId}`),
+      tools: buildMcpTools(this.operations),
     });
 
     this.watcher = new ConfigWatcher(sessionConfigDir(baseDir));
@@ -265,6 +301,7 @@ export class Supervisor {
   }
 
   private async startLocked(opts: SupervisorStartOptions): Promise<void> {
+    this.operatorRequests.recoverStaleClaims();
     log().info('supervisor', `Starting agent-conductor (backend: ${this.backend.name})`);
     await this.backend.init();
 
@@ -276,6 +313,10 @@ export class Supervisor {
           void this.retitle(codename);
         }
       }
+      // Rediscovery proves that panes survived, not that their agent processes
+      // did. A pane may now be an idle shell after Ctrl-C while the conductor
+      // was down.
+      await this.lifecycle.reconcile();
       // Persisted state can say "running" for sessions whose panes did NOT
       // survive (window closed, tmux server gone, reboot). Those are dead —
       // reconcile to stopped, or status reports ghosts as stalled/working.
@@ -302,7 +343,6 @@ export class Supervisor {
 
     this.watcher.start(heartbeatMs);
     this.scheduler.rebuild();
-    this.autoPause?.start();
 
     if (opts.startAll === true) {
       for (const codename of this.sessions.keys()) {
@@ -316,7 +356,7 @@ export class Supervisor {
 
     // The sentinel is optional extra functionality — never nag about its
     // absence. A configured-but-missing codename IS a config error, though.
-    const sentinel = this.config.sentinel.codename;
+    const sentinel = this.sentinel.sentinelCodename();
     if (sentinel !== undefined && !this.sessions.has(sentinel)) {
       log().warn('supervisor', `Configured sentinel '${sentinel}' has no session config.`);
     }
@@ -327,8 +367,8 @@ export class Supervisor {
     if (this.heartbeatTimer !== undefined) clearInterval(this.heartbeatTimer);
     this.watcher.stop();
     this.scheduler.stop();
-    this.autoPause?.stop();
     this.health.stop();
+    this.sentinel.stop();
     this.delivery.stop();
     for (const channel of this.channels) {
       await channel.stop();
@@ -354,7 +394,8 @@ export class Supervisor {
       {
         sessions: () => this.sessions,
         getState: (name) => this.states.get(name),
-        sentinelCodename: () => this.config.sentinel.codename,
+        runtimeFor: (name) => this.displayRuntimeFor(name),
+        sentinelCodename: () => this.sentinel.sentinelCodename(),
       },
       codename,
     );
@@ -367,8 +408,13 @@ export class Supervisor {
   }
 
   private runtimeFor(session: string): SessionRuntime | undefined {
-    const config = this.sessions.get(session);
-    return config !== undefined ? this.runtimes.get(config.runtime) : undefined;
+    const runtime = this.lifecycle.runtimeNameFor(session);
+    return runtime !== undefined ? this.runtimes.get(runtime) : undefined;
+  }
+
+  private displayRuntimeFor(session: string): SessionConfig['runtime'] | undefined {
+    const configured = this.sessions.get(session)?.runtime;
+    return this.states.get(session)?.running === true ? this.lifecycle.runtimeNameFor(session) : configured;
   }
 
   private handleRuntimeEvent(session: string, body: unknown): void {
@@ -414,37 +460,43 @@ export class Supervisor {
     const pane = this.lifecycle.getPane(session);
     if (pane === undefined) return;
     const tag = this.states.getTag(session);
-    await this.backend.rename(pane, tag !== undefined && tag.length > 0 ? `${session} — ${tag}` : session);
+    await this.backend.rename(pane, tag !== undefined && tag.length > 0 ? `${session} — ${tag}` : session, session);
+  }
+
+  setSentinel(session: string | undefined): void {
+    if (session !== undefined && !this.sessions.has(session)) {
+      throw new Error(`Unknown session: ${session}`);
+    }
+    this.sentinel.setSentinel(session);
+    this.store.setWorkspaceValue(SENTINEL_WORKSPACE_KEY, session ?? null);
   }
 
   private async connectChannels(): Promise<void> {
-    const token = process.env.CONDUCTOR_TELEGRAM_TOKEN;
-    const chatId = process.env.CONDUCTOR_TELEGRAM_CHAT_ID;
-    if (this.config.channels.telegram.enabled && token !== undefined && chatId !== undefined) {
-      const telegram = new TelegramAdapter({ botToken: token, chatId });
-      await telegram.start({
-        onCommand: (command, args) => this.commands.route(`/${command} ${args.join(' ')}`.trim()),
-        onFreeText: (text) => this.commands.freeText(text),
+    for (const channel of this.channelCandidates) {
+      await channel.start({
+        onCommand: (command, args, context) =>
+          this.commands.route(`/${command} ${args.join(' ')}`.trim(), `${channel.name}:${context.conversationId}`),
+        onFreeText: (text, context) => this.commands.freeText(text, `${channel.name}:${context.conversationId}`),
       });
-      this.channels.push(telegram);
-      log().info('supervisor', 'Telegram channel connected.');
+      this.channels.push(channel);
+      log().info('supervisor', `${channel.name} channel connected.`);
     }
   }
 
-  private async channelSend(text: string): Promise<boolean> {
+  private async channelSend(message: ChannelMessage): Promise<boolean> {
     // Attached operator consoles (conductor start / conductor console) get
     // every operator-bound message pushed over the /feed SSE stream.
-    const consoleDelivered = this.mcpServer.pushToFeed(text);
+    const consoleDelivered = this.mcpServer.pushToFeed(message);
     if (this.channels.length === 0) {
       if (!consoleDelivered) {
-        log().info('operator', text);
+        log().info('operator', renderChannelMessage(message));
         return false;
       }
       return true;
     }
     for (const channel of this.channels) {
       try {
-        await channel.send(text);
+        await channel.send(message);
       } catch (err) {
         log().warn(
           'supervisor',
@@ -456,7 +508,10 @@ export class Supervisor {
   }
 
   private reloadSessions(): void {
-    const fresh = loadSessionConfigs(this.baseDir, { tolerant: true });
+    const fresh = loadSessionConfigs(this.baseDir, {
+      tolerant: true,
+      defaultRuntime: this.config.defaults.runtime,
+    });
     for (const [codename, session] of fresh) {
       if (!this.sessions.has(codename)) {
         log().info('supervisor', `Session registered: ${codename}`);
@@ -470,7 +525,7 @@ export class Supervisor {
       // Distinguish a genuinely deleted config from one that merely failed to
       // parse this tick (an editor's atomic save the mtime poller caught
       // mid-write). Only a truly-gone file deregisters — otherwise a transient
-      // parse error would wipe the session's persisted autonomy/tag.
+      // parse error would wipe the session's persisted auto/tag state.
       const fileStillPresent =
         existsSync(join(configDir, `${codename}.yaml`)) || existsSync(join(configDir, `${codename}.yml`));
       if (fileStillPresent) {
@@ -485,6 +540,9 @@ export class Supervisor {
       }
     }
     this.sessions = fresh;
+    for (const watch of this.sentinel.pruneFleetWatches(new Set(fresh.keys()))) {
+      log().warn('supervisor', `Fleet watch '${watch}' disarmed because one of its sessions was deregistered.`);
+    }
     this.scheduler.rebuild();
   }
 

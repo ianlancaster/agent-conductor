@@ -33,10 +33,12 @@ beforeEach(() => {
     isPaused: () => paused,
     startSession: async (session, opts) => {
       started.push({ session, prompt: opts.prompt });
+      active = true;
       return 'started';
     },
     stopSession: async (session) => {
       stopped.push(session);
+      active = false;
       return 'stopped';
     },
     deliver: async (session, text) => {
@@ -126,5 +128,46 @@ describe('Scheduler', () => {
     scheduler.stop();
     await vi.advanceTimersByTimeAsync(3000);
     expect(started.length).toBe(1);
+  });
+
+  it('serializes simultaneous schedules for one inactive session without losing a prompt', async () => {
+    sessions.set(
+      'alpha',
+      sessionWith([
+        { cron: EVERY_SECOND, prompt: 'first', paused: false, freshContext: false },
+        { cron: EVERY_SECOND, prompt: 'second', paused: false, freshContext: false },
+      ]),
+    );
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+
+    expect(started).toEqual([{ session: 'alpha', prompt: 'first' }]);
+    expect(delivered).toEqual([{ session: 'alpha', text: 'second' }]);
+  });
+
+  it('uses an asynchronous authoritative activity check', async () => {
+    let inspected = 0;
+    scheduler = new Scheduler({
+      sessions: () => sessions,
+      isActive: async () => {
+        inspected += 1;
+        return false;
+      },
+      isPaused: () => false,
+      startSession: async (session, opts) => {
+        started.push({ session, prompt: opts.prompt });
+        return 'started';
+      },
+      stopSession: async () => 'stopped',
+      deliver: async (session, text) => {
+        delivered.push({ session, text });
+      },
+    });
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'restart', paused: false, freshContext: false }]));
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(inspected).toBe(1);
+    expect(started[0]?.prompt).toBe('restart');
+    expect(delivered).toEqual([]);
   });
 });

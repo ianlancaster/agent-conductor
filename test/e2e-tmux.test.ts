@@ -1,10 +1,20 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Store } from '../src/store/index.js';
 import { Supervisor } from '../src/core/supervisor.js';
+import { FakeChannel } from './fakes/fake-channel.js';
 import { TmuxBackend } from '../src/terminals/tmux/index.js';
 
 /**
@@ -73,6 +83,18 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       await until(async () => (await backend.capture(pane, 50)).includes('MARKER_42'));
       const capture = await backend.capture(pane, 50);
       expect(capture).toContain(workDir);
+      expect(await backend.isAlive(pane)).toBe(true);
+    });
+
+    it('distinguishes an active foreground job from an idle shell in a live pane', async () => {
+      const pane = await backend.createPane('process-check', 'pane', workDir);
+      expect(await backend.isSessionActive(pane)).toBe(false);
+
+      await backend.launch(pane, 'sleep 30');
+      await until(async () => backend.isSessionActive(pane));
+      execFileSync('tmux', ['send-keys', '-t', pane.id, 'C-c']);
+      await until(async () => !(await backend.isSessionActive(pane)));
+
       expect(await backend.isAlive(pane)).toBe(true);
     });
 
@@ -233,6 +255,8 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
   describe('full stack: Supervisor + tmux + fake session binary', () => {
     let baseDir: string;
     let supervisor: Supervisor;
+    let channel: FakeChannel;
+    let secondChannel: FakeChannel;
 
     beforeEach(() => {
       chmodSync(FAKE_BINARY, 0o755);
@@ -254,13 +278,18 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
           '  port: 43399',
           'runtimes:',
           '  claudeCode:',
-          `    claudeJsonPath: ${join(baseDir, 'claude.json')}`,
           `    binary: ${FAKE_BINARY}`,
           '',
         ].join('\n'),
       );
       writeFileSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'), `codename: alpha\nrepo: ${repo}\n`);
-      supervisor = new Supervisor(baseDir);
+      channel = new FakeChannel();
+      secondChannel = new FakeChannel();
+      supervisor = new Supervisor(baseDir, {
+        channels: [channel, secondChannel],
+        includeConfiguredChannels: false,
+        claudeJsonPath: join(baseDir, 'claude.json'),
+      });
     });
 
     afterEach(async () => {
@@ -272,6 +301,8 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
     it('starts a session, delivers an operator message, and reads it back', async () => {
       await supervisor.start();
 
+      expect(await channel.command('status')).toContain('alpha');
+
       const startReply = await supervisor.command('/start alpha');
       expect(startReply).toBe('alpha started.');
 
@@ -282,11 +313,56 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       expect(tellReply).toContain('alpha');
       await until(async () => (await tail()).includes('GOT: [Message from operator] hello from the operator'));
 
+      const requestResponse = await fetch('http://127.0.0.1:43399/mcp/alpha', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: {
+            name: 'send_to_operator',
+            arguments: { message: 'Deploy where?', options: ['Staging', 'Production'] },
+          },
+        }),
+      });
+      const requestPayload = (await requestResponse.json()) as {
+        result: { content: { text: string }[] };
+      };
+      expect(requestPayload.result.content[0]?.text).toBe('Request #1 sent to the operator.');
+      expect(channel.lastSent()).toEqual(secondChannel.lastSent());
+      expect(channel.lastSent()?.actions?.[1]).toEqual({ label: 'Production', command: '/respond 1 2' });
+      expect(await channel.command('respond', ['1', '2'])).toContain('Response recorded: Production');
+      await until(async () => (await tail()).includes('Response to request #1'));
+
       const status = supervisor.statusReport();
-      expect(status).toContain('  alpha · 🟢 working');
+      expect(status).toContain('  alpha - CC · 🟢 working');
 
       expect(await supervisor.command('/stop alpha')).toBe('alpha stopped.');
-      expect(supervisor.statusReport()).toContain('  alpha · ⚪ stopped');
+      expect(supervisor.statusReport()).toContain('  alpha - CC · ⚪ stopped');
+    }, 30_000);
+
+    it('detects Ctrl-C and restarts or continues in the same pane', async () => {
+      await supervisor.start();
+      expect(await supervisor.command('/start alpha')).toBe('alpha started.');
+      await until(async () => (await supervisor.command('/tail alpha 30')).includes('FAKE SESSION START'));
+
+      const paneId = execFileSync('tmux', ['list-panes', '-t', `=${SESSION}`, '-F', '#{pane_id}'], {
+        encoding: 'utf8',
+      }).trim();
+      execFileSync('tmux', ['send-keys', '-t', paneId, 'C-c']);
+      await until(async () => (await supervisor.command('/status alpha')).includes('"running": false'));
+      expect(await supervisor.command('/start alpha')).toBe('alpha started.');
+      expect(
+        execFileSync('tmux', ['list-panes', '-t', `=${SESSION}`, '-F', '#{pane_id}'], { encoding: 'utf8' }).trim(),
+      ).toBe(paneId);
+
+      execFileSync('tmux', ['send-keys', '-t', paneId, 'C-c']);
+      await until(async () => (await supervisor.command('/status alpha')).includes('"running": false'));
+      expect(await supervisor.command('/continue alpha')).toBe('alpha continued.');
+      expect(
+        execFileSync('tmux', ['list-panes', '-t', `=${SESSION}`, '-F', '#{pane_id}'], { encoding: 'utf8' }).trim(),
+      ).toBe(paneId);
     }, 30_000);
 
     it('marks sessions stopped when their panes died while the conductor was down', async () => {
@@ -295,13 +371,16 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       // stopped — not report ghosts as working/stalled.
       await supervisor.start();
       await supervisor.command('/start alpha');
-      expect(supervisor.statusReport()).toContain('alpha · 🟢 working');
+      expect(supervisor.statusReport()).toContain('alpha - CC · 🟢 working');
       await supervisor.stop();
       killSession();
 
-      supervisor = new Supervisor(baseDir);
+      supervisor = new Supervisor(baseDir, {
+        includeConfiguredChannels: false,
+        claudeJsonPath: join(baseDir, 'claude.json'),
+      });
       await supervisor.start();
-      expect(supervisor.statusReport()).toContain('alpha · ⚪ stopped');
+      expect(supervisor.statusReport()).toContain('alpha - CC · ⚪ stopped');
     }, 30_000);
 
     it('delivers a piped initial prompt through the runtime launch command', async () => {
@@ -311,5 +390,117 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       // Session was not running: /tell starts it with the message as the prompt.
       await until(async () => (await tail()).includes('PROMPT: [Message from operator] do the morning checklist'));
     }, 30_000);
+
+    it('spawns and safely tears down a real git worktree without orphaning dirty work', async () => {
+      const repo = join(baseDir, 'main-repo');
+      mkdirSync(repo);
+      const gitEnv = { ...process.env };
+      for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
+        delete gitEnv[key];
+      }
+      const git = (cwd: string, ...args: string[]): string =>
+        execFileSync('git', ['-C', cwd, '-c', 'user.name=test', '-c', 'user.email=test@example.com', ...args], {
+          encoding: 'utf8',
+          env: gitEnv,
+        });
+      git(repo, 'init', '-b', 'main');
+      writeFileSync(join(repo, 'README.md'), 'main\n');
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-m', 'initial');
+
+      await supervisor.start();
+      expect(await supervisor.command(`/spawn worker --worktree ${repo} --branch worker-branch`)).toContain(
+        'Spawned worker',
+      );
+      const worktree = join(baseDir, 'worker');
+      await until(async () => (await supervisor.command('/tail worker 40')).includes('FAKE SESSION START'));
+      const canonicalWorktree = realpathSync(worktree);
+      expect(git(worktree, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('worker-branch');
+      expect(git(repo, 'worktree', 'list', '--porcelain')).toContain(`worktree ${canonicalWorktree}`);
+
+      writeFileSync(join(worktree, 'unfinished.txt'), 'keep this\n');
+      const refused = await supervisor.command('/teardown worker --delete');
+      expect(refused).toContain('NOT deregistered');
+      expect(supervisor.statusReport()).toContain('worker - CC · ⚪ stopped');
+      expect(existsSync(join(baseDir, 'config', 'sessions', 'worker.yaml'))).toBe(true);
+      expect(existsSync(join(worktree, 'unfinished.txt'))).toBe(true);
+
+      rmSync(join(worktree, 'unfinished.txt'));
+      const removed = await supervisor.command('/teardown worker --delete');
+      expect(removed).toContain('Worktree removed');
+      expect(existsSync(worktree)).toBe(false);
+      expect(existsSync(join(baseDir, 'config', 'sessions', 'worker.yaml'))).toBe(false);
+      expect(git(repo, 'worktree', 'list', '--porcelain')).not.toContain(canonicalWorktree);
+      expect(git(repo, 'show-ref', '--verify', 'refs/heads/worker-branch')).toContain('refs/heads/worker-branch');
+      expect(git(repo, 'status', '--porcelain')).toBe('');
+    }, 30_000);
+
+    it('runs cron prompts, restarts a Ctrl-C session, honors pause, and hot-reloads schedules', async () => {
+      // Reconstruct with a one-second config poll just for this timing test.
+      await supervisor.stop();
+      const supervisorFile = join(baseDir, 'config', 'supervisor.yaml');
+      writeFileSync(
+        supervisorFile,
+        `supervisor:\n  heartbeatIntervalSeconds: 1\n${readFileSync(supervisorFile, 'utf8')}`,
+      );
+      const cronRepo = join(baseDir, 'cron-repo');
+      mkdirSync(cronRepo);
+      const cronFile = join(baseDir, 'config', 'sessions', 'cron.yaml');
+      const scheduleConfig = (prompt?: string): string =>
+        [
+          'codename: cron',
+          `repo: ${cronRepo}`,
+          ...(prompt === undefined
+            ? []
+            : ['schedules:', '  - label: heartbeat', '    cron: "*/2 * * * * *"', `    prompt: ${prompt}`]),
+          '',
+        ].join('\n');
+      writeFileSync(cronFile, scheduleConfig('cron-tick'));
+
+      supervisor = new Supervisor(baseDir, {
+        channels: [channel],
+        includeConfiguredChannels: false,
+        claudeJsonPath: join(baseDir, 'claude.json'),
+      });
+      await supervisor.start();
+      const tail = async (): Promise<string> => supervisor.command('/tail cron 200');
+      const count = (text: string, marker: string): number => text.split(marker).length - 1;
+
+      // Inactive target: cron starts it with the scheduled prompt. Later ticks
+      // go through the active-session delivery path.
+      await until(async () => (await tail()).includes('PROMPT: cron-tick'));
+      await until(async () => (await tail()).includes('GOT: cron-tick'));
+
+      // Kill only the runtime, leaving its pane/shell. The next cron fire must
+      // inspect process liveness and restart; typing into the shell would yield
+      // "command not found" and this assertion would time out.
+      const paneId = execFileSync('tmux', ['list-panes', '-t', `=${SESSION}`, '-F', '#{pane_id}'], {
+        encoding: 'utf8',
+      }).trim();
+      if (paneId === '') throw new Error('cron pane not found');
+      execFileSync('tmux', ['send-keys', '-t', paneId, 'C-c']);
+      await until(async () => count(await tail(), 'FAKE SESSION START') >= 2);
+      expect(await tail()).not.toContain('command not found');
+
+      await supervisor.command('/pause cron');
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const pausedCount = count(await tail(), 'cron-tick');
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      expect(count(await tail(), 'cron-tick')).toBe(pausedCount);
+
+      await supervisor.command('/resume cron');
+      await until(async () => count(await tail(), 'cron-tick') > pausedCount);
+
+      // Automatic watcher reload replaces the old job rather than double-arming.
+      writeFileSync(cronFile, scheduleConfig('cron-updated'));
+      await until(async () => (await tail()).includes('GOT: cron-updated'));
+
+      // Removing the schedule and rebuilding prevents any later delivery.
+      writeFileSync(cronFile, scheduleConfig());
+      supervisor.reloadSessionsForTest();
+      const removedCount = count(await tail(), 'cron-updated');
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      expect(count(await tail(), 'cron-updated')).toBe(removedCount);
+    }, 45_000);
   });
 });

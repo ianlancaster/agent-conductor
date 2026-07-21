@@ -1,8 +1,9 @@
 import type { Store } from '../store/index.js';
-import type { Activity, SessionState, Autonomy } from './types.js';
+import type { RuntimeName } from '../config/schema.js';
+import type { Activity, SessionState } from './types.js';
 
 /**
- * Per-session state registry. Autonomy/tag/pause persist to SQLite; session and
+ * Per-session state registry. Auto/tag/pause persist to SQLite; session and
  * activity fields are runtime-only and recomputed after a conductor restart.
  */
 export class SessionStateManager {
@@ -10,7 +11,7 @@ export class SessionStateManager {
 
   constructor(
     private readonly store: Store,
-    private readonly defaultAutonomy: Autonomy,
+    private readonly defaultAuto: boolean,
   ) {}
 
   register(codename: string, isAgentProject: boolean): void {
@@ -21,9 +22,10 @@ export class SessionStateManager {
     }
     const persisted = this.store.getSessionState(codename);
     this.states.set(codename, {
-      autonomy: persisted?.autonomy ?? this.defaultAutonomy,
+      auto: persisted?.auto ?? this.defaultAuto,
       tag: persisted?.tag ?? undefined,
-      pause: persisted?.pause ?? undefined,
+      paused: persisted?.paused ?? false,
+      runtime: persisted?.activeRuntime ?? undefined,
       running: false,
       ready: false,
       activity: 'stopped',
@@ -52,15 +54,15 @@ export class SessionStateManager {
     return [...this.states.entries()].filter(([, state]) => state.running).map(([codename]) => codename);
   }
 
-  getAutonomy(codename: string): Autonomy {
-    return this.states.get(codename)?.autonomy ?? this.defaultAutonomy;
+  isAuto(codename: string): boolean {
+    return this.states.get(codename)?.auto ?? this.defaultAuto;
   }
 
-  setAutonomy(codename: string, autonomy: Autonomy): void {
+  toggleAuto(codename: string): boolean {
     const state = this.mustGet(codename);
-    state.autonomy = autonomy;
-    state.pause = undefined; // an explicit mode change clears any pause
+    state.auto = !state.auto;
     this.persist(codename);
+    return state.auto;
   }
 
   getTag(codename: string): string | undefined {
@@ -73,27 +75,30 @@ export class SessionStateManager {
     this.persist(codename);
   }
 
-  /** Temporarily force facilitated, remembering the previous mode. */
-  pause(codename: string, pausedBy: 'manual' | 'auto-focus'): boolean {
+  pause(codename: string): boolean {
     const state = this.mustGet(codename);
-    if (state.pause !== undefined || state.autonomy === 'facilitated') return false;
-    state.pause = { previousAutonomy: state.autonomy, pausedBy };
-    state.autonomy = 'facilitated';
+    if (state.paused) return false;
+    state.paused = true;
     this.persist(codename);
     return true;
   }
 
   resume(codename: string): boolean {
     const state = this.mustGet(codename);
-    if (state.pause === undefined) return false;
-    state.autonomy = state.pause.previousAutonomy;
-    state.pause = undefined;
+    if (!state.paused) return false;
+    state.paused = false;
     this.persist(codename);
     return true;
   }
 
   isPaused(codename: string): boolean {
-    return this.states.get(codename)?.pause !== undefined;
+    return this.states.get(codename)?.paused === true;
+  }
+
+  setRuntime(codename: string, runtime: RuntimeName | undefined): void {
+    const state = this.mustGet(codename);
+    state.runtime = runtime;
+    this.persist(codename);
   }
 
   setSession(codename: string, paneId: string | undefined): void {
@@ -132,9 +137,10 @@ export class SessionStateManager {
     if (state === undefined) return;
     this.store.upsertSessionState({
       session: codename,
-      autonomy: state.autonomy,
+      auto: state.auto,
       tag: state.tag ?? null,
-      pause: state.pause ?? null,
+      paused: state.paused,
+      activeRuntime: state.runtime ?? null,
       activity: state.activity,
     });
   }

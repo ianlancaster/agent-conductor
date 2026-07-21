@@ -53,6 +53,38 @@ describe('Supervisor construction', () => {
     expect(supervisor.statusReport()).not.toContain('sentinel');
   });
 
+  it('fails fast when Telegram is enabled without both credentials', () => {
+    writeConfig('terminal:\n  backend: tmux\nchannels:\n  telegram:\n    enabled: true\n', {});
+    expect(() => new Supervisor(baseDir, { env: {} })).toThrow(/CONDUCTOR_TELEGRAM_TOKEN.*CHAT_ID.*missing or blank/);
+  });
+
+  it('honors injected/global environment over fleet .env for configured channels', () => {
+    writeConfig('terminal:\n  backend: tmux\nchannels:\n  telegram:\n    enabled: true\n', {});
+    writeFileSync(join(baseDir, '.env'), 'CONDUCTOR_TELEGRAM_TOKEN=file-token\nCONDUCTOR_TELEGRAM_CHAT_ID=file-chat\n');
+    supervisor = new Supervisor(baseDir, {
+      env: { CONDUCTOR_TELEGRAM_TOKEN: 'inherited-token', CONDUCTOR_TELEGRAM_CHAT_ID: 'inherited-chat' },
+    });
+    expect(supervisor.config.channels.telegram.enabled).toBe(true);
+  });
+
+  it('bypasses bundled channel discovery while retaining deterministic environment detection', () => {
+    writeConfig('channels:\n  telegram:\n    enabled: true\n', {});
+    supervisor = new Supervisor(baseDir, {
+      env: { TMUX: 'socket,1,0' },
+      includeConfiguredChannels: false,
+    });
+    expect(supervisor.config.terminal.backend).toBe('tmux');
+  });
+
+  it('applies a Codex default runtime to sessions that omit runtime', () => {
+    writeConfig('terminal:\n  backend: iterm\nmcp:\n  port: 43390\ndefaults:\n  runtime: codex\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    supervisor = new Supervisor(baseDir);
+    expect(supervisor.statusReport()).toContain('alpha - codex ·');
+    expect(supervisor.statusReport('alpha')).toContain('"runtime": "codex"');
+  });
+
   it('routes operator commands through the shared router', async () => {
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43393\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
@@ -62,8 +94,8 @@ describe('Supervisor construction', () => {
     expect(await supervisor.command('/help')).toContain('/status');
     expect(await supervisor.command('/start ghost')).toBe('Unknown session: ghost');
     expect(await supervisor.command('/tag alpha smoke test')).toContain('smoke test');
-    expect(await supervisor.command('/auto alpha')).toBe('alpha set to autonomous.');
-    expect(supervisor.statusReport('alpha')).toContain('"autonomy": "autonomous"');
+    expect(await supervisor.command('/auto alpha')).toBe('alpha: auto on');
+    expect(supervisor.statusReport('alpha')).toContain('"auto": true');
   });
 
   it('persists session state across supervisor instances (single SQLite store)', async () => {
@@ -77,8 +109,28 @@ describe('Supervisor construction', () => {
 
     supervisor = new Supervisor(baseDir);
     const status = supervisor.statusReport('alpha');
-    expect(status).toContain('"autonomy": "autonomous"');
+    expect(status).toContain('"auto": true');
     expect(status).toContain('"tag": "carry-over"');
+  });
+
+  it('persists a tool-set sentinel override and a cleared designation', async () => {
+    writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43398\nsentinel:\n  codename: watch\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+      watch: `codename: watch\nrepo: ${baseDir}\n`,
+    });
+    supervisor = new Supervisor(baseDir);
+    supervisor.setSentinel('alpha');
+    expect(supervisor.statusReport('alpha')).toContain('"isSentinel": true');
+    await supervisor.stop();
+
+    supervisor = new Supervisor(baseDir);
+    expect(supervisor.statusReport('alpha')).toContain('"isSentinel": true');
+    expect(supervisor.statusReport('watch')).toContain('"isSentinel": false');
+    supervisor.setSentinel(undefined);
+    await supervisor.stop();
+
+    supervisor = new Supervisor(baseDir);
+    expect(supervisor.statusReport()).not.toContain('🛡');
   });
 
   it('keeps persisted state when a config transiently fails to parse (M13)', async () => {
@@ -94,7 +146,7 @@ describe('Supervisor construction', () => {
     supervisor.reloadSessionsForTest();
 
     expect(supervisor.statusReport()).toContain('alpha');
-    expect(supervisor.statusReport('alpha')).toContain('"autonomy": "autonomous"');
+    expect(supervisor.statusReport('alpha')).toContain('"auto": true');
   });
 
   it('deregisters and clears state when a config is genuinely removed', async () => {
@@ -111,7 +163,7 @@ describe('Supervisor construction', () => {
   it('groups marker-file repos under the Agents header in status', () => {
     const repo = join(baseDir, 'session-repo');
     mkdirSync(repo, { recursive: true });
-    writeFileSync(join(repo, '.conductor-agent'), '');
+    writeFileSync(join(repo, '.agent-marker'), '');
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43395\n', {
       alpha: `codename: alpha\nrepo: ${repo}\n`,
       beta: `codename: beta\nrepo: ${baseDir}\n`,

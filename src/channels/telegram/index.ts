@@ -1,13 +1,16 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { log } from '../../logger.js';
-import type { ChannelAdapter, ChannelHandlers } from '../types.js';
+import type { ChannelAdapter, ChannelHandlers, ChannelMessage } from '../types.js';
+import { renderChannelMessage } from '../render.js';
 import { splitMessage } from './split.js';
 
 const POLL_TIMEOUT_SECONDS = 30;
 const ERROR_BACKOFF_MS = 5000;
 /** Ceiling for a single sendMessage round-trip so a half-open socket can't freeze the poll loop. */
 const SEND_TIMEOUT_MS = 15_000;
+const CALLBACK_DATA_MAX_BYTES = 64;
+const SHORT_BUTTON_LABEL_LENGTH = 30;
 
 // ── Minimal Telegram Bot API payload shapes (only the fields we touch) ───────
 
@@ -55,6 +58,20 @@ class TelegramApiError extends Error {
 export type ClassifiedUpdate =
   { kind: 'command'; command: string; args: string[] } | { kind: 'freeText'; text: string };
 
+function classifyText(text: string): ClassifiedUpdate {
+  if (text.startsWith('//')) {
+    return { kind: 'freeText', text: text.slice(1) };
+  }
+
+  if (text.startsWith('/')) {
+    const parts = text.split(/\s+/).filter((part) => part.length > 0);
+    const command = (parts[0] ?? '/').slice(1);
+    return { kind: 'command', command, args: parts.slice(1) };
+  }
+
+  return { kind: 'freeText', text };
+}
+
 /**
  * Classify an incoming Telegram update for routing:
  *
@@ -69,20 +86,52 @@ export type ClassifiedUpdate =
  * messages).
  */
 export function classifyUpdate(update: TelegramUpdate): ClassifiedUpdate | undefined {
+  const callbackData = update.callback_query?.data;
+  if (callbackData !== undefined) {
+    const classified = classifyText(callbackData);
+    return classified.kind === 'command' ? classified : undefined;
+  }
+
   const text = update.message?.text;
   if (text === undefined) return undefined;
+  return classifyText(text);
+}
 
-  if (text.startsWith('//')) {
-    return { kind: 'freeText', text: text.slice(1) };
+interface TelegramInlineButton {
+  text: string;
+  callback_data: string;
+}
+
+/** Build compact keyboard rows while leaving long labels readable. */
+export function buildInlineKeyboard(message: ChannelMessage): TelegramInlineButton[][] | undefined {
+  const actions = message.actions;
+  if (actions === undefined || actions.length === 0) return undefined;
+
+  const buttons = actions.map((action) => {
+    const bytes = Buffer.byteLength(action.command, 'utf8');
+    if (bytes < 1 || bytes > CALLBACK_DATA_MAX_BYTES) {
+      throw new Error(`Telegram action command must be between 1 and ${String(CALLBACK_DATA_MAX_BYTES)} UTF-8 bytes`);
+    }
+    return { text: action.label, callback_data: action.command };
+  });
+  const rows: TelegramInlineButton[][] = [];
+  for (let index = 0; index < buttons.length;) {
+    const current = buttons[index];
+    const next = buttons[index + 1];
+    if (
+      current !== undefined &&
+      next !== undefined &&
+      current.text.length <= SHORT_BUTTON_LABEL_LENGTH &&
+      next.text.length <= SHORT_BUTTON_LABEL_LENGTH
+    ) {
+      rows.push([current, next]);
+      index += 2;
+    } else if (current !== undefined) {
+      rows.push([current]);
+      index += 1;
+    }
   }
-
-  if (text.startsWith('/')) {
-    const parts = text.split(/\s+/).filter((part) => part.length > 0);
-    const command = (parts[0] ?? '/').slice(1);
-    return { kind: 'command', command, args: parts.slice(1) };
-  }
-
-  return { kind: 'freeText', text };
+  return rows;
 }
 
 // ── Adapter ──────────────────────────────────────────────────────────────────
@@ -121,18 +170,23 @@ export class TelegramAdapter implements ChannelAdapter {
     this.polling = true;
     this.abortController = new AbortController();
     this.pollPromise = this.pollLoop();
-    log().info('telegram', `Long-poll loop started for chat ${this.chatId}`);
+    log().info('telegram', 'Long-poll loop started');
   }
 
-  async send(text: string): Promise<void> {
+  async send(message: ChannelMessage): Promise<void> {
+    const text = renderChannelMessage(message);
     if (!text.trim()) return;
 
     const chunks = splitMessage(text);
-    for (const chunk of chunks) {
+    const inlineKeyboard = buildInlineKeyboard(message);
+    for (const [index, chunk] of chunks.entries()) {
       const payload: Record<string, unknown> = {
         chat_id: this.chatId,
         text: chunk,
         parse_mode: 'Markdown',
+        ...(inlineKeyboard !== undefined && index === chunks.length - 1
+          ? { reply_markup: { inline_keyboard: inlineKeyboard } }
+          : {}),
       };
 
       try {
@@ -210,24 +264,36 @@ export class TelegramAdapter implements ChannelAdapter {
     const chatId = update.callback_query ? update.callback_query.message?.chat.id : update.message?.chat.id;
     if (chatId === undefined || String(chatId) !== this.chatId) return;
 
+    const callback = update.callback_query;
+    if (callback !== undefined) {
+      try {
+        await this.api('answerCallbackQuery', { callback_query_id: callback.id });
+      } catch (err) {
+        // Acknowledgement is best-effort: still process the operator's answer
+        // if Telegram briefly fails this cosmetic progress-indicator request.
+        log().warn('telegram', `answerCallbackQuery failed: ${String(err).slice(0, 200)}`);
+      }
+    }
+
     const classified = classifyUpdate(update);
     if (!classified) return;
+    const context = { conversationId: String(chatId) };
 
     // Handler and reply-delivery errors are logged, never thrown: one bad
     // update must not kill the poll loop or trigger backoff.
     try {
       switch (classified.kind) {
         case 'command': {
-          const reply = await handlers.onCommand(classified.command, classified.args);
+          const reply = await handlers.onCommand(classified.command, classified.args, context);
           if (reply) {
             log().debug('telegram', `Responding to /${classified.command} (${reply.length} chars)`);
-            await this.send(reply);
+            await this.send({ text: reply });
           }
           break;
         }
         case 'freeText': {
-          const reply = await handlers.onFreeText(classified.text);
-          if (reply) await this.send(reply);
+          const reply = await handlers.onFreeText(classified.text, context);
+          if (reply) await this.send({ text: reply });
           break;
         }
       }

@@ -52,7 +52,7 @@ export class HealthMonitor {
 
     switch (event.type) {
       case 'stop': {
-        const info: StallInfo = { transcriptPath: event.transcriptPath };
+        const info: StallInfo = { reason: event.reason, transcriptPath: event.transcriptPath };
         if (this.deps.config.idleConfirmMs <= 0) {
           this.deps.onStall(session, 'idle', info);
           return;
@@ -74,7 +74,10 @@ export class HealthMonitor {
       case 'session-end':
         this.deps.logEvent(session, 'session_end', event.reason);
         this.reset(session);
-        this.deps.onSessionEnd(session);
+        // Claude emits SessionEnd for conversation boundaries such as /clear,
+        // even though the CLI process remains alive in the pane. Hooks describe
+        // runtime/session semantics; only the terminal process check in
+        // checkSession() is authoritative for process liveness.
         return;
       case 'session-start':
         this.reset(session);
@@ -122,13 +125,6 @@ export class HealthMonitor {
   }
 
   private async checkSession(session: string): Promise<void> {
-    const runtime = this.deps.runtimeFor(session);
-    const hasEvents = runtime?.capabilities.lifecycleEvents === true;
-    const lastEvent = this.lastEventAt.get(session);
-    if (hasEvents && lastEvent !== undefined && Date.now() - lastEvent < this.deps.config.eventSilenceMs) {
-      return; // events are flowing — no need to scrape
-    }
-
     const pane = this.deps.getPane(session);
     if (pane === undefined) return;
     if (!(await this.deps.backend.isAlive(pane))) {
@@ -136,6 +132,19 @@ export class HealthMonitor {
       this.reset(session);
       this.deps.onSessionEnd(session);
       return;
+    }
+    if (!(await this.deps.backend.isSessionActive(pane))) {
+      this.deps.logEvent(session, 'runtime_ended');
+      this.reset(session);
+      this.deps.onSessionEnd(session);
+      return;
+    }
+
+    const runtime = this.deps.runtimeFor(session);
+    const hasEvents = runtime?.capabilities.lifecycleEvents === true;
+    const lastEvent = this.lastEventAt.get(session);
+    if (hasEvents && lastEvent !== undefined && Date.now() - lastEvent < this.deps.config.eventSilenceMs) {
+      return; // events are flowing — no need to scrape
     }
 
     const capture = await this.deps.backend.capture(pane, this.deps.config.captureLines);

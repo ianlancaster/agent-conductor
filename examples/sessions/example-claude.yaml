@@ -2,6 +2,7 @@
 codename: alpha
 repo: ../my-project # absolute, or relative to the conductor directory
 runtime: claude-code # default
+# bypassPermissions: false # optional override of defaults.bypassPermissions
 model: claude-opus-4-6 # optional; falls back to runtimes.claudeCode.defaultModel, then the CLI default
 additionalDirs:
   - ../shared-notes
@@ -9,6 +10,7 @@ schedules:
   - label: morning-standup
     cron: '0 9 * * 1-5'
     prompt: Review overnight CI results and summarize anything broken.
+    paused: false # disable this one schedule without pausing the whole session
   - label: nightly-fresh
     cron: '0 2 * * *'
     prompt: Start the nightly maintenance checklist.

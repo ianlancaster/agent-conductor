@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { log } from '../logger.js';
+import type { ChannelMessage } from '../channels/types.js';
 
 export interface McpToolDefinition {
   name: string;
@@ -16,7 +17,7 @@ export interface McpServerOptions {
   /** Lifecycle event pushed by a session's runtime hooks. */
   onEvent(session: string, body: unknown): void;
   /** CLI command line (from the interactive client via POST /cmd). */
-  onCommand?(line: string): Promise<string>;
+  onCommand?(line: string, interactionId: string): Promise<string>;
 }
 
 interface JsonRpcRequest {
@@ -93,9 +94,9 @@ export class ConductorMcpServer {
    * Push an operator-bound message to every attached console. Returns whether
    * anyone was listening — callers use this to report honest delivery status.
    */
-  pushToFeed(text: string): boolean {
+  pushToFeed(message: ChannelMessage): boolean {
     if (this.feedClients.size === 0) return false;
-    const frame = `data: ${JSON.stringify(text)}\n\n`;
+    const frame = `data: ${JSON.stringify(message)}\n\n`;
     for (const client of this.feedClients) client.write(frame);
     return true;
   }
@@ -174,7 +175,11 @@ export class ConductorMcpServer {
         typeof (body as { command?: unknown } | null)?.command === 'string'
           ? (body as { command: string }).command
           : '';
-      const reply = await this.opts.onCommand(line);
+      const interactionId =
+        typeof (body as { interactionId?: unknown } | null)?.interactionId === 'string'
+          ? (body as { interactionId: string }).interactionId
+          : 'cli';
+      const reply = await this.opts.onCommand(line, interactionId);
       this.respondJson(res, 200, { reply });
       return;
     }

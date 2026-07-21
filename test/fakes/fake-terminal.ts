@@ -8,6 +8,7 @@ export interface FakePane {
   cwd: string | undefined;
   lines: string[];
   alive: boolean;
+  sessionActive: boolean;
   name: string;
   launched: string[];
   received: string[];
@@ -16,10 +17,9 @@ export interface FakePane {
 /** In-memory TerminalBackend — the test harness for everything above the seam. */
 export class FakeTerminalBackend implements TerminalBackend {
   readonly name = 'fake';
-  readonly capabilities: TerminalCapabilities = { focusTracking: true, headless: true };
+  readonly capabilities: TerminalCapabilities = { headless: true };
 
   readonly panes = new Map<string, FakePane>();
-  focusedSession: string | null = null;
   survivors = new Map<string, PaneRef>();
   private counter = 0;
 
@@ -37,6 +37,7 @@ export class FakeTerminalBackend implements TerminalBackend {
       cwd,
       lines: [],
       alive: true,
+      sessionActive: false,
       name: session,
       launched: [],
       received: [],
@@ -46,6 +47,7 @@ export class FakeTerminalBackend implements TerminalBackend {
 
   async launch(pane: PaneRef, command: string): Promise<void> {
     const p = this.mustGet(pane);
+    p.sessionActive = true;
     p.launched.push(command);
     p.lines.push(`$ ${command}`);
   }
@@ -64,9 +66,17 @@ export class FakeTerminalBackend implements TerminalBackend {
     return this.panes.get(pane.id)?.alive ?? false;
   }
 
+  async isSessionActive(pane: PaneRef): Promise<boolean> {
+    const p = this.panes.get(pane.id);
+    return p?.alive === true && p.sessionActive;
+  }
+
   async kill(pane: PaneRef): Promise<void> {
     const p = this.panes.get(pane.id);
-    if (p) p.alive = false;
+    if (p) {
+      p.alive = false;
+      p.sessionActive = false;
+    }
   }
 
   async rename(pane: PaneRef, name: string): Promise<void> {
@@ -77,20 +87,18 @@ export class FakeTerminalBackend implements TerminalBackend {
     return new Map(this.survivors);
   }
 
-  async getFocusedSession(): Promise<string | null> {
-    return this.focusedSession;
-  }
-
-  async focusWindow(): Promise<void> {
-    // no-op
-  }
-
   // ── test helpers ──────────────────────────────────────────────────────────
 
   setPaneContent(paneId: string, content: string): void {
     const p = this.panes.get(paneId);
     if (!p) throw new Error(`No fake pane ${paneId}`);
     p.lines = content.split('\n');
+  }
+
+  endSession(paneId: string): void {
+    const p = this.panes.get(paneId);
+    if (!p) throw new Error(`No fake pane ${paneId}`);
+    p.sessionActive = false;
   }
 
   paneFor(session: string): FakePane | undefined {

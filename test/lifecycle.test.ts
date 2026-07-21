@@ -14,11 +14,12 @@ let baseDir: string;
 let store: Store;
 let backend: FakeTerminalBackend;
 let runtime: FakeRuntime;
+let codexRuntime: FakeRuntime;
 let states: SessionStateManager;
 let lifecycle: Lifecycle;
 let sessions: Map<string, SessionConfig>;
-let healthResets: string[];
-let notified: string[];
+let supervisionResets: string[];
+let defaultBypassPermissions: boolean;
 
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-lc-'));
@@ -30,33 +31,42 @@ beforeEach(() => {
   store = new Store(':memory:');
   backend = new FakeTerminalBackend();
   runtime = new FakeRuntime();
-  states = new SessionStateManager(store, 'facilitated');
+  codexRuntime = new FakeRuntime();
+  states = new SessionStateManager(store, false);
   sessions = loadSessionConfigs(baseDir);
-  healthResets = [];
-  notified = [];
+  supervisionResets = [];
+  defaultBypassPermissions = true;
 
   lifecycle = new Lifecycle({
     store,
     backend,
     states,
-    runtimes: new Map([['claude-code', runtime]]),
+    runtimes: new Map([
+      ['claude-code', runtime],
+      ['codex', codexRuntime],
+    ]),
     sessions: () => sessions,
     identityFor: (codename) => ({
       mcpUrl: `http://127.0.0.1:1/mcp/${codename}`,
       eventsUrl: `http://127.0.0.1:1/events/${codename}`,
       configDir: join(baseDir, 'data', 'sessions', codename),
     }),
-    config: { defaultPlacement: 'pane', markerFile: '.conductor-agent', spawnDirPattern: './spawned/{codename}' },
+    config: {
+      defaultPlacement: 'pane',
+      defaultRuntime: 'claude-code',
+      get defaultBypassPermissions() {
+        return defaultBypassPermissions;
+      },
+      markerFile: '.agent-marker',
+      spawnDirPattern: './spawned/{codename}',
+    },
     baseDir,
     sessionConfigDir: join(baseDir, 'config', 'sessions'),
     reloadSessions: () => {
       sessions = loadSessionConfigs(baseDir, { tolerant: true });
       for (const codename of sessions.keys()) states.register(codename, false);
     },
-    healthReset: (session) => healthResets.push(session),
-    onStarted: async (session) => {
-      notified.push(session);
-    },
+    supervisionReset: (session) => supervisionResets.push(session),
   });
   states.register('alpha', false);
 });
@@ -70,11 +80,51 @@ describe('lifecycle edges', () => {
   it('runs prepare before launch and resets health on start', async () => {
     await lifecycle.start('alpha', { prompt: 'begin' });
     expect(runtime.prepared[0]?.session.codename).toBe('alpha');
-    expect(healthResets).toEqual(['alpha']);
-    expect(notified).toEqual(['alpha']);
+    expect(supervisionResets).toEqual(['alpha']);
     const session = store.getActiveRuns()[0];
     expect(session?.session).toBe('alpha');
     expect(session?.prompt_summary).toBe('begin');
+  });
+
+  it('resolves permission bypass from the fleet default and per-session override', async () => {
+    await lifecycle.start('alpha');
+    expect(runtime.launches.at(-1)?.opts.bypassPermissions).toBe(true);
+    await lifecycle.stop('alpha');
+
+    const alpha = sessions.get('alpha');
+    if (alpha === undefined) throw new Error('alpha missing');
+    sessions.set('alpha', { ...alpha, bypassPermissions: false });
+    await lifecycle.start('alpha');
+    expect(runtime.launches.at(-1)?.opts.bypassPermissions).toBe(false);
+    await lifecycle.stop('alpha');
+
+    sessions.set('alpha', { ...alpha, bypassPermissions: undefined });
+    defaultBypassPermissions = false;
+    await lifecycle.start('alpha');
+    expect(runtime.launches.at(-1)?.opts.bypassPermissions).toBe(false);
+  });
+
+  it('overrides the configured runtime for one run and clears it when that run ends', async () => {
+    const session = sessions.get('alpha');
+    if (session !== undefined) session.model = 'claude-only-model';
+
+    await lifecycle.start('alpha', { runtime: 'codex' });
+
+    expect(runtime.prepared).toHaveLength(0);
+    expect(codexRuntime.prepared[0]?.session).toMatchObject({ runtime: 'codex' });
+    expect(codexRuntime.prepared[0]?.session.model).toBeUndefined();
+    expect(lifecycle.runtimeNameFor('alpha')).toBe('codex');
+    expect(states.get('alpha')?.runtime).toBe('codex');
+
+    const restoredStates = new SessionStateManager(store, false);
+    restoredStates.register('alpha', false);
+    expect(restoredStates.get('alpha')?.runtime).toBe('codex');
+
+    const pane = lifecycle.getPane('alpha');
+    backend.endSession(pane?.id ?? '');
+    await lifecycle.reconcile('alpha');
+    expect(states.get('alpha')?.runtime).toBeUndefined();
+    expect(lifecycle.runtimeNameFor('alpha')).toBe('claude-code');
   });
 
   it('recovers when state says active but the pane is dead', async () => {
@@ -95,6 +145,7 @@ describe('lifecycle edges', () => {
 
   it('adopts a surviving pane after a conductor restart', async () => {
     const pane = await backend.createPane('alpha', 'pane');
+    backend.panes.get(pane.id)!.sessionActive = true;
     lifecycle.adopt('alpha', pane);
     expect(lifecycle.getPane('alpha')).toEqual(pane);
     expect(states.get('alpha')?.running).toBe(true);
@@ -103,13 +154,75 @@ describe('lifecycle edges', () => {
 
   it('handles an externally ended session exactly once', async () => {
     await lifecycle.start('alpha');
+    const pane = lifecycle.getPane('alpha');
     lifecycle.handleSessionEnd('alpha');
     expect(states.get('alpha')?.running).toBe(false);
     expect(states.get('alpha')?.activity).toBe('stopped');
-    expect(lifecycle.getPane('alpha')).toBeUndefined();
+    expect(lifecycle.getPane('alpha')).toEqual(pane);
     expect(store.getActiveRuns()).toEqual([]);
     // Second call is a no-op, not a crash.
     lifecycle.handleSessionEnd('alpha');
+  });
+
+  it('detects Ctrl-C as a stopped runtime and restarts it in the same pane', async () => {
+    await lifecycle.start('alpha');
+    const pane = lifecycle.getPane('alpha');
+    expect(pane).toBeDefined();
+    backend.endSession(pane!.id);
+
+    await lifecycle.reconcile('alpha');
+    expect(states.get('alpha')?.running).toBe(false);
+    expect(states.get('alpha')?.activity).toBe('stopped');
+    expect(lifecycle.getPane('alpha')).toEqual(pane);
+    expect(store.getActiveRuns()).toEqual([]);
+
+    expect(await lifecycle.start('alpha')).toBe('alpha started.');
+    expect(lifecycle.getPane('alpha')).toEqual(pane);
+    expect(backend.panes.size).toBe(1);
+    expect(backend.panes.get(pane!.id)?.launched).toHaveLength(2);
+    expect(states.get('alpha')?.running).toBe(true);
+  });
+
+  it('continues an ended runtime in its existing pane', async () => {
+    await lifecycle.start('alpha');
+    const pane = lifecycle.getPane('alpha')!;
+    backend.endSession(pane.id);
+
+    expect(await lifecycle.continue('alpha')).toBe('alpha continued.');
+    expect(lifecycle.getPane('alpha')).toEqual(pane);
+    expect(backend.panes.get(pane.id)?.launched.at(-1)).toContain('--continue');
+    expect(runtime.prepared).toHaveLength(2);
+  });
+
+  it('continues with a per-run runtime override in the existing pane', async () => {
+    await lifecycle.start('alpha');
+    const pane = lifecycle.getPane('alpha')!;
+    backend.endSession(pane.id);
+
+    expect(await lifecycle.continue('alpha', { runtime: 'codex' })).toBe('alpha continued.');
+    expect(lifecycle.getPane('alpha')).toEqual(pane);
+    expect(codexRuntime.prepared.at(-1)?.session.runtime).toBe('codex');
+    expect(states.get('alpha')?.runtime).toBe('codex');
+  });
+
+  it('discovers and reuses an idle marked pane before creating a new one', async () => {
+    const pane = await backend.createPane('alpha', 'pane');
+    backend.survivors.set('alpha', pane);
+
+    expect(await lifecycle.start('alpha')).toBe('alpha started.');
+    expect(lifecycle.getPane('alpha')).toEqual(pane);
+    expect(backend.panes.size).toBe(1);
+  });
+
+  it('teardown closes an idle pane left by an ended runtime', async () => {
+    await lifecycle.start('alpha');
+    const pane = lifecycle.getPane('alpha')!;
+    backend.endSession(pane.id);
+    await lifecycle.reconcile('alpha');
+
+    await lifecycle.teardown('alpha');
+    expect(backend.panes.get(pane.id)?.alive).toBe(false);
+    expect(lifecycle.getPane('alpha')).toBeUndefined();
   });
 
   it('restart cycles the pane', async () => {
@@ -120,6 +233,7 @@ describe('lifecycle edges', () => {
     expect(secondPane?.id).not.toBe(firstPane?.id);
     expect(backend.panes.get(firstPane?.id ?? '')?.alive).toBe(false);
     expect(await backend.isAlive(secondPane ?? { backend: 'fake', id: '' })).toBe(true);
+    expect(runtime.prepared).toHaveLength(2);
   });
 
   it('stop is graceful about unknown sessions and missing panes', async () => {
@@ -129,9 +243,9 @@ describe('lifecycle edges', () => {
 
   it('resets health tracking on stop so stale timers cannot fire (H5)', async () => {
     await lifecycle.start('alpha');
-    healthResets.length = 0;
+    supervisionResets.length = 0;
     await lifecycle.stop('alpha');
-    expect(healthResets).toContain('alpha');
+    expect(supervisionResets).toContain('alpha');
   });
 
   it('serializes concurrent starts into a single pane (H6)', async () => {

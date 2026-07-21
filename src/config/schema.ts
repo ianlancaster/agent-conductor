@@ -7,199 +7,208 @@ export function isValidCodename(value: string): boolean {
   return CODENAME_PATTERN.test(value);
 }
 
-export const scheduleEntrySchema = z.object({
-  label: z.string().optional(),
-  cron: z.string(),
-  prompt: z.string(),
-  paused: z.boolean().default(false),
-  freshContext: z.boolean().default(false),
-});
+export const runtimeSchema = z.enum(['claude-code', 'codex']);
 
-export const sessionConfigSchema = z.object({
-  codename: z.string().min(1).regex(CODENAME_PATTERN, 'codename must be alphanumeric with dashes/underscores'),
-  /** Absolute or config-relative path to the session's working directory. */
-  repo: z.string().min(1),
-  runtime: z.enum(['claude-code', 'codex']).default('claude-code'),
-  model: z.string().optional(),
-  additionalDirs: z.array(z.string()).default([]),
-  /**
-   * Per-session instructions appended to this session's system prompt, on top of the
-   * conductor protocol every session receives. Point the sentinel at the shipped
-   * sentinel prompt here. Absolute, or resolved relative to the config dir.
-   */
-  systemPromptFile: z.string().optional(),
-  schedules: z.array(scheduleEntrySchema).default([]),
-});
+export const scheduleEntrySchema = z
+  .object({
+    label: z.string().optional(),
+    cron: z.string(),
+    prompt: z.string(),
+    paused: z.boolean().default(false),
+    freshContext: z.boolean().default(false),
+  })
+  .strict();
 
-export const supervisorConfigSchema = z.object({
-  supervisor: z
-    .object({
-      heartbeatIntervalSeconds: z.number().int().positive().default(30),
-      logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-    })
-    .default({}),
-  paths: z
-    .object({
-      dataDir: z.string().default('./data'),
-    })
-    .default({}),
-  mcp: z
-    .object({
-      /** Default: derived per fleet dir (stable hash into 3456..3955) so multiple conductors don't collide. */
-      port: z.number().int().positive().optional(),
-      host: z.string().default('127.0.0.1'),
-      keepAliveTimeoutMs: z.number().int().positive().default(60_000),
-    })
-    .default({}),
-  health: z
-    .object({
-      /** Pane lines captured per check and attached to stall events. */
-      captureLines: z.number().int().positive().default(40),
-      /** Unchanged heartbeats before the fallback watchdog flags a silent stall. */
-      stallBeatsThreshold: z.number().int().positive().default(2),
-      /** Quiet period after a runtime `stop` event before it becomes an idle stall. */
-      idleConfirmMs: z.number().int().nonnegative().default(15_000),
-      /** Window in which similar stalls are suppressed as duplicates. */
-      suppressWindowMs: z.number().int().positive().default(300_000),
-      /** Content similarity (0..1) above which a repeat stall is suppressed. */
-      suppressSimilarity: z.number().min(0).max(1).default(0.8),
-      /** With lifecycle events flowing, how stale events must be before pane-diffing kicks in. */
-      eventSilenceMs: z.number().int().positive().default(120_000),
-    })
-    .default({}),
-  messaging: z
-    .object({
-      queueDrainMs: z.number().int().positive().default(2_000),
-      queueMaxAgeMs: z.number().int().positive().default(60_000),
-      tailDefaultLines: z.number().int().positive().default(30),
-      tailMaxLines: z.number().int().positive().default(500),
-    })
-    .default({}),
-  defaults: z
-    .object({
-      autonomy: z.enum(['facilitated', 'autonomous']).default('facilitated'),
-      placement: z.enum(['pane', 'tab', 'window']).default('pane'),
-    })
-    .default({}),
-  sentinel: z
-    .object({
-      /** Codename of the designated stall sentinel. Autonomous mode requires one. */
-      codename: z.string().optional(),
-    })
-    .default({}),
-  terminal: z
-    .object({
-      /** Default: auto-detected — tmux when the conductor is launched inside tmux ($TMUX), else iterm on macOS, tmux elsewhere. */
-      backend: z.enum(['iterm', 'tmux']).optional(),
-      /** Default: "Agent Conductor (<fleet dir name>)" so multiple fleets are distinguishable. */
-      windowName: z.string().optional(),
-      iterm: z
-        .object({
-          /** Watermark the session codename as an iTerm badge (the big red text). */
-          badge: z.boolean().default(false),
-          autoPauseOnFocus: z.boolean().default(false),
-          autoPauseResumeDelaySeconds: z.number().int().positive().default(60),
-          focusCheckMs: z.number().int().positive().default(5_000),
-          bracketedPasteThreshold: z.number().int().positive().default(512),
-          launchTimeoutSec: z.number().positive().default(8),
-          pollIntervalSec: z.number().positive().default(0.25),
-        })
-        .default({}),
-      tmux: z
-        .object({
-          /** Default: "conductor-<fleet slug>" so multiple fleets don't share one tmux session. */
-          sessionName: z.string().optional(),
-          /**
-           * When the conductor is launched from inside tmux, put session panes in
-           * the launching window (splits/new windows in YOUR tmux session), like
-           * the iTerm backend does. Set false to always use the detached
-           * `sessionName` session instead.
-           */
-          attachToCurrent: z.boolean().default(true),
-          /**
-           * Show each pane's title ("codename — tag") in a border line above it,
-           * by enabling tmux's pane-border-status on windows the conductor puts
-           * panes into. tmux hides pane titles by default, which makes a fleet
-           * unidentifiable. Set false to leave the window's border style alone.
-           */
-          paneBorders: z.boolean().default(true),
-        })
-        .default({}),
-    })
-    .default({}),
-  channels: z
-    .object({
-      telegram: z
-        .object({
-          /** Token/chat id come from env: CONDUCTOR_TELEGRAM_TOKEN / CONDUCTOR_TELEGRAM_CHAT_ID. */
-          enabled: z.boolean().default(true),
-          panePreviewLines: z.number().int().positive().default(20),
-        })
-        .default({}),
-    })
-    .default({}),
-  runtimes: z
-    .object({
-      claudeCode: z
-        .object({
-          binary: z.string().default('claude'),
-          defaultModel: z.string().optional(),
-          autocompactPct: z.number().int().min(1).max(100).default(70),
-          skipPermissions: z.boolean().default(true),
-          /** Export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 (disable if it breaks tools you rely on). */
-          disableNonessentialTraffic: z.boolean().default(true),
-          /** Strip Claude Code's optional UI chrome from panes: spinner tips, prompt suggestions, onboarding/startup hints. */
-          bareUi: z.boolean().default(true),
-          /** Extra env vars exported to every session. Values here override the built-in defaults. */
-          env: z.record(z.string()).default({}),
-          /** Path to the conductor protocol prompt appended to every session's system prompt. */
-          systemPromptFile: z.string().optional(),
-          /** Claude config file used for folder-trust pre-seeding (override for tests). */
-          claudeJsonPath: z.string().optional(),
-        })
-        .default({}),
-      codex: z
-        .object({
-          binary: z.string().default('codex'),
-          defaultModel: z.string().optional(),
-          /** MCP tool timeout — Codex defaults to 60s, far too low for long consults. */
-          toolTimeoutSec: z.number().int().positive().default(600),
-          /**
-           * Launch with --dangerously-bypass-approvals-and-sandbox (plus the
-           * approval_policy/sandbox_mode -c overrides, since resume drops the
-           * flag — openai/codex#9144). The Codex analog of claudeCode.
-           * skipPermissions. Set false to let your own config.toml approval
-           * and sandbox settings govern — unattended sessions will then hang
-           * on approval prompts until nudged.
-           */
-          skipPermissions: z.boolean().default(true),
-          /**
-           * Strip Codex's optional UI chrome and non-essential traffic: startup
-           * update check (an interactive prompt that would hang a spawned pane),
-           * analytics, startup tips, animations, and terminal-title writes
-           * (which would clobber the conductor's pane titles).
-           */
-          bareUi: z.boolean().default(true),
-        })
-        .default({}),
-    })
-    .default({}),
-  spawn: z
-    .object({
-      /** Directory pattern for spawned sessions, relative to the fleet dir; {codename} is substituted. */
-      dirPattern: z.string().default('./{codename}'),
-      /** Marker file that flags a repo as an agent project (display-only 🤖). */
-      markerFile: z.string().default('.conductor-agent'),
-    })
-    .default({}),
-  scheduler: z
-    .object({
-      reloadIntervalBeats: z.number().int().positive().default(10),
-    })
-    .default({}),
-});
+export const sessionConfigSchema = z
+  .object({
+    codename: z.string().min(1).regex(CODENAME_PATTERN, 'codename must be alphanumeric with dashes/underscores'),
+    /** Absolute or config-relative path to the session's working directory. */
+    repo: z.string().min(1),
+    runtime: runtimeSchema.default('claude-code'),
+    /** Override the fleet default for approval/sandbox bypass when this session launches. */
+    bypassPermissions: z.boolean().optional(),
+    model: z.string().optional(),
+    additionalDirs: z.array(z.string()).default([]),
+    /**
+     * Per-session instructions appended to this session's system prompt, on top of the
+     * conductor protocol every session receives. Point the sentinel at the shipped
+     * sentinel prompt here. Absolute, or resolved relative to the config dir.
+     */
+    systemPromptFile: z.string().optional(),
+    schedules: z.array(scheduleEntrySchema).default([]),
+  })
+  .strict();
+
+export const supervisorConfigSchema = z
+  .object({
+    supervisor: z
+      .object({
+        heartbeatIntervalSeconds: z.number().int().positive().default(30),
+        logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+      })
+      .strict()
+      .default({}),
+    paths: z
+      .object({
+        dataDir: z.string().default('./data'),
+      })
+      .strict()
+      .default({}),
+    mcp: z
+      .object({
+        /** Default: derived per fleet dir (stable hash into 3456..3955) so multiple conductors don't collide. */
+        port: z.number().int().positive().optional(),
+        host: z.string().default('127.0.0.1'),
+        keepAliveTimeoutMs: z.number().int().positive().default(60_000),
+      })
+      .strict()
+      .default({}),
+    health: z
+      .object({
+        /** Pane lines captured per check and attached to stall events. */
+        captureLines: z.number().int().positive().default(40),
+        /** Unchanged heartbeats before the fallback watchdog flags a silent stall. */
+        stallBeatsThreshold: z.number().int().positive().default(2),
+        /** Quiet period after a runtime `stop` event before it becomes an idle stall. */
+        idleConfirmMs: z.number().int().nonnegative().default(15_000),
+        /** Default confirmation period after every session in an armed fleet watch has stalled. */
+        fleetStallConfirmMs: z.number().int().nonnegative().default(300_000),
+        /** Window in which similar stalls are suppressed as duplicates. */
+        suppressWindowMs: z.number().int().positive().default(300_000),
+        /** Content similarity (0..1) above which a repeat stall is suppressed. */
+        suppressSimilarity: z.number().min(0).max(1).default(0.8),
+        /** With lifecycle events flowing, how stale events must be before pane-diffing kicks in. */
+        eventSilenceMs: z.number().int().positive().default(120_000),
+      })
+      .strict()
+      .default({}),
+    messaging: z
+      .object({
+        queueDrainMs: z.number().int().positive().default(2_000),
+        queueMaxAgeMs: z.number().int().positive().default(60_000),
+        tailDefaultLines: z.number().int().positive().default(30),
+        tailMaxLines: z.number().int().positive().default(500),
+      })
+      .strict()
+      .default({}),
+    defaults: z
+      .object({
+        auto: z.boolean().default(false),
+        runtime: runtimeSchema.default('claude-code'),
+        /** Launch sessions without approval prompts or sandbox restrictions. */
+        bypassPermissions: z.boolean().default(true),
+        placement: z.enum(['pane', 'tab', 'window']).default('pane'),
+      })
+      .strict()
+      .default({}),
+    sentinel: z
+      .object({
+        /** Initial stall sentinel. The persisted set_sentinel choice overrides it. */
+        codename: z.string().optional(),
+      })
+      .strict()
+      .default({}),
+    terminal: z
+      .object({
+        /** Default: auto-detected — tmux when the conductor is launched inside tmux ($TMUX), else iterm on macOS, tmux elsewhere. */
+        backend: z.enum(['iterm', 'tmux']).optional(),
+        /** Default: "Agent Conductor (<fleet dir name>)" so multiple fleets are distinguishable. */
+        windowName: z.string().optional(),
+        iterm: z
+          .object({
+            /** Watermark the session codename as an iTerm badge (the big red text). */
+            badge: z.boolean().default(true),
+            bracketedPasteThreshold: z.number().int().positive().default(512),
+            launchTimeoutSec: z.number().positive().default(8),
+            pollIntervalSec: z.number().positive().default(0.25),
+          })
+          .strict()
+          .default({}),
+        tmux: z
+          .object({
+            /** Default: "conductor-<fleet slug>" so multiple fleets don't share one tmux session. */
+            sessionName: z.string().optional(),
+            /**
+             * When the conductor is launched from inside tmux, put session panes in
+             * the launching window (splits/new windows in YOUR tmux session), like
+             * the iTerm backend does. Set false to always use the detached
+             * `sessionName` session instead.
+             */
+            attachToCurrent: z.boolean().default(true),
+            /**
+             * Show each pane's title ("codename — tag") in a border line above it,
+             * by enabling tmux's pane-border-status on windows the conductor puts
+             * panes into. tmux hides pane titles by default, which makes a fleet
+             * unidentifiable. Set false to leave the window's border style alone.
+             */
+            paneBorders: z.boolean().default(true),
+          })
+          .strict()
+          .default({}),
+      })
+      .strict()
+      .default({}),
+    channels: z
+      .object({
+        telegram: z
+          .object({
+            /** Token/chat id come from env: CONDUCTOR_TELEGRAM_TOKEN / CONDUCTOR_TELEGRAM_CHAT_ID. */
+            enabled: z.boolean().default(false),
+          })
+          .strict()
+          .default({}),
+      })
+      .strict()
+      .default({}),
+    runtimes: z
+      .object({
+        claudeCode: z
+          .object({
+            binary: z.string().default('claude'),
+            defaultModel: z.string().optional(),
+            autocompactPct: z.number().int().min(1).max(100).default(70),
+            /** Export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 (disable if it breaks tools you rely on). */
+            disableNonessentialTraffic: z.boolean().default(true),
+            /** Strip Claude Code's optional UI chrome from panes: spinner tips, prompt suggestions, onboarding/startup hints. */
+            bareUi: z.boolean().default(true),
+            /** Extra env vars exported to every session. Values here override the built-in defaults. */
+            env: z.record(z.string()).default({}),
+          })
+          .strict()
+          .default({}),
+        codex: z
+          .object({
+            binary: z.string().default('codex'),
+            defaultModel: z.string().optional(),
+            /** MCP tool timeout — Codex defaults to 60s, far too low for long consults. */
+            toolTimeoutSec: z.number().int().positive().default(600),
+            /**
+             * Strip Codex's optional UI chrome and non-essential traffic: startup
+             * update check (an interactive prompt that would hang a spawned pane),
+             * analytics, startup tips, animations, and terminal-title writes
+             * (which would clobber the conductor's pane titles).
+             */
+            bareUi: z.boolean().default(true),
+          })
+          .strict()
+          .default({}),
+      })
+      .strict()
+      .default({}),
+    spawn: z
+      .object({
+        /** Directory pattern for spawned sessions, relative to the fleet dir; {codename} is substituted. */
+        dirPattern: z.string().default('./{codename}'),
+        /** Marker file that flags a repo as an agent project (display-only 🤖). */
+        markerFile: z.string().default('.agent-marker'),
+      })
+      .strict()
+      .default({}),
+  })
+  .strict();
 
 export type ScheduleEntry = z.infer<typeof scheduleEntrySchema>;
+export type RuntimeName = z.infer<typeof runtimeSchema>;
 export type SessionConfig = z.infer<typeof sessionConfigSchema>;
 
 /** Raw parse output — instance-scoped fields may be absent (loader derives them per fleet dir). */

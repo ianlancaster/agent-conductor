@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -9,6 +10,7 @@ import { CodexRuntime } from '../src/runtimes/codex/index.js';
 import type { CodexRuntimeSettings } from '../src/runtimes/codex/index.js';
 import {
   GENERATED_MARKER,
+  appendConductorInstructions,
   buildConfigOverrides,
   renderAgentsOverride,
   renderNotifyScript,
@@ -16,7 +18,7 @@ import {
   tomlString,
 } from '../src/runtimes/codex/config-gen.js';
 
-const SETTINGS: CodexRuntimeSettings = { binary: 'codex', toolTimeoutSec: 600, skipPermissions: true };
+const SETTINGS: CodexRuntimeSettings = { binary: 'codex', toolTimeoutSec: 600 };
 
 function makeSession(overrides: Partial<SessionConfig> = {}): SessionConfig {
   return sessionConfigSchema.parse({ codename: 'midgard', repo: '/repos/midgard', runtime: 'codex', ...overrides });
@@ -36,7 +38,7 @@ describe('config generation', () => {
       mcpUrl: 'http://127.0.0.1:3456/mcp/midgard',
       notifyCommand: ['/bin/sh', '/cfg/notify.sh'],
       toolTimeoutSec: 600,
-      skipPermissions: true,
+      bypassPermissions: true,
       bareUi: false,
     });
     expect(overrides).toContain('mcp_servers.conductor.url="http://127.0.0.1:3456/mcp/midgard"');
@@ -52,7 +54,7 @@ describe('config generation', () => {
       mcpUrl: 'http://127.0.0.1:3456/mcp/midgard',
       notifyCommand: ['/bin/sh', '/cfg/notify.sh'],
       toolTimeoutSec: 600,
-      skipPermissions: true,
+      bypassPermissions: true,
       bareUi: true,
     });
     expect(overrides).toContain('check_for_update_on_startup=false');
@@ -62,12 +64,12 @@ describe('config generation', () => {
     expect(overrides).toContain('tui.terminal_title=[]');
   });
 
-  it('skipPermissions: false drops the approval/sandbox overrides but keeps the correctness ones', () => {
+  it('bypassPermissions: false drops the approval/sandbox overrides but keeps the correctness ones', () => {
     const overrides = buildConfigOverrides({
       mcpUrl: 'http://127.0.0.1:3456/mcp/midgard',
       notifyCommand: ['/bin/sh', '/cfg/notify.sh'],
       toolTimeoutSec: 600,
-      skipPermissions: false,
+      bypassPermissions: false,
       bareUi: true,
     });
     expect(overrides.join(' ')).not.toContain('approval_policy');
@@ -116,6 +118,18 @@ describe('config generation', () => {
     expect(output).toContain('Be the sentinel.');
     expect(output.indexOf('# Conductor protocol')).toBeLessThan(output.indexOf('# Session instructions'));
   });
+
+  it('appends and refreshes one conductor section without replacing existing override instructions', () => {
+    const original = '# Existing override\n\nKeep this exactly.';
+    const first = appendConductorInstructions(original, 'PROTOCOL ONE');
+    const refreshed = appendConductorInstructions(first, 'PROTOCOL TWO', 'Session-specific rule.');
+
+    expect(refreshed).toContain(original);
+    expect(refreshed).not.toContain('PROTOCOL ONE');
+    expect(refreshed).toContain('PROTOCOL TWO');
+    expect(refreshed).toContain('Session-specific rule.');
+    expect(refreshed.match(/# Conductor protocol/gu)).toHaveLength(1);
+  });
 });
 
 describe('buildLaunchCommand', () => {
@@ -123,7 +137,7 @@ describe('buildLaunchCommand', () => {
   const identity = makeIdentity('/cfg/midgard');
 
   it('constructs a fresh launch command', () => {
-    const cmd = runtime.buildLaunchCommand(makeSession(), identity, {});
+    const cmd = runtime.buildLaunchCommand(makeSession(), identity, { bypassPermissions: true });
     expect(cmd.startsWith("cd '/repos/midgard' && export CODEX_HOME='/cfg/midgard/codex-home' && 'codex' ")).toBe(true);
     expect(cmd).toContain(`-c 'mcp_servers.conductor.url="http://127.0.0.1:3456/mcp/midgard"'`);
     expect(cmd).toContain(`-c 'mcp_servers.conductor.tool_timeout_sec=600'`);
@@ -135,19 +149,18 @@ describe('buildLaunchCommand', () => {
   });
 
   it('uses resume --last when continuing a session', () => {
-    const cmd = runtime.buildLaunchCommand(makeSession(), identity, { continueSession: true });
+    const cmd = runtime.buildLaunchCommand(makeSession(), identity, {
+      continueSession: true,
+      bypassPermissions: true,
+    });
     expect(cmd).toContain("'codex' resume --last -c ");
     // Config overrides still apply on resume (the bypass flag alone is not honored there).
     expect(cmd).toContain(`-c 'approval_policy="never"'`);
     expect(cmd).toContain(`-c 'sandbox_mode="danger-full-access"'`);
   });
 
-  it('skipPermissions: false omits the bypass flag and the approval overrides', () => {
-    const guarded = new CodexRuntime({
-      config: { ...SETTINGS, skipPermissions: false },
-      baseDir: '/base',
-    });
-    const cmd = guarded.buildLaunchCommand(makeSession(), identity, {});
+  it('bypassPermissions: false omits the bypass flag and the approval overrides', () => {
+    const cmd = runtime.buildLaunchCommand(makeSession(), identity, { bypassPermissions: false });
     expect(cmd).not.toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(cmd).not.toContain('approval_policy');
     expect(cmd).not.toContain('sandbox_mode');
@@ -219,6 +232,7 @@ describe('prepare', () => {
     const override = await readFile(path.join(repoDir, 'AGENTS.override.md'), 'utf8');
     expect(override).toContain(GENERATED_MARKER);
     expect(override).toContain('conductor protocol placeholder');
+    expect(await readFile(path.join(repoDir, '.gitignore'), 'utf8')).toBe('AGENTS.override.md\n');
   });
 
   it('inlines the protocol file and the repo AGENTS.md when both exist', async () => {
@@ -243,16 +257,52 @@ describe('prepare', () => {
 
     const override = await readFile(path.join(repoDir, 'AGENTS.override.md'), 'utf8');
     expect(override).toContain('# Added later');
+    expect(override.match(/# Conductor protocol/gu)).toHaveLength(1);
+    expect(await readFile(path.join(repoDir, '.gitignore'), 'utf8')).toBe('AGENTS.override.md\n');
   });
 
-  it('never clobbers a human-authored AGENTS.override.md', async () => {
+  it('preserves a tracked AGENTS.override.md and appends the conductor instructions', async () => {
     const overridePath = path.join(repoDir, 'AGENTS.override.md');
-    await writeFile(overridePath, '# Hand-written override');
+    await writeFile(overridePath, '# Hand-written override\n\nKeep this rule.\n');
+    execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
+    execFileSync('git', ['add', 'AGENTS.override.md'], { cwd: repoDir, stdio: 'ignore' });
+
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+    await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
+    await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
+
+    const override = await readFile(overridePath, 'utf8');
+    expect(override.startsWith('# Hand-written override\n\nKeep this rule.')).toBe(true);
+    expect(override).toContain('# Conductor protocol');
+    expect(override.match(/# Conductor protocol/gu)).toHaveLength(1);
+    await expect(readFile(path.join(repoDir, '.gitignore'), 'utf8')).rejects.toThrow();
+  });
+
+  it('preserves an untracked existing override, appends instructions, and ignores it', async () => {
+    const overridePath = path.join(repoDir, 'AGENTS.override.md');
+    await writeFile(overridePath, '# Local override\n');
+    await writeFile(path.join(repoDir, '.gitignore'), 'dist/');
 
     const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
     await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
 
-    expect(await readFile(overridePath, 'utf8')).toBe('# Hand-written override');
+    const override = await readFile(overridePath, 'utf8');
+    expect(override.startsWith('# Local override')).toBe(true);
+    expect(override).toContain('# Conductor protocol');
+    expect(await readFile(path.join(repoDir, '.gitignore'), 'utf8')).toBe('dist/\nAGENTS.override.md\n');
+  });
+
+  it('recreates a deleted generated override on the next prepare', async () => {
+    const overridePath = path.join(repoDir, 'AGENTS.override.md');
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+    const session = makeSession({ repo: repoDir });
+    const identity = makeIdentity(configDir);
+    await runtime.prepare(session, identity);
+    await rm(overridePath);
+
+    await runtime.prepare(session, identity);
+
+    expect(await readFile(overridePath, 'utf8')).toContain('# Conductor protocol');
   });
 
   it('creates a per-session CODEX_HOME: auth symlinked, config copied with the repo pre-trusted (H4)', async () => {

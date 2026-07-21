@@ -25,6 +25,7 @@ beforeEach(async () => {
   runtime = new FakeRuntime();
   const pane = await backend.createPane('alpha', 'pane');
   paneId = pane.id;
+  backend.panes.get(paneId)!.sessionActive = true;
   stalls = [];
   sessionEnds = [];
   monitor = new HealthMonitor({
@@ -49,11 +50,11 @@ function event(type: 'stop' | 'notification' | 'compaction' | 'session-start' | 
 }
 
 describe('event-driven signals', () => {
-  it('turns a stop event into an idle stall after the quiet period', () => {
-    event('stop');
+  it('turns a stop event into an idle stall after the quiet period without losing its message', () => {
+    event('stop', 'All tests passed.');
     expect(stalls).toEqual([]);
     vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
-    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: undefined }]);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'All tests passed.' }]);
   });
 
   it('cancels the idle timer when another event arrives (session got new work)', () => {
@@ -74,9 +75,9 @@ describe('event-driven signals', () => {
     expect(stalls[0]?.kind).toBe('compaction');
   });
 
-  it('fires session end handling', () => {
+  it('does not treat a runtime session boundary as process death', () => {
     event('session-end');
-    expect(sessionEnds).toEqual(['alpha']);
+    expect(sessionEnds).toEqual([]);
   });
 });
 
@@ -129,6 +130,13 @@ describe('fallback pane-diff watchdog', () => {
     vi.advanceTimersByTime(CONFIG.eventSilenceMs + 1);
     await backend.kill({ backend: 'fake', id: paneId });
     await monitor.heartbeat();
+    expect(sessionEnds).toEqual(['alpha']);
+  });
+
+  it('detects an ended runtime while its pane remains alive', async () => {
+    backend.endSession(paneId);
+    await monitor.heartbeat();
+    expect(await backend.isAlive({ backend: 'fake', id: paneId })).toBe(true);
     expect(sessionEnds).toEqual(['alpha']);
   });
 });

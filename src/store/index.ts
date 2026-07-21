@@ -1,7 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
-import type { Activity, Autonomy, PauseState } from '../core/types.js';
+import type { RuntimeName } from '../config/schema.js';
+import type { Activity } from '../core/types.js';
 
 /** One launch of a session's CLI (start → stop). A session has many runs over time. */
 export interface RunRow {
@@ -18,7 +19,7 @@ export interface MessageRow {
   id: number;
   sender: string;
   recipient: string;
-  type: 'message' | 'notification' | 'broadcast';
+  type: 'message' | 'broadcast';
   content: string;
   status: 'pending' | 'delivered';
   created_at: string;
@@ -34,10 +35,22 @@ export interface HealthLogRow {
 
 export interface PersistedSessionState {
   session: string;
-  autonomy: Autonomy;
+  auto: boolean;
   tag: string | null;
-  pause: PauseState | null;
+  paused: boolean;
+  activeRuntime: RuntimeName | null;
   activity: Activity;
+}
+
+export interface OperatorRequestRow {
+  id: number;
+  session: string;
+  message: string;
+  options: string[];
+  status: 'pending' | 'responding' | 'responded';
+  selectedIndex: number | null;
+  createdAt: string;
+  resolvedAt: string | null;
 }
 
 /** Versioned migrations. Append only — never edit an existing entry (post first release). */
@@ -87,6 +100,46 @@ const MIGRATIONS: string[] = [
     key TEXT PRIMARY KEY,
     value_json TEXT NOT NULL
   );
+  `,
+  `
+  CREATE TABLE session_state_v2 (
+    session TEXT PRIMARY KEY,
+    auto INTEGER NOT NULL DEFAULT 0,
+    tag TEXT,
+    is_paused INTEGER NOT NULL DEFAULT 0,
+    activity TEXT NOT NULL DEFAULT 'stopped',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  INSERT INTO session_state_v2 (session, auto, tag, is_paused, activity, updated_at)
+  SELECT
+    session,
+    CASE
+      WHEN autonomy = 'autonomous' OR pause_json LIKE '%"previousAutonomy":"autonomous"%' THEN 1
+      ELSE 0
+    END,
+    tag,
+    CASE WHEN pause_json IS NULL THEN 0 ELSE 1 END,
+    activity,
+    updated_at
+  FROM session_state;
+  DROP TABLE session_state;
+  ALTER TABLE session_state_v2 RENAME TO session_state;
+  `,
+  `
+  ALTER TABLE session_state ADD COLUMN active_runtime TEXT;
+  `,
+  `
+  CREATE TABLE operator_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session TEXT NOT NULL,
+    message TEXT NOT NULL,
+    options_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    selected_index INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT
+  );
+  CREATE INDEX idx_operator_requests_status ON operator_requests(status, id);
   `,
 ];
 
@@ -158,16 +211,84 @@ export class Store {
     return Number(result.lastInsertRowid);
   }
 
-  getPendingMessages(recipient: string): MessageRow[] {
-    // `id` tiebreaks within a one-second created_at bucket so dependent
-    // messages ("apply patch" then "run tests") keep insertion order.
-    return this.db
-      .prepare("SELECT * FROM messages WHERE recipient = ? AND status = 'pending' ORDER BY created_at, id")
-      .all(recipient) as MessageRow[];
-  }
-
   markMessageDelivered(id: number): void {
     this.db.prepare("UPDATE messages SET status = 'delivered' WHERE id = ?").run(id);
+  }
+
+  // ── operator requests ────────────────────────────────────────────────────
+
+  insertOperatorRequest(session: string, message: string, options: readonly string[]): number {
+    const result = this.db
+      .prepare('INSERT INTO operator_requests (session, message, options_json) VALUES (?, ?, ?)')
+      .run(session, message, JSON.stringify(options));
+    return Number(result.lastInsertRowid);
+  }
+
+  getOperatorRequest(id: number): OperatorRequestRow | undefined {
+    const row = this.db.prepare('SELECT * FROM operator_requests WHERE id = ?').get(id) as
+      | {
+          id: number;
+          session: string;
+          message: string;
+          options_json: string;
+          status: string;
+          selected_index: number | null;
+          created_at: string;
+          resolved_at: string | null;
+        }
+      | undefined;
+    if (row === undefined) return undefined;
+
+    let options: unknown;
+    try {
+      options = JSON.parse(row.options_json);
+    } catch {
+      throw new Error(`Operator request #${String(id)} has invalid stored options.`);
+    }
+    if (!Array.isArray(options) || !options.every((option) => typeof option === 'string')) {
+      throw new Error(`Operator request #${String(id)} has invalid stored options.`);
+    }
+    if (row.status !== 'pending' && row.status !== 'responding' && row.status !== 'responded') {
+      throw new Error(`Operator request #${String(id)} has invalid stored status.`);
+    }
+    return {
+      id: row.id,
+      session: row.session,
+      message: row.message,
+      options,
+      status: row.status,
+      selectedIndex: row.selected_index,
+      createdAt: row.created_at,
+      resolvedAt: row.resolved_at,
+    };
+  }
+
+  claimOperatorRequest(id: number): boolean {
+    const result = this.db
+      .prepare("UPDATE operator_requests SET status = 'responding' WHERE id = ? AND status = 'pending'")
+      .run(id);
+    return result.changes === 1;
+  }
+
+  finalizeOperatorRequest(id: number, selectedIndex: number): boolean {
+    const result = this.db
+      .prepare(
+        "UPDATE operator_requests SET status = 'responded', selected_index = ?, resolved_at = datetime('now') " +
+          "WHERE id = ? AND status = 'responding'",
+      )
+      .run(selectedIndex, id);
+    return result.changes === 1;
+  }
+
+  releaseOperatorRequest(id: number): boolean {
+    const result = this.db
+      .prepare("UPDATE operator_requests SET status = 'pending' WHERE id = ? AND status = 'responding'")
+      .run(id);
+    return result.changes === 1;
+  }
+
+  resetRespondingOperatorRequests(): number {
+    return this.db.prepare("UPDATE operator_requests SET status = 'pending' WHERE status = 'responding'").run().changes;
   }
 
   // ── health log ────────────────────────────────────────────────────────────
@@ -191,14 +312,22 @@ export class Store {
 
   getSessionState(session: string): PersistedSessionState | undefined {
     const row = this.db.prepare('SELECT * FROM session_state WHERE session = ?').get(session) as
-      | { session: string; autonomy: Autonomy; tag: string | null; pause_json: string | null; activity: Activity }
+      | {
+          session: string;
+          auto: number;
+          tag: string | null;
+          is_paused: number;
+          active_runtime: RuntimeName | null;
+          activity: Activity;
+        }
       | undefined;
     if (!row) return undefined;
     return {
       session: row.session,
-      autonomy: row.autonomy,
+      auto: row.auto === 1,
       tag: row.tag,
-      pause: row.pause_json !== null ? (JSON.parse(row.pause_json) as PauseState) : null,
+      paused: row.is_paused === 1,
+      activeRuntime: row.active_runtime,
       activity: row.activity,
     };
   }
@@ -213,17 +342,18 @@ export class Store {
   upsertSessionState(state: PersistedSessionState): void {
     this.db
       .prepare(
-        `INSERT INTO session_state (session, autonomy, tag, pause_json, activity, updated_at)
-         VALUES (@session, @autonomy, @tag, @pause, @activity, datetime('now'))
+        `INSERT INTO session_state (session, auto, tag, is_paused, active_runtime, activity, updated_at)
+         VALUES (@session, @auto, @tag, @paused, @activeRuntime, @activity, datetime('now'))
          ON CONFLICT(session) DO UPDATE SET
-           autonomy = @autonomy, tag = @tag, pause_json = @pause, activity = @activity,
+           auto = @auto, tag = @tag, is_paused = @paused, active_runtime = @activeRuntime, activity = @activity,
            updated_at = datetime('now')`,
       )
       .run({
         session: state.session,
-        autonomy: state.autonomy,
+        auto: state.auto ? 1 : 0,
         tag: state.tag,
-        pause: state.pause !== null ? JSON.stringify(state.pause) : null,
+        paused: state.paused ? 1 : 0,
+        activeRuntime: state.activeRuntime,
         activity: state.activity,
       });
   }
