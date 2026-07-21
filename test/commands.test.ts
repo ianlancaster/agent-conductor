@@ -125,6 +125,7 @@ beforeEach(() => {
     sentinel,
     states,
     sessions: () => sessions,
+    modelHints: { 'claude-code': [], 'codex': [] },
     statusReport: (codename) => (codename !== undefined ? `status:${codename}` : 'status:all'),
     tail: async (codename, lines) => `tail:${codename}:${lines}`,
     typeInPane: async (codename, text) => {

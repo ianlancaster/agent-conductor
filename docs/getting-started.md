@@ -233,6 +233,10 @@ primitive, not an approval or execution queue.
   other agent. A model configured for the default runtime is ignored during an override so
   the selected runtime can use its own default model. Claude Code and Codex do not share
   conversation history; `continue` resumes the selected runtime's latest conversation.
+  `spawn_session.model` advertises the non-exhaustive lists configured under
+  `runtimes.claudeCode.availableModels` and `runtimes.codex.availableModels`; unknown model
+  strings remain valid for newly released or third-party models. Detailed session status reports
+  the model Conductor resolved, or `null` when model selection belongs to the runtime.
 - **Worktree sessions** (parallel work on one repo): `/spawn reviewer --worktree
 /path/to/repo --branch review-pass`. Full file isolation, shared git history.
   The destination follows `spawn.dirPattern` unless `--path` is supplied. A new branch starts

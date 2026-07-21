@@ -102,12 +102,14 @@ beforeEach(() => {
     sentinel,
     states,
     sessions: () => sessions,
+    modelHints: { 'claude-code': ['claude-test'], 'codex': ['codex-test', 'custom-provider/model'] },
     statusReport: (c) =>
       statusReport(
         {
           sessions: () => sessions,
           getState: (n) => states.get(n),
           runtimeFor: (n) => lifecycle.runtimeNameFor(n),
+          modelFor: (n) => sessions.get(n)?.model,
           sentinelCodename: () => sentinel.sentinelCodename(),
         },
         c,
@@ -305,6 +307,15 @@ describe('surface contract', () => {
     expect(spawn.description).toContain('current HEAD');
     expect(properties.path?.description).toContain('Destination');
     expect(properties.branch?.description).toContain('current HEAD');
+  });
+
+  it('advertises configurable model hints without turning them into validation', () => {
+    const spawn = tool('spawn_session');
+    const properties = spawn.inputSchema.properties as Record<string, { description?: string; enum?: string[] }>;
+    expect(properties.model?.description).toContain('claude-code: claude-test');
+    expect(properties.model?.description).toContain('codex: codex-test, custom-provider/model');
+    expect(properties.model?.description).toContain('not exhaustive or validated');
+    expect(properties.model?.enum).toBeUndefined();
   });
 
   it('arms and inspects fleet watches through MCP', async () => {

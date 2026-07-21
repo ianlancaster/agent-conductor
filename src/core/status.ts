@@ -18,7 +18,27 @@ export interface StatusDeps {
   sessions(): Map<string, SessionConfig>;
   getState(codename: string): SessionState | undefined;
   runtimeFor(codename: string): SessionConfig['runtime'] | undefined;
+  modelFor(codename: string): string | undefined;
   sentinelCodename(): string | undefined;
+}
+
+export interface RuntimeModelDefaults {
+  'claude-code'?: string;
+  'codex'?: string;
+}
+
+/**
+ * Return the model Conductor resolves for a session run. A per-session model only
+ * applies to that session's configured runtime; runtime overrides use the selected
+ * runtime's default instead. Undefined means the runtime chooses its own default.
+ */
+export function resolvedSessionModel(
+  session: SessionConfig,
+  runtime: SessionConfig['runtime'],
+  defaults: RuntimeModelDefaults,
+): string | undefined {
+  if (runtime === session.runtime && session.model !== undefined) return session.model;
+  return defaults[runtime];
 }
 
 export function formatSessionLine(
@@ -49,6 +69,7 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
         path: session.repo,
         branch: currentBranch(session.repo),
         runtime: deps.runtimeFor(codename) ?? null,
+        model: deps.modelFor(codename) ?? null,
         auto: state.auto,
         paused: state.paused,
         tag: state.tag ?? null,

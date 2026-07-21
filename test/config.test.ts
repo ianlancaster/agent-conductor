@@ -11,6 +11,7 @@ import {
   validateConfig,
 } from '../src/config/loader.js';
 import { ConfigWatcher } from '../src/config/watcher.js';
+import { DEFAULT_CLAUDE_CODE_MODELS, DEFAULT_CODEX_MODELS } from '../src/config/schema.js';
 
 let baseDir: string;
 
@@ -40,7 +41,9 @@ describe('loadSupervisorConfig', () => {
     expect(config.health.fleetStallConfirmMs).toBe(300_000);
     expect(config.terminal.iterm.badge).toBe(true);
     expect(config.runtimes.claudeCode.binary).toBe('claude');
+    expect(config.runtimes.claudeCode.availableModels).toEqual(DEFAULT_CLAUDE_CODE_MODELS);
     expect(config.runtimes.codex.toolTimeoutSec).toBe(600);
+    expect(config.runtimes.codex.availableModels).toEqual(DEFAULT_CODEX_MODELS);
     expect(config.spawn.markerFile).toBe('.agent-marker');
     expect(config.channels.telegram.enabled).toBe(false);
   });
@@ -75,6 +78,16 @@ describe('loadSupervisorConfig', () => {
   it('allows the fleet permission bypass default to be disabled', () => {
     writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'defaults:\n  bypassPermissions: false\n');
     expect(loadSupervisorConfig(baseDir).defaults.bypassPermissions).toBe(false);
+  });
+
+  it('accepts replacement model-hint lists without restricting model IDs', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'runtimes:\n  claudeCode:\n    availableModels: [claude-private]\n  codex:\n    availableModels: [third-party/model]\n',
+    );
+    const config = loadSupervisorConfig(baseDir);
+    expect(config.runtimes.claudeCode.availableModels).toEqual(['claude-private']);
+    expect(config.runtimes.codex.availableModels).toEqual(['third-party/model']);
   });
 
   it('rejects invalid values with a readable error', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatSessionLine } from '../src/core/status.js';
+import { formatSessionLine, resolvedSessionModel } from '../src/core/status.js';
 import type { SessionState } from '../src/core/types.js';
 
 function sessionState(overrides: Partial<SessionState> = {}): SessionState {
@@ -33,5 +33,28 @@ describe('formatSessionLine', () => {
     expect(formatSessionLine('alpha', 'claude-code', state, false)).toBe(
       'alpha - CC · 🟢 working - auto (paused) · nightly',
     );
+  });
+});
+
+describe('resolvedSessionModel', () => {
+  const session = {
+    codename: 'alpha',
+    repo: '/tmp/alpha',
+    runtime: 'claude-code',
+    model: 'claude-private',
+  } as const;
+
+  it('uses the session model for its configured runtime', () => {
+    expect(resolvedSessionModel(session, 'claude-code', { 'claude-code': 'claude-default' })).toBe('claude-private');
+  });
+
+  it('uses the selected runtime default for a cross-runtime override', () => {
+    expect(resolvedSessionModel(session, 'codex', { codex: 'third-party/codex-model' })).toBe(
+      'third-party/codex-model',
+    );
+  });
+
+  it('leaves model selection to the runtime when no override is configured', () => {
+    expect(resolvedSessionModel(session, 'codex', {})).toBeUndefined();
   });
 });

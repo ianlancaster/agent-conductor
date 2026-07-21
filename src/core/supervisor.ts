@@ -30,7 +30,7 @@ import { ConductorOperations } from './operations.js';
 import { OperatorRequests } from './operator-requests.js';
 import { StallSentinelRouter } from './sentinel.js';
 import { SessionStateManager } from './state.js';
-import { statusReport } from './status.js';
+import { resolvedSessionModel, statusReport } from './status.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 const SENTINEL_WORKSPACE_KEY = 'sentinel.codename';
@@ -245,6 +245,10 @@ export class Supervisor {
       sentinel: this.sentinel,
       states: this.states,
       sessions: () => this.sessions,
+      modelHints: {
+        'claude-code': this.config.runtimes.claudeCode.availableModels,
+        'codex': this.config.runtimes.codex.availableModels,
+      },
       statusReport: (codename) => this.statusReport(codename),
       tail: (codename, lines) => this.tail(codename, lines),
       typeInPane: (codename, text) => this.typeInPane(codename, text),
@@ -404,6 +408,7 @@ export class Supervisor {
         sessions: () => this.sessions,
         getState: (name) => this.states.get(name),
         runtimeFor: (name) => this.displayRuntimeFor(name),
+        modelFor: (name) => this.displayModelFor(name),
         sentinelCodename: () => this.sentinel.sentinelCodename(),
       },
       codename,
@@ -448,6 +453,17 @@ export class Supervisor {
   private displayRuntimeFor(session: string): SessionConfig['runtime'] | undefined {
     const configured = this.sessions.get(session)?.runtime;
     return this.states.get(session)?.running === true ? this.lifecycle.runtimeNameFor(session) : configured;
+  }
+
+  /** Model string Conductor resolves for this run; null status means the runtime chooses its own default. */
+  private displayModelFor(session: string): string | undefined {
+    const configured = this.sessions.get(session);
+    const runtime = this.displayRuntimeFor(session);
+    if (configured === undefined || runtime === undefined) return undefined;
+    return resolvedSessionModel(configured, runtime, {
+      'claude-code': this.config.runtimes.claudeCode.defaultModel,
+      'codex': this.config.runtimes.codex.defaultModel,
+    });
   }
 
   private handleRuntimeEvent(session: string, body: unknown): void {

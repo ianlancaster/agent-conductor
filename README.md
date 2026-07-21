@@ -107,7 +107,7 @@ codename: alpha
 repo: /absolute/path/to/my-project
 runtime: claude-code # or codex
 # bypassPermissions: false # optional override of the fleet default
-# model: claude-opus-4-6
+# model: claude-opus-4-8
 ```
 
 Sessions that omit `runtime` use `defaults.runtime` from `config/supervisor.yaml`:
@@ -122,6 +122,21 @@ defaults:
 bypass through one runtime-neutral setting. Set it under `defaults` for the fleet, or in a
 session file for an override. `/spawn` also accepts `--bypass-permissions` or
 `--require-permissions`; `spawn_session` exposes the same `bypassPermissions` boolean.
+
+`spawn_session.model` remains free text, but its MCP schema advertises per-runtime availability
+hints from `runtimes.claudeCode.availableModels` and `runtimes.codex.availableModels`. Conductor
+ships conservative current defaults; replace either list in `config/supervisor.yaml` for fleet,
+account, or third-party-provider models. The lists are discoverability hints only: an unlisted
+model is still accepted and passed through unchanged. `get_session_status` returns the model
+string Conductor resolved for the session, or `null` when the runtime chooses its own default.
+
+```yaml
+runtimes:
+  claudeCode:
+    availableModels: [claude-fable-5, claude-opus-4-8, claude-sonnet-5]
+  codex:
+    availableModels: [gpt-5.6, gpt-5.6-sol, third-party/model-id]
+```
 
 See [examples/supervisor.yaml](examples/supervisor.yaml) for the complete user-facing
 supervisor configuration.
