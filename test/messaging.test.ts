@@ -44,9 +44,12 @@ describe('Messaging durable delivery recovery', () => {
     const firstQueue = makeQueue(blockedRuntime, pane.id);
     const firstMessaging = makeMessaging(firstQueue);
 
-    expect(await firstMessaging.sendToSession('alpha', 'beta', 'durable payload')).toBe(
-      'Queued message #1 for beta (input is occupied; 1 pending).',
-    );
+    expect(await firstMessaging.sendToSession('alpha', 'beta', 'durable payload')).toEqual({
+      messageId: 1,
+      recipient: 'beta',
+      status: 'queued',
+      deduplicated: false,
+    });
     expect(store.getMessage(1)?.status).toBe('pending');
     firstQueue.stop();
 
@@ -58,6 +61,38 @@ describe('Messaging durable delivery recovery', () => {
 
     expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] durable payload']);
     expect(store.getMessage(1)?.status).toBe('delivered');
+  });
+
+  it('deduplicates a sender-scoped key without scheduling a second delivery', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const runtime = new FakeRuntime();
+    const queue = makeQueue(runtime, pane.id);
+    const messaging = makeMessaging(queue);
+
+    const first = await messaging.sendToSession('alpha', 'beta', 'once', 'stable-key');
+    const repeated = await messaging.sendToSession('alpha', 'beta', 'changed payload', 'stable-key');
+
+    expect(first).toEqual({ messageId: 1, recipient: 'beta', status: 'delivered', deduplicated: false });
+    expect(repeated).toEqual({ messageId: 1, recipient: 'beta', status: 'delivered', deduplicated: true });
+    expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] once']);
+  });
+
+  it('returns the original receipt on retry even when the recipient left the roster', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const queue = makeQueue(new FakeRuntime(), pane.id);
+    const messaging = makeMessaging(queue);
+
+    const first = await messaging.sendToSession('alpha', 'beta', 'once', 'stable-key');
+    sessions.delete('beta');
+
+    await expect(messaging.sendToSession('alpha', 'beta', 'retry', 'stable-key')).resolves.toEqual({
+      ...first,
+      deduplicated: true,
+    });
   });
 
   function makeQueue(runtime: FakeRuntime, paneId: string): DeliveryQueue {

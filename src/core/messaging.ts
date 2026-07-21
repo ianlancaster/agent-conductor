@@ -1,9 +1,10 @@
 import { log } from '../logger.js';
-import type { Store } from '../store/index.js';
+import type { MessageRow, Store } from '../store/index.js';
 import type { SessionConfig } from '../config/schema.js';
 import type { DeliveryQueue, DeliveryResult } from './delivery.js';
 import type { SessionStateManager } from './state.js';
 import { broadcastEnvelope, messageEnvelope } from './utils.js';
+import { InvalidRequestError } from './errors.js';
 
 export interface MessagingDeps {
   store: Store;
@@ -13,6 +14,19 @@ export interface MessagingDeps {
   startSession(codename: string, opts: { prompt?: string }): Promise<string>;
 }
 
+export interface MessageReceipt {
+  messageId: number;
+  recipient: string;
+  status: 'delivered' | 'queued';
+  deduplicated: boolean;
+}
+
+export function renderMessageReceipt(receipt: MessageReceipt): string {
+  const action = receipt.status === 'delivered' ? 'Delivered' : 'Queued';
+  const duplicate = receipt.deduplicated ? ' (deduplicated)' : '';
+  return `${action} message #${String(receipt.messageId)} for ${receipt.recipient}${duplicate}.`;
+}
+
 /** Inter-session and session-to-operator messaging primitives behind the MCP tools. */
 export class Messaging {
   /** Message ids already represented in the in-memory delivery queue. */
@@ -20,17 +34,29 @@ export class Messaging {
 
   constructor(private readonly deps: MessagingDeps) {}
 
-  async sendToSession(from: string, target: string, message: string): Promise<string> {
-    if (!this.deps.sessions().has(target)) return `Unknown session: ${target}`;
-    if (target === from) return 'Cannot send a message to yourself.';
+  async sendToSession(from: string, target: string, message: string, idempotencyKey?: string): Promise<MessageReceipt> {
+    if (idempotencyKey !== undefined) {
+      const existing = this.deps.store.getDirectMessageByIdempotencyKey(from, idempotencyKey);
+      if (existing !== undefined) return this.receipt(existing, true);
+    }
+    if (!this.deps.sessions().has(target)) throw new InvalidRequestError(`Unknown session: ${target}`);
+    if (target === from) throw new InvalidRequestError('Cannot send a message to yourself.');
     const envelope = messageEnvelope(from, message);
-    const id = this.deps.store.insertMessage(from, target, 'message', message);
+    const inserted = this.deps.store.insertDirectMessage(from, target, message, idempotencyKey);
+    const id = inserted.row.id;
+
+    if (inserted.deduplicated) {
+      return this.receipt(inserted.row, true);
+    }
 
     if (this.deps.states.get(target)?.running === true) {
       const result = await this.schedule(id, target, envelope);
-      if (result === 'no-pane') return `${target} has no pane — message #${String(id)} stored but undelivered.`;
-      if (result === 'delivered') return `Delivered message #${String(id)} to ${target}.`;
-      return `Queued message #${String(id)} for ${target} (input is occupied; ${String(this.deps.delivery.pendingCount(target))} pending).`;
+      return {
+        messageId: id,
+        recipient: target,
+        status: result === 'delivered' ? 'delivered' : 'queued',
+        deduplicated: false,
+      };
     }
 
     // Prevent the lifecycle's on-running recovery hook from scheduling this
@@ -43,17 +69,18 @@ export class Messaging {
         this.scheduled.delete(id);
         releaseStartReservation = false; // schedule() now owns this id until its receipt fires.
         const result = await this.schedule(id, target, envelope);
-        if (result === 'delivered') return `Delivered message #${String(id)} to ${target}.`;
-        if (result === 'queued') {
-          return `Queued message #${String(id)} for ${target} (input is occupied; ${String(this.deps.delivery.pendingCount(target))} pending).`;
-        }
-        return `${target} has no pane — message #${String(id)} stored but undelivered.`;
+        return {
+          messageId: id,
+          recipient: target,
+          status: result === 'delivered' ? 'delivered' : 'queued',
+          deduplicated: false,
+        };
       }
       if (started !== `${target} started.`) {
-        return `${target} did not start — message #${String(id)} remains pending. (${started})`;
+        return { messageId: id, recipient: target, status: 'queued', deduplicated: false };
       }
       this.deps.store.markMessageDelivered(id);
-      return `${target} was not running — started with your message #${String(id)}. (${started})`;
+      return { messageId: id, recipient: target, status: 'delivered', deduplicated: false };
     } finally {
       if (releaseStartReservation) this.scheduled.delete(id);
     }
@@ -92,14 +119,28 @@ export class Messaging {
 
   private async schedule(id: number, target: string, envelope: string): Promise<DeliveryResult> {
     this.scheduled.add(id);
-    const result = await this.deps.delivery.deliverOrQueue(target, envelope, {
-      onDelivered: () => {
-        this.deps.store.markMessageDelivered(id);
-        this.scheduled.delete(id);
-      },
-    });
-    if (result === 'no-pane') this.scheduled.delete(id);
-    return result;
+    try {
+      const result = await this.deps.delivery.deliverOrQueue(target, envelope, {
+        onDelivered: () => {
+          this.deps.store.markMessageDelivered(id);
+          this.scheduled.delete(id);
+        },
+      });
+      if (result === 'no-pane') this.scheduled.delete(id);
+      return result;
+    } catch (error) {
+      this.scheduled.delete(id);
+      throw error;
+    }
+  }
+
+  private receipt(row: MessageRow, deduplicated: boolean): MessageReceipt {
+    return {
+      messageId: row.id,
+      recipient: row.recipient,
+      status: row.status === 'delivered' ? 'delivered' : 'queued',
+      deduplicated,
+    };
   }
 
   async broadcast(from: string, message: string): Promise<string> {

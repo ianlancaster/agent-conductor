@@ -21,13 +21,13 @@ import {
 const SETTINGS: CodexRuntimeSettings = { binary: 'codex', toolTimeoutSec: 600 };
 
 function makeSession(overrides: Partial<SessionConfig> = {}): SessionConfig {
-  return sessionConfigSchema.parse({ codename: 'midgard', repo: '/repos/midgard', runtime: 'codex', ...overrides });
+  return sessionConfigSchema.parse({ codename: 'sample', repo: '/repos/sample', runtime: 'codex', ...overrides });
 }
 
 function makeIdentity(configDir: string): IdentityEndpoints {
   return {
-    mcpUrl: 'http://127.0.0.1:3456/mcp/midgard',
-    eventsUrl: 'http://127.0.0.1:3456/events/midgard',
+    mcpUrl: 'http://127.0.0.1:3456/mcp/sample',
+    eventsUrl: 'http://127.0.0.1:3456/events/sample',
     configDir,
   };
 }
@@ -35,13 +35,13 @@ function makeIdentity(configDir: string): IdentityEndpoints {
 describe('config generation', () => {
   it('builds MCP server overrides with URL identity and raised tool timeout', () => {
     const overrides = buildConfigOverrides({
-      mcpUrl: 'http://127.0.0.1:3456/mcp/midgard',
+      mcpUrl: 'http://127.0.0.1:3456/mcp/sample',
       notifyCommand: ['/bin/sh', '/cfg/notify.sh'],
       toolTimeoutSec: 600,
       bypassPermissions: true,
       bareUi: false,
     });
-    expect(overrides).toContain('mcp_servers.conductor.url="http://127.0.0.1:3456/mcp/midgard"');
+    expect(overrides).toContain('mcp_servers.conductor.url="http://127.0.0.1:3456/mcp/sample"');
     expect(overrides).toContain('mcp_servers.conductor.tool_timeout_sec=600');
     expect(overrides).toContain('notify=["/bin/sh","/cfg/notify.sh"]');
     expect(overrides).toContain('approval_policy="never"');
@@ -51,7 +51,7 @@ describe('config generation', () => {
 
   it('bareUi strips update prompt, analytics, tips, animations, and title writes', () => {
     const overrides = buildConfigOverrides({
-      mcpUrl: 'http://127.0.0.1:3456/mcp/midgard',
+      mcpUrl: 'http://127.0.0.1:3456/mcp/sample',
       notifyCommand: ['/bin/sh', '/cfg/notify.sh'],
       toolTimeoutSec: 600,
       bypassPermissions: true,
@@ -66,7 +66,7 @@ describe('config generation', () => {
 
   it('bypassPermissions: false drops the approval/sandbox overrides but keeps the correctness ones', () => {
     const overrides = buildConfigOverrides({
-      mcpUrl: 'http://127.0.0.1:3456/mcp/midgard',
+      mcpUrl: 'http://127.0.0.1:3456/mcp/sample',
       notifyCommand: ['/bin/sh', '/cfg/notify.sh'],
       toolTimeoutSec: 600,
       bypassPermissions: false,
@@ -89,11 +89,11 @@ describe('config generation', () => {
   });
 
   it('renders a notify hook that POSTs argv JSON to the events URL', () => {
-    const script = renderNotifyScript('http://127.0.0.1:3456/events/midgard');
+    const script = renderNotifyScript('http://127.0.0.1:3456/events/sample');
     expect(script).toContain('#!/bin/sh');
     expect(script).toContain('payload="$1"');
     expect(script).toContain('--data "$payload"');
-    expect(script).toContain("'http://127.0.0.1:3456/events/midgard'");
+    expect(script).toContain("'http://127.0.0.1:3456/events/sample'");
     expect(script).toContain('curl -fsS');
   });
 
@@ -134,14 +134,14 @@ describe('config generation', () => {
 
 describe('buildLaunchCommand', () => {
   const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
-  const identity = makeIdentity('/cfg/midgard');
+  const identity = makeIdentity('/cfg/sample');
 
   it('constructs a fresh launch command', () => {
     const cmd = runtime.buildLaunchCommand(makeSession(), identity, { bypassPermissions: true });
-    expect(cmd.startsWith("cd '/repos/midgard' && export CODEX_HOME='/cfg/midgard/codex-home' && 'codex' ")).toBe(true);
-    expect(cmd).toContain(`-c 'mcp_servers.conductor.url="http://127.0.0.1:3456/mcp/midgard"'`);
+    expect(cmd.startsWith("cd '/repos/sample' && export CODEX_HOME='/cfg/sample/codex-home' && 'codex' ")).toBe(true);
+    expect(cmd).toContain(`-c 'mcp_servers.conductor.url="http://127.0.0.1:3456/mcp/sample"'`);
     expect(cmd).toContain(`-c 'mcp_servers.conductor.tool_timeout_sec=600'`);
-    expect(cmd).toContain(`-c 'notify=["/bin/sh","/cfg/midgard/notify.sh"]'`);
+    expect(cmd).toContain(`-c 'notify=["/bin/sh","/cfg/sample/notify.sh"]'`);
     expect(cmd).toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(cmd).not.toContain('resume');
     expect(cmd).not.toContain('--model');
@@ -168,7 +168,7 @@ describe('buildLaunchCommand', () => {
 
   it('exports a per-session CODEX_HOME so resume --last only sees this session (H4)', () => {
     const cmd = runtime.buildLaunchCommand(makeSession(), identity, { continueSession: true });
-    expect(cmd).toContain("export CODEX_HOME='/cfg/midgard/codex-home'");
+    expect(cmd).toContain("export CODEX_HOME='/cfg/sample/codex-home'");
     // The export precedes the binary so the resume reads the isolated sessions dir.
     expect(cmd.indexOf('CODEX_HOME')).toBeLessThan(cmd.indexOf("'codex'"));
   });
@@ -194,11 +194,11 @@ describe('buildLaunchCommand', () => {
 
   it('grants additional directories via --add-dir and resolves relative paths against baseDir', () => {
     const cmd = runtime.buildLaunchCommand(
-      makeSession({ repo: 'repos/midgard', additionalDirs: ['/shared/docs', 'sibling'] }),
+      makeSession({ repo: 'repos/sample', additionalDirs: ['/shared/docs', 'sibling'] }),
       identity,
       {},
     );
-    expect(cmd.startsWith("cd '/base/repos/midgard' && ")).toBe(true);
+    expect(cmd.startsWith("cd '/base/repos/sample' && ")).toBe(true);
     expect(cmd).toContain("--add-dir '/shared/docs'");
     expect(cmd).toContain("--add-dir '/base/sibling'");
   });
@@ -227,7 +227,7 @@ describe('prepare', () => {
     const notifyPath = path.join(configDir, 'notify.sh');
     const notifyStat = await stat(notifyPath);
     expect(notifyStat.mode & 0o100).toBe(0o100);
-    expect(await readFile(notifyPath, 'utf8')).toContain('http://127.0.0.1:3456/events/midgard');
+    expect(await readFile(notifyPath, 'utf8')).toContain('http://127.0.0.1:3456/events/sample');
 
     const override = await readFile(path.join(repoDir, 'AGENTS.override.md'), 'utf8');
     expect(override).toContain(GENERATED_MARKER);

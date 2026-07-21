@@ -1,12 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { log } from '../logger.js';
 import type { ChannelMessage } from '../channels/types.js';
+import { InvalidRequestError } from '../core/errors.js';
 
 export interface McpToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  handler(args: Record<string, unknown>, caller: string): Promise<string>;
+  handler(args: Record<string, unknown>, caller: string): Promise<unknown>;
 }
 
 export interface McpServerOptions {
@@ -239,11 +240,15 @@ export class ConductorMcpServer {
         }
         try {
           const result = await tool.handler(args, caller);
-          this.respondRpc(res, id, { content: [{ type: 'text', text: result }] });
+          const text = typeof result === 'string' ? result : JSON.stringify(result);
+          this.respondRpc(res, id, {
+            content: [{ type: 'text', text }],
+            ...(typeof result === 'object' && result !== null ? { structuredContent: result } : {}),
+          });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           log().warn('mcp', `Tool ${name} failed for ${caller}: ${message}`);
-          this.respondRpc(res, id, { content: [{ type: 'text', text: `Error: ${message}` }], isError: true });
+          this.respondRpcError(res, id, err instanceof InvalidRequestError ? -32602 : -32603, message);
         }
         return;
       }

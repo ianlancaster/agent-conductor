@@ -221,9 +221,12 @@ describe('surface contract', () => {
 
   it('returns inspectable direct-message receipts without exposing them to unrelated sessions', async () => {
     await tool('start_session').handler({ codename: 'beta' }, 'alpha');
-    await expect(tool('send_to_session').handler({ codename: 'beta', message: 'hello' }, 'alpha')).resolves.toBe(
-      'Delivered message #1 to beta.',
-    );
+    await expect(tool('send_to_session').handler({ codename: 'beta', message: 'hello' }, 'alpha')).resolves.toEqual({
+      messageId: 1,
+      recipient: 'beta',
+      status: 'delivered',
+      deduplicated: false,
+    });
     expect(JSON.parse(await tool('get_message_status').handler({ messageId: 1 }, 'alpha'))).toMatchObject({
       id: 1,
       sender: 'alpha',
@@ -234,6 +237,36 @@ describe('surface contract', () => {
       'Message #1 was not found.',
     );
     await expect(tool('get_message_status').handler({ messageId: 1.5 }, 'alpha')).rejects.toThrow(/positive integer/);
+  });
+
+  it('defines and enforces the idempotent message receipt contract', async () => {
+    const properties = tool('send_to_session').inputSchema.properties as Record<string, unknown>;
+    expect(properties.idempotencyKey).toEqual({
+      type: 'string',
+      minLength: 1,
+      maxLength: 128,
+      description: 'Optional sender-scoped key for durable deduplication',
+    });
+    await tool('start_session').handler({ codename: 'beta' }, 'alpha');
+    const first = await tool('send_to_session').handler(
+      { codename: 'beta', message: 'hello', idempotencyKey: 'shepherd:event:beta' },
+      'alpha',
+    );
+    const duplicate = await tool('send_to_session').handler(
+      { codename: 'beta', message: 'different', idempotencyKey: 'shepherd:event:beta' },
+      'alpha',
+    );
+    expect(first).toEqual({ messageId: 1, recipient: 'beta', status: 'delivered', deduplicated: false });
+    expect(duplicate).toEqual({ messageId: 1, recipient: 'beta', status: 'delivered', deduplicated: true });
+    await expect(tool('send_to_session').handler({ codename: 'ghost', message: 'hello' }, 'alpha')).rejects.toThrow(
+      'Unknown session: ghost',
+    );
+    await expect(tool('send_to_session').handler({ codename: 'alpha', message: 'hello' }, 'alpha')).rejects.toThrow(
+      'Cannot send a message to yourself',
+    );
+    await expect(
+      tool('send_to_session').handler({ codename: 'beta', message: 'hello', idempotencyKey: 'x'.repeat(129) }, 'alpha'),
+    ).rejects.toThrow(/at most 128/);
   });
 
   it('passes start and continue runtime overrides through MCP', async () => {

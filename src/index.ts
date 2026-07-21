@@ -13,3 +13,4 @@ export type {
 export { renderChannelMessage } from './channels/render.js';
 export { TelegramAdapter } from './channels/telegram/index.js';
 export type { TelegramAdapterConfig } from './channels/telegram/index.js';
+export * from './shepherd/index.js';

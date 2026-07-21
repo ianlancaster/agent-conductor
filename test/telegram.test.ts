@@ -60,10 +60,10 @@ describe('classifyUpdate', () => {
   });
 
   it('classifies a slash command with whitespace-separated args', () => {
-    expect(classifyUpdate(message('/status midgard-1   verbose'))).toEqual({
+    expect(classifyUpdate(message('/status project-1   verbose'))).toEqual({
       kind: 'command',
       command: 'status',
-      args: ['midgard-1', 'verbose'],
+      args: ['project-1', 'verbose'],
     });
   });
 

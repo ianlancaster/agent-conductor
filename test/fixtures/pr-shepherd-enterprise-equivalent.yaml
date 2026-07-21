@@ -1,0 +1,56 @@
+version: 2
+profile:
+  githubUser: configured-by-environment
+polling:
+  intervalSeconds: 180
+  bootstrap: baseline-only
+github:
+  defaultRepo: example-enterprise/platform
+  includeOwners: [example-enterprise]
+  includeRepos: []
+  excludeOwners: []
+  excludeRepos: []
+  mode: merge-queue
+  mergeMethod: squash
+checks:
+  required: []
+  ignored: [GitHub Actions, Vercel]
+reviews:
+  ignoredActors: ['github-actions[bot]', 'vercel[bot]']
+  ignoredCommentPatterns: ['<!-- linear-linkback -->']
+  requiredApprovals: 1
+  bots:
+    - username: 'quality-reviewer[bot]'
+      actionablePatterns: ['Finding:', 'changes requested']
+      positivePatterns: ['No findings', 'approved']
+      inboxGate: true
+      maxFeedbackAttempts: 2
+features:
+  authoredPRs: { enabled: true }
+  reviewInbox:
+    enabled: true
+    ignoreDrafts: true
+    ignoredRepos: []
+    maxAgeDays: 5
+  reviewFollowUp: { enabled: true }
+  reviewerNudge:
+    enabled: true
+    escalateAfterHours: 24
+    businessDaysOnly: true
+    timezone: America/Denver
+    maxEscalations: null
+  staleThresholdHours: 24
+automation:
+  autoMerge: execute
+  branchUpdate: notify
+  reviewerComment: execute
+delivery:
+  type: conductor
+  endpoint: http://127.0.0.1:31415
+  coordinatorSession: configured-by-environment
+guidance:
+  ci-failed: Run the repository's documented validation commands and report the failing check.
+  bot-findings: Bot changes-requested findings must be addressed before approval.
+  review-dispatch: Dispatch a reviewer and retain ownership of the assignment.
+  review-completed: Release the reviewer assigned to this pull request.
+databasePath: ./data/pr-shepherd-enterprise.db

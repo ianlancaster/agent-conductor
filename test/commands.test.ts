@@ -257,7 +257,7 @@ describe('conversation commands', () => {
 
   it('tell starts a stopped session with the message as prompt', async () => {
     const reply = await router.route('/tell beta check the build');
-    expect(reply).toContain('started with your message');
+    expect(reply).toBe('Delivered message #1 for beta.');
     expect(backend.paneFor('beta')?.launched[0]).toContain('[Message from operator] check the build');
   });
 
@@ -265,9 +265,7 @@ describe('conversation commands', () => {
     await router.route('/start alpha');
     runtime.inputState = 'operator-draft';
 
-    expect(await router.route('/tell alpha wait for the draft')).toBe(
-      'Queued message #1 for alpha (input is occupied; 1 pending).',
-    );
+    expect(await router.route('/tell alpha wait for the draft')).toBe('Queued message #1 for alpha.');
     expect(JSON.parse(await router.route('/message-status 1'))).toMatchObject({
       id: 1,
       status: 'pending',

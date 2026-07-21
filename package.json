@@ -15,7 +15,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "conductor": "dist/cli/index.js"
+    "conductor": "dist/cli/index.js",
+    "pr-shepherd": "dist/shepherd/cli.js"
   },
   "files": [
     "dist",

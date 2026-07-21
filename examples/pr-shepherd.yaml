@@ -1,0 +1,45 @@
+version: 2
+profile:
+  githubUser: octocat
+polling:
+  intervalSeconds: 180
+  bootstrap: notify-current
+github:
+  defaultRepo: null
+  includeOwners: []
+  includeRepos: []
+  excludeOwners: []
+  excludeRepos: []
+  mode: direct
+  mergeMethod: squash
+checks:
+  required: []
+  ignored: []
+reviews:
+  ignoredActors: []
+  ignoredCommentPatterns: []
+  requiredApprovals: 1
+  bots: []
+features:
+  authoredPRs: { enabled: true }
+  reviewInbox:
+    enabled: false
+    ignoreDrafts: true
+    ignoredRepos: []
+    maxAgeDays: 5
+  reviewFollowUp: { enabled: false }
+  reviewerNudge:
+    enabled: false
+    escalateAfterHours: 24
+    businessDaysOnly: true
+    timezone: UTC
+    maxEscalations: 1
+  staleThresholdHours: 4
+automation:
+  autoMerge: notify
+  branchUpdate: notify
+  reviewerComment: notify
+delivery:
+  type: stdout
+guidance: {}
+databasePath: ./data/pr-shepherd-v2.db

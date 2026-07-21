@@ -47,6 +47,15 @@ describe('messages', () => {
     expect(store.getMessage(id)?.status).toBe('delivered');
     expect(store.getPendingMessages('beta')).toEqual([]);
   });
+
+  it('persists sender-scoped idempotency keys', () => {
+    const first = store.insertDirectMessage('alpha', 'beta', 'first', 'key-1');
+    const duplicate = store.insertDirectMessage('alpha', 'beta', 'ignored', 'key-1');
+    const otherSender = store.insertDirectMessage('watch', 'beta', 'separate', 'key-1');
+    expect(first.deduplicated).toBe(false);
+    expect(duplicate).toEqual({ row: first.row, deduplicated: true });
+    expect(otherSender.row.id).not.toBe(first.row.id);
+  });
 });
 
 describe('operator requests', () => {
@@ -155,6 +164,15 @@ describe('session state', () => {
         pause_json TEXT,
         activity TEXT NOT NULL DEFAULT 'stopped',
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'message',
+        content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       INSERT INTO session_state (session, autonomy, tag, pause_json, activity)
       VALUES ('alpha', 'facilitated', 'legacy', '{"previousAutonomy":"autonomous"}', 'working');

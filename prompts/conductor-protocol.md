@@ -15,7 +15,9 @@ you are from your connection; never claim to be another session.
 
 ## Tools (conductor MCP server)
 
-- `send_to_session` — message a specific session (starts them if needed). Preferred.
+- `send_to_session` — message a specific session (starts it if needed). Its optional
+  `idempotencyKey` is sender-scoped and returns the original structured receipt on retry.
+  A `queued` or `delivered` receipt means the message is durably persisted. Preferred.
 - `broadcast` — message ALL active sessions except you. Use carefully and sparingly.
 - `send_to_operator` — message the operator, signed with your codename. For a question,
   optionally pass `options` with 1–8 short, unique choices. The call returns a request ID;

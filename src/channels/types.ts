@@ -4,7 +4,7 @@ export interface ChannelContext {
 }
 
 export interface ChannelHandlers {
-  /** A slash command, e.g. command="status", args=["midgard-1"]. Returns the reply text. */
+  /** A slash command, e.g. command="status", args=["project-1"]. Returns the reply text. */
   onCommand(command: string, args: string[], context: ChannelContext): Promise<string>;
   /** Free text (no leading slash). Returns an optional reply. */
   onFreeText(text: string, context: ChannelContext): Promise<string | undefined>;
