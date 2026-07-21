@@ -71,6 +71,7 @@ beforeEach(async () => {
     config: {
       defaultPlacement: 'pane',
       defaultRuntime: 'claude-code',
+      defaultEfforts: { 'claude-code': undefined, 'codex': undefined },
       defaultBypassPermissions: true,
       markerFile: '.agent-marker',
       spawnDirPattern: './{codename}',
@@ -115,6 +116,7 @@ beforeEach(async () => {
     states,
     sessions: () => sessions,
     modelHints: { 'claude-code': [], 'codex': [] },
+    effortHints: { 'claude-code': [], 'codex': [] },
     statusReport: () => '',
     tail: async () => '',
     typeInPane: async () => '',

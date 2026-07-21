@@ -89,6 +89,32 @@ describe('buildLaunchCommand', () => {
     expect(withDefault.buildLaunchCommand(session, identity, {})).toContain(`--model 'claude-sonnet-5'`);
   });
 
+  it('passes through per-run, session, and fleet effort levels with per-run precedence', () => {
+    const withDefault = new ClaudeCodeRuntime({
+      config: { ...defaults.runtimes.claudeCode, defaultEffort: 'fleet-level' },
+    });
+    expect(withDefault.buildLaunchCommand(session, identity, {})).toContain(`--effort 'fleet-level'`);
+    expect(withDefault.buildLaunchCommand({ ...session, effort: 'session-level' }, identity, {})).toContain(
+      `--effort 'session-level'`,
+    );
+    expect(
+      withDefault.buildLaunchCommand({ ...session, effort: 'session-level' }, identity, { effort: 'future-level' }),
+    ).toContain(`--effort 'future-level'`);
+  });
+
+  it('keeps per-run effort authoritative over the higher-precedence native environment setting', () => {
+    const withEnv = new ClaudeCodeRuntime({
+      config: {
+        ...defaults.runtimes.claudeCode,
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'low' },
+      },
+    });
+    const command = withEnv.buildLaunchCommand(session, identity, { effort: 'future-level' });
+    expect(command).toContain(`export CLAUDE_CODE_EFFORT_LEVEL='future-level'`);
+    expect(command).not.toContain(`export CLAUDE_CODE_EFFORT_LEVEL='low'`);
+    expect(command).toContain(`--effort 'future-level'`);
+  });
+
   it('appends a per-session systemPromptFile after the conductor protocol when it exists', () => {
     const promptFile = join(configDir, 'sentinel.md');
     writeFileSync(promptFile, '# be the sentinel');

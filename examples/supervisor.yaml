@@ -80,6 +80,9 @@ runtimes:
       - claude-opus-4-8
       - claude-sonnet-5
       - claude-haiku-4-5-20251001
+    # defaultEffort: xhigh # fleet launch default; omit to let Claude Code choose
+    # Hints shown on spawn/start/continue effort. Model support varies; unknown values still pass through.
+    availableEfforts: [low, medium, high, xhigh, max]
     autocompactPct: 70
     disableNonessentialTraffic: true # exports CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; disable if it breaks tools you rely on
     bareUi: true # bare-bones panes: no spinner tips, prompt suggestions, or onboarding/startup hints. Set false for the full Claude Code UI.
@@ -95,6 +98,9 @@ runtimes:
       - gpt-5.6-luna
       - gpt-5.4
       - gpt-5.3-codex-spark
+    # defaultEffort: xhigh # fleet launch default; omit to let Codex choose
+    # Hints only; providers/models may support a subset or additional levels.
+    availableEfforts: [none, minimal, low, medium, high, xhigh, max, ultra]
     toolTimeoutSec: 600 # Codex default is 60s — too low for long conductor tools
     bareUi: true # bare-bones panes: no startup update prompt (it BLOCKS spawned panes), analytics, tips, animations, or terminal-title writes. Set false for stock Codex behavior.
 

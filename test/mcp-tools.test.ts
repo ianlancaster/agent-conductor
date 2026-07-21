@@ -63,6 +63,7 @@ beforeEach(() => {
     config: {
       defaultPlacement: 'pane',
       defaultRuntime: 'claude-code',
+      defaultEfforts: { 'claude-code': undefined, 'codex': undefined },
       defaultBypassPermissions: true,
       markerFile: '.agent-marker',
       spawnDirPattern: './{codename}',
@@ -103,6 +104,7 @@ beforeEach(() => {
     states,
     sessions: () => sessions,
     modelHints: { 'claude-code': ['claude-test'], 'codex': ['codex-test', 'custom-provider/model'] },
+    effortHints: { 'claude-code': ['low', 'max'], 'codex': ['minimal', 'xhigh', 'ultra'] },
     statusReport: (c) =>
       statusReport(
         {
@@ -110,6 +112,7 @@ beforeEach(() => {
           getState: (n) => states.get(n),
           runtimeFor: (n) => lifecycle.runtimeNameFor(n),
           modelFor: (n) => sessions.get(n)?.model,
+          effortFor: (n) => states.get(n)?.effort ?? sessions.get(n)?.effort,
           sentinelCodename: () => sentinel.sentinelCodename(),
         },
         c,
@@ -180,12 +183,15 @@ describe('surface contract', () => {
     const spawnProperties = tool('spawn_session').inputSchema.properties as Record<string, unknown>;
     expect(startProperties).not.toHaveProperty('prompt');
     expect(startProperties).toHaveProperty('runtime');
+    expect(startProperties).toHaveProperty('effort');
     expect(continueProperties).toHaveProperty('runtime');
+    expect(continueProperties).toHaveProperty('effort');
     expect((startProperties.runtime as { enum?: string[] }).enum).toEqual(['claude-code', 'cc', 'codex']);
     expect(spawnProperties).not.toHaveProperty('prompt');
     expect(spawnProperties).toHaveProperty('worktreeRepo');
     expect(spawnProperties).toHaveProperty('branch');
     expect(spawnProperties).toHaveProperty('bypassPermissions');
+    expect(spawnProperties).toHaveProperty('effort');
   });
 
   it('validates arguments in the shared layer for every adapter', async () => {
@@ -271,28 +277,35 @@ describe('surface contract', () => {
     ).rejects.toThrow(/at most 128/);
   });
 
-  it('passes start and continue runtime overrides through MCP', async () => {
-    expect(await tool('start_session').handler({ codename: 'watch', runtime: 'codex' }, 'alpha')).toBe(
-      'watch started.',
-    );
+  it('passes start and continue runtime and effort overrides through MCP', async () => {
+    expect(
+      await tool('start_session').handler(
+        { codename: 'watch', runtime: 'codex', effort: 'future-provider-level' },
+        'alpha',
+      ),
+    ).toBe('watch started.');
     expect(states.get('watch')?.runtime).toBe('codex');
+    expect(states.get('watch')?.effort).toBe('future-provider-level');
     expect(await tool('list_sessions').handler({}, 'alpha')).toContain('watch - codex');
     expect(await tool('list_sessions').handler({}, 'alpha')).toContain('path: /tmp/watch');
     const status = JSON.parse(await tool('get_session_status').handler({ codename: 'watch' }, 'alpha')) as {
       runtime: unknown;
+      effort: unknown;
       path: unknown;
       branch: unknown;
     };
     const identity = JSON.parse(await tool('whoami').handler({}, 'watch')) as { runtime: unknown };
     expect(status.runtime).toBe('codex');
+    expect(status.effort).toBe('future-provider-level');
     expect(status.path).toBe('/tmp/watch');
     expect(status.branch).toBeNull();
     expect(identity.runtime).toBe('codex');
     await tool('stop_session').handler({ codename: 'watch' }, 'alpha');
-    expect(await tool('continue_session').handler({ codename: 'watch', runtime: 'codex' }, 'alpha')).toBe(
-      'watch continued.',
-    );
+    expect(
+      await tool('continue_session').handler({ codename: 'watch', runtime: 'codex', effort: 'ultra' }, 'alpha'),
+    ).toBe('watch continued.');
     expect(states.get('watch')?.runtime).toBe('codex');
+    expect(states.get('watch')?.effort).toBe('ultra');
   });
 
   it('normalizes the cc runtime shorthand through MCP', async () => {
@@ -316,6 +329,16 @@ describe('surface contract', () => {
     expect(properties.model?.description).toContain('codex: codex-test, custom-provider/model');
     expect(properties.model?.description).toContain('not exhaustive or validated');
     expect(properties.model?.enum).toBeUndefined();
+  });
+
+  it('advertises configurable effort hints on every lifecycle surface without validating them', () => {
+    for (const name of ['spawn_session', 'start_session', 'continue_session']) {
+      const properties = tool(name).inputSchema.properties as Record<string, { description?: string; enum?: string[] }>;
+      expect(properties.effort?.description).toContain('claude-code: low, max');
+      expect(properties.effort?.description).toContain('codex: minimal, xhigh, ultra');
+      expect(properties.effort?.description).toContain('not exhaustive or validated');
+      expect(properties.effort?.enum).toBeUndefined();
+    }
   });
 
   it('arms and inspects fleet watches through MCP', async () => {

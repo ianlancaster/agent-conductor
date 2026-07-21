@@ -53,6 +53,7 @@ export interface ConductorOperationDeps {
   states: SessionStateManager;
   sessions(): Map<string, SessionConfig>;
   modelHints: Record<RuntimeName, readonly string[]>;
+  effortHints: Record<RuntimeName, readonly string[]>;
   statusReport(codename?: string): string;
   tail(codename: string, lines: number): Promise<string>;
   /** Deliberately bypass the protected delivery queue for terminal control input. */
@@ -147,11 +148,11 @@ function actorName(actor: OperationActor): string {
   return actor.audience === 'operator' ? 'operator' : actor.codename;
 }
 
-function modelHintDescription(hints: Record<RuntimeName, readonly string[]>): string {
+function runtimeHintDescription(setting: 'model' | 'effort', hints: Record<RuntimeName, readonly string[]>): string {
   const runtimeHints = (['claude-code', 'codex'] as const)
     .map((runtime) => `${runtime}: ${hints[runtime].join(', ') || 'none configured'}`)
     .join('; ');
-  return `Optional model override. Availability hints only (not exhaustive or validated): ${runtimeHints}.`;
+  return `Optional ${setting} override. Availability hints only (not exhaustive or validated): ${runtimeHints}.`;
 }
 
 function fleetSessions(args: Record<string, unknown>): string[] {
@@ -268,12 +269,14 @@ export class ConductorOperations {
       },
       {
         name: 'start_session',
-        description: 'Start one registered session, or all registered sessions, with an optional runtime override.',
+        description:
+          'Start one registered session, or all registered sessions, with optional runtime and effort overrides.',
         audiences: BOTH,
         inputSchema: schema(
           {
             codename: stringProperty("Session codename or 'all'"),
             runtime: runtimeProperty,
+            effort: stringProperty(runtimeHintDescription('effort', this.deps.effortHints)),
             placement: placementProperty,
             headless: headlessProperty,
           },
@@ -283,6 +286,7 @@ export class ConductorOperations {
           this.forTargets(args, actor, 'start', (codename) =>
             this.deps.lifecycle.start(codename, {
               runtime: runtime(args),
+              effort: optionalString(args, 'effort'),
               placement: placement(args),
               headless: args.headless === true,
             }),
@@ -299,12 +303,13 @@ export class ConductorOperations {
       {
         name: 'continue_session',
         description:
-          "Continue one session's most recent conversation, or all sessions, with an optional runtime override.",
+          "Continue one session's most recent conversation, or all sessions, with optional runtime and effort overrides.",
         audiences: BOTH,
         inputSchema: schema(
           {
             codename: stringProperty("Session codename or 'all'"),
             runtime: runtimeProperty,
+            effort: stringProperty(runtimeHintDescription('effort', this.deps.effortHints)),
             placement: placementProperty,
             headless: headlessProperty,
           },
@@ -314,6 +319,7 @@ export class ConductorOperations {
           this.forTargets(args, actor, 'continue', (codename) =>
             this.deps.lifecycle.continue(codename, {
               runtime: runtime(args),
+              effort: optionalString(args, 'effort'),
               placement: placement(args),
               headless: args.headless === true,
             }),
@@ -335,7 +341,8 @@ export class ConductorOperations {
               description: 'Agent runtime (default: supervisor defaults.runtime)',
             },
             bypassPermissions: bypassPermissionsProperty,
-            model: stringProperty(modelHintDescription(this.deps.modelHints)),
+            model: stringProperty(runtimeHintDescription('model', this.deps.modelHints)),
+            effort: stringProperty(runtimeHintDescription('effort', this.deps.effortHints)),
             worktreeRepo: stringProperty('Existing source repository from which to create a linked worktree'),
             branch: stringProperty(
               "Worktree branch (default: codename); a missing branch is created at the source repository's current HEAD",
@@ -351,6 +358,7 @@ export class ConductorOperations {
             runtime: runtime(args),
             bypassPermissions: typeof args.bypassPermissions === 'boolean' ? args.bypassPermissions : undefined,
             model: optionalString(args, 'model'),
+            effort: optionalString(args, 'effort'),
             worktreeRepo: optionalString(args, 'worktreeRepo'),
             branch: optionalString(args, 'branch'),
             placement: placement(args),
@@ -565,7 +573,7 @@ export class ConductorOperations {
       {
         name: 'get_session_status',
         description:
-          'Return detailed status for one session as JSON, including its working-directory path, branch, and Conductor-resolved model.',
+          'Return detailed status for one session as JSON, including its working-directory path, branch, and Conductor-resolved model and effort.',
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty('Session codename') }, ['codename']),
         handler: async (args) => {

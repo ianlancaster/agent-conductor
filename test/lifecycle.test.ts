@@ -20,6 +20,7 @@ let lifecycle: Lifecycle;
 let sessions: Map<string, SessionConfig>;
 let supervisionResets: string[];
 let defaultBypassPermissions: boolean;
+let defaultEfforts: { 'claude-code': string | undefined; 'codex': string | undefined };
 
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-lc-'));
@@ -36,6 +37,7 @@ beforeEach(() => {
   sessions = loadSessionConfigs(baseDir);
   supervisionResets = [];
   defaultBypassPermissions = true;
+  defaultEfforts = { 'claude-code': undefined, 'codex': undefined };
 
   lifecycle = new Lifecycle({
     store,
@@ -54,6 +56,7 @@ beforeEach(() => {
     config: {
       defaultPlacement: 'pane',
       defaultRuntime: 'claude-code',
+      defaultEfforts,
       get defaultBypassPermissions() {
         return defaultBypassPermissions;
       },
@@ -104,21 +107,46 @@ describe('lifecycle edges', () => {
     expect(runtime.launches.at(-1)?.opts.bypassPermissions).toBe(false);
   });
 
+  it('resolves and persists per-run effort without validating new provider levels', async () => {
+    const alpha = sessions.get('alpha');
+    if (alpha === undefined) throw new Error('alpha missing');
+    sessions.set('alpha', { ...alpha, effort: 'session-level' });
+
+    await lifecycle.start('alpha', { effort: 'future-provider-level' });
+    expect(runtime.launches.at(-1)?.opts.effort).toBe('future-provider-level');
+    expect(states.get('alpha')?.effort).toBe('future-provider-level');
+    expect(store.getSessionState('alpha')?.activeEffort).toBe('future-provider-level');
+
+    await lifecycle.stop('alpha');
+    expect(states.get('alpha')?.effort).toBeUndefined();
+    expect(store.getSessionState('alpha')?.activeEffort).toBeNull();
+
+    await lifecycle.start('alpha');
+    expect(runtime.launches.at(-1)?.opts.effort).toBe('session-level');
+  });
+
   it('overrides the configured runtime for one run and clears it when that run ends', async () => {
     const session = sessions.get('alpha');
-    if (session !== undefined) session.model = 'claude-only-model';
+    if (session !== undefined) {
+      session.model = 'claude-only-model';
+      session.effort = 'claude-only-effort';
+    }
+    defaultEfforts.codex = 'codex-default-effort';
 
     await lifecycle.start('alpha', { runtime: 'codex' });
 
     expect(runtime.prepared).toHaveLength(0);
     expect(codexRuntime.prepared[0]?.session).toMatchObject({ runtime: 'codex' });
     expect(codexRuntime.prepared[0]?.session.model).toBeUndefined();
+    expect(codexRuntime.prepared[0]?.session.effort).toBeUndefined();
+    expect(codexRuntime.launches[0]?.opts.effort).toBe('codex-default-effort');
     expect(lifecycle.runtimeNameFor('alpha')).toBe('codex');
     expect(states.get('alpha')?.runtime).toBe('codex');
 
     const restoredStates = new SessionStateManager(store, false);
     restoredStates.register('alpha', false);
     expect(restoredStates.get('alpha')?.runtime).toBe('codex');
+    expect(restoredStates.get('alpha')?.effort).toBe('codex-default-effort');
 
     const pane = lifecycle.getPane('alpha');
     backend.endSession(pane?.id ?? '');

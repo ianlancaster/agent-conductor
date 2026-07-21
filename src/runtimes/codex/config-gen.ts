@@ -13,6 +13,8 @@
  * - approvals/sandbox: `approval_policy` / `sandbox_mode` config keys and the
  *   `--dangerously-bypass-approvals-and-sandbox` flag
  *   (https://developers.openai.com/codex/cli/reference)
+ * - reasoning effort: `model_reasoning_effort`
+ *   (https://developers.openai.com/codex/config-reference)
  */
 
 /** Marker stamped into every file we generate so prepare() never clobbers a human-authored file. */
@@ -33,6 +35,8 @@ export interface CodexOverrideOptions {
   toolTimeoutSec: number;
   /** Run without approval prompts or sandbox restrictions. */
   bypassPermissions: boolean;
+  /** Runtime-specific reasoning effort passed through to model_reasoning_effort. */
+  effort?: string;
   /** Strip UI chrome and non-essential traffic (update check, analytics, tips, animations, title writes). */
   bareUi: boolean;
 }
@@ -72,6 +76,7 @@ export function buildConfigOverrides(opts: CodexOverrideOptions): string[] {
     // trust from the config FILE. prepareCodexHome() appends the trust entry
     // to the per-session config.toml copy instead.
   ];
+  if (opts.effort !== undefined) overrides.push(`model_reasoning_effort=${tomlString(opts.effort)}`);
   if (opts.bypassPermissions) {
     overrides.push(
       // Belt and braces alongside --dangerously-bypass-approvals-and-sandbox:

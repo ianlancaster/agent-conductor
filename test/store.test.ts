@@ -117,6 +117,7 @@ describe('session state', () => {
       tag: 'refactor',
       paused: true,
       activeRuntime: 'codex',
+      activeEffort: 'xhigh',
       activity: 'working',
     });
     const state = store.getSessionState('alpha');
@@ -124,6 +125,7 @@ describe('session state', () => {
     expect(state?.tag).toBe('refactor');
     expect(state?.paused).toBe(true);
     expect(state?.activeRuntime).toBe('codex');
+    expect(state?.activeEffort).toBe('xhigh');
 
     store.upsertSessionState({
       session: 'alpha',
@@ -131,6 +133,7 @@ describe('session state', () => {
       tag: null,
       paused: false,
       activeRuntime: null,
+      activeEffort: null,
       activity: 'stopped',
     });
     const updated = store.getSessionState('alpha');
@@ -146,6 +149,7 @@ describe('session state', () => {
       tag: null,
       paused: false,
       activeRuntime: null,
+      activeEffort: null,
       activity: 'stopped',
     });
     store.deleteSessionState('alpha');
@@ -198,6 +202,7 @@ describe('session state', () => {
       'activity',
       'updated_at',
       'active_runtime',
+      'active_effort',
     ]);
   });
 });

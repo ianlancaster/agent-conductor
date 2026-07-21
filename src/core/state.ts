@@ -26,6 +26,7 @@ export class SessionStateManager {
       tag: persisted?.tag ?? undefined,
       paused: persisted?.paused ?? false,
       runtime: persisted?.activeRuntime ?? undefined,
+      effort: persisted?.activeEffort ?? undefined,
       running: false,
       ready: false,
       activity: 'stopped',
@@ -101,6 +102,14 @@ export class SessionStateManager {
     this.persist(codename);
   }
 
+  /** Persist the active process settings together so restart recovery never sees a torn pair. */
+  setRunSettings(codename: string, runtime: RuntimeName | undefined, effort: string | undefined): void {
+    const state = this.mustGet(codename);
+    state.runtime = runtime;
+    state.effort = effort;
+    this.persist(codename);
+  }
+
   setSession(codename: string, paneId: string | undefined): void {
     const state = this.mustGet(codename);
     state.paneId = paneId;
@@ -141,6 +150,7 @@ export class SessionStateManager {
       tag: state.tag ?? null,
       paused: state.paused,
       activeRuntime: state.runtime ?? null,
+      activeEffort: state.effort ?? null,
       activity: state.activity,
     });
   }

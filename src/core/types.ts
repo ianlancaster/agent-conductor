@@ -17,6 +17,8 @@ export interface SessionState {
   paused: boolean;
   /** Runtime for the active run. Absent while stopped; the session config remains the default. */
   runtime?: RuntimeName;
+  /** Reasoning effort resolved for the active process. Absent when the runtime chooses. */
+  effort?: string;
   running: boolean;
   /**
    * The runtime process has proven it is up (first lifecycle event received).

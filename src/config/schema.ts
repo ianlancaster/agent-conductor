@@ -16,7 +16,11 @@ export const DEFAULT_CODEX_MODELS = [
   'gpt-5.3-codex-spark',
 ] as const;
 
-const modelHints = (defaults: readonly string[]) => z.array(z.string().trim().min(1)).default([...defaults]);
+export const DEFAULT_CLAUDE_CODE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+export const DEFAULT_CODEX_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+
+const stringHints = (defaults: readonly string[]) => z.array(z.string().trim().min(1)).default([...defaults]);
 
 /** Codenames become URL path segments, filenames, and tmux targets — keep them boring. */
 export const CODENAME_PATTERN = /^[a-z0-9][a-z0-9-_]*$/i;
@@ -46,6 +50,8 @@ export const sessionConfigSchema = z
     /** Override the fleet default for approval/sandbox bypass when this session launches. */
     bypassPermissions: z.boolean().optional(),
     model: z.string().optional(),
+    /** Per-session effort default. Runtime/model support is intentionally not validated here. */
+    effort: z.string().min(1).optional(),
     additionalDirs: z.array(z.string()).default([]),
     /**
      * Per-session instructions appended to this session's system prompt, on top of the
@@ -185,7 +191,11 @@ export const supervisorConfigSchema = z
             binary: z.string().default('claude'),
             defaultModel: z.string().optional(),
             /** Discoverability hints only; model overrides are deliberately not validated against this list. */
-            availableModels: modelHints(DEFAULT_CLAUDE_CODE_MODELS),
+            availableModels: stringHints(DEFAULT_CLAUDE_CODE_MODELS),
+            /** Fleet default for Claude Code launches; omit to let Claude Code choose. */
+            defaultEffort: z.string().min(1).optional(),
+            /** Discoverability hints only; model support varies and unknown values pass through. */
+            availableEfforts: stringHints(DEFAULT_CLAUDE_CODE_EFFORTS),
             autocompactPct: z.number().int().min(1).max(100).default(70),
             /** Export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 (disable if it breaks tools you rely on). */
             disableNonessentialTraffic: z.boolean().default(true),
@@ -201,7 +211,11 @@ export const supervisorConfigSchema = z
             binary: z.string().default('codex'),
             defaultModel: z.string().optional(),
             /** Discoverability hints only; custom providers may support additional model IDs. */
-            availableModels: modelHints(DEFAULT_CODEX_MODELS),
+            availableModels: stringHints(DEFAULT_CODEX_MODELS),
+            /** Fleet default for Codex launches; omit to let Codex choose. */
+            defaultEffort: z.string().min(1).optional(),
+            /** Discoverability hints only; model/provider support varies and unknown values pass through. */
+            availableEfforts: stringHints(DEFAULT_CODEX_EFFORTS),
             /** MCP tool timeout — Codex defaults to 60s, far too low for long consults. */
             toolTimeoutSec: z.number().int().positive().default(600),
             /**

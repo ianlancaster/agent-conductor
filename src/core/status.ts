@@ -19,10 +19,11 @@ export interface StatusDeps {
   getState(codename: string): SessionState | undefined;
   runtimeFor(codename: string): SessionConfig['runtime'] | undefined;
   modelFor(codename: string): string | undefined;
+  effortFor(codename: string): string | undefined;
   sentinelCodename(): string | undefined;
 }
 
-export interface RuntimeModelDefaults {
+export interface RuntimeSettingDefaults {
   'claude-code'?: string;
   'codex'?: string;
 }
@@ -35,9 +36,19 @@ export interface RuntimeModelDefaults {
 export function resolvedSessionModel(
   session: SessionConfig,
   runtime: SessionConfig['runtime'],
-  defaults: RuntimeModelDefaults,
+  defaults: RuntimeSettingDefaults,
 ): string | undefined {
   if (runtime === session.runtime && session.model !== undefined) return session.model;
+  return defaults[runtime];
+}
+
+/** Resolve a stopped/configured session's effort using the same runtime portability rule as models. */
+export function resolvedSessionEffort(
+  session: SessionConfig,
+  runtime: SessionConfig['runtime'],
+  defaults: RuntimeSettingDefaults,
+): string | undefined {
+  if (runtime === session.runtime && session.effort !== undefined) return session.effort;
   return defaults[runtime];
 }
 
@@ -70,6 +81,7 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
         branch: currentBranch(session.repo),
         runtime: deps.runtimeFor(codename) ?? null,
         model: deps.modelFor(codename) ?? null,
+        effort: deps.effortFor(codename) ?? null,
         auto: state.auto,
         paused: state.paused,
         tag: state.tag ?? null,

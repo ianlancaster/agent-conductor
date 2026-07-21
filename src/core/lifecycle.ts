@@ -18,6 +18,8 @@ export interface StartOptions {
   continueSession?: boolean;
   /** Override the session's configured default for this run only. */
   runtime?: SessionConfig['runtime'];
+  /** Override the resolved reasoning effort for this run only. */
+  effort?: string;
   /** Create the pane in the detached fleet session (tmux only) — see CreatePaneOptions.headless. */
   headless?: boolean;
 }
@@ -25,6 +27,8 @@ export interface StartOptions {
 export interface SpawnOptions {
   path?: string;
   model?: string;
+  /** Persisted per-session effort default for the new session. */
+  effort?: string;
   prompt?: string;
   placement?: Placement;
   /** Runtime for the new session (default: the supervisor's configured runtime). */
@@ -51,6 +55,7 @@ export interface LifecycleDeps {
   config: {
     defaultPlacement: Placement;
     defaultRuntime: SessionConfig['runtime'];
+    defaultEfforts: Record<SessionConfig['runtime'], string | undefined>;
     defaultBypassPermissions: boolean;
     markerFile: string;
     spawnDirPattern: string;
@@ -181,10 +186,14 @@ export class Lifecycle {
     const runtime = this.deps.runtimes.get(runtimeName);
     if (runtime === undefined) return `No runtime registered for '${runtimeName}'.`;
 
-    // A model pinned for the configured runtime is not portable across agent
-    // CLIs. An override uses the selected runtime's own default model.
+    // Model and effort pins for the configured runtime are not portable across
+    // agent CLIs. An override uses the selected runtime's own defaults unless
+    // the caller explicitly supplies a per-run effort.
     const launchSession: SessionConfig =
-      runtimeName === session.runtime ? session : { ...session, runtime: runtimeName, model: undefined };
+      runtimeName === session.runtime
+        ? session
+        : { ...session, runtime: runtimeName, model: undefined, effort: undefined };
+    const effort = opts.effort ?? launchSession.effort ?? this.deps.config.defaultEfforts[runtimeName];
 
     const identity = this.deps.identityFor(codename);
 
@@ -205,10 +214,11 @@ export class Lifecycle {
     this.panes.set(codename, pane);
 
     try {
-      this.deps.states.setRuntime(codename, runtimeName);
+      this.deps.states.setRunSettings(codename, runtimeName, effort);
       const command = runtime.buildLaunchCommand(launchSession, identity, {
         prompt: opts.prompt,
         continueSession: opts.continueSession ?? false,
+        effort,
         bypassPermissions: launchSession.bypassPermissions ?? this.deps.config.defaultBypassPermissions,
       });
       // Title the pane from INSIDE the launch command (cc-conductor pattern):
@@ -233,7 +243,7 @@ export class Lifecycle {
         // A pre-existing shell is still useful even if this launch failed.
         this.clearSession(codename, true);
       }
-      if (this.deps.states.has(codename)) this.deps.states.setRuntime(codename, undefined);
+      if (this.deps.states.has(codename)) this.deps.states.setRunSettings(codename, undefined, undefined);
       throw err;
     }
 
@@ -303,7 +313,7 @@ export class Lifecycle {
       mkdirSync(dir, { recursive: true });
     }
 
-    // Serialize with js-yaml, never string interpolation: a model/prompt value
+    // Serialize with js-yaml, never string interpolation: a model/effort value
     // containing a newline would otherwise inject arbitrary YAML keys.
     const config: Record<string, string | boolean> = {
       codename,
@@ -311,6 +321,7 @@ export class Lifecycle {
       runtime: opts.runtime ?? this.deps.config.defaultRuntime,
     };
     if (opts.model !== undefined) config.model = opts.model;
+    if (opts.effort !== undefined) config.effort = opts.effort;
     if (opts.bypassPermissions !== undefined) config.bypassPermissions = opts.bypassPermissions;
     mkdirSync(this.deps.sessionConfigDir, { recursive: true });
     writeFileSync(join(this.deps.sessionConfigDir, `${codename}.yaml`), yaml.dump(config));
@@ -388,7 +399,7 @@ export class Lifecycle {
     this.deps.supervisionReset(codename);
     if (this.deps.states.has(codename)) {
       this.deps.states.setSession(codename, undefined);
-      this.deps.states.setRuntime(codename, undefined);
+      this.deps.states.setRunSettings(codename, undefined, undefined);
       this.deps.states.setActivity(codename, 'stopped');
     }
   }

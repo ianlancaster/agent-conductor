@@ -192,6 +192,22 @@ describe('buildLaunchCommand', () => {
     expect(defaulted.buildLaunchCommand(makeSession(), identity, {})).toContain("--model 'gpt-5.5'");
   });
 
+  it('maps per-run, session, and fleet effort levels to model_reasoning_effort', () => {
+    const defaulted = new CodexRuntime({
+      config: { ...SETTINGS, defaultEffort: 'fleet-level' },
+      baseDir: '/base',
+    });
+    expect(defaulted.buildLaunchCommand(makeSession(), identity, {})).toContain(
+      `-c 'model_reasoning_effort="fleet-level"'`,
+    );
+    expect(defaulted.buildLaunchCommand(makeSession({ effort: 'session-level' }), identity, {})).toContain(
+      `-c 'model_reasoning_effort="session-level"'`,
+    );
+    expect(
+      defaulted.buildLaunchCommand(makeSession({ effort: 'session-level' }), identity, { effort: 'future-level' }),
+    ).toContain(`-c 'model_reasoning_effort="future-level"'`);
+  });
+
   it('grants additional directories via --add-dir and resolves relative paths against baseDir', () => {
     const cmd = runtime.buildLaunchCommand(
       makeSession({ repo: 'repos/sample', additionalDirs: ['/shared/docs', 'sibling'] }),

@@ -30,7 +30,7 @@ import { ConductorOperations } from './operations.js';
 import { OperatorRequests } from './operator-requests.js';
 import { StallSentinelRouter } from './sentinel.js';
 import { SessionStateManager } from './state.js';
-import { resolvedSessionModel, statusReport } from './status.js';
+import { resolvedSessionEffort, resolvedSessionModel, statusReport } from './status.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 const SENTINEL_WORKSPACE_KEY = 'sentinel.codename';
@@ -159,6 +159,12 @@ export class Supervisor {
       config: {
         defaultPlacement: this.config.defaults.placement,
         defaultRuntime: this.config.defaults.runtime,
+        defaultEfforts: {
+          'claude-code':
+            this.config.runtimes.claudeCode.defaultEffort ??
+            this.config.runtimes.claudeCode.env.CLAUDE_CODE_EFFORT_LEVEL,
+          'codex': this.config.runtimes.codex.defaultEffort,
+        },
         defaultBypassPermissions: this.config.defaults.bypassPermissions,
         markerFile: this.config.spawn.markerFile,
         spawnDirPattern: this.config.spawn.dirPattern,
@@ -248,6 +254,10 @@ export class Supervisor {
       modelHints: {
         'claude-code': this.config.runtimes.claudeCode.availableModels,
         'codex': this.config.runtimes.codex.availableModels,
+      },
+      effortHints: {
+        'claude-code': this.config.runtimes.claudeCode.availableEfforts,
+        'codex': this.config.runtimes.codex.availableEfforts,
       },
       statusReport: (codename) => this.statusReport(codename),
       tail: (codename, lines) => this.tail(codename, lines),
@@ -409,6 +419,7 @@ export class Supervisor {
         getState: (name) => this.states.get(name),
         runtimeFor: (name) => this.displayRuntimeFor(name),
         modelFor: (name) => this.displayModelFor(name),
+        effortFor: (name) => this.displayEffortFor(name),
         sentinelCodename: () => this.sentinel.sentinelCodename(),
       },
       codename,
@@ -464,6 +475,20 @@ export class Supervisor {
       'claude-code': this.config.runtimes.claudeCode.defaultModel,
       'codex': this.config.runtimes.codex.defaultModel,
     });
+  }
+
+  /** Effort resolved for the active run, or the configured next run while stopped. */
+  private displayEffortFor(session: string): string | undefined {
+    const configured = this.sessions.get(session);
+    const runtime = this.displayRuntimeFor(session);
+    if (configured === undefined || runtime === undefined) return undefined;
+    const resolved = resolvedSessionEffort(configured, runtime, {
+      'claude-code':
+        this.config.runtimes.claudeCode.defaultEffort ?? this.config.runtimes.claudeCode.env.CLAUDE_CODE_EFFORT_LEVEL,
+      'codex': this.config.runtimes.codex.defaultEffort,
+    });
+    const state = this.states.get(session);
+    return state?.running === true ? (state.effort ?? resolved) : resolved;
   }
 
   private handleRuntimeEvent(session: string, body: unknown): void {

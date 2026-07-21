@@ -108,6 +108,7 @@ repo: /absolute/path/to/my-project
 runtime: claude-code # or codex
 # bypassPermissions: false # optional override of the fleet default
 # model: claude-opus-4-8
+# effort: xhigh # optional per-session default; accepted values depend on runtime/model
 ```
 
 Sessions that omit `runtime` use `defaults.runtime` from `config/supervisor.yaml`:
@@ -123,20 +124,30 @@ bypass through one runtime-neutral setting. Set it under `defaults` for the flee
 session file for an override. `/spawn` also accepts `--bypass-permissions` or
 `--require-permissions`; `spawn_session` exposes the same `bypassPermissions` boolean.
 
-`spawn_session.model` remains free text, but its MCP schema advertises per-runtime availability
-hints from `runtimes.claudeCode.availableModels` and `runtimes.codex.availableModels`. Conductor
-ships conservative current defaults; replace either list in `config/supervisor.yaml` for fleet,
-account, or third-party-provider models. The lists are discoverability hints only: an unlisted
-model is still accepted and passed through unchanged. `get_session_status` returns the model
-string Conductor resolved for the session, or `null` when the runtime chooses its own default.
+Model and effort values remain free text. Their operation schemas advertise configurable,
+per-runtime availability hints; the lists are discoverability aids, never validators. This lets
+new models, effort levels, and third-party provider values pass through without waiting for a
+Conductor release. `spawn_session` persists `model` and `effort` as session defaults, while
+`start_session` and `continue_session` accept a per-process `effort` override. Operator and channel
+adapters expose the same behavior as `/spawn --effort`, `/start --effort`, and
+`/continue --effort` (`-e`).
 
 ```yaml
 runtimes:
   claudeCode:
     availableModels: [claude-fable-5, claude-opus-4-8, claude-sonnet-5]
+    defaultEffort: xhigh # optional; omit to let Claude Code choose
+    availableEfforts: [low, medium, high, xhigh, max]
   codex:
     availableModels: [gpt-5.6, gpt-5.6-sol, third-party/model-id]
+    defaultEffort: xhigh # optional; omit to let Codex choose
+    availableEfforts: [none, minimal, low, medium, high, xhigh, max, ultra]
 ```
+
+Effort precedence is per-run argument, then the session's `effort`, then the selected runtime's
+`defaultEffort`, then the runtime's own default. A runtime override does not carry the original
+runtime's model or effort into the other family. `get_session_status` reports the model and effort
+Conductor resolved, using `null` when selection belongs to the runtime.
 
 See [examples/supervisor.yaml](examples/supervisor.yaml) for the complete user-facing
 supervisor configuration.
@@ -258,9 +269,9 @@ These operations are available through both MCP and operator adapters:
 | `send_to_session`    | `/tell`               | Send a signed message; starts a stopped recipient when needed  |
 | `get_message_status` | `/message-status`     | Inspect a direct-message receipt as pending or delivered       |
 | `broadcast`          | `/broadcast`          | Message every active session except the sender                 |
-| `start_session`      | `/start`              | Start sessions, optionally overriding their runtime            |
+| `start_session`      | `/start`              | Start sessions, optionally overriding runtime and effort       |
 | `stop_session`       | `/stop`               | Stop one session or all sessions                               |
-| `continue_session`   | `/continue`           | Continue sessions, optionally overriding their runtime         |
+| `continue_session`   | `/continue`           | Continue sessions, optionally overriding runtime and effort    |
 | `spawn_session`      | `/spawn`              | Create, register, and start a session or worktree session      |
 | `teardown_session`   | `/teardown`           | Stop and deregister a session; optionally remove its directory |
 | `toggle_auto`        | `/auto`               | Toggle automatic stall routing                                 |

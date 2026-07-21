@@ -34,22 +34,28 @@ function parseSessionLaunch(args: string[], command: 'start' | 'continue'): Reco
   const parsed = parsePlacement(args);
   const rest: string[] = [];
   let runtime: string | undefined;
+  let effort: string | undefined;
   for (let index = 0; index < parsed.rest.length; index += 1) {
     const arg = parsed.rest[index];
     if (arg === '--runtime' || arg === '-r') {
       runtime = parsed.rest[index + 1];
-      if (runtime === undefined) usage(`/${command} <session|all> [-r runtime] [placement]`);
+      if (runtime === undefined) usage(`/${command} <session|all> [-r runtime] [-e effort] [placement]`);
+      index += 1;
+    } else if (arg === '--effort' || arg === '-e') {
+      effort = parsed.rest[index + 1];
+      if (effort === undefined) usage(`/${command} <session|all> [-r runtime] [-e effort] [placement]`);
       index += 1;
     } else if (arg !== undefined) {
       rest.push(arg);
     }
   }
   if (rest.length !== 1 || rest[0] === undefined) {
-    usage(`/${command} <session|all> [-r runtime] [placement]`);
+    usage(`/${command} <session|all> [-r runtime] [-e effort] [placement]`);
   }
   return {
     codename: rest[0],
     ...(runtime !== undefined ? { runtime } : {}),
+    ...(effort !== undefined ? { effort } : {}),
     ...(parsed.placement !== undefined ? { placement: parsed.placement } : {}),
     ...(parsed.headless === true ? { headless: true } : {}),
   };
@@ -126,7 +132,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       command: 'start',
       operations: ['start_session'],
       group: 'Sessions',
-      usage: '/start <session|all> [-r|--runtime cc|claude-code|codex] [placement]',
+      usage: '/start <session|all> [-r|--runtime cc|claude-code|codex] [-e|--effort level] [placement]',
       description: operationDescription(operations, 'start_session'),
       invoke: (args, actor) => invoke('start_session', parseSessionLaunch(args, 'start'), actor),
     },
@@ -134,7 +140,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       command: 'continue',
       operations: ['continue_session'],
       group: 'Sessions',
-      usage: '/continue <session|all> [-r|--runtime cc|claude-code|codex] [placement]',
+      usage: '/continue <session|all> [-r|--runtime cc|claude-code|codex] [-e|--effort level] [placement]',
       description: operationDescription(operations, 'continue_session'),
       invoke: (args, actor) => invoke('continue_session', parseSessionLaunch(args, 'continue'), actor),
     },
@@ -323,8 +329,8 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       usage: '/spawn <name> [flags] [placement]',
       description: operationDescription(operations, 'spawn_session'),
       details: [
-        '    -r/--runtime cc|claude-code|codex · -m/--model <model> · -d/--path <dir>',
-        '    -w/--worktree <repo> · -b/--branch <name>',
+        '    -r/--runtime cc|claude-code|codex · -m/--model <model> · -e/--effort <level>',
+        '    -d/--path <dir> · -w/--worktree <repo> · -b/--branch <name>',
         '    --bypass-permissions · --require-permissions',
       ],
       invoke: (args, actor) => invoke('spawn_session', parseSpawn(args), actor),
@@ -362,6 +368,8 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     '-r': 'runtime',
     '--model': 'model',
     '-m': 'model',
+    '--effort': 'effort',
+    '-e': 'effort',
     '--worktree': 'worktreeRepo',
     '-w': 'worktreeRepo',
     '--branch': 'branch',
@@ -379,7 +387,7 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     }
     const value = parsed.rest[index + 1];
     if (flag === undefined || value === undefined || flags[flag] === undefined) {
-      usage('/spawn <name> [-r runtime] [-d path] [-m model] [-w repo] [-b branch] [placement]');
+      usage('/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-w repo] [-b branch] [placement]');
     }
     output[flags[flag]] = value;
     index += 2;

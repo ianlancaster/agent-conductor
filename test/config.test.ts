@@ -11,7 +11,12 @@ import {
   validateConfig,
 } from '../src/config/loader.js';
 import { ConfigWatcher } from '../src/config/watcher.js';
-import { DEFAULT_CLAUDE_CODE_MODELS, DEFAULT_CODEX_MODELS } from '../src/config/schema.js';
+import {
+  DEFAULT_CLAUDE_CODE_EFFORTS,
+  DEFAULT_CLAUDE_CODE_MODELS,
+  DEFAULT_CODEX_EFFORTS,
+  DEFAULT_CODEX_MODELS,
+} from '../src/config/schema.js';
 
 let baseDir: string;
 
@@ -42,8 +47,12 @@ describe('loadSupervisorConfig', () => {
     expect(config.terminal.iterm.badge).toBe(true);
     expect(config.runtimes.claudeCode.binary).toBe('claude');
     expect(config.runtimes.claudeCode.availableModels).toEqual(DEFAULT_CLAUDE_CODE_MODELS);
+    expect(config.runtimes.claudeCode.availableEfforts).toEqual(DEFAULT_CLAUDE_CODE_EFFORTS);
+    expect(config.runtimes.claudeCode.defaultEffort).toBeUndefined();
     expect(config.runtimes.codex.toolTimeoutSec).toBe(600);
     expect(config.runtimes.codex.availableModels).toEqual(DEFAULT_CODEX_MODELS);
+    expect(config.runtimes.codex.availableEfforts).toEqual(DEFAULT_CODEX_EFFORTS);
+    expect(config.runtimes.codex.defaultEffort).toBeUndefined();
     expect(config.spawn.markerFile).toBe('.agent-marker');
     expect(config.channels.telegram.enabled).toBe(false);
   });
@@ -88,6 +97,22 @@ describe('loadSupervisorConfig', () => {
     const config = loadSupervisorConfig(baseDir);
     expect(config.runtimes.claudeCode.availableModels).toEqual(['claude-private']);
     expect(config.runtimes.codex.availableModels).toEqual(['third-party/model']);
+  });
+
+  it('accepts fleet effort defaults and replacement hints without restricting levels', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'runtimes:\n  claudeCode:\n    defaultEffort: frontier\n    availableEfforts: [eco, frontier]\n  codex:\n    defaultEffort: provider-max\n    availableEfforts: [provider-max]\n',
+    );
+    const config = loadSupervisorConfig(baseDir);
+    expect(config.runtimes.claudeCode).toMatchObject({
+      defaultEffort: 'frontier',
+      availableEfforts: ['eco', 'frontier'],
+    });
+    expect(config.runtimes.codex).toMatchObject({
+      defaultEffort: 'provider-max',
+      availableEfforts: ['provider-max'],
+    });
   });
 
   it('rejects invalid values with a readable error', () => {
