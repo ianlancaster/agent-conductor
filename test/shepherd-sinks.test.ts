@@ -114,6 +114,7 @@ beforeEach(async () => {
     sentinel,
     states,
     sessions: () => sessions,
+    modelHints: { 'claude-code': [], 'codex': [] },
     statusReport: () => '',
     tail: async () => '',
     typeInPane: async () => '',

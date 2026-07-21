@@ -1,4 +1,4 @@
-import type { SessionConfig } from '../config/schema.js';
+import type { RuntimeName, SessionConfig } from '../config/schema.js';
 import type { Lifecycle } from './lifecycle.js';
 import type { Messaging } from './messaging.js';
 import type { MessageReceipt } from './messaging.js';
@@ -52,6 +52,7 @@ export interface ConductorOperationDeps {
   sentinel: StallSentinelRouter;
   states: SessionStateManager;
   sessions(): Map<string, SessionConfig>;
+  modelHints: Record<RuntimeName, readonly string[]>;
   statusReport(codename?: string): string;
   tail(codename: string, lines: number): Promise<string>;
   /** Deliberately bypass the protected delivery queue for terminal control input. */
@@ -144,6 +145,13 @@ function placement(args: Record<string, unknown>): Placement | undefined {
 
 function actorName(actor: OperationActor): string {
   return actor.audience === 'operator' ? 'operator' : actor.codename;
+}
+
+function modelHintDescription(hints: Record<RuntimeName, readonly string[]>): string {
+  const runtimeHints = (['claude-code', 'codex'] as const)
+    .map((runtime) => `${runtime}: ${hints[runtime].join(', ') || 'none configured'}`)
+    .join('; ');
+  return `Optional model override. Availability hints only (not exhaustive or validated): ${runtimeHints}.`;
 }
 
 function fleetSessions(args: Record<string, unknown>): string[] {
@@ -327,7 +335,7 @@ export class ConductorOperations {
               description: 'Agent runtime (default: supervisor defaults.runtime)',
             },
             bypassPermissions: bypassPermissionsProperty,
-            model: stringProperty('Optional model override'),
+            model: stringProperty(modelHintDescription(this.deps.modelHints)),
             worktreeRepo: stringProperty('Existing source repository from which to create a linked worktree'),
             branch: stringProperty(
               "Worktree branch (default: codename); a missing branch is created at the source repository's current HEAD",
@@ -556,7 +564,8 @@ export class ConductorOperations {
       },
       {
         name: 'get_session_status',
-        description: 'Return detailed status for one session as JSON, including its working-directory path and branch.',
+        description:
+          'Return detailed status for one session as JSON, including its working-directory path, branch, and Conductor-resolved model.',
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty('Session codename') }, ['codename']),
         handler: async (args) => {

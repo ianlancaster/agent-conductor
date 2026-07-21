@@ -73,14 +73,28 @@ messaging:
 runtimes:
   claudeCode:
     binary: claude
-    # defaultModel: claude-opus-4-6
+    # defaultModel: claude-opus-4-8
+    # Discovery hints shown on spawn_session.model. Replace freely; they are not a validator.
+    availableModels:
+      - claude-fable-5
+      - claude-opus-4-8
+      - claude-sonnet-5
+      - claude-haiku-4-5-20251001
     autocompactPct: 70
     disableNonessentialTraffic: true # exports CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; disable if it breaks tools you rely on
     bareUi: true # bare-bones panes: no spinner tips, prompt suggestions, or onboarding/startup hints. Set false for the full Claude Code UI.
     env: {} # extra environment variables; values here override built-in conductor defaults
   codex:
     binary: codex
-    # defaultModel: gpt-5.4
+    # defaultModel: gpt-5.6
+    # Account/provider availability varies; custom-provider model IDs are allowed too.
+    availableModels:
+      - gpt-5.6
+      - gpt-5.6-sol
+      - gpt-5.6-terra
+      - gpt-5.6-luna
+      - gpt-5.4
+      - gpt-5.3-codex-spark
     toolTimeoutSec: 600 # Codex default is 60s — too low for long conductor tools
     bareUi: true # bare-bones panes: no startup update prompt (it BLOCKS spawned panes), analytics, tips, animations, or terminal-title writes. Set false for stock Codex behavior.
 

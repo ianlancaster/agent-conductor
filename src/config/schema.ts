@@ -1,5 +1,23 @@
 import { z } from 'zod';
 
+export const DEFAULT_CLAUDE_CODE_MODELS = [
+  'claude-fable-5',
+  'claude-opus-4-8',
+  'claude-sonnet-5',
+  'claude-haiku-4-5-20251001',
+] as const;
+
+export const DEFAULT_CODEX_MODELS = [
+  'gpt-5.6',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.4',
+  'gpt-5.3-codex-spark',
+] as const;
+
+const modelHints = (defaults: readonly string[]) => z.array(z.string().trim().min(1)).default([...defaults]);
+
 /** Codenames become URL path segments, filenames, and tmux targets — keep them boring. */
 export const CODENAME_PATTERN = /^[a-z0-9][a-z0-9-_]*$/i;
 
@@ -166,6 +184,8 @@ export const supervisorConfigSchema = z
           .object({
             binary: z.string().default('claude'),
             defaultModel: z.string().optional(),
+            /** Discoverability hints only; model overrides are deliberately not validated against this list. */
+            availableModels: modelHints(DEFAULT_CLAUDE_CODE_MODELS),
             autocompactPct: z.number().int().min(1).max(100).default(70),
             /** Export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 (disable if it breaks tools you rely on). */
             disableNonessentialTraffic: z.boolean().default(true),
@@ -180,6 +200,8 @@ export const supervisorConfigSchema = z
           .object({
             binary: z.string().default('codex'),
             defaultModel: z.string().optional(),
+            /** Discoverability hints only; custom providers may support additional model IDs. */
+            availableModels: modelHints(DEFAULT_CODEX_MODELS),
             /** MCP tool timeout — Codex defaults to 60s, far too low for long consults. */
             toolTimeoutSec: z.number().int().positive().default(600),
             /**
