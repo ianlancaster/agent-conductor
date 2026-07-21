@@ -16,6 +16,7 @@ import { Store } from '../src/store/index.js';
 import { Supervisor } from '../src/core/supervisor.js';
 import { FakeChannel } from './fakes/fake-channel.js';
 import { TmuxBackend } from '../src/terminals/tmux/index.js';
+import { hasShellPrompt } from '../src/terminals/tmux/tmux.js';
 
 /**
  * End-to-end tests against a REAL tmux server. The "session" is a shell script
@@ -96,6 +97,25 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       await until(async () => !(await backend.isSessionActive(pane)));
 
       expect(await backend.isAlive(pane)).toBe(true);
+    });
+
+    it('interrupts a stale foreground job before delivering a launch command', async () => {
+      const recoveryBackend = new TmuxBackend({
+        store,
+        config: { sessionName: SESSION, windowName: 'e2e', fleetId: 'e2e', paneBorders: true },
+        launchTimeoutMs: 100,
+        launchPollMs: 20,
+        launchRecoveryTimeoutMs: 1_000,
+      });
+      const pane = await recoveryBackend.createPane('launch-recovery', 'pane', workDir);
+      await until(async () => hasShellPrompt(await recoveryBackend.capture(pane, 20)));
+      await recoveryBackend.run(pane, 'sleep 30');
+      await until(async () => recoveryBackend.isSessionActive(pane));
+
+      await recoveryBackend.launch(pane, 'echo LAUNCH_RECOVERED');
+
+      await until(async () => (await recoveryBackend.capture(pane, 20)).includes('LAUNCH_RECOVERED'));
+      expect(await recoveryBackend.isSessionActive(pane)).toBe(false);
     });
 
     it('delivers multiline input via bracketed paste as a single unit', async () => {

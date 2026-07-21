@@ -1,9 +1,11 @@
 import type { SessionConfig } from '../config/schema.js';
 import type { Lifecycle } from './lifecycle.js';
 import type { Messaging } from './messaging.js';
+import type { MessageReceipt } from './messaging.js';
 import type { OperatorRequests } from './operator-requests.js';
 import type { StallSentinelRouter } from './sentinel.js';
 import type { SessionStateManager } from './state.js';
+import { InvalidRequestError } from './errors.js';
 import type { Placement } from './types.js';
 
 export type OperationAudience = 'operator' | 'session';
@@ -40,7 +42,7 @@ export interface OperationDefinition {
   inputSchema: OperationInputSchema;
   /** The actor's identity is applied mechanically to messages made by this operation. */
   signedIdentity?: boolean;
-  handler(args: Record<string, unknown>, actor: OperationActor): Promise<string>;
+  handler(args: Record<string, unknown>, actor: OperationActor): Promise<string | MessageReceipt>;
 }
 
 export interface ConductorOperationDeps {
@@ -114,7 +116,7 @@ function schema(properties: Record<string, JsonPropertySchema> = {}, required: s
 function requireString(args: Record<string, unknown>, name: string): string {
   const value = args[name];
   if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new Error(`'${name}' is required and must be a non-empty string`);
+    throw new InvalidRequestError(`'${name}' is required and must be a non-empty string`);
   }
   return value;
 }
@@ -184,7 +186,7 @@ export class ConductorOperations {
     return this.deps.sessions().has(codename);
   }
 
-  async invoke(name: string, args: Record<string, unknown>, actor: OperationActor): Promise<string> {
+  async invoke(name: string, args: Record<string, unknown>, actor: OperationActor): Promise<string | MessageReceipt> {
     const definition = this.byName.get(name);
     if (definition === undefined) throw new Error(`Unknown operation: ${name}`);
     if (!definition.audiences.includes(actor.audience)) {
@@ -205,6 +207,12 @@ export class ConductorOperations {
           {
             codename: stringProperty('Target session codename'),
             message: stringProperty('Message text'),
+            idempotencyKey: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              description: 'Optional sender-scoped key for durable deduplication',
+            },
           },
           ['codename', 'message'],
         ),
@@ -213,6 +221,7 @@ export class ConductorOperations {
             actorName(actor),
             requireString(args, 'codename'),
             requireString(args, 'message'),
+            optionalString(args, 'idempotencyKey'),
           ),
       },
       {
@@ -362,7 +371,7 @@ export class ConductorOperations {
         handler: async (args, actor) => {
           const messageId = args.messageId;
           if (typeof messageId !== 'number' || !Number.isInteger(messageId) || messageId < 1) {
-            throw new Error("'messageId' is required and must be a positive integer");
+            throw new InvalidRequestError("'messageId' is required and must be a positive integer");
           }
           return this.deps.messaging.messageStatus(
             messageId,
@@ -438,9 +447,9 @@ export class ConductorOperations {
         handler: (args) => {
           const name = requireString(args, 'name');
           const sessions = fleetSessions(args);
-          if (sessions.length < 2) throw new Error('A fleet watch needs at least two distinct sessions.');
+          if (sessions.length < 2) throw new InvalidRequestError('A fleet watch needs at least two distinct sessions.');
           for (const codename of sessions) {
-            if (!this.deps.sessions().has(codename)) throw new Error(`Unknown session: ${codename}`);
+            if (!this.deps.sessions().has(codename)) throw new InvalidRequestError(`Unknown session: ${codename}`);
           }
           const thresholdSeconds =
             typeof args.thresholdSeconds === 'number'
@@ -494,7 +503,7 @@ export class ConductorOperations {
         ),
         handler: async (args) => {
           const codename = requireString(args, 'codename');
-          if (!this.deps.states.has(codename)) throw new Error(`Unknown session: ${codename}`);
+          if (!this.deps.states.has(codename)) throw new InvalidRequestError(`Unknown session: ${codename}`);
           const tag = optionalString(args, 'tag');
           this.deps.states.setTag(codename, tag);
           await this.deps.retitle(codename);
@@ -507,7 +516,7 @@ export class ConductorOperations {
         audiences: SESSION_ONLY,
         inputSchema: schema(),
         handler: (_args, actor) => {
-          if (actor.audience !== 'session') throw new Error('whoami requires a session caller');
+          if (actor.audience !== 'session') throw new InvalidRequestError('whoami requires a session caller');
           const state = this.deps.states.get(actor.codename);
           return Promise.resolve(
             JSON.stringify(
@@ -629,48 +638,53 @@ export class ConductorOperations {
 
   private noSelf(actor: OperationActor, codename: string, verb: string): void {
     if (actor.audience === 'session' && actor.codename === codename) {
-      throw new Error(`You cannot ${verb} yourself.`);
+      throw new InvalidRequestError(`You cannot ${verb} yourself.`);
     }
   }
 
   private validate(definition: OperationDefinition, args: Record<string, unknown>): void {
     const { properties, required = [] } = definition.inputSchema;
     for (const name of required) {
-      if (args[name] === undefined) throw new Error(`'${name}' is required`);
+      if (args[name] === undefined) throw new InvalidRequestError(`'${name}' is required`);
     }
     for (const [name, value] of Object.entries(args)) {
       const property = properties[name];
-      if (property === undefined) throw new Error(`Unknown argument '${name}' for ${definition.name}`);
+      if (property === undefined) throw new InvalidRequestError(`Unknown argument '${name}' for ${definition.name}`);
       if (value === undefined) continue;
       const matchesType = property.type === 'array' ? Array.isArray(value) : typeof value === property.type;
       if (!matchesType || (property.type === 'number' && !Number.isFinite(value))) {
-        throw new Error(`'${name}' must be a ${property.type}`);
+        throw new InvalidRequestError(`'${name}' must be a ${property.type}`);
       }
       if (typeof value === 'string') {
         if (property.minLength !== undefined && value.trim().length < property.minLength) {
-          throw new Error(`'${name}' must be a non-empty string`);
+          throw new InvalidRequestError(`'${name}' must be a non-empty string`);
+        }
+        if (property.maxLength !== undefined && value.length > property.maxLength) {
+          throw new InvalidRequestError(`'${name}' must be at most ${String(property.maxLength)} characters`);
         }
         if (property.enum !== undefined && !property.enum.includes(value)) {
-          throw new Error(`'${name}' must be one of: ${property.enum.join(', ')}`);
+          throw new InvalidRequestError(`'${name}' must be one of: ${property.enum.join(', ')}`);
         }
       }
       if (typeof value === 'number' && property.minimum !== undefined && value < property.minimum) {
-        throw new Error(`'${name}' must be at least ${String(property.minimum)}`);
+        throw new InvalidRequestError(`'${name}' must be at least ${String(property.minimum)}`);
       }
       if (Array.isArray(value)) {
         if (property.minItems !== undefined && value.length < property.minItems) {
-          throw new Error(`'${name}' must contain at least ${String(property.minItems)} item(s)`);
+          throw new InvalidRequestError(`'${name}' must contain at least ${String(property.minItems)} item(s)`);
         }
         if (property.maxItems !== undefined && value.length > property.maxItems) {
-          throw new Error(`'${name}' must contain at most ${String(property.maxItems)} item(s)`);
+          throw new InvalidRequestError(`'${name}' must contain at most ${String(property.maxItems)} item(s)`);
         }
         for (const item of value) {
-          if (typeof item !== 'string') throw new Error(`'${name}' items must be strings`);
+          if (typeof item !== 'string') throw new InvalidRequestError(`'${name}' items must be strings`);
           if (property.items?.minLength !== undefined && item.trim().length < property.items.minLength) {
-            throw new Error(`'${name}' items must be non-empty strings`);
+            throw new InvalidRequestError(`'${name}' items must be non-empty strings`);
           }
           if (property.items?.maxLength !== undefined && item.trim().length > property.items.maxLength) {
-            throw new Error(`'${name}' items must be at most ${String(property.items.maxLength)} characters`);
+            throw new InvalidRequestError(
+              `'${name}' items must be at most ${String(property.items.maxLength)} characters`,
+            );
           }
         }
       }

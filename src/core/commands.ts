@@ -1,4 +1,5 @@
 import type { ConductorOperations, OperationActor } from './operations.js';
+import { renderMessageReceipt } from './messaging.js';
 import type { Placement } from './types.js';
 
 /** Tokenize a command line, honoring double quotes. */
@@ -89,7 +90,9 @@ function operationDescription(operations: ConductorOperations, name: string): st
  */
 export function buildOperatorCommands(operations: ConductorOperations): OperatorCommandDefinition[] {
   const invoke = (name: string, args: Record<string, unknown>, actor: OperationActor): Promise<string> =>
-    operations.invoke(name, args, actor);
+    operations
+      .invoke(name, args, actor)
+      .then((result) => (typeof result === 'string' ? result : renderMessageReceipt(result)));
 
   const targetCommand = (
     command: string,
@@ -447,7 +450,8 @@ export class CommandRouter {
         this.talkTargets.set(interactionId, commandName);
         const message = args.join(' ');
         if (message.length === 0) return `Talking to ${commandName}.`;
-        return await this.operations.invoke('send_to_session', { codename: commandName, message }, actor);
+        const result = await this.operations.invoke('send_to_session', { codename: commandName, message }, actor);
+        return typeof result === 'string' ? result : renderMessageReceipt(result);
       }
       return `Unknown command: /${commandName}. Try /help.`;
     } catch (error) {
@@ -460,11 +464,9 @@ export class CommandRouter {
     if (target === undefined) {
       return Promise.resolve('No active conversation. Use /talk <session> or /<session> <message>.');
     }
-    return this.operations.invoke(
-      'send_to_session',
-      { codename: target, message: text },
-      { audience: 'operator', id: interactionId },
-    );
+    return this.operations
+      .invoke('send_to_session', { codename: target, message: text }, { audience: 'operator', id: interactionId })
+      .then((result) => (typeof result === 'string' ? result : renderMessageReceipt(result)));
   }
 
   definitions(): readonly OperatorCommandDefinition[] {

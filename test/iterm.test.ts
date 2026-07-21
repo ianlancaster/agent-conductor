@@ -40,7 +40,7 @@ describe('escapeAppleScript', () => {
   });
 
   it('leaves plain text untouched', () => {
-    expect(escapeAppleScript('midgard-7')).toBe('midgard-7');
+    expect(escapeAppleScript('project-7')).toBe('project-7');
     expect(escapeAppleScript('')).toBe('');
   });
 
@@ -158,7 +158,7 @@ describe('tailLines', () => {
 describe('session user-variable encoding', () => {
   it('round-trips a codename through base64, scoped by fleet id', () => {
     expect(encodeSessionVar('fleet-1', 'alpha')).toBe(Buffer.from('fleet-1:alpha').toString('base64'));
-    expect(decodeSessionVar(encodeSessionVar('fleet-1', 'midgard-12'), 'fleet-1')).toBe('midgard-12');
+    expect(decodeSessionVar(encodeSessionVar('fleet-1', 'project-12'), 'fleet-1')).toBe('project-12');
   });
 
   it("rejects another fleet's marker", () => {
@@ -166,7 +166,7 @@ describe('session user-variable encoding', () => {
   });
 
   it('rejects a legacy bare-codename marker (cc-conductor uses the same variable)', () => {
-    expect(decodeSessionVar(Buffer.from('midgard-3').toString('base64'), 'fleet-1')).toBeNull();
+    expect(decodeSessionVar(Buffer.from('project-3').toString('base64'), 'fleet-1')).toBeNull();
   });
 
   it('returns null for an empty value', () => {
@@ -226,7 +226,7 @@ describe('parseRediscoveryOutput', () => {
     const raw = [
       `SESSION-A|${encodeSessionVar('f1', 'alpha')}`,
       `SESSION-B|${encodeSessionVar('f2', 'alpha')}`, // same codename, other fleet
-      `SESSION-C|${Buffer.from('midgard-3').toString('base64')}`, // legacy cc-conductor marker
+      `SESSION-C|${Buffer.from('project-3').toString('base64')}`, // legacy cc-conductor marker
     ].join('\n');
     const result = parseRediscoveryOutput(raw, 'f1');
     expect(result.size).toBe(1);

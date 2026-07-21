@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConductorMcpServer, type McpToolDefinition } from '../src/mcp/server.js';
+import { InvalidRequestError } from '../src/core/errors.js';
 
 const PORT = 43_217;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -20,6 +21,18 @@ const tools: McpToolDefinition[] = [
     description: 'always throws',
     inputSchema: { type: 'object', properties: {} },
     handler: () => Promise.reject(new Error('kapow')),
+  },
+  {
+    name: 'receipt',
+    description: 'returns structured data',
+    inputSchema: { type: 'object', properties: {} },
+    handler: () => Promise.resolve({ messageId: 4, recipient: 'beta', status: 'queued', deduplicated: false }),
+  },
+  {
+    name: 'invalid',
+    description: 'rejects caller input',
+    inputSchema: { type: 'object', properties: {} },
+    handler: () => Promise.reject(new InvalidRequestError('bad input')),
   },
 ];
 
@@ -140,11 +153,26 @@ describe('JSON-RPC surface', () => {
     expect(sentinelNames).toEqual(regularNames);
   });
 
-  it('maps handler errors to isError results, not transport failures', async () => {
+  it('distinguishes invalid params from internal tool failures', async () => {
     const result = await rpc('/mcp/alpha', 'tools/call', { name: 'boom', arguments: {} });
-    const payload = result.result as { isError: boolean; content: { text: string }[] };
-    expect(payload.isError).toBe(true);
-    expect(payload.content[0]?.text).toContain('kapow');
+    const payload = result.error as { code: number; message: string };
+    expect(payload.code).toBe(-32603);
+    expect(payload.message).toContain('kapow');
+
+    const invalid = await rpc('/mcp/alpha', 'tools/call', { name: 'invalid', arguments: {} });
+    expect(invalid.error).toEqual({ code: -32602, message: 'bad input' });
+  });
+
+  it('returns object operation results as MCP structured content and JSON text', async () => {
+    const response = await rpc('/mcp/alpha', 'tools/call', { name: 'receipt', arguments: {} });
+    const result = response.result as { structuredContent: unknown; content: { text: string }[] };
+    expect(result.structuredContent).toEqual({
+      messageId: 4,
+      recipient: 'beta',
+      status: 'queued',
+      deduplicated: false,
+    });
+    expect(JSON.parse(result.content[0]?.text ?? '')).toEqual(result.structuredContent);
   });
 
   it('acknowledges notifications without a body', async () => {

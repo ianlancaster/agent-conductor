@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from 'node:timers/promises';
+import { randomUUID } from 'node:crypto';
 import type { PaneRef, Placement } from '../../core/types.js';
 import type { CreatePaneOptions, TerminalBackend, TerminalCapabilities } from '../types.js';
 import type { Store } from '../../store/index.js';
@@ -24,6 +25,7 @@ const WORKSPACE_KEY = 'tmux.panes';
 
 const LAUNCH_TIMEOUT_MS = 8_000;
 const LAUNCH_POLL_MS = 250;
+const LAUNCH_RECOVERY_TIMEOUT_MS = 2_000;
 
 export interface TmuxBackendConfig {
   sessionName: string;
@@ -49,6 +51,10 @@ export interface TmuxBackendConfig {
 export interface TmuxBackendOptions {
   store: Store;
   config: TmuxBackendConfig;
+  /** Internal timing overrides for deterministic launch-recovery tests. */
+  launchTimeoutMs?: number;
+  launchPollMs?: number;
+  launchRecoveryTimeoutMs?: number;
 }
 
 /**
@@ -71,6 +77,9 @@ export class TmuxBackend implements TerminalBackend {
   private readonly fleetId: string;
   private readonly attachPane: string | undefined;
   private readonly paneBorders: boolean;
+  private readonly launchTimeoutMs: number;
+  private readonly launchPollMs: number;
+  private readonly launchRecoveryTimeoutMs: number;
 
   constructor(opts: TmuxBackendOptions) {
     this.store = opts.store;
@@ -79,6 +88,9 @@ export class TmuxBackend implements TerminalBackend {
     this.fleetId = opts.config.fleetId;
     this.attachPane = opts.config.attachPane;
     this.paneBorders = opts.config.paneBorders;
+    this.launchTimeoutMs = opts.launchTimeoutMs ?? LAUNCH_TIMEOUT_MS;
+    this.launchPollMs = opts.launchPollMs ?? LAUNCH_POLL_MS;
+    this.launchRecoveryTimeoutMs = opts.launchRecoveryTimeoutMs ?? LAUNCH_RECOVERY_TIMEOUT_MS;
   }
 
   async init(): Promise<void> {
@@ -232,17 +244,54 @@ export class TmuxBackend implements TerminalBackend {
   /** Wait for the pane's shell prompt, then deliver the launch command. */
   async launch(pane: PaneRef, command: string): Promise<void> {
     this.assertRef(pane);
-    const deadline = Date.now() + LAUNCH_TIMEOUT_MS;
+    const deadline = Date.now() + this.launchTimeoutMs;
     for (;;) {
       const capture = await tmux(['capture-pane', '-p', '-t', pane.id]);
       if (hasShellPrompt(capture)) break;
       if (Date.now() >= deadline) {
-        log().warn('tmux', `no shell prompt in pane ${pane.id} after ${LAUNCH_TIMEOUT_MS}ms; delivering anyway`);
+        log().warn(
+          'tmux',
+          `no shell prompt in pane ${pane.id} after ${String(this.launchTimeoutMs)}ms; interrupting the foreground job before delivery`,
+        );
+        await this.recoverShell(pane);
         break;
       }
-      await sleep(LAUNCH_POLL_MS);
+      await sleep(this.launchPollMs);
     }
     await this.run(pane, command);
+  }
+
+  /**
+   * A launch timeout often means shell startup or a stale foreground command
+   * still owns the pane. Process-group idleness is insufficient here: startup
+   * code runs inside the shell process and can consume keystrokes while still
+   * appearing idle. Interrupt it, then require an executed probe before typing
+   * the real launch command.
+   */
+  private async recoverShell(pane: PaneRef): Promise<void> {
+    const deadline = Date.now() + this.launchRecoveryTimeoutMs;
+    const suffix = randomUUID().replaceAll('-', '');
+    const marker = `__CONDUCTOR_SHELL_READY_${suffix}__`;
+    // Split the marker across arguments so the echoed command line cannot be
+    // mistaken for the probe's output in a pane capture.
+    const probe = `printf '%s%s\\n' '__CONDUCTOR_SHELL_' 'READY_${suffix}__'`;
+
+    for (;;) {
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `tmux pane ${pane.id} did not execute a shell readiness probe within ${String(this.launchRecoveryTimeoutMs)}ms`,
+        );
+      }
+
+      await tmux(['send-keys', '-t', pane.id, 'C-c']);
+      await sleep(this.launchPollMs);
+      if (await this.isSessionActive(pane)) continue;
+
+      await this.run(pane, probe);
+      await sleep(this.launchPollMs);
+      const capture = await tmux(['capture-pane', '-p', '-t', pane.id]);
+      if (capture.split('\n').some((line) => line.trim() === marker)) return;
+    }
   }
 
   /** Deliver text + Enter. Multiline text goes through bracketed paste. */

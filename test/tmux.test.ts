@@ -27,9 +27,9 @@ describe('parsePaneIds', () => {
 
 describe('parseSessionPanes', () => {
   it('maps marked panes to codenames and skips unmarked panes', () => {
-    const output = '%0 \n%1 f1:midgard-1\n%2\n%3 f1:pr-shepherd\n';
+    const output = '%0 \n%1 f1:project-1\n%2\n%3 f1:pr-shepherd\n';
     const map = parseSessionPanes(output, 'f1');
-    expect(map.get('midgard-1')).toBe('%1');
+    expect(map.get('project-1')).toBe('%1');
     expect(map.get('pr-shepherd')).toBe('%3');
     expect(map.size).toBe(2);
   });

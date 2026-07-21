@@ -1,6 +1,6 @@
 import type { ChannelAction, ChannelMessage } from '../channels/types.js';
 import type { Store } from '../store/index.js';
-import type { Messaging } from './messaging.js';
+import { renderMessageReceipt, type Messaging } from './messaging.js';
 import { messageEnvelope } from './utils.js';
 
 const MAX_OPTIONS = 8;
@@ -66,7 +66,8 @@ export class OperatorRequests {
       if (!this.deps.store.finalizeOperatorRequest(requestId, selectedIndex)) {
         throw new Error(`Operator request #${String(requestId)} could not be finalized.`);
       }
-      return `${delivery} Response recorded: ${selected}`;
+      const renderedDelivery = typeof delivery === 'string' ? delivery : renderMessageReceipt(delivery);
+      return `${renderedDelivery} Response recorded: ${selected}`;
     } catch (error) {
       this.deps.store.releaseOperatorRequest(requestId);
       throw error;

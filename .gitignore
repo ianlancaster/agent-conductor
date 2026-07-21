@@ -6,4 +6,7 @@ data/
 .env
 .DS_Store
 /plans
+/reviews
+/config
+/agent-conductor
 AGENTS.override.md

@@ -22,7 +22,13 @@ export interface MessageRow {
   type: 'message' | 'broadcast';
   content: string;
   status: 'pending' | 'delivered';
+  idempotency_key: string | null;
   created_at: string;
+}
+
+export interface MessageInsertResult {
+  row: MessageRow;
+  deduplicated: boolean;
 }
 
 export interface HealthLogRow {
@@ -141,6 +147,12 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_operator_requests_status ON operator_requests(status, id);
   `,
+  `
+  ALTER TABLE messages ADD COLUMN idempotency_key TEXT;
+  CREATE UNIQUE INDEX idx_messages_sender_idempotency
+    ON messages(sender, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+  `,
 ];
 
 export class Store {
@@ -204,11 +216,49 @@ export class Store {
 
   // ── messages ──────────────────────────────────────────────────────────────
 
-  insertMessage(sender: string, recipient: string, type: MessageRow['type'], content: string): number {
+  insertMessage(
+    sender: string,
+    recipient: string,
+    type: MessageRow['type'],
+    content: string,
+    idempotencyKey?: string,
+  ): number {
     const result = this.db
-      .prepare('INSERT INTO messages (sender, recipient, type, content) VALUES (?, ?, ?, ?)')
-      .run(sender, recipient, type, content);
+      .prepare('INSERT INTO messages (sender, recipient, type, content, idempotency_key) VALUES (?, ?, ?, ?, ?)')
+      .run(sender, recipient, type, content, idempotencyKey ?? null);
     return Number(result.lastInsertRowid);
+  }
+
+  insertDirectMessage(
+    sender: string,
+    recipient: string,
+    content: string,
+    idempotencyKey?: string,
+  ): MessageInsertResult {
+    return this.db.transaction(() => {
+      if (idempotencyKey === undefined) {
+        const id = this.insertMessage(sender, recipient, 'message', content);
+        const row = this.getMessage(id);
+        if (row === undefined) throw new Error(`Message #${String(id)} was not persisted.`);
+        return { row, deduplicated: false };
+      }
+
+      const inserted = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO messages (sender, recipient, type, content, idempotency_key)
+           VALUES (?, ?, 'message', ?, ?)`,
+        )
+        .run(sender, recipient, content, idempotencyKey);
+      const row = this.getDirectMessageByIdempotencyKey(sender, idempotencyKey);
+      if (row === undefined) throw new Error('Idempotent message was not persisted.');
+      return { row, deduplicated: inserted.changes === 0 };
+    })();
+  }
+
+  getDirectMessageByIdempotencyKey(sender: string, idempotencyKey: string): MessageRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM messages WHERE sender = ? AND idempotency_key = ? AND type = 'message'")
+      .get(sender, idempotencyKey) as MessageRow | undefined;
   }
 
   markMessageDelivered(id: number): void {

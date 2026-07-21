@@ -59,6 +59,7 @@ tools: message the session, ask the operator, or do nothing.
 - Claude Code (`claude`) and/or OpenAI Codex (`codex`)
 - iTerm2 on macOS, or tmux on macOS/Linux
 - `curl` for runtime lifecycle hooks
+- GitHub CLI (`gh`) only when using the optional PR Shepherd
 
 Telegram is optional.
 
@@ -72,7 +73,7 @@ pnpm build
 pnpm link --global
 ```
 
-This installs the `conductor` command globally. Until the npm package is published, you can
+This installs the `conductor` and standalone `pr-shepherd` commands globally. Until the npm package is published, you can
 also run the CLI from the repository with `pnpm cli <arguments>`.
 
 ## Quick start
@@ -270,11 +271,23 @@ intentionally not exposed as agent tools. `/respond <request-id> <option-number>
 first selected response back to the requesting session; it does not approve or execute an
 action.
 
-`send_to_session` returns a durable message receipt. A queued receipt remains pending across
-agent or conductor restarts and can be inspected with `get_message_status` or
-`/message-status`. `type_in_pane` is intentionally different: it writes immediately for
+`send_to_session` returns `{ messageId, recipient, status, deduplicated }`. Its optional
+1–128 character `idempotencyKey` is scoped to the mechanically assigned sender; retrying the
+same key returns the original receipt without inserting or delivering another message. A
+`queued` receipt is already persisted and remains pending across agent or conductor restarts.
+It can be inspected with `get_message_status` or `/message-status`. `type_in_pane` is intentionally different: it writes immediately for
 interactive prompts and slash commands, so callers must avoid using it while the operator is
 composing in that pane.
+
+## PR Shepherd V2
+
+The package also ships the opt-in `pr-shepherd` executable, a standalone GitHub polling
+service with a pure policy engine, strict YAML profiles, SQLite event/outbox persistence, and
+optional durable delivery to a Conductor coordinator session. Installing or starting
+Conductor never starts or initializes Shepherd; it runs only when explicitly invoked and has
+its own configuration, database, process lifecycle, and shutdown. See the complete
+[getting-started and configuration guide](docs/pr-shepherd.md) and
+[generic example profile](examples/pr-shepherd.yaml).
 
 ## Auto sessions and the stall sentinel
 
