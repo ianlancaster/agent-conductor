@@ -156,7 +156,8 @@ Claude Code and Codex settings used by newly started sessions; restart an existi
 session to pick it up.
 
 Claude Code receives a conductor-supplied status-line command showing model, context used,
-cost, project, worktree, Git branch, and staged/modified counts. Codex uses its native
+cost, project, worktree, Git branch, and staged/modified counts. It detects linked worktrees
+from Git when Claude Code did not create the worktree itself. Codex uses its native
 `tui.status_line` with the closest supported fields: model and reasoning, context used,
 tokens used, project, and Git branch. Codex does not currently expose dollar cost, worktree
 name, or working-tree change counts as native status-line items. You can further customize
@@ -366,6 +367,19 @@ Create an isolated worktree session without cloning the repository again:
 ```
 
 The equivalent MCP call is `spawn_session` with `worktreeRepo` and an optional `branch`.
+The destination is the explicit `path`, or `spawn.dirPattern` with `{codename}` substituted;
+both relative paths are resolved from the fleet directory. When the requested branch does not
+exist, Git creates it at the source repository's currently checked-out `HEAD`. Conductor does
+not fetch or choose a remote base implicitly. If the branch already exists, it is checked out
+as-is.
+
+Linked worktrees share Git history but have independent checked-out files. A branch already
+checked out elsewhere cannot also be checked out in the new worktree, so workflows should diff,
+rebase, or merge against a remote-tracking ref such as `origin/main` instead of running
+`git checkout main` inside the worktree. Gitignored and untracked files are not copied from the
+source working tree: local settings, secrets, dependency directories, and build artifacts must
+be seeded or recreated explicitly. For build work, fetch the desired refs and run the project's
+normal dependency/setup commands before making changes.
 
 Remove the session with `/teardown reviewer --delete`, or `teardown_session` with
 `deleteDir: true`. The conductor refuses to remove a dirty worktree, leaves the stopped session

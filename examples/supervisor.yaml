@@ -93,5 +93,7 @@ spawn:
   # resolved relative to the fleet dir; {codename} is substituted.
   #   './{codename}'  → inside the fleet dir (default)
   #   '../{codename}' → sibling of the fleet dir (keeps the fleet dir config-only)
+  # Worktree spawns use this destination too unless path/--path is supplied.
+  # New branches start at the source repository's current HEAD; no fetch is performed.
   dirPattern: './{codename}'
   markerFile: .agent-marker # presence marks a repo as an agent project (🤖) in status

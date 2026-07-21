@@ -25,7 +25,8 @@ you are from your connection; never claim to be another session.
   `[Message from operator] Response to request #…` message. Choices communicate the
   operator's answer only; they do not approve or execute another action.
 - `whoami` — your own codename and status (identity is mechanical; this is authoritative).
-- `list_sessions`, `get_session_status`, `tail_session` — fleet observability.
+- `list_sessions`, `get_session_status`, `tail_session` — fleet observability. Session status
+  includes the configured working-directory path and current Git branch.
 - `start_session`, `stop_session`, `continue_session` — lifecycle of existing sessions
   (`codename` may be a session or `all`; for an agent caller, `all` means every other session).
   Optional `runtime`: cc | claude-code | codex overrides the session default for that run
@@ -34,8 +35,10 @@ you are from your connection; never claim to be another session.
 - `spawn_session` — create + start a brand-new session. Args: `codename` (required),
   `runtime` (cc | claude-code | codex, default from supervisor config), `model`, `path`,
   `placement`, `headless`, and optional `bypassPermissions`. Set `worktreeRepo` to create its
-  directory as a git worktree (`branch` defaults to the codename). `teardown_session` reverses
-  it; `deleteDir` removes safe directories. Dirty worktrees are left registered and untouched.
+  directory as a git worktree (`branch` defaults to the codename). The destination is `path` or
+  the fleet's `spawn.dirPattern`; a new branch starts at the source repository's current HEAD,
+  while an existing branch is checked out as-is. `teardown_session` reverses it; `deleteDir`
+  removes safe directories. Dirty worktrees are left registered and untouched.
 - `toggle_auto` — toggle automatic stall routing for a session.
 - `pause_session`, `resume_session` — temporarily suppress a session's schedules and
   stall routing without changing its auto setting.

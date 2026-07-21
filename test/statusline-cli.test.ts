@@ -109,4 +109,43 @@ describe('configureStatusLines', () => {
       'Opus | 42% | $1.24 | 📁 conductor-statusline-' + baseDir.split('-').at(-1) + ' | 🌳 feature-one | 🌿 no branch',
     );
   });
+
+  it('detects a linked worktree that was created outside Claude Code', () => {
+    const paths = {
+      claudeSettingsPath: join(baseDir, 'claude', 'settings.json'),
+      codexConfigPath: join(baseDir, 'codex', 'config.toml'),
+      claudeScriptPath: join(baseDir, 'conductor', 'statusline.mjs'),
+    };
+    const source = join(baseDir, 'source');
+    const linked = join(baseDir, 'review-one');
+    mkdirSync(source);
+    const gitEnv = { ...process.env };
+    for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
+      delete gitEnv[key];
+    }
+    const git = (cwd: string, ...args: string[]): void => {
+      execFileSync('git', ['-C', cwd, '-c', 'user.name=test', '-c', 'user.email=test@example.com', ...args], {
+        stdio: 'ignore',
+        env: gitEnv,
+      });
+    };
+    git(source, 'init', '-b', 'main');
+    writeFileSync(join(source, 'README.md'), 'source\n');
+    git(source, 'add', '.');
+    git(source, 'commit', '-m', 'initial');
+    git(source, 'worktree', 'add', '-b', 'review-one', linked);
+
+    configureStatusLines({ paths });
+    const output = execFileSync(process.execPath, [paths.claudeScriptPath], {
+      encoding: 'utf8',
+      input: JSON.stringify({ model: { display_name: 'Opus' }, cwd: linked }),
+    });
+    const sourceOutput = execFileSync(process.execPath, [paths.claudeScriptPath], {
+      encoding: 'utf8',
+      input: JSON.stringify({ model: { display_name: 'Opus' }, cwd: source }),
+    });
+
+    expect(output).toContain('📁 review-one | 🌳 review-one | 🌿 review-one');
+    expect(sourceOutput).toContain('📁 source | 🌳 no worktree | 🌿 main');
+  });
 });

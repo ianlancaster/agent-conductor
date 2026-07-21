@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   addWorktree,
+  currentBranch,
   isWorktree,
   mainRepoFromGitdir,
   parseGitdirPointer,
@@ -62,6 +63,11 @@ describe('git integration', () => {
     expect(existsSync(join(dir, 'README.md'))).toBe(true);
     expect(isWorktree(dir)).toBe(true);
     expect(isWorktree(repo)).toBe(false);
+    expect(currentBranch(repo)).toBe('main');
+    expect(currentBranch(dir)).toBe('session-1');
+    const nested = join(dir, 'nested');
+    mkdirSync(nested);
+    expect(currentBranch(nested)).toBe('session-1');
     expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('session-1');
 
     expect(await removeWorktree(dir)).toBe('session-1'); // reports the branch left behind
