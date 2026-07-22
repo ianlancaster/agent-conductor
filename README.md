@@ -54,7 +54,7 @@ tools: message the session, ask the operator, or do nothing.
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 22.13 or newer (the non-LTS Node 23 line requires 23.4 or newer)
 - pnpm
 - Claude Code (`claude`) and/or OpenAI Codex (`codex`)
 - iTerm2 on macOS, or tmux on macOS/Linux

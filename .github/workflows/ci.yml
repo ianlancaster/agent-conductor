@@ -39,9 +39,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:coverage
 
+  minimum-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm exec vitest run test/sqlite.test.ts test/store.test.ts test/shepherd-store.test.ts
+
   gate:
     # Single required status check for branch protection.
-    needs: [quality, test]
+    needs: [quality, test, minimum-node]
     if: always()
     runs-on: ubuntu-latest
     steps:

@@ -1,8 +1,7 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
+import type { DatabaseSync } from 'node:sqlite';
 import type { RuntimeName } from '../config/schema.js';
 import type { Activity } from '../core/types.js';
+import { applyMigrations, openSqliteDatabase, withTransaction } from './sqlite.js';
 
 /** One launch of a session's CLI (start → stop). A session has many runs over time. */
 export interface RunRow {
@@ -160,27 +159,15 @@ const MIGRATIONS: string[] = [
 ];
 
 export class Store {
-  private readonly db: Database.Database;
+  private readonly db: DatabaseSync;
 
   constructor(dbPath: string) {
-    if (dbPath !== ':memory:') {
-      mkdirSync(dirname(dbPath), { recursive: true });
-    }
-    this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    this.migrate();
-  }
-
-  private migrate(): void {
-    const current = this.db.pragma('user_version', { simple: true }) as number;
-    for (let version = current; version < MIGRATIONS.length; version += 1) {
-      const sql = MIGRATIONS[version];
-      if (sql === undefined) continue;
-      this.db.transaction(() => {
-        this.db.exec(sql);
-        this.db.pragma(`user_version = ${version + 1}`);
-      })();
+    this.db = openSqliteDatabase(dbPath);
+    try {
+      applyMigrations(this.db, MIGRATIONS);
+    } catch (error) {
+      this.db.close();
+      throw error;
     }
   }
 
@@ -209,13 +196,15 @@ export class Store {
   }
 
   getActiveRuns(): RunRow[] {
-    return this.db.prepare("SELECT * FROM runs WHERE status = 'active' ORDER BY started_at").all() as RunRow[];
+    return this.db
+      .prepare("SELECT * FROM runs WHERE status = 'active' ORDER BY started_at")
+      .all() as unknown as RunRow[];
   }
 
   getRecentRuns(session: string, limit = 10): RunRow[] {
     return this.db
       .prepare('SELECT * FROM runs WHERE session = ? ORDER BY started_at DESC LIMIT ?')
-      .all(session, limit) as RunRow[];
+      .all(session, limit) as unknown as RunRow[];
   }
 
   // ── messages ──────────────────────────────────────────────────────────────
@@ -239,7 +228,7 @@ export class Store {
     content: string,
     idempotencyKey?: string,
   ): MessageInsertResult {
-    return this.db.transaction(() => {
+    return withTransaction(this.db, () => {
       if (idempotencyKey === undefined) {
         const id = this.insertMessage(sender, recipient, 'message', content);
         const row = this.getMessage(id);
@@ -256,7 +245,7 @@ export class Store {
       const row = this.getDirectMessageByIdempotencyKey(sender, idempotencyKey);
       if (row === undefined) throw new Error('Idempotent message was not persisted.');
       return { row, deduplicated: inserted.changes === 0 };
-    })();
+    });
   }
 
   getDirectMessageByIdempotencyKey(sender: string, idempotencyKey: string): MessageRow | undefined {
@@ -277,11 +266,11 @@ export class Store {
     if (recipient !== undefined) {
       return this.db
         .prepare("SELECT * FROM messages WHERE recipient = ? AND type = 'message' AND status = 'pending' ORDER BY id")
-        .all(recipient) as MessageRow[];
+        .all(recipient) as unknown as MessageRow[];
     }
     return this.db
       .prepare("SELECT * FROM messages WHERE type = 'message' AND status = 'pending' ORDER BY id")
-      .all() as MessageRow[];
+      .all() as unknown as MessageRow[];
   }
 
   // ── operator requests ────────────────────────────────────────────────────
@@ -357,7 +346,9 @@ export class Store {
   }
 
   resetRespondingOperatorRequests(): number {
-    return this.db.prepare("UPDATE operator_requests SET status = 'pending' WHERE status = 'responding'").run().changes;
+    return Number(
+      this.db.prepare("UPDATE operator_requests SET status = 'pending' WHERE status = 'responding'").run().changes,
+    );
   }
 
   // ── health log ────────────────────────────────────────────────────────────
@@ -372,9 +363,9 @@ export class Store {
     if (session !== undefined) {
       return this.db
         .prepare('SELECT * FROM health_log WHERE session = ? ORDER BY id DESC LIMIT ?')
-        .all(session, limit) as HealthLogRow[];
+        .all(session, limit) as unknown as HealthLogRow[];
     }
-    return this.db.prepare('SELECT * FROM health_log ORDER BY id DESC LIMIT ?').all(limit) as HealthLogRow[];
+    return this.db.prepare('SELECT * FROM health_log ORDER BY id DESC LIMIT ?').all(limit) as unknown as HealthLogRow[];
   }
 
   // ── session state ─────────────────────────────────────────────────────────
@@ -421,13 +412,13 @@ export class Store {
            updated_at = datetime('now')`,
       )
       .run({
-        session: state.session,
-        auto: state.auto ? 1 : 0,
-        tag: state.tag,
-        paused: state.paused ? 1 : 0,
-        activeRuntime: state.activeRuntime,
-        activeEffort: state.activeEffort,
-        activity: state.activity,
+        '@session': state.session,
+        '@auto': state.auto ? 1 : 0,
+        '@tag': state.tag,
+        '@paused': state.paused ? 1 : 0,
+        '@activeRuntime': state.activeRuntime,
+        '@activeEffort': state.activeEffort,
+        '@activity': state.activity,
       });
   }
 

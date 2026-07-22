@@ -10,7 +10,7 @@ invariants, extension seams, and testing strategy.
 
 ## Development setup
 
-Agent Conductor requires Node.js 22 or newer and pnpm.
+Agent Conductor requires Node.js 22.13 or newer (23.4 or newer on the non-LTS Node 23 line) and pnpm.
 
 ```bash
 pnpm install
