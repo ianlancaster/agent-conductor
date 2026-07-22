@@ -367,12 +367,16 @@ export class ConductorOperations {
       },
       {
         name: 'teardown_session',
-        description: 'Stop and deregister a session, optionally removing its guarded working directory.',
+        description:
+          'Stop and deregister a session, optionally removing its guarded working directory. Git-ignored files do not make a worktree dirty and are deleted with it.',
         audiences: BOTH,
         inputSchema: schema(
           {
             codename: stringProperty('Session codename'),
-            deleteDir: { type: 'boolean', description: 'Also remove the working directory when safe' },
+            deleteDir: {
+              type: 'boolean',
+              description: 'Also remove the working directory when safe; ignored files do not block removal',
+            },
           },
           ['codename'],
         ),
@@ -451,7 +455,7 @@ export class ConductorOperations {
       },
       {
         name: 'arm_fleet_watch',
-        description: `Watch a session group and alert the sentinel when every member remains stalled (default confirmation: ${String(this.deps.fleetStallDefaultSeconds)}s).`,
+        description: `Watch a session group and alert the sentinel—or the operator when none is designated—when every member remains stalled (default confirmation: ${String(this.deps.fleetStallDefaultSeconds)}s).`,
         audiences: BOTH,
         inputSchema: schema(
           {
@@ -477,8 +481,12 @@ export class ConductorOperations {
               ? Math.floor(args.thresholdSeconds)
               : this.deps.fleetStallDefaultSeconds;
           this.deps.sentinel.armFleetWatch({ name, sessions, thresholdSeconds });
+          const noSentinelNote =
+            this.deps.sentinel.sentinelCodename() === undefined
+              ? ' No sentinel is designated; alerts will go to the operator.'
+              : '';
           return Promise.resolve(
-            `Fleet watch '${name}' armed for ${sessions.join(', ')} (${String(thresholdSeconds)}s confirmation).`,
+            `Fleet watch '${name}' armed for ${sessions.join(', ')} (${String(thresholdSeconds)}s confirmation).${noSentinelNote}`,
           );
         },
       },

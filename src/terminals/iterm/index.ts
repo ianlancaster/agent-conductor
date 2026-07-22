@@ -213,7 +213,11 @@ export class ITermBackend implements TerminalBackend {
       return tailLines(contents, lines);
     } catch (err) {
       log().warn('iterm', `${pane.id.slice(0, 8)}: capture failed: ${String(err)}`);
-      return '';
+      // Empty output is valid for a genuinely blank pane. Propagate observation
+      // failures so health skips the sample, delivery uses its readiness
+      // fallback, and tail_session tells the caller it could not observe the
+      // pane instead of reporting a misleading empty tail.
+      throw err;
     }
   }
 

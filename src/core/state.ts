@@ -114,12 +114,13 @@ export class SessionStateManager {
     const state = this.mustGet(codename);
     state.paneId = paneId;
     state.running = paneId !== undefined;
-    // A fresh run starts NOT ready — the runtime proves liveness via its first
-    // lifecycle event. A cleared session is trivially not ready.
+    // A fresh run starts NOT ready — a hook, foreground process, or visible
+    // runtime chrome must prove launch completion. A cleared session is
+    // trivially not ready.
     state.ready = false;
   }
 
-  /** The runtime signalled it is up (first lifecycle event / adopted live pane). */
+  /** The runtime was observed up through a hook, process, chrome, or adopted live pane. */
   setReady(codename: string): void {
     const state = this.states.get(codename);
     if (state?.running === true) state.ready = true;

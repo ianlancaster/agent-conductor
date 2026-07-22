@@ -410,7 +410,8 @@ normal dependency/setup commands before making changes.
 Remove the session with `/teardown reviewer --delete`, or `teardown_session` with
 `deleteDir: true`. The conductor refuses to remove a dirty worktree, leaves the stopped session
 registered so cleanup can be retried, and keeps its branch in the main repository after a
-successful removal.
+successful removal. Git determines dirtiness: ignored files such as `.env.local`, local settings,
+and reports under ignored directories do not block removal and are deleted with the worktree.
 
 ## Telegram
 
@@ -560,7 +561,9 @@ Codex sessions receive isolated `CODEX_HOME` directories so `resume --last` cann
 another managed session's history. Before every start or continue, the conductor ensures an
 `AGENTS.override.md` injects its protocol. If the file is tracked, its existing instructions are
 preserved and the conductor section is appended; otherwise the file is created and added to the
-working directory's `.gitignore` automatically.
+working directory's `.gitignore` automatically. The launch also receives a mechanically scoped
+Conductor MCP URL and lifecycle notify hook, so Codex has the same fleet tools as Claude Code
+without trusting caller-supplied identity.
 
 ## Development
 

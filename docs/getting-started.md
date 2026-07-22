@@ -253,11 +253,13 @@ primitive, not an approval or execution queue.
   files (including local settings, secrets, and dependencies) are not copied, so run the repo's
   setup/install steps before build work.
   `/teardown --delete` refuses a dirty worktree and keeps the stopped session registered so you
-  can clean it and retry. Successful removal keeps the branch.
+  can clean it and retry. Successful removal keeps the branch. Git-ignored files do not count as
+  dirty; local reports, `.env.local`, and other ignored artifacts are deleted with the worktree.
 - **Codex sessions**: set `runtime: codex`. Before every start or continue, the conductor
   ensures `AGENTS.override.md` injects the protocol. Existing tracked instructions are
   preserved; otherwise the generated file is added to the repo's `.gitignore` automatically.
-  Each Codex session gets an isolated `CODEX_HOME` so sessions don't cross.
+  Each Codex session gets an isolated `CODEX_HOME` so sessions don't cross, plus a mechanically
+  scoped Conductor MCP endpoint and lifecycle notify hook.
 
 ---
 

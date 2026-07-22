@@ -12,6 +12,7 @@ let queue: DeliveryQueue;
 let pane: PaneRef;
 let ready: boolean;
 let deliveryEvents: string[];
+let runtimeObservations: string[];
 
 beforeEach(async () => {
   vi.useFakeTimers();
@@ -19,12 +20,14 @@ beforeEach(async () => {
   runtime = new FakeRuntime();
   ready = true;
   deliveryEvents = [];
+  runtimeObservations = [];
   pane = await backend.createPane('alpha', 'pane');
   queue = new DeliveryQueue({
     backend,
     runtimeFor: () => runtime,
     getPane: (session) => (session === 'alpha' ? pane : undefined),
     isReady: () => ready,
+    onRuntimeObserved: (session) => runtimeObservations.push(session),
     onDelivered: (session) => deliveryEvents.push(session),
     config: CONFIG,
   });
@@ -193,7 +196,7 @@ describe('DeliveryQueue', () => {
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual([]);
 
-    // First lifecycle event arrives → ready → next drain delivers.
+    // An independent runtime observation arrives → ready → next drain delivers.
     ready = true;
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['PING-42']);
@@ -204,6 +207,7 @@ describe('DeliveryQueue', () => {
     runtime.inputState = 'clear';
     ready = false;
     expect(await queue.deliverOrQueue('alpha', 'go')).toBe('delivered');
+    expect(runtimeObservations).toEqual(['alpha']);
   });
 
   it('treats capture failures as clear rather than blocking forever (when ready)', async () => {

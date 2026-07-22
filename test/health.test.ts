@@ -18,6 +18,7 @@ let monitor: HealthMonitor;
 let stalls: Recorded[];
 let sessionEnds: string[];
 let working: string[];
+let observed: string[];
 let paneId: string;
 
 beforeEach(async () => {
@@ -30,12 +31,14 @@ beforeEach(async () => {
   stalls = [];
   sessionEnds = [];
   working = [];
+  observed = [];
   monitor = new HealthMonitor({
     config: CONFIG,
     backend,
     runtimeFor: () => runtime,
     getPane: (session) => (session === 'alpha' ? { backend: 'fake', id: paneId } : undefined),
     getActiveSessions: () => ['alpha'],
+    onRuntimeObserved: (session) => observed.push(session),
     onStall: (session, kind, info) => stalls.push({ session, kind, reason: info.reason }),
     onWorking: (session) => working.push(session),
     onSessionEnd: (session) => sessionEnds.push(session),
@@ -97,6 +100,11 @@ describe('event-driven signals', () => {
 });
 
 describe('fallback pane-diff watchdog', () => {
+  it('reports a live foreground runtime before any lifecycle event arrives', async () => {
+    await monitor.heartbeat();
+    expect(observed).toEqual(['alpha']);
+  });
+
   it('skips pane-diffing while events are flowing', async () => {
     event('session-start');
     backend.setPaneContent(paneId, 'unchanged');
@@ -128,6 +136,7 @@ describe('fallback pane-diff watchdog', () => {
       runtimeFor: () => silent,
       getPane: () => ({ backend: 'fake', id: paneId }),
       getActiveSessions: () => ['alpha'],
+      onRuntimeObserved: (session) => observed.push(session),
       onStall: (session, kind, info) => stalls.push({ session, kind, reason: info.reason }),
       onWorking: (session) => working.push(session),
       onSessionEnd: (session) => sessionEnds.push(session),

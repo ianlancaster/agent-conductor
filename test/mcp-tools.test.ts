@@ -349,6 +349,15 @@ describe('surface contract', () => {
     expect(await tool('disarm_fleet_watch').handler({ name: 'pair' }, 'alpha')).toContain('disarmed');
   });
 
+  it('warns at arm time that a sentinel-less fleet watch alerts the operator', async () => {
+    sentinel.setSentinel(undefined);
+    const result = await tool('arm_fleet_watch').handler(
+      { name: 'pair', sessions: 'alpha,beta', thresholdSeconds: 0 },
+      'unknown',
+    );
+    expect(result).toContain('No sentinel is designated; alerts will go to the operator.');
+  });
+
   it('documents every shared operation and every session-facing tool', () => {
     const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
     const protocol = readFileSync(new URL('../prompts/conductor-protocol.md', import.meta.url), 'utf8');
