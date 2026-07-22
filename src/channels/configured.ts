@@ -9,6 +9,12 @@ function credential(env: NodeJS.ProcessEnv, name: string): string | undefined {
 
 /** Construct the package's explicitly enabled operator channels. */
 export function buildConfiguredChannels(config: SupervisorConfig, env: NodeJS.ProcessEnv): ChannelAdapter[] {
+  if (config.channels.slack.enabled) {
+    throw new Error(
+      'Slack is enabled, but this Agent Conductor build does not include the Slack adapter yet. ' +
+        'Set channels.slack.enabled to false until the adapter implementation is installed.',
+    );
+  }
   if (!config.channels.telegram.enabled) return [];
 
   const botToken = credential(env, 'CONDUCTOR_TELEGRAM_TOKEN');

@@ -107,6 +107,8 @@ runtimes:
 channels:
   telegram:
     enabled: false # opt in; credentials come from .conductor/.env or the inherited environment
+  slack:
+    enabled: false # opt in; credentials come from .conductor/.env or the inherited environment
 
 spawn:
   # Where /spawn and spawn_session create a session's working directory,

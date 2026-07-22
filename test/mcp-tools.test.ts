@@ -49,8 +49,7 @@ beforeEach(() => {
     backend,
     runtimeFor: () => runtime,
     getPane: (a) => lifecycle.getPane(a),
-    isReady: (a) => states.isReady(a),
-    config: { queueDrainMs: 2000, queueMaxAgeMs: 60_000 },
+    config: { queueDrainMs: 2000 },
   });
   const lifecycle = new Lifecycle({
     store,
@@ -377,6 +376,24 @@ describe('surface contract', () => {
     for (const command of buildOperatorCommands(operations)) {
       expect(readme, `/${command.command} missing from README`).toContain(`/${command.command}`);
     }
+  });
+
+  it('makes direct messaging the default for peer interaction and restricts tailing', () => {
+    const protocol = readFileSync(new URL('../prompts/conductor-protocol.md', import.meta.url), 'utf8');
+    expect(protocol).toMatch(/Ask the peer directly instead of\s+silently reading its terminal\./u);
+    expect(protocol).toContain('`tail_session` is not a substitute for communication');
+    expect(protocol).toContain('You already contacted the peer through `send_to_session`');
+    expect(protocol).toContain('The user explicitly asks you to tail');
+    expect(protocol).toContain('Prefer `get_session_status` for non-invasive liveness checks.');
+    expect(protocol).toContain('Peer conversation is event-driven.');
+    expect(protocol).toMatch(
+      /end your turn; the peer's response will arrive as a new message and activate your\s+next turn/u,
+    );
+    expect(protocol).toContain('Do not create timers, sleep loops, recurring monitors, scheduled checks');
+    expect(protocol).toContain('never poll the peer');
+    expect(operations.definition('tail_session')?.description).toContain(
+      'use send_to_session for normal agent conversation and status requests',
+    );
   });
 });
 

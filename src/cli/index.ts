@@ -13,7 +13,7 @@ import { resolveFleetDataDir } from '../config/paths.js';
 import { Supervisor } from '../core/supervisor.js';
 import { Store } from '../store/index.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
-import { initFleet } from './init.js';
+import { ensureFleetScaffold } from './scaffold.js';
 import { configureStatusLines } from './statusline.js';
 import { formatFeedPayload, formatTerminalReply } from './terminal-format.js';
 
@@ -215,15 +215,6 @@ async function runForeground(startAll: boolean): Promise<void> {
 }
 
 program
-  .command('init')
-  .description('Scaffold a fleet directory under .conductor/')
-  .option('-s, --session <codename>', 'Also create the first session config')
-  .option('-r, --repo <path>', "The session's project directory (required with --session)")
-  .action((opts: { session?: string; repo?: string }) => {
-    for (const line of initFleet(baseDir(), opts)) process.stdout.write(`${line}\n`);
-  });
-
-program
   .command('statusline')
   .description('Configure richer status lines for Claude Code and Codex (optional)')
   .action(() => {
@@ -232,10 +223,16 @@ program
 
 program
   .command('start')
-  .description('Launch the conductor and turn this terminal into the operator console')
+  .description('Initialize missing fleet files, launch the conductor, and open the operator console')
   .option('-a, --start-all', 'Start every configured session immediately')
   .option('-f, --foreground', 'Run the conductor process in this terminal instead (visible log feed, no console)')
   .action(async (opts: { startAll?: boolean; foreground?: boolean }) => {
+    const created = ensureFleetScaffold(baseDir());
+    if (created.length > 0) {
+      log('Initialized missing fleet files:');
+      for (const file of created) log(`  ${file}`);
+    }
+
     if (opts.foreground === true) {
       await runForeground(opts.startAll ?? false);
       return;

@@ -40,7 +40,7 @@ describe('Messaging durable delivery recovery', () => {
     states.setReady('beta');
 
     const blockedRuntime = new FakeRuntime();
-    blockedRuntime.inputState = 'operator-draft';
+    blockedRuntime.inputState = 'draft';
     const firstQueue = makeQueue(blockedRuntime, pane.id);
     const firstMessaging = makeMessaging(firstQueue);
 
@@ -100,7 +100,6 @@ describe('Messaging durable delivery recovery', () => {
       backend,
       runtimeFor: () => runtime,
       getPane: (session) => (session === 'beta' ? { backend: 'fake', id: paneId } : undefined),
-      isReady: (session) => states.isReady(session),
       config: CONFIG,
     });
     queues.push(queue);

@@ -5,12 +5,16 @@ one hand-driven session, then auto stall handling with a sentinel, then remote c
 Do them in order — each step assumes the previous one worked.
 
 Prerequisites and install are in the [README](../README.md). This guide assumes
-`conductor` is on your PATH. Scaffold a fleet directory first:
+`conductor` is on your PATH. Create a fleet directory and start it:
 
 ```bash
 mkdir ~/fleet && cd ~/fleet
-conductor init
+conductor start
 ```
+
+The first start creates every missing fleet scaffold file automatically, then opens the operator console.
+Existing configuration and secrets are never overwritten. A new `supervisor.yaml` records the complete
+effective defaults, including the values derived for this fleet and disabled Telegram and Slack blocks.
 
 ---
 
@@ -19,8 +23,8 @@ conductor init
 ```
 ~/fleet/
 └── .conductor/
-    ├── env.template           # public environment-variable stubs
-    ├── .env                   # optional fleet secrets (create it yourself)
+    ├── env.template           # public copy of the environment-variable stubs
+    ├── .env                   # owner-only, gitignored fleet secrets with inert stubs
     ├── .gitignore             # ignores only .env and data/
     ├── config/
     │   ├── supervisor.yaml    # fleet-wide settings
@@ -56,14 +60,14 @@ mv config .conductor/config
 [ ! -f .env ] || mv .env .conductor/.env # only if this is Conductor's fleet env
 ```
 
-Run `conductor validate` before starting it again. Never copy or move `data/` while the old Conductor is
-running.
+Run `conductor validate` before starting it again. The next `conductor start` fills in any scaffold files
+that are still missing. Never copy or move `data/` while the old Conductor is running.
 
 ---
 
 ## Optional — richer runtime status lines
 
-This is not part of fleet initialization. If you want richer footers in managed Claude Code
+This is not part of fleet startup. If you want richer footers in managed Claude Code
 and Codex panes, run the opt-in user setup once:
 
 ```bash
@@ -83,34 +87,26 @@ the conductor launches the session and relays your messages, but does not route 
 isolates the terminal/launch machinery from the health/sentinel machinery, so if
 something is wrong with your iTerm2 or `claude` setup you find out cleanly.
 
-1. Create the session config (point it at a real repo you don't mind a session touching):
+1. At the `conductor>` prompt opened above, register and start a session in a real repo you don't mind it
+   touching:
 
-   ```bash
-   conductor init --session alpha --repo /path/to/some/project
+   ```text
+   /spawn alpha --path /path/to/some/project
    ```
 
-   That writes `.conductor/config/sessions/alpha.yaml` — open it to see the optional knobs
-   (`runtime: codex`, `model:`, `effort:`, `schedules:`).
+   That writes `.conductor/config/sessions/alpha.yaml` and starts the session. Open the YAML to see the
+   optional knobs (`runtime: codex`, `model:`, `effort:`, `schedules:`).
 
-   To make Codex the fleet default, set `defaults.runtime: codex` in
-   `.conductor/config/supervisor.yaml`; a session-level `runtime` still overrides it.
+   To use Codex immediately, add `--runtime codex` to `/spawn`. To make it the fleet default, set
+   `defaults.runtime: codex` in `.conductor/config/supervisor.yaml` and restart before spawning;
+   a session-level `runtime` still overrides it.
 
 2. Leave auto off for the shakedown (the default). To make the default explicit in
    `.conductor/config/supervisor.yaml`, use `defaults.auto: false`.
 
-3. Launch (this terminal becomes the operator console; the conductor process runs
-   hidden in the background and stops when you close the console):
-
-   ```bash
-   cd ~/fleet
-   conductor validate      # expect: Config OK.
-   conductor start
-   ```
-
-   At the `conductor>` prompt:
+3. Exercise the session from the same `conductor>` prompt:
 
    ```
-   /start alpha            # opens a pane, launches `claude` in your repo
    /status                 # "Sessions:" then "  alpha - CC · 🟢 working"
    /tell alpha summarize what this project does
    /tail alpha 40          # see the session's pane contents
@@ -202,12 +198,11 @@ stalls, the conductor alerts you directly.
        enabled: true
    ```
 
-4. Copy the scaffolded template to the fleet's gitignored `.conductor/.env`, restrict its permissions,
-   and fill in the values:
+4. Fill in the Telegram values in the owner-only, gitignored `.conductor/.env` created by
+   `conductor start`:
 
    ```bash
-   cp .conductor/env.template .conductor/.env
-   chmod 600 .conductor/.env
+   ${EDITOR:-vi} .conductor/.env
    ```
 
    ```dotenv

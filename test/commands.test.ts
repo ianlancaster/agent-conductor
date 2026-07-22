@@ -54,8 +54,7 @@ beforeEach(() => {
     backend,
     runtimeFor: () => runtime,
     getPane: (session) => lifecycle.getPane(session),
-    isReady: (session) => states.isReady(session),
-    config: { queueDrainMs: 2000, queueMaxAgeMs: 60_000 },
+    config: { queueDrainMs: 2000 },
   });
 
   lifecycle = new Lifecycle({
@@ -180,7 +179,7 @@ describe('session commands', () => {
 
   it('types raw text immediately without entering the protected delivery queue', async () => {
     await router.route('/start alpha');
-    runtime.inputState = 'operator-draft';
+    runtime.inputState = 'draft';
 
     expect(await router.route('/type alpha /model gpt-5.6')).toBe("Typed into alpha's pane.");
     expect(backend.paneFor('alpha')?.received).toEqual(['/model gpt-5.6']);
@@ -277,7 +276,7 @@ describe('conversation commands', () => {
 
   it('returns durable queued receipts and exposes their delivery status', async () => {
     await router.route('/start alpha');
-    runtime.inputState = 'operator-draft';
+    runtime.inputState = 'draft';
 
     expect(await router.route('/tell alpha wait for the draft')).toBe('Queued message #1 for alpha.');
     expect(JSON.parse(await router.route('/message-status 1'))).toMatchObject({

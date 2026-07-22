@@ -4,8 +4,8 @@ Use a dedicated test bot and private test chat. Never paste credentials into tes
 shell history, committed files, or screenshots.
 
 1. In a temporary fleet, set `channels.telegram.enabled: true`.
-2. Copy `.conductor/env.template` to `.conductor/.env`, run `chmod 600 .conductor/.env`, and fill in the test bot token and
-   permitted chat ID.
+2. Run `conductor start` once so the fleet scaffold exists, then fill in the test bot token and operator
+   chat ID in the generated owner-only `.conductor/.env`. Do not commit this file.
 3. Start the conductor and confirm `/status`, free text after `/talk`, and `//compact` route
    through the same operator command behavior as the console.
 4. From a managed session, call `send_to_operator` once without options and once with

@@ -410,19 +410,19 @@ describe('parseInputState', () => {
     expect(runtime.parseInputState('some output\n\n› \n  ⏎ send   Ctrl+J newline')).toBe('clear');
   });
 
-  it('recognizes built-in plain-text ghost hints without learning arbitrary content', () => {
+  it('blocks on all non-empty plain-text composer content', () => {
     const fresh = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
-    // Known Codex placeholders are safe even though iTerm strips their dim style.
-    expect(fresh.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
-    expect(fresh.parseInputState('› Explain this codebase', 'alpha')).toBe('clear');
-    // Arbitrary first-seen content is never learned as a placeholder.
-    expect(fresh.parseInputState('› refactor the parser', 'alpha')).toBe('operator-draft');
-    expect(fresh.parseInputState('› my half-typed operator draft', 'beta')).toBe('operator-draft');
+    // iTerm strips the dim styling that identifies placeholders, so safety
+    // requires treating even suggestion-shaped plain text as occupied input.
+    expect(fresh.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('draft');
+    expect(fresh.parseInputState('› Explain this codebase', 'alpha')).toBe('draft');
+    expect(fresh.parseInputState('› refactor the parser', 'alpha')).toBe('draft');
+    expect(fresh.parseInputState('› my half-typed operator draft', 'beta')).toBe('draft');
     expect(fresh.parseInputState('› ', 'alpha')).toBe('clear');
   });
 
   it('reports an operator draft for non-empty content when no session is given', () => {
-    expect(runtime.parseInputState('output\n› refactor the parser\n⏎ send')).toBe('operator-draft');
+    expect(runtime.parseInputState('output\n› refactor the parser\n⏎ send')).toBe('draft');
   });
 
   it('returns null when no composer row is visible', () => {
@@ -430,11 +430,13 @@ describe('parseInputState', () => {
     expect(runtime.parseInputState('')).toBeNull();
   });
 
-  it('treats a transcript echo of a delivered envelope as history, not typing', () => {
-    // Codex renders submitted messages with the same › prefix as the composer;
-    // while working, the composer row itself is hidden.
-    expect(runtime.parseInputState('output\n› [Message from operator] MSG-ONE-111\n\n  model med · /repo')).toBeNull();
-    expect(runtime.parseInputState('› [Broadcast from alpha] heads up', 'x')).toBeNull();
+  it('conservatively blocks on plain envelope rows whose composer status is ambiguous', () => {
+    // Plain iTerm capture cannot prove whether a › envelope row is submitted
+    // history or occupied input. The safe result is draft in both cases.
+    expect(runtime.parseInputState('output\n› [Message from operator] MSG-ONE-111\n\n  model med · /repo')).toBe(
+      'draft',
+    );
+    expect(runtime.parseInputState('› [Broadcast from alpha] heads up', 'x')).toBe('draft');
   });
 
   it('sees the composer through footer and hint chrome below it', () => {
@@ -458,28 +460,28 @@ describe('parseInputState — styled captures (tmux -e)', () => {
 
   it('detects the dim ghost hint as an EMPTY composer — no learning involved', () => {
     const capture = `${BOLD_GLYPH} \u001b[2mImplement {feature}\u001b[0m`;
-    // No session passed: styling alone decides — the plain path would say operator-draft.
+    // Styling proves this is a placeholder rather than actual input.
     expect(runtime.parseInputState(capture)).toBe('clear');
   });
 
   it('classifies unstyled content as an operator draft', () => {
-    expect(runtime.parseInputState(`${BOLD_GLYPH} hello this is my draft`, 'alpha')).toBe('operator-draft');
+    expect(runtime.parseInputState(`${BOLD_GLYPH} hello this is my draft`, 'alpha')).toBe('draft');
   });
 
   it('never learns operator text as a ghost hint (the restart-clobber bug)', () => {
     const fresh = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
     // A restarted conductor sees the operator's draft FIRST — with styling it
     // must classify, not learn.
-    expect(fresh.parseInputState(`${BOLD_GLYPH} my precious draft`, 'alpha')).toBe('operator-draft');
+    expect(fresh.parseInputState(`${BOLD_GLYPH} my precious draft`, 'alpha')).toBe('draft');
     // …and the real ghost hint later is still recognized as clear.
     expect(fresh.parseInputState(`${BOLD_GLYPH} \u001b[2mImplement {feature}\u001b[0m`, 'alpha')).toBe('clear');
     // …and the draft is STILL an operator draft afterwards.
-    expect(fresh.parseInputState(`${BOLD_GLYPH} my precious draft`, 'alpha')).toBe('operator-draft');
+    expect(fresh.parseInputState(`${BOLD_GLYPH} my precious draft`, 'alpha')).toBe('draft');
   });
 
-  it('recognizes a stuck conductor envelope in the live composer', () => {
+  it('treats a signed conductor envelope as an ordinary draft', () => {
     const capture = `${BOLD_GLYPH} [Message from operator] test envelope`;
-    expect(runtime.parseInputState(capture, 'alpha')).toBe('conductor-draft');
+    expect(runtime.parseInputState(capture, 'alpha')).toBe('draft');
   });
 
   it('treats a dim-glyph ›-row as transcript history (composer hidden)', () => {
@@ -494,7 +496,7 @@ describe('parseInputState — styled captures (tmux -e)', () => {
   it('does not mistake extended-color components for the dim attribute', () => {
     // 38;5;2 is a green FOREGROUND, not dim — this is typed text.
     const capture = `${BOLD_GLYPH} \u001b[38;5;2mgreen typed text\u001b[0m`;
-    expect(runtime.parseInputState(capture, 'alpha')).toBe('operator-draft');
+    expect(runtime.parseInputState(capture, 'alpha')).toBe('draft');
   });
 });
 

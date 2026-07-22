@@ -58,6 +58,7 @@ describe('loadSupervisorConfig', () => {
     expect(config.runtimes.codex.defaultEffort).toBeUndefined();
     expect(config.spawn.markerFile).toBe('.agent-marker');
     expect(config.channels.telegram.enabled).toBe(false);
+    expect(config.channels.slack.enabled).toBe(false);
     expect(config.paths.dataDir).toBe('./data');
   });
 
