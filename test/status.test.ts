@@ -1,5 +1,6 @@
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { formatSessionLine, resolvedSessionEffort, resolvedSessionModel } from '../src/core/status.js';
+import { displayPath, formatSessionLine, resolvedSessionEffort, resolvedSessionModel } from '../src/core/status.js';
 import type { SessionState } from '../src/core/types.js';
 
 function sessionState(overrides: Partial<SessionState> = {}): SessionState {
@@ -13,6 +14,19 @@ function sessionState(overrides: Partial<SessionState> = {}): SessionState {
     ...overrides,
   };
 }
+
+describe('displayPath', () => {
+  it('uses a home alias for the home directory and its descendants', () => {
+    const home = join('/Users', 'example');
+    expect(displayPath(home, home)).toBe('~');
+    expect(displayPath(join(home, 'Projects', 'alpha'), home)).toBe(join('~', 'Projects', 'alpha'));
+  });
+
+  it('does not abbreviate paths that merely share the home prefix', () => {
+    const home = join('/Users', 'ian');
+    expect(displayPath(join('/Users', 'ian-other', 'project'), home)).toBe(join('/Users', 'ian-other', 'project'));
+  });
+});
 
 describe('formatSessionLine', () => {
   it('shows the Claude Code runtime and no mode text when auto is off', () => {

@@ -325,7 +325,9 @@ program
   .command('status [session]')
   .description('Show fleet status from the running conductor')
   .action(async (session: string | undefined) => {
-    process.stdout.write(`${await sendCommand(session === undefined ? '/status' : `/status ${session}`)}\n`);
+    const command = session === undefined ? '/status' : `/status ${session}`;
+    const reply = await sendCommand(command);
+    process.stdout.write(`${formatTerminalReply(command, reply, process.stdout.isTTY === true)}\n`);
   });
 
 program
