@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Supervisor } from '../src/core/supervisor.js';
+import type { ChannelAdapter, ChannelHandlers, ChannelMessage } from '../src/channels/types.js';
 
 let baseDir: string;
 let supervisor: Supervisor | undefined;
@@ -59,9 +61,67 @@ describe('Supervisor construction', () => {
     expect(() => new Supervisor(baseDir, { env: {} })).toThrow(/CONDUCTOR_TELEGRAM_TOKEN.*CHAT_ID.*missing or blank/);
   });
 
-  it('fails clearly when Slack is enabled before the optional adapter is installed', () => {
+  it('fails clearly when Slack is enabled without its credentials', () => {
     writeConfig('terminal:\n  backend: tmux\nchannels:\n  slack:\n    enabled: true\n', {});
-    expect(() => new Supervisor(baseDir, { env: {} })).toThrow(/does not include the Slack adapter yet/);
+    expect(() => new Supervisor(baseDir, { env: {} })).toThrow(
+      /CONDUCTOR_SLACK_BOT_TOKEN.*CONDUCTOR_SLACK_APP_TOKEN.*CONDUCTOR_SLACK_OPERATOR_USER_ID/,
+    );
+  });
+
+  it('rolls back started channels and the MCP listener when a later channel fails startup', async () => {
+    const port = await freePort();
+    writeConfig(`terminal:\n  backend: tmux\nmcp:\n  port: ${String(port)}\n`, {});
+    const first = new ControlledChannel('first');
+    const failure = new ControlledChannel('failure', new Error('Slack preflight failed'));
+    supervisor = new Supervisor(baseDir, {
+      channels: [first, failure],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await expect(supervisor.start()).rejects.toThrow('Slack preflight failed');
+    expect(first.stopCount).toBe(1);
+    expect(failure.stopCount).toBe(0);
+    await expect(canListen(port)).resolves.toBe(true);
+
+    // Failed startup released the fleet lock as well as the port.
+    await supervisor.stop();
+    supervisor = new Supervisor(baseDir, { channels: [], includeConfiguredChannels: false, env: {} });
+    await supervisor.start();
+  });
+
+  it('fans operator notifications out concurrently across adapters', async () => {
+    const port = await freePort();
+    writeConfig(`terminal:\n  backend: tmux\nmcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    let releaseSlow: (() => void) | undefined;
+    const blocked = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const slow = new ControlledChannel('slow', undefined, async () => blocked);
+    const fast = new ControlledChannel('fast');
+    supervisor = new Supervisor(baseDir, {
+      channels: [slow, fast],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+
+    const response = fetch(`http://127.0.0.1:${String(port)}/mcp/alpha`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'send_to_operator', arguments: { message: 'Ready?' } },
+      }),
+    });
+    await until(() => fast.sent.length === 1);
+    expect(slow.sent).toHaveLength(1);
+    releaseSlow?.();
+    expect((await response).status).toBe(200);
   });
 
   it('honors injected/global environment over fleet .env for configured channels', () => {
@@ -208,3 +268,55 @@ describe('Supervisor construction', () => {
     expect(status.slice(sessionsAt)).toContain('beta');
   });
 });
+
+class ControlledChannel implements ChannelAdapter {
+  readonly sent: ChannelMessage[] = [];
+  stopCount = 0;
+
+  constructor(
+    readonly name: string,
+    private readonly startError?: Error,
+    private readonly onSend?: (message: ChannelMessage) => Promise<void>,
+  ) {}
+
+  async start(_handlers: ChannelHandlers): Promise<void> {
+    if (this.startError !== undefined) throw this.startError;
+  }
+
+  async send(message: ChannelMessage): Promise<void> {
+    this.sent.push(message);
+    await this.onSend?.(message);
+  }
+
+  async stop(): Promise<void> {
+    this.stopCount += 1;
+  }
+}
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (typeof address !== 'object' || address === null) throw new Error('no test port');
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return address.port;
+}
+
+async function canListen(port: number): Promise<boolean> {
+  const server = createServer();
+  return new Promise((resolve) => {
+    server.once('error', () => resolve(false));
+    server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
+  });
+}
+
+async function until(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const started = Date.now();
+  while (!condition()) {
+    if (Date.now() - started > timeoutMs) throw new Error('condition not met');
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}

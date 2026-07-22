@@ -11,6 +11,8 @@ export type {
   ChannelMessage,
 } from './channels/types.js';
 export { renderChannelMessage } from './channels/render.js';
+export { SlackAdapter } from './channels/slack/index.js';
+export type { SlackAdapterConfig, SlackAdapterOptions } from './channels/slack/index.js';
 export { TelegramAdapter } from './channels/telegram/index.js';
 export type { TelegramAdapterConfig } from './channels/telegram/index.js';
 export * from './shepherd/index.js';

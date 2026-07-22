@@ -362,7 +362,13 @@ export class Supervisor {
     await this.recoverPendingMessages();
 
     await this.mcpServer.start();
-    await this.connectChannels();
+    try {
+      await this.connectChannels();
+    } catch (error) {
+      await this.rollbackChannelStartup();
+      await this.mcpServer.stop();
+      throw error;
+    }
 
     const heartbeatMs = this.config.supervisor.heartbeatIntervalSeconds * 1000;
     this.heartbeatTimer = setInterval(() => {
@@ -399,8 +405,15 @@ export class Supervisor {
     this.health.stop();
     this.sentinel.stop();
     this.delivery.stop();
-    for (const channel of this.channels) {
-      await channel.stop();
+    const stoppedChannels = this.channels.splice(0);
+    const stopResults = await Promise.allSettled(stoppedChannels.map((channel) => channel.stop()));
+    for (const [index, result] of stopResults.entries()) {
+      if (result.status === 'rejected') {
+        log().warn(
+          'supervisor',
+          `channel ${stoppedChannels[index]?.name ?? String(index)} stop failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+        );
+      }
     }
     await this.mcpServer.stop();
     this.store.close();
@@ -570,6 +583,19 @@ export class Supervisor {
     }
   }
 
+  private async rollbackChannelStartup(): Promise<void> {
+    const started = this.channels.splice(0);
+    const results = await Promise.allSettled(started.map((channel) => channel.stop()));
+    for (const [index, result] of results.entries()) {
+      if (result.status === 'rejected') {
+        log().warn(
+          'supervisor',
+          `channel ${started[index]?.name ?? String(index)} rollback failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+        );
+      }
+    }
+  }
+
   private async channelSend(message: ChannelMessage): Promise<boolean> {
     // Attached operator consoles (conductor start / conductor console) get
     // every operator-bound message pushed over the /feed SSE stream.
@@ -581,13 +607,13 @@ export class Supervisor {
       }
       return true;
     }
-    for (const channel of this.channels) {
-      try {
-        await channel.send(message);
-      } catch (err) {
+    const results = await Promise.allSettled(this.channels.map((channel) => channel.send(message)));
+    for (const [index, result] of results.entries()) {
+      if (result.status === 'rejected') {
+        const channel = this.channels[index];
         log().warn(
           'supervisor',
-          `channel ${channel.name} send failed: ${err instanceof Error ? err.message : String(err)}`,
+          `channel ${channel?.name ?? String(index)} send failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
         );
       }
     }

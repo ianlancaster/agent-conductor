@@ -459,6 +459,32 @@ This records an answer only; it is not an approval or escalation queue.
 Telegram permits only one long-polling process per bot token. Use a separate bot token for
 each concurrently running fleet.
 
+## Slack
+
+Slack is also bundled, optional, and disabled by default. It connects outbound through Socket Mode and
+restricts control to one configured member's private App Home conversation—there is no public webhook,
+channel access, or workspace slash command. Enable it with:
+
+```yaml
+channels:
+  slack:
+    enabled: true
+```
+
+The first `conductor start` scaffolds the required `CONDUCTOR_SLACK_*` values in `.conductor/.env`.
+Creating the private Slack app, assigning its least-privilege scopes, and finding the operator member ID
+are covered by the copyable manifest and walkthrough in the [Slack adapter guide](guides/slack-adapter.md).
+Use a separate Slack app for each concurrently running fleet.
+
+Inside **Apps > Agent Conductor > Messages**, prefix Conductor commands with `!` (`!status`, `!talk
+alpha`, `!help`). Ordinary text goes to the active talk session. `!send /compact` sends a leading-slash
+line through to that session, and `!!important` sends literal text beginning with `!`.
+
+Slack's runtime packages are optional dependencies installed by default. A consumer intentionally using
+`--omit=optional` keeps the core/Telegram installation lean, but must reinstall optional dependencies
+before enabling Slack. When multiple operator adapters are enabled, all receive outbound notifications;
+responses remain scoped to the originating conversation and the first `/respond` answer wins.
+
 ## Adding an operator adapter
 
 Operator transports implement the small `ChannelAdapter` interface:
@@ -502,8 +528,9 @@ Core lifecycle and messaging policy stays in the canonical operations.
 
 Semantic actions contain canonical commands such as `/respond 42 2`. Rich adapters may render
 native controls; text-only adapters can use the exported `renderChannelMessage` fallback.
-`TelegramAdapter`, its configuration type, and all channel contract types are exported for
-embedding.
+`TelegramAdapter`, `SlackAdapter`, their configuration types, and all channel contract types are exported
+for embedding. Importing the package does not load Slack's optional SDK modules unless the Slack adapter
+is actually started.
 
 Bundled channels are opt-in integrations whose configuration and credential discovery ship
 with the package. Injected channels are constructed by the embedding application and may use
