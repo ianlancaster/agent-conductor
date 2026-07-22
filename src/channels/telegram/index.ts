@@ -1,6 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { log } from '../../logger.js';
+import { classifySlashInput, type ClassifiedChannelInput } from '../classify.js';
 import type { ChannelAdapter, ChannelHandlers, ChannelMessage } from '../types.js';
 import { renderChannelMessage } from '../render.js';
 import { splitMessage } from './split.js';
@@ -55,22 +56,7 @@ class TelegramApiError extends Error {
 
 // ── Pure update classification ───────────────────────────────────────────────
 
-export type ClassifiedUpdate =
-  { kind: 'command'; command: string; args: string[] } | { kind: 'freeText'; text: string };
-
-function classifyText(text: string): ClassifiedUpdate {
-  if (text.startsWith('//')) {
-    return { kind: 'freeText', text: text.slice(1) };
-  }
-
-  if (text.startsWith('/')) {
-    const parts = text.split(/\s+/).filter((part) => part.length > 0);
-    const command = (parts[0] ?? '/').slice(1);
-    return { kind: 'command', command, args: parts.slice(1) };
-  }
-
-  return { kind: 'freeText', text };
-}
+export type ClassifiedUpdate = ClassifiedChannelInput;
 
 /**
  * Classify an incoming Telegram update for routing:
@@ -88,13 +74,13 @@ function classifyText(text: string): ClassifiedUpdate {
 export function classifyUpdate(update: TelegramUpdate): ClassifiedUpdate | undefined {
   const callbackData = update.callback_query?.data;
   if (callbackData !== undefined) {
-    const classified = classifyText(callbackData);
+    const classified = classifySlashInput(callbackData);
     return classified.kind === 'command' ? classified : undefined;
   }
 
   const text = update.message?.text;
   if (text === undefined) return undefined;
-  return classifyText(text);
+  return classifySlashInput(text);
 }
 
 interface TelegramInlineButton {

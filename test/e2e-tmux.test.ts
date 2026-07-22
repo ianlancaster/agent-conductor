@@ -17,6 +17,12 @@ import { Supervisor } from '../src/core/supervisor.js';
 import { FakeChannel } from './fakes/fake-channel.js';
 import { TmuxBackend } from '../src/terminals/tmux/index.js';
 import { hasShellPrompt } from '../src/terminals/tmux/tmux.js';
+import {
+  SlackAdapter,
+  type SlackClientFactory,
+  type SlackSocketClient,
+  type SlackWebClient,
+} from '../src/channels/slack/index.js';
 
 /**
  * End-to-end tests against a REAL tmux server. The "session" is a shell script
@@ -277,6 +283,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
     let supervisor: Supervisor;
     let channel: FakeChannel;
     let secondChannel: FakeChannel;
+    let slack: E2eSlackTransport;
 
     beforeEach(() => {
       chmodSync(FAKE_BINARY, 0o755);
@@ -305,8 +312,13 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       writeFileSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'), `codename: alpha\nrepo: ${repo}\n`);
       channel = new FakeChannel();
       secondChannel = new FakeChannel();
+      slack = new E2eSlackTransport();
+      const slackAdapter = new SlackAdapter(
+        { appToken: 'xapp-e2e', botToken: 'xoxb-e2e', operatorUserId: 'U1' },
+        { clientFactory: slack.factory, sleep: async () => undefined },
+      );
       supervisor = new Supervisor(baseDir, {
-        channels: [channel, secondChannel],
+        channels: [channel, secondChannel, slackAdapter],
         includeConfiguredChannels: false,
         claudeJsonPath: join(baseDir, 'claude.json'),
       });
@@ -322,12 +334,19 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       await supervisor.start();
 
       expect(await channel.command('status')).toContain('alpha');
+      slack.message('!status');
+      await until(async () => slack.posts.some((post) => String(post.text).includes('alpha')));
 
       const startReply = await supervisor.command('/start alpha');
       expect(startReply).toBe('alpha started.');
 
       const tail = async (): Promise<string> => supervisor.command('/tail alpha 60');
       await until(async () => (await tail()).includes('FAKE SESSION START'));
+
+      slack.message('!talk alpha');
+      await until(async () => slack.posts.some((post) => String(post.text).includes('Talking to alpha')));
+      slack.message('hello through Slack');
+      await until(async () => (await tail()).includes('GOT: [Message from operator] hello through Slack'));
 
       const tellReply = await supervisor.command('/tell alpha hello from the operator');
       expect(tellReply).toContain('alpha');
@@ -352,8 +371,10 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       expect(requestPayload.result.content[0]?.text).toBe('Request #1 sent to the operator.');
       expect(channel.lastSent()).toEqual(secondChannel.lastSent());
       expect(channel.lastSent()?.actions?.[1]).toEqual({ label: 'Production', command: '/respond 1 2' });
-      expect(await channel.command('respond', ['1', '2'])).toContain('Response recorded: Production');
+      await until(async () => slack.posts.some((post) => Array.isArray(post.blocks)));
+      slack.action('/respond 1 2');
       await until(async () => (await tail()).includes('Response to request #1'));
+      expect(await channel.command('respond', ['1', '2'])).toContain('already answered');
 
       const status = supervisor.statusReport();
       expect(status).toContain('  alpha - CC · 🟢 working');
@@ -523,4 +544,66 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       expect(count(await tail(), 'cron-updated')).toBe(removedCount);
     }, 45_000);
   });
+
+  class E2eSlackTransport {
+    readonly posts: Record<string, unknown>[] = [];
+    private listener:
+      | ((request: Parameters<SlackSocketClient['on']>[1] extends (value: infer T) => void ? T : never) => void)
+      | undefined;
+
+    readonly socket: SlackSocketClient = {
+      on: (_event, listener) => {
+        this.listener = listener;
+        return this.socket;
+      },
+      off: (_event, listener) => {
+        if (this.listener === listener) this.listener = undefined;
+        return this.socket;
+      },
+      start: async () => ({}),
+      disconnect: async () => undefined,
+    };
+
+    readonly web: SlackWebClient = {
+      auth: { test: async () => ({ team_id: 'T1', user_id: 'UBOT' }) },
+      conversations: { open: async () => ({ channel: { id: 'D1' } }) },
+      chat: {
+        postMessage: async (payload) => {
+          this.posts.push(payload);
+          return { ok: true };
+        },
+      },
+    };
+
+    readonly factory: SlackClientFactory = { create: async () => ({ socket: this.socket, web: this.web }) };
+
+    message(text: string): void {
+      const id = `e${String(this.posts.length)}-${text}`;
+      this.listener?.({
+        ack: async () => undefined,
+        envelope_id: `env-${id}`,
+        type: 'events_api',
+        body: {
+          team_id: 'T1',
+          event_id: id,
+          event: { type: 'message', user: 'U1', channel: 'D1', channel_type: 'im', text },
+        },
+      });
+    }
+
+    action(value: string): void {
+      this.listener?.({
+        ack: async () => undefined,
+        envelope_id: `action-${String(this.posts.length)}`,
+        type: 'interactive',
+        body: {
+          type: 'block_actions',
+          team: { id: 'T1' },
+          user: { id: 'U1' },
+          channel: { id: 'D1' },
+          actions: [{ action_id: 'conductor_action_0', value }],
+        },
+      });
+    }
+  }
 });

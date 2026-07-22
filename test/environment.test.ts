@@ -80,6 +80,37 @@ describe('buildConfiguredChannels', () => {
     expect(channels.map((channel) => channel.name)).toEqual(['telegram']);
   });
 
+  it('constructs Slack only when explicitly enabled with all three credentials', () => {
+    writeFileSync(join(baseDir, '.conductor', 'config', 'supervisor.yaml'), 'channels:\n  slack:\n    enabled: true\n');
+    const config = loadSupervisorConfig(baseDir, {});
+    const channels = buildConfiguredChannels(config, {
+      CONDUCTOR_SLACK_APP_TOKEN: 'xapp-test',
+      CONDUCTOR_SLACK_BOT_TOKEN: 'xoxb-test',
+      CONDUCTOR_SLACK_OPERATOR_USER_ID: 'U123',
+    });
+    expect(channels.map((channel) => channel.name)).toEqual(['slack']);
+  });
+
+  it('composes enabled adapters and reports all missing channel credentials together', () => {
+    writeFileSync(
+      join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
+      'channels:\n  telegram:\n    enabled: true\n  slack:\n    enabled: true\n',
+    );
+    const config = loadSupervisorConfig(baseDir, {});
+    expect(() => buildConfiguredChannels(config, {})).toThrow(
+      /CONDUCTOR_TELEGRAM_TOKEN.*CONDUCTOR_TELEGRAM_CHAT_ID.*CONDUCTOR_SLACK_BOT_TOKEN.*CONDUCTOR_SLACK_APP_TOKEN.*CONDUCTOR_SLACK_OPERATOR_USER_ID/,
+    );
+    expect(
+      buildConfiguredChannels(config, {
+        CONDUCTOR_TELEGRAM_TOKEN: 'telegram-secret',
+        CONDUCTOR_TELEGRAM_CHAT_ID: '123',
+        CONDUCTOR_SLACK_APP_TOKEN: 'xapp-secret',
+        CONDUCTOR_SLACK_BOT_TOKEN: 'xoxb-secret',
+        CONDUCTOR_SLACK_OPERATOR_USER_ID: 'U123',
+      }).map((channel) => channel.name),
+    ).toEqual(['telegram', 'slack']);
+  });
+
   it('rejects missing or blank enabled credentials without reflecting values', () => {
     writeFileSync(
       join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
