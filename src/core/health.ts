@@ -19,6 +19,8 @@ export interface HealthDeps {
   runtimeFor(session: string): SessionRuntime | undefined;
   getPane(session: string): PaneRef | undefined;
   getActiveSessions(): string[];
+  /** A live foreground process proves launch completed even before a runtime hook fires. */
+  onRuntimeObserved?(session: string): void;
   onStall(session: string, kind: StallKind, info: StallInfo): void;
   onWorking(session: string): void;
   onSessionEnd(session: string): void;
@@ -144,6 +146,7 @@ export class HealthMonitor {
       this.deps.onSessionEnd(session);
       return;
     }
+    this.deps.onRuntimeObserved?.(session);
 
     const runtime = this.deps.runtimeFor(session);
     const hasEvents = runtime?.capabilities.lifecycleEvents === true;

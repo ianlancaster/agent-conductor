@@ -37,11 +37,14 @@ export interface DeliveryDeps {
   runtimeFor(session: string): SessionRuntime | undefined;
   getPane(session: string): PaneRef | undefined;
   /**
-   * Whether the session's runtime has proven it is up (first lifecycle event).
+   * Whether the session's runtime has proven it is up (event, foreground
+   * process, visible chrome, or adopted pane).
    * Until then nothing is typed into the pane — a message racing the launch
    * command splices into the shell line and corrupts it.
    */
   isReady(session: string): boolean;
+  /** Visible runtime input chrome is an independent readiness proof. */
+  onRuntimeObserved?(session: string): void;
   /** Called only after text has actually been submitted to a live runtime pane. */
   onDelivered?(session: string): void;
   config: {
@@ -182,7 +185,7 @@ export class DeliveryQueue {
    * Classify the pane for typing. Visible runtime chrome (parseInputState
    * returns non-null) proves the process is up — the draft's signature (or
    * absence of one) decides whose content is in the way. NO chrome (null, or
-   * capture failure) falls back to the event-based ready flag: ready → clear,
+   * capture failure) falls back to the independently proven ready flag: ready → clear,
    * otherwise `not-up`.
    */
   private async typingState(session: string, pane: PaneRef): Promise<TypingState> {
@@ -196,6 +199,7 @@ export class DeliveryQueue {
           : await this.deps.backend.capture(pane, 10);
       const state = runtime.parseInputState(capture, session);
       if (state === null) return fallback();
+      this.deps.onRuntimeObserved?.(session);
       if (state === 'clear') return 'clear';
       return state === 'operator-draft' ? 'operator' : 'busy';
     } catch {

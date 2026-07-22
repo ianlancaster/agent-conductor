@@ -21,7 +21,8 @@ export interface SessionState {
   effort?: string;
   running: boolean;
   /**
-   * The runtime process has proven it is up (first lifecycle event received).
+   * The runtime process has proven it is up through a lifecycle event,
+   * foreground-process check, visible runtime chrome, or adopted live pane.
    * Deliveries are queued until then — typing into a pane whose launch command
    * is still executing splices text into the shell line and corrupts it.
    */

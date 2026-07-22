@@ -140,6 +140,9 @@ export class Supervisor {
       runtimeFor: (session) => this.runtimeFor(session),
       getPane: (session) => this.lifecycle.getPane(session),
       isReady: (session) => this.states.isReady(session),
+      onRuntimeObserved: (session) => {
+        this.markRuntimeObserved(session);
+      },
       onDelivered: (session) => {
         if (this.states.get(session)?.running === true) this.states.setActivity(session, 'working');
         this.health.reset(session);
@@ -228,6 +231,9 @@ export class Supervisor {
       runtimeFor: (session) => this.runtimeFor(session),
       getPane: (session) => this.lifecycle.getPane(session),
       getActiveSessions: () => this.states.activeSessions(),
+      onRuntimeObserved: (session) => {
+        if (this.markRuntimeObserved(session)) void this.delivery.drainNow();
+      },
       onStall: (session, kind, info) => {
         this.states.setActivity(session, kind === 'idle' ? 'idle' : 'stalled');
         void this.sentinel.handleStall(session, kind, info);
@@ -499,16 +505,23 @@ export class Supervisor {
     log().debug('events', `${session}: ${parsed.type}${parsed.reason !== undefined ? ` (${parsed.reason})` : ''}`);
     // Any lifecycle event proves the runtime process is up — unblock queued
     // deliveries that were held to protect the launch command.
+    this.markRuntimeObserved(session);
+    this.health.handleEvent({ ...parsed, session, receivedAt: Date.now() });
+    void this.delivery.drainNow();
+  }
+
+  /** Record either hook, foreground-process, or runtime-chrome proof of a completed launch. */
+  private markRuntimeObserved(session: string): boolean {
     const wasReady = this.states.isReady(session);
     this.states.setReady(session);
-    if (!wasReady && this.states.isReady(session)) {
+    const becameReady = !wasReady && this.states.isReady(session);
+    if (becameReady) {
       // Titles set before/at launch get clobbered by the shell's title escape
       // when the launch command runs; the runtime never touches the title, so
       // a rename applied once it is up sticks.
       void this.retitle(session);
     }
-    this.health.handleEvent({ ...parsed, session, receivedAt: Date.now() });
-    void this.delivery.drainNow();
+    return becameReady;
   }
 
   /** Route /summon and /banish to the backend, with capability + liveness checks. */

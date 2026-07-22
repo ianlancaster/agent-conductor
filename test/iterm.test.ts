@@ -141,8 +141,8 @@ describe('tailLines', () => {
     expect(tailLines('a\nb', 10)).toBe('a\nb');
   });
 
-  it('ignores a single trailing newline', () => {
-    expect(tailLines('a\nb\nc\n', 2)).toBe('b\nc');
+  it('ignores trailing empty viewport rows before taking the tail', () => {
+    expect(tailLines('boot banner\n› Codex composer\n\n   \n\n', 2)).toBe('boot banner\n› Codex composer');
   });
 
   it('preserves interior blank lines', () => {
@@ -295,6 +295,8 @@ describe('script builders', () => {
     expect(script).toContain('if (id of s) is "SESSION-X" then');
     expect(script).toContain('set name to "n"');
     expect(script).toContain('return (contents as string)');
+    expect(script).toContain('set sessionList to every session of t');
+    expect(script).toContain('if errorNumber is not -1719 then error errorMessage number errorNumber');
   });
 
   it('buildInSessionScript defaults to returning "OK" and escapes the session id', () => {

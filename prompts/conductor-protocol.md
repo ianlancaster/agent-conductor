@@ -40,14 +40,16 @@ you are from your connection; never claim to be another session.
   directory as a git worktree (`branch` defaults to the codename). The destination is `path` or
   the fleet's `spawn.dirPattern`; a new branch starts at the source repository's current HEAD,
   while an existing branch is checked out as-is. `teardown_session` reverses it; `deleteDir`
-  removes safe directories. Dirty worktrees are left registered and untouched.
+  removes safe directories. Dirty worktrees are left registered and untouched, but Git-ignored
+  artifacts do not count as dirty and are deleted with the worktree.
 - `toggle_auto` — toggle automatic stall routing for a session.
 - `pause_session`, `resume_session` — temporarily suppress a session's schedules and
   stall routing without changing its auto setting.
 - `set_sentinel` — designate a registered session as the fleet stall sentinel, or
   clear the designation. The target should already have the sentinel instructions.
 - `arm_fleet_watch`, `disarm_fleet_watch`, `list_fleet_watches` — watch an explicit
-  group of sessions and escalate when every member remains stalled together.
+  group of sessions and escalate when every member remains stalled together. With no sentinel,
+  the alert goes directly to the operator.
 - `set_tag` — set or clear a status label; status results include the current label.
 - `get_message_status` — inspect whether a durable direct-message receipt is pending or delivered.
 - `type_in_pane` — raw immediate text into a peer's terminal (answering prompts, slash commands).

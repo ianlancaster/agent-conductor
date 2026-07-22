@@ -104,11 +104,17 @@ export function containsPromptMarker(contents: string): boolean {
   return /(?:(?<!\d)%|[$#❯>])$/.test(last);
 }
 
-/** Trailing `lines` lines of pane contents (a single trailing newline is ignored). */
+/** Trailing `lines` content rows, ignoring the terminal viewport's empty tail. */
 export function tailLines(contents: string, lines: number): string {
-  const trimmed = contents.endsWith('\n') ? contents.slice(0, -1) : contents;
   if (lines <= 0) return '';
-  return trimmed.split('\n').slice(-lines).join('\n');
+  const all = contents.split('\n');
+  let end = all.length;
+  while (end > 0) {
+    const line = all[end - 1];
+    if (line !== undefined && line.trim().length > 0) break;
+    end -= 1;
+  }
+  return all.slice(Math.max(0, end - lines), end).join('\n');
 }
 
 /**
@@ -303,14 +309,27 @@ export function buildInSessionScript(sessionId: string, operations: string, retu
     tell application "iTerm2"
       repeat with w in windows
         repeat with t in tabs of w
-          repeat with s in sessions of t
-            if (id of s) is "${escapeAppleScript(sessionId)}" then
-              tell s
-                ${operations}
-                return ${returnExpr}
-              end tell
-            end if
-          end repeat
+          try
+            -- Snapshot object references before iterating. iTerm mutates its
+            -- live session collection while panes open/close; iterating the
+            -- lazy every-session specifier can otherwise raise -1719 and
+            -- make unrelated captures and deliveries fail.
+            set sessionList to every session of t
+            repeat with s in sessionList
+              try
+                if (id of s) is "${escapeAppleScript(sessionId)}" then
+                  tell s
+                    ${operations}
+                    return ${returnExpr}
+                  end tell
+                end if
+              on error errorMessage number errorNumber
+                if errorNumber is not -1719 then error errorMessage number errorNumber
+              end try
+            end repeat
+          on error errorMessage number errorNumber
+            if errorNumber is not -1719 then error errorMessage number errorNumber
+          end try
         end repeat
       end repeat
       return "${SESSION_NOT_FOUND_RESULT}"
