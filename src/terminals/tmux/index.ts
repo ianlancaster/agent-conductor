@@ -25,7 +25,7 @@ const WORKSPACE_KEY = 'tmux.panes';
 
 const LAUNCH_TIMEOUT_MS = 8_000;
 const LAUNCH_POLL_MS = 250;
-const LAUNCH_RECOVERY_TIMEOUT_MS = 2_000;
+const LAUNCH_RECOVERY_TIMEOUT_MS = 8_000;
 
 export interface TmuxBackendConfig {
   sessionName: string;
@@ -269,28 +269,39 @@ export class TmuxBackend implements TerminalBackend {
    * the real launch command.
    */
   private async recoverShell(pane: PaneRef): Promise<void> {
-    const deadline = Date.now() + this.launchRecoveryTimeoutMs;
     const suffix = randomUUID().replaceAll('-', '');
     const marker = `__CONDUCTOR_SHELL_READY_${suffix}__`;
     // Split the marker across arguments so the echoed command line cannot be
     // mistaken for the probe's output in a pane capture.
     const probe = `printf '%s%s\\n' '__CONDUCTOR_SHELL_' 'READY_${suffix}__'`;
 
+    await tmux(['send-keys', '-t', pane.id, 'C-c']);
+    const idleDeadline = Date.now() + this.launchRecoveryTimeoutMs;
     for (;;) {
-      if (Date.now() >= deadline) {
+      await sleep(this.launchPollMs);
+      if (!(await this.isSessionActive(pane))) break;
+      if (Date.now() >= idleDeadline) {
+        throw new Error(
+          `tmux pane ${pane.id} did not return to an idle shell within ${String(this.launchRecoveryTimeoutMs)}ms`,
+        );
+      }
+    }
+
+    // Submit exactly once. Repeated Ctrl-C/probe cycles can continually
+    // interrupt slow prompt hooks (for example nvm auto-switching in a new
+    // git worktree), preventing a shell that is making progress from ever
+    // reaching the marker.
+    await this.run(pane, probe);
+    const probeDeadline = Date.now() + this.launchRecoveryTimeoutMs;
+    for (;;) {
+      await sleep(this.launchPollMs);
+      const capture = await tmux(['capture-pane', '-p', '-t', pane.id]);
+      if (capture.split('\n').some((line) => line.trim() === marker)) return;
+      if (Date.now() >= probeDeadline) {
         throw new Error(
           `tmux pane ${pane.id} did not execute a shell readiness probe within ${String(this.launchRecoveryTimeoutMs)}ms`,
         );
       }
-
-      await tmux(['send-keys', '-t', pane.id, 'C-c']);
-      await sleep(this.launchPollMs);
-      if (await this.isSessionActive(pane)) continue;
-
-      await this.run(pane, probe);
-      await sleep(this.launchPollMs);
-      const capture = await tmux(['capture-pane', '-p', '-t', pane.id]);
-      if (capture.split('\n').some((line) => line.trim() === marker)) return;
     }
   }
 
