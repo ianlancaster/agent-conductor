@@ -6,7 +6,7 @@ Installing or starting Agent Conductor does not start, initialize, configure, or
 
 ## Prerequisites
 
-- Node.js 22 or newer and the Agent Conductor package installed or built
+- Node.js 22.13 or newer (23.4 or newer on the non-LTS Node 23 line) and the Agent Conductor package installed or built
 - [GitHub CLI](https://cli.github.com/) available as `gh`
 - A successful `gh auth status` for the GitHub account that will poll repositories
 - Read access to the configured repositories; write access is required only for automation policies set to `execute`

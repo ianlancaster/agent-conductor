@@ -1,6 +1,5 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
+import type { DatabaseSync } from 'node:sqlite';
+import { applyMigrations, openSqliteDatabase, withTransaction } from '../store/sqlite.js';
 import type {
   CoordinatorReceipt,
   DiscoveryKind,
@@ -123,14 +122,16 @@ function outboxFromRow(row: OutboxRow): OutboxItem {
 }
 
 export class SqliteShepherdStore implements ShepherdStore {
-  private readonly db: Database.Database;
+  private readonly db: DatabaseSync;
 
   constructor(dbPath: string) {
-    if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
-    this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    this.migrate();
+    this.db = openSqliteDatabase(dbPath);
+    try {
+      applyMigrations(this.db, MIGRATIONS);
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   getEntity<T>(key: string): StoredEntity<T> | undefined {
@@ -145,11 +146,11 @@ export class SqliteShepherdStore implements ShepherdStore {
   }
 
   listEntities<T>(kind?: string): StoredEntity<T>[] {
-    const rows = (
-      kind === undefined
-        ? this.db.prepare('SELECT * FROM shepherd_entities ORDER BY key').all()
-        : this.db.prepare('SELECT * FROM shepherd_entities WHERE kind = ? ORDER BY key').all(kind)
-    ) as EntityRow[];
+    const rows = (kind === undefined
+      ? this.db.prepare('SELECT * FROM shepherd_entities ORDER BY key').all()
+      : this.db
+          .prepare('SELECT * FROM shepherd_entities WHERE kind = ? ORDER BY key')
+          .all(kind)) as unknown as EntityRow[];
     return rows.map((row) => ({
       key: row.key,
       kind: row.kind,
@@ -164,7 +165,7 @@ export class SqliteShepherdStore implements ShepherdStore {
     recipient?: string,
     deleteKeys: string[] = [],
   ): ShepherdEvent[] {
-    return this.db.transaction(() => {
+    return withTransaction(this.db, () => {
       const inserted: ShepherdEvent[] = [];
       const committedAt = new Date().toISOString();
       for (const update of updates) {
@@ -207,14 +208,14 @@ export class SqliteShepherdStore implements ShepherdStore {
       const remove = this.db.prepare('DELETE FROM shepherd_entities WHERE key = ?');
       for (const key of deleteKeys) remove.run(key);
       return inserted;
-    })();
+    });
   }
 
   deleteEntities(keys: string[]): void {
     const remove = this.db.prepare('DELETE FROM shepherd_entities WHERE key = ?');
-    this.db.transaction(() => {
+    withTransaction(this.db, () => {
       for (const key of keys) remove.run(key);
-    })();
+    });
   }
 
   hasCompletedBootstrap(kind: DiscoveryKind): boolean {
@@ -228,7 +229,7 @@ export class SqliteShepherdStore implements ShepherdStore {
   }
 
   claimOutbox(now: Date, limit = 20): OutboxItem[] {
-    return this.db.transaction(() => {
+    return withTransaction(this.db, () => {
       const rows = this.db
         .prepare(
           `SELECT id, event_id, recipient, idempotency_key, message, attempts, next_attempt_at
@@ -236,12 +237,12 @@ export class SqliteShepherdStore implements ShepherdStore {
            WHERE status = 'pending' AND next_attempt_at <= ?
            ORDER BY id LIMIT ?`,
         )
-        .all(now.toISOString(), limit) as OutboxRow[];
+        .all(now.toISOString(), limit) as unknown as OutboxRow[];
       const claim = this.db.prepare(
         "UPDATE shepherd_outbox SET status = 'sending', claimed_at = ? WHERE id = ? AND status = 'pending'",
       );
       return rows.filter((row) => claim.run(now.toISOString(), row.id).changes === 1).map(outboxFromRow);
-    })();
+    });
   }
 
   completeOutbox(id: number, receipt?: CoordinatorReceipt): void {
@@ -276,7 +277,7 @@ export class SqliteShepherdStore implements ShepherdStore {
   listEvents(limit = 100): ShepherdEvent[] {
     const rows = this.db
       .prepare('SELECT * FROM shepherd_events ORDER BY occurred_at DESC, id DESC LIMIT ?')
-      .all(limit) as EventRow[];
+      .all(limit) as unknown as EventRow[];
     return rows.map(eventFromRow);
   }
 
@@ -286,7 +287,7 @@ export class SqliteShepherdStore implements ShepherdStore {
         `SELECT id, event_id, recipient, idempotency_key, message, attempts, next_attempt_at
          FROM shepherd_outbox ${includeCompleted ? '' : "WHERE status NOT IN ('completed')"} ORDER BY id`,
       )
-      .all() as OutboxRow[];
+      .all() as unknown as OutboxRow[];
     return rows.map(outboxFromRow);
   }
 
@@ -298,17 +299,5 @@ export class SqliteShepherdStore implements ShepherdStore {
 
   close(): void {
     this.db.close();
-  }
-
-  private migrate(): void {
-    const current = this.db.pragma('user_version', { simple: true }) as number;
-    for (let version = current; version < MIGRATIONS.length; version += 1) {
-      const migration = MIGRATIONS[version];
-      if (migration === undefined) continue;
-      this.db.transaction(() => {
-        this.db.exec(migration);
-        this.db.pragma(`user_version = ${String(version + 1)}`);
-      })();
-    }
   }
 }
