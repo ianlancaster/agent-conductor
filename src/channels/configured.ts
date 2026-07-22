@@ -20,7 +20,7 @@ export function buildConfiguredChannels(config: SupervisorConfig, env: NodeJS.Pr
     ];
     throw new Error(
       `Telegram is enabled but ${missing.join(' and ')} ${missing.length === 1 ? 'is' : 'are'} missing or blank. ` +
-        'Set the value(s) in the fleet .env or inherited environment, or disable channels.telegram.',
+        'Set the value(s) in the fleet .conductor/.env or inherited environment, or disable channels.telegram.',
     );
   }
 

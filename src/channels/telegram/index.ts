@@ -247,7 +247,7 @@ export class TelegramAdapter implements ChannelAdapter {
             'telegram',
             'Another process is polling this bot token (Telegram 409). ' +
               'Each conductor needs its own bot token — set a different CONDUCTOR_TELEGRAM_TOKEN ' +
-              'for this fleet, or disable telegram in its config/supervisor.yaml.',
+              'for this fleet, or disable telegram in its .conductor/config/supervisor.yaml.',
           );
         } else {
           log().warn('telegram', `getUpdates failed, backing off ${ERROR_BACKOFF_MS}ms: ${String(err).slice(0, 200)}`);

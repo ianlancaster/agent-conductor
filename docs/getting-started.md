@@ -18,20 +18,46 @@ conductor init
 
 ```
 ~/fleet/
-├── env.template              # public environment-variable stubs (safe to commit)
-├── .env                      # optional fleet secrets (gitignored; create it yourself)
-├── config/
-│   ├── supervisor.yaml        # global settings
-│   └── sessions/
-│       ├── alpha.yaml         # one file per session (hot-reloaded)
-│       └── watch.yaml         # the stall sentinel (later)
-├── prompts/                   # optional: session-specific instructions
-│   └── sentinel.md
-└── data/                      # created on first run — SQLite, logs, per-session config
+└── .conductor/
+    ├── env.template           # public environment-variable stubs
+    ├── .env                   # optional fleet secrets (create it yourself)
+    ├── .gitignore             # ignores only .env and data/
+    ├── config/
+    │   ├── supervisor.yaml    # fleet-wide settings
+    │   └── sessions/
+    │       ├── alpha.yaml     # one file per session (hot-reloaded)
+    │       └── watch.yaml     # the stall sentinel (later)
+    ├── prompts/               # optional: session-specific instructions
+    │   └── sentinel.md
+    └── data/                  # created on first run — SQLite, logs, per-session runtime config
 ```
 
 Everything is relative to the fleet directory. Run `conductor` from inside it, or pass
 `-C ~/fleet` from anywhere.
+
+`supervisor.yaml` configures the whole fleet: terminal backend, defaults, channels, health policy, and
+runtime hints. It is not tied to the agent you want to message. Each managed agent has its own YAML file
+under `.conductor/config/sessions/`; `repo:` in that file selects the project directory where it works.
+
+### Existing root-level fleets
+
+Releases before the hidden layout used root-level `config/`, `data/`, `.env`, and `env.template` paths.
+Those fleets remain supported in place. Conductor refuses to guess if both root-level and `.conductor/`
+configuration exist.
+
+To migrate, first stop the Conductor completely—close its owning console, or uninstall/stop its daemon—so
+the SQLite database has no live lock or WAL writer. Then, from the fleet directory:
+
+```bash
+mkdir -p .conductor
+mv config .conductor/config
+[ ! -d data ] || mv data .conductor/data
+[ ! -f env.template ] || mv env.template .conductor/env.template
+[ ! -f .env ] || mv .env .conductor/.env # only if this is Conductor's fleet env
+```
+
+Run `conductor validate` before starting it again. Never copy or move `data/` while the old Conductor is
+running.
 
 ---
 
@@ -63,14 +89,14 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    conductor init --session alpha --repo /path/to/some/project
    ```
 
-   That writes `config/sessions/alpha.yaml` — open it to see the optional knobs
+   That writes `.conductor/config/sessions/alpha.yaml` — open it to see the optional knobs
    (`runtime: codex`, `model:`, `effort:`, `schedules:`).
 
    To make Codex the fleet default, set `defaults.runtime: codex` in
-   `config/supervisor.yaml`; a session-level `runtime` still overrides it.
+   `.conductor/config/supervisor.yaml`; a session-level `runtime` still overrides it.
 
 2. Leave auto off for the shakedown (the default). To make the default explicit in
-   `config/supervisor.yaml`, use `defaults.auto: false`.
+   `.conductor/config/supervisor.yaml`, use `defaults.auto: false`.
 
 3. Launch (this terminal becomes the operator console; the conductor process runs
    hidden in the background and stops when you close the console):
@@ -92,7 +118,7 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    ```
 
    On iTerm, session panes open **in this same window**, beside the console. Process
-   output lives in `data/conductor.out.log` (`conductor start --foreground` runs it
+   output lives in `.conductor/data/conductor.out.log` (`conductor start --foreground` runs it
    visibly instead; `conductor console` attaches an extra console from elsewhere).
 
    `/tell` delivers your message into the session's pane. The session replies **in its own
@@ -101,7 +127,8 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
 
 **If this step fails**, it's almost always one of: `claude` not on PATH, the `repo:` path
 doesn't exist, or iTerm2 automation permission (macOS will prompt the first time
-`osascript` drives iTerm2 — approve it). Check `conductor logs` and `data/conductor.log`.
+`osascript` drives iTerm2 — approve it). Check `conductor logs` and
+`.conductor/data/conductor.log`.
 
 ---
 
@@ -117,20 +144,20 @@ because the sentinel is not running.)
 1. Give the sentinel its instructions. Copy the shipped prompt into your fleet:
 
    ```bash
-   mkdir -p ~/fleet/prompts
-   cp /path/to/agent-conductor/prompts/sentinel.md ~/fleet/prompts/sentinel.md
+   mkdir -p ~/fleet/.conductor/prompts
+   cp /path/to/agent-conductor/prompts/sentinel.md ~/fleet/.conductor/prompts/sentinel.md
    ```
 
-2. Create `config/sessions/watch.yaml`:
+2. Create `.conductor/config/sessions/watch.yaml`:
 
    ```yaml
    codename: watch
    repo: /absolute/path/to/a/scratch/dir # the sentinel needs its own working dir
    runtime: claude-code
-   systemPromptFile: ./prompts/sentinel.md # <- this is what makes it act as the sentinel
+   systemPromptFile: ./.conductor/prompts/sentinel.md # <- this is what makes it act as the sentinel
    ```
 
-3. Point the supervisor at it. In `config/supervisor.yaml`:
+3. Point the supervisor at it. In `.conductor/config/supervisor.yaml`:
 
    ```yaml
    sentinel:
@@ -167,7 +194,7 @@ stalls, the conductor alerts you directly.
 1. Create a bot with [@BotFather](https://t.me/BotFather), copy the token.
 2. Get your chat id: message your bot, then open
    `https://api.telegram.org/bot<TOKEN>/getUpdates` and read `message.chat.id`.
-3. Enable the bundled adapter in `config/supervisor.yaml`:
+3. Enable the bundled adapter in `.conductor/config/supervisor.yaml`:
 
    ```yaml
    channels:
@@ -175,12 +202,12 @@ stalls, the conductor alerts you directly.
        enabled: true
    ```
 
-4. Copy the scaffolded template to the fleet's gitignored `.env`, restrict its permissions,
+4. Copy the scaffolded template to the fleet's gitignored `.conductor/.env`, restrict its permissions,
    and fill in the values:
 
    ```bash
-   cp env.template .env
-   chmod 600 .env
+   cp .conductor/env.template .conductor/.env
+   chmod 600 .conductor/.env
    ```
 
    ```dotenv
@@ -196,8 +223,8 @@ stalls, the conductor alerts you directly.
    export CONDUCTOR_TELEGRAM_CHAT_ID=987654321
    ```
 
-   Inherited variables override `.env`. The conductor does not read shell startup files
-   directly; launchd and systemd usually do not source them, so fleet `.env` is the reliable
+   Inherited variables override `.conductor/.env`. The conductor does not read shell startup files
+   directly; launchd and systemd usually do not source them, so fleet `.conductor/.env` is the reliable
    fallback for daemons.
 
 5. Restart `conductor start`. The log shows `telegram channel connected.` Enabling Telegram

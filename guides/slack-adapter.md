@@ -23,7 +23,7 @@ You need:
   explains that process.
 - The Slack member ID of the one operator who may control this fleet.
 - A separate Slack app for each Conductor fleet that will run concurrently.
-- A fleet-local `.env` file or another secure environment-secret mechanism.
+- A fleet-local `.conductor/.env` file or another secure environment-secret mechanism.
 
 The app sends Conductor messages and agent output through Slack. Slack stores that content according to
 your workspace's retention, export, security, and administrative policies. Do not enable this adapter for
@@ -136,7 +136,8 @@ address.
 
 ## 6. Configure the Conductor fleet
 
-Enable Slack in the fleet's `config/supervisor.yaml`:
+Enable Slack in the fleet-wide `.conductor/config/supervisor.yaml` (this is not an individual agent's
+session file):
 
 ```yaml
 channels:
@@ -144,11 +145,11 @@ channels:
     enabled: true
 ```
 
-Put the two tokens and the authorized member ID in the fleet's `.env`:
+Put the two tokens and the authorized member ID in the fleet's `.conductor/.env`:
 
 ```bash
-cp env.template .env
-chmod 600 .env
+cp .conductor/env.template .conductor/.env
+chmod 600 .conductor/.env
 ```
 
 ```dotenv
@@ -157,9 +158,9 @@ CONDUCTOR_SLACK_BOT_TOKEN=xoxb-replace-me
 CONDUCTOR_SLACK_OPERATOR_USER_ID=U012ABCDEF
 ```
 
-Never commit `.env`, paste either token into a Slack message, add tokens to YAML, or include them in logs,
+Never commit `.conductor/.env`, paste either token into a Slack message, add tokens to YAML, or include them in logs,
 screenshots, issue reports, or test fixtures. Inherited environment variables may be used instead; they
-override fleet `.env` values.
+override fleet `.conductor/.env` values.
 
 Use a dedicated secret manager when running Conductor as a shared production service. Slack's [security
 guidance](https://docs.slack.dev/concepts/security/) recommends environment-based development secrets and
@@ -239,7 +240,7 @@ own `/talk` conversation state.
 
 Anyone who obtains either token can use its Slack permissions. Revoke a leaked app-level token in
 **Basic Information > App-Level Tokens**, rotate/reinstall the bot token under **OAuth & Permissions**,
-update `.env`, and restart Conductor. To shut the integration off immediately, set
+update `.conductor/.env`, and restart Conductor. To shut the integration off immediately, set
 `channels.slack.enabled: false` and restart; uninstall the Slack app if it is no longer needed.
 
 ## Troubleshooting

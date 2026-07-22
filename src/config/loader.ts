@@ -4,6 +4,7 @@ import yaml from 'js-yaml';
 import type { ZodError } from 'zod';
 import { log } from '../logger.js';
 import { deriveInstanceDefaults } from './instance.js';
+import { resolveFleetPaths } from './paths.js';
 import { sessionConfigSchema, supervisorConfigSchema, type SessionConfig, type SupervisorConfig } from './schema.js';
 
 export interface LoadedConfig {
@@ -41,7 +42,8 @@ export function detectBackend(
 }
 
 export function loadSupervisorConfig(baseDir: string, env: NodeJS.ProcessEnv = process.env): SupervisorConfig {
-  const file = join(baseDir, 'config', 'supervisor.yaml');
+  const paths = resolveFleetPaths(baseDir);
+  const file = paths.supervisorFile;
   let raw: unknown = {};
   if (existsSync(file)) {
     raw = yaml.load(readFileSync(file, 'utf8')) ?? {};
@@ -55,6 +57,11 @@ export function loadSupervisorConfig(baseDir: string, env: NodeJS.ProcessEnv = p
   // is deterministic — sessions' MCP configs bake the port into URLs, so it must
   // be stable across restarts.
   const config = parsed.data;
+  const rawPaths =
+    typeof raw === 'object' && raw !== null && !Array.isArray(raw) && 'paths' in raw ? raw.paths : undefined;
+  const hasExplicitDataDir =
+    typeof rawPaths === 'object' && rawPaths !== null && !Array.isArray(rawPaths) && 'dataDir' in rawPaths;
+  if (!hasExplicitDataDir) config.paths.dataDir = paths.dataDirDefault;
   const derived = deriveInstanceDefaults(baseDir);
   config.mcp.port ??= derived.port;
   config.terminal.backend ??= detectBackend(env);
@@ -88,7 +95,7 @@ export function parseSessionConfig(
 }
 
 export function sessionConfigDir(baseDir: string): string {
-  return join(baseDir, 'config', 'sessions');
+  return resolveFleetPaths(baseDir).sessionsDir;
 }
 
 /**
@@ -141,7 +148,14 @@ export function validateConfig(baseDir: string): string[] {
   } catch (err) {
     problems.push(err instanceof Error ? err.message : String(err));
   }
-  const dir = sessionConfigDir(baseDir);
+  let dir: string;
+  try {
+    dir = sessionConfigDir(baseDir);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!problems.includes(message)) problems.push(message);
+    return problems;
+  }
   if (existsSync(dir)) {
     const seen = new Set<string>();
     for (const entry of readdirSync(dir).sort()) {

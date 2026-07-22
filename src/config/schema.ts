@@ -74,7 +74,7 @@ export const supervisorConfigSchema = z
       .default({}),
     paths: z
       .object({
-        dataDir: z.string().default('./data'),
+        dataDir: z.string().default('./.conductor/data'),
       })
       .strict()
       .default({}),

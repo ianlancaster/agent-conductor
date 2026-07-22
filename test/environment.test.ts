@@ -11,7 +11,7 @@ let baseDir: string;
 
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-environment-'));
-  mkdirSync(join(baseDir, 'config'), { recursive: true });
+  mkdirSync(join(baseDir, '.conductor', 'config'), { recursive: true });
 });
 
 afterEach(() => {
@@ -19,8 +19,8 @@ afterEach(() => {
 });
 
 describe('resolveFleetEnvironment', () => {
-  it('loads a fleet .env without mutating the inherited object', () => {
-    writeFileSync(join(baseDir, '.env'), 'CONDUCTOR_TELEGRAM_TOKEN=file-token\nEXTRA=file-only\n');
+  it('loads a fleet .conductor/.env without mutating the inherited object', () => {
+    writeFileSync(join(baseDir, '.conductor', '.env'), 'CONDUCTOR_TELEGRAM_TOKEN=file-token\nEXTRA=file-only\n');
     const inherited = { PATH: '/bin' };
 
     const resolved = resolveFleetEnvironment(baseDir, inherited);
@@ -30,8 +30,8 @@ describe('resolveFleetEnvironment', () => {
     expect(inherited).toEqual({ PATH: '/bin' });
   });
 
-  it('lets inherited shell, CI, or service values override .env', () => {
-    writeFileSync(join(baseDir, '.env'), 'VALUE=from-file\nFILE_ONLY=yes\n');
+  it('lets inherited shell, CI, or service values override .conductor/.env', () => {
+    writeFileSync(join(baseDir, '.conductor', '.env'), 'VALUE=from-file\nFILE_ONLY=yes\n');
     expect(resolveFleetEnvironment(baseDir, { VALUE: 'from-parent' })).toMatchObject({
       VALUE: 'from-parent',
       FILE_ONLY: 'yes',
@@ -43,6 +43,15 @@ describe('resolveFleetEnvironment', () => {
     const resolved = resolveFleetEnvironment(baseDir, inherited);
     expect(resolved).toEqual(inherited);
     expect(resolved).not.toBe(inherited);
+  });
+
+  it('keeps reading a root .env for a legacy root-level config', () => {
+    rmSync(join(baseDir, '.conductor'), { recursive: true });
+    mkdirSync(join(baseDir, 'config', 'sessions'), { recursive: true });
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), '');
+    writeFileSync(join(baseDir, '.env'), 'LEGACY=yes\n');
+
+    expect(resolveFleetEnvironment(baseDir, {})).toMatchObject({ LEGACY: 'yes' });
   });
 });
 
@@ -59,7 +68,10 @@ describe('buildConfiguredChannels', () => {
   });
 
   it('constructs Telegram only when explicitly enabled with both credentials', () => {
-    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'channels:\n  telegram:\n    enabled: true\n');
+    writeFileSync(
+      join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
+      'channels:\n  telegram:\n    enabled: true\n',
+    );
     const config = loadSupervisorConfig(baseDir, {});
     const channels = buildConfiguredChannels(config, {
       CONDUCTOR_TELEGRAM_TOKEN: 'token',
@@ -69,7 +81,10 @@ describe('buildConfiguredChannels', () => {
   });
 
   it('rejects missing or blank enabled credentials without reflecting values', () => {
-    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'channels:\n  telegram:\n    enabled: true\n');
+    writeFileSync(
+      join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
+      'channels:\n  telegram:\n    enabled: true\n',
+    );
     const config = loadSupervisorConfig(baseDir, {});
 
     expect(() =>

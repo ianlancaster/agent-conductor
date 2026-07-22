@@ -1,19 +1,19 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { parseEnv } from 'node:util';
 
 import { ConfigError } from './loader.js';
+import { resolveFleetPaths } from './paths.js';
 
 /**
  * Resolve the environment visible to one fleet without mutating process.env.
  * Values inherited from the parent process deliberately override fleet-local
- * `.env` values so shell, CI, and service configuration remains authoritative.
+ * `.conductor/.env` values so shell, CI, and service configuration remains authoritative.
  */
 export function resolveFleetEnvironment(
   baseDir: string,
   inheritedEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  const file = join(baseDir, '.env');
+  const file = resolveFleetPaths(baseDir).environmentFile;
   let fileValues: NodeJS.ProcessEnv = {};
 
   if (existsSync(file)) {

@@ -64,7 +64,7 @@ export class ConductorMcpServer {
           reject(
             new Error(
               `Port ${String(this.opts.port)} is already in use — likely another conductor. ` +
-                `Set a unique 'mcp: port:' in this fleet's config/supervisor.yaml, or stop the other process.`,
+                `Set a unique 'mcp: port:' in this fleet's .conductor/config/supervisor.yaml, or stop the other process.`,
             ),
           );
           return;

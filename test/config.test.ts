@@ -8,8 +8,10 @@ import {
   loadSessionConfigs,
   loadConfig,
   loadSupervisorConfig,
+  sessionConfigDir,
   validateConfig,
 } from '../src/config/loader.js';
+import { resolveFleetPaths } from '../src/config/paths.js';
 import { ConfigWatcher } from '../src/config/watcher.js';
 import {
   DEFAULT_CLAUDE_CODE_EFFORTS,
@@ -23,6 +25,7 @@ let baseDir: string;
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-config-'));
   mkdirSync(join(baseDir, 'config', 'sessions'), { recursive: true });
+  writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), '');
 });
 
 afterEach(() => {
@@ -55,6 +58,30 @@ describe('loadSupervisorConfig', () => {
     expect(config.runtimes.codex.defaultEffort).toBeUndefined();
     expect(config.spawn.markerFile).toBe('.agent-marker');
     expect(config.channels.telegram.enabled).toBe(false);
+    expect(config.paths.dataDir).toBe('./data');
+  });
+
+  it('uses the hidden data directory for the preferred .conductor layout', () => {
+    rmSync(join(baseDir, 'config'), { recursive: true });
+    mkdirSync(join(baseDir, '.conductor', 'config', 'sessions'), { recursive: true });
+
+    expect(loadSupervisorConfig(baseDir).paths.dataDir).toBe('./.conductor/data');
+    expect(resolveFleetPaths(baseDir).supervisorFile).toBe(join(baseDir, '.conductor', 'config', 'supervisor.yaml'));
+    expect(sessionConfigDir(baseDir)).toBe(join(baseDir, '.conductor', 'config', 'sessions'));
+  });
+
+  it('rejects ambiguous preferred and legacy configuration layouts', () => {
+    mkdirSync(join(baseDir, '.conductor', 'config', 'sessions'), { recursive: true });
+    writeFileSync(join(baseDir, '.conductor', 'config', 'supervisor.yaml'), '');
+
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/Ambiguous Conductor fleet layout/);
+    expect(validateConfig(baseDir)).toEqual([expect.stringMatching(/Ambiguous Conductor fleet layout/)]);
+  });
+
+  it('does not mistake an unrelated empty config/sessions directory for a legacy fleet', () => {
+    rmSync(join(baseDir, 'config', 'supervisor.yaml'));
+
+    expect(resolveFleetPaths(baseDir).layout).toBe('conductor-directory');
   });
 
   it('derives per-fleet instance defaults so two fleets never collide', () => {

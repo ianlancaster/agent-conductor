@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 import { fleetSlug } from '../config/instance.js';
+import { loadSupervisorConfig } from '../config/loader.js';
+import { resolveFleetDataDir } from '../config/paths.js';
 
 // Service names embed the fleet slug so each fleet directory can run its own
 // daemon — a fixed label would make the second `daemon install` silently
@@ -28,6 +30,9 @@ function conductorBin(): string {
 }
 
 export function installDaemon(baseDir: string): string {
+  const config = loadSupervisorConfig(baseDir);
+  const dataDir = resolveFleetDataDir(baseDir, config.paths.dataDir);
+  mkdirSync(dataDir, { recursive: true });
   if (platform() === 'darwin') {
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -45,8 +50,8 @@ export function installDaemon(baseDir: string): string {
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardOutPath</key><string>${join(baseDir, 'data', 'daemon.stdout.log')}</string>
-  <key>StandardErrorPath</key><string>${join(baseDir, 'data', 'daemon.stderr.log')}</string>
+  <key>StandardOutPath</key><string>${join(dataDir, 'daemon.stdout.log')}</string>
+  <key>StandardErrorPath</key><string>${join(dataDir, 'daemon.stderr.log')}</string>
 </dict>
 </plist>
 `;

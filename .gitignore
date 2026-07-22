@@ -9,4 +9,5 @@ data/
 /reviews
 /config
 /agent-conductor
+/.conductor/
 AGENTS.override.md
