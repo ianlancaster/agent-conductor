@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { applyMigrations, openSqliteDatabase, withTransaction } from '../src/store/sqlite.js';
 
@@ -17,6 +18,24 @@ function tempDatabase(): string {
 }
 
 describe('SQLite support', () => {
+  it('suppresses only the SQLite experimental warning', () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        "const original = process.emitWarning; await import('./src/index.ts'); if (process.emitWarning !== original) throw new Error('root import changed emitWarning'); const sqlite = await import('./src/store/sqlite.ts'); sqlite.openSqliteDatabase(':memory:').close(); if (process.emitWarning !== original) throw new Error('open changed emitWarning'); process.emitWarning('keep me', 'CustomWarning');",
+      ],
+      { cwd: join(import.meta.dirname, '..'), encoding: 'utf8' },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain('SQLite is an experimental feature');
+    expect(result.stderr).toContain('CustomWarning: keep me');
+  });
+
   it('creates parent directories and enables the required pragmas', () => {
     const db = openSqliteDatabase(tempDatabase());
 
