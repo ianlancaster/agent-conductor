@@ -1,3 +1,5 @@
+import { homedir } from 'node:os';
+import { sep } from 'node:path';
 import type { SessionConfig } from '../config/schema.js';
 import type { SessionState } from './types.js';
 import { currentBranch } from './worktree.js';
@@ -26,6 +28,13 @@ export interface StatusDeps {
 export interface RuntimeSettingDefaults {
   'claude-code'?: string;
   'codex'?: string;
+}
+
+/** Shorten paths inside the current user's home for human- and agent-facing status output. */
+export function displayPath(value: string, homeDirectory = homedir()): string {
+  if (value === homeDirectory) return '~';
+  const homePrefix = homeDirectory.endsWith(sep) ? homeDirectory : `${homeDirectory}${sep}`;
+  return value.startsWith(homePrefix) ? `~${value.slice(homeDirectory.length)}` : value;
 }
 
 /**
@@ -77,7 +86,7 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
     return JSON.stringify(
       {
         codename,
-        path: session.repo,
+        path: displayPath(session.repo),
         branch: currentBranch(session.repo),
         runtime: deps.runtimeFor(codename) ?? null,
         model: deps.modelFor(codename) ?? null,
@@ -118,7 +127,7 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
         const session = deps.sessions().get(name);
         if (session !== undefined) {
           const branch = currentBranch(session.repo);
-          lines.push(`    path: ${session.repo} · branch: ${branch ?? 'none'}`);
+          lines.push(`    path: ${displayPath(session.repo)} · branch: ${branch ?? 'none'}`);
         }
       }
     }

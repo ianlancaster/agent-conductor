@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { SessionConfig } from '../src/config/schema.js';
 import { DeliveryQueue } from '../src/core/delivery.js';
 import { buildOperatorCommands } from '../src/core/commands.js';
@@ -278,6 +280,8 @@ describe('surface contract', () => {
   });
 
   it('passes start and continue runtime and effort overrides through MCP', async () => {
+    const displayedPath = join('~', 'Projects', 'watch');
+    sessions.set('watch', { ...sessionConfig('watch'), repo: join(homedir(), 'Projects', 'watch') });
     expect(
       await tool('start_session').handler(
         { codename: 'watch', runtime: 'codex', effort: 'future-provider-level' },
@@ -287,7 +291,7 @@ describe('surface contract', () => {
     expect(states.get('watch')?.runtime).toBe('codex');
     expect(states.get('watch')?.effort).toBe('future-provider-level');
     expect(await tool('list_sessions').handler({}, 'alpha')).toContain('watch - codex');
-    expect(await tool('list_sessions').handler({}, 'alpha')).toContain('path: /tmp/watch');
+    expect(await tool('list_sessions').handler({}, 'alpha')).toContain(`path: ${displayedPath}`);
     const status = JSON.parse(await tool('get_session_status').handler({ codename: 'watch' }, 'alpha')) as {
       runtime: unknown;
       effort: unknown;
@@ -297,7 +301,7 @@ describe('surface contract', () => {
     const identity = JSON.parse(await tool('whoami').handler({}, 'watch')) as { runtime: unknown };
     expect(status.runtime).toBe('codex');
     expect(status.effort).toBe('future-provider-level');
-    expect(status.path).toBe('/tmp/watch');
+    expect(status.path).toBe(displayedPath);
     expect(status.branch).toBeNull();
     expect(identity.runtime).toBe('codex');
     await tool('stop_session').handler({ codename: 'watch' }, 'alpha');

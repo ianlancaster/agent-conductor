@@ -1,9 +1,32 @@
 const GREEN = '\u001b[32m';
 const DEFAULT_FOREGROUND = '\u001b[39m';
+const BOLD = '\u001b[1m';
+const NORMAL_INTENSITY = '\u001b[22m';
 
 /** Apply presentation that belongs to the local terminal, never to shared adapter text. */
 export function formatTerminalReply(command: string, reply: string, colors: boolean): string {
-  if (!colors || !/^\/help(?:\s|$)/i.test(command.trim())) return reply;
+  if (!colors) return reply;
+
+  if (/^\/status(?:\s|$)/i.test(command.trim())) {
+    return reply
+      .split('\n')
+      .map((line) => {
+        const fleetRow = /^( {2})(.+)( - (?:CC|codex)(?: 🛡)? · .+)$/.exec(line);
+        if (fleetRow !== null) {
+          return `${fleetRow[1]}${BOLD}${fleetRow[2]}${NORMAL_INTENSITY}${fleetRow[3]}`;
+        }
+
+        const detailedCodename = /^(\s*"codename": )(.+?)(,?)$/.exec(line);
+        if (detailedCodename !== null) {
+          return `${detailedCodename[1]}${BOLD}${detailedCodename[2]}${NORMAL_INTENSITY}${detailedCodename[3]}`;
+        }
+
+        return line;
+      })
+      .join('\n');
+  }
+
+  if (!/^\/help(?:\s|$)/i.test(command.trim())) return reply;
 
   return reply
     .split('\n')

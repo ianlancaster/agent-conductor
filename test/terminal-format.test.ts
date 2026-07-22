@@ -28,10 +28,23 @@ describe('formatTerminalReply', () => {
     expect(formatTerminalReply('/help', help, false)).toBe(help);
   });
 
-  it('does not style ordinary command replies', () => {
-    expect(formatTerminalReply('/status', 'Sessions:\n  alpha · 🟢 working', true)).toBe(
-      'Sessions:\n  alpha · 🟢 working',
+  it('bolds session names in fleet status only for terminals', () => {
+    const status = 'Sessions:\n  alpha - CC · 🟢 working\n    path: ~/Projects/alpha · branch: main';
+    expect(formatTerminalReply('/status', status, true)).toBe(
+      'Sessions:\n  \u001b[1malpha\u001b[22m - CC · 🟢 working\n    path: ~/Projects/alpha · branch: main',
     );
+    expect(formatTerminalReply('/status', status, false)).toBe(status);
+  });
+
+  it('bolds the codename value in detailed terminal status', () => {
+    const status = '{\n  "codename": "alpha",\n  "path": "~/Projects/alpha"\n}';
+    expect(formatTerminalReply('/status alpha', status, true)).toBe(
+      '{\n  "codename": \u001b[1m"alpha"\u001b[22m,\n  "path": "~/Projects/alpha"\n}',
+    );
+  });
+
+  it('does not style other ordinary command replies', () => {
+    expect(formatTerminalReply('/start alpha', 'alpha started.', true)).toBe('alpha started.');
   });
 });
 
