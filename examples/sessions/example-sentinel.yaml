@@ -1,8 +1,8 @@
 # The stall sentinel is a normal session designated by sentinel.codename in supervisor.yaml.
 # Give it the shipped sentinel instructions via systemPromptFile so it knows how to
 # judge each stall message and respond with ordinary session tools. Copy
-# prompts/sentinel.md from the agent-conductor package into your fleet dir first.
+# prompts/sentinel.md from the agent-conductor package into .conductor/prompts/ first.
 codename: watch
 repo: ../watch
 runtime: claude-code
-systemPromptFile: ./prompts/sentinel.md
+systemPromptFile: ./.conductor/prompts/sentinel.md

@@ -7,6 +7,7 @@ import { buildConfiguredChannels } from '../channels/configured.js';
 import { resolveFleetEnvironment } from '../config/environment.js';
 import { fleetSlug } from '../config/instance.js';
 import { sessionConfigDir, loadSessionConfigs, loadSupervisorConfig } from '../config/loader.js';
+import { resolveFleetDataDir } from '../config/paths.js';
 import type { SessionConfig, SupervisorConfig } from '../config/schema.js';
 import { ConfigWatcher } from '../config/watcher.js';
 import { initLogger, log } from '../logger.js';
@@ -45,7 +46,7 @@ export interface SupervisorOptions {
   channels?: ChannelAdapter[];
   /** Disable environment-configured built-in adapters, primarily for embedding and tests. */
   includeConfiguredChannels?: boolean;
-  /** Override the inherited environment before merging the fleet's .env. */
+  /** Override the inherited environment before merging the fleet's .conductor/.env. */
   env?: NodeJS.ProcessEnv;
   /** Override Claude's state path when embedding the conductor (primarily for isolated tests). */
   claudeJsonPath?: string;
@@ -83,7 +84,7 @@ export class Supervisor {
   ) {
     this.env = resolveFleetEnvironment(baseDir, options.env ?? process.env);
     this.config = loadSupervisorConfig(baseDir, this.env);
-    const dataDir = join(baseDir, this.config.paths.dataDir);
+    const dataDir = resolveFleetDataDir(baseDir, this.config.paths.dataDir);
     initLogger({ level: this.config.supervisor.logLevel, filePath: join(dataDir, 'conductor.log') });
     this.lock = new FleetLock(join(dataDir, 'conductor.lock'));
     this.channelCandidates = [

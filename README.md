@@ -100,7 +100,7 @@ console. At the `conductor>` prompt:
 /stop alpha
 ```
 
-Session configuration lives in `config/sessions/alpha.yaml`:
+Session configuration lives in `.conductor/config/sessions/alpha.yaml`:
 
 ```yaml
 codename: alpha
@@ -111,7 +111,7 @@ runtime: claude-code # or codex
 # effort: xhigh # optional per-session default; accepted values depend on runtime/model
 ```
 
-Sessions that omit `runtime` use `defaults.runtime` from `config/supervisor.yaml`:
+Sessions that omit `runtime` use `defaults.runtime` from `.conductor/config/supervisor.yaml`:
 
 ```yaml
 defaults:
@@ -159,9 +159,14 @@ the session file; command and tool arguments accept `cc` as shorthand for `claud
 Claude Code and Codex keep separate conversation histories: a runtime-overridden `continue`
 resumes the selected runtime's latest conversation, not a conversation created by the other runtime.
 
-Session files hot-reload. Add, edit, or remove a YAML file under `config/sessions/` without
+Session files hot-reload. Add, edit, or remove a YAML file under `.conductor/config/sessions/` without
 restarting the conductor. Unknown configuration keys are validation errors, so stale or
 misspelled settings never fail silently.
+
+`conductor init` keeps Conductor-owned configuration, secrets, runtime state, and logs together under
+`.conductor/`; it does not create generic `config/` or `data/` directories in the fleet root. Fleets made
+by older releases continue to load from root-level `config/`, `data/`, and `.env`. See the
+[migration note](docs/getting-started.md#existing-root-level-fleets) before moving a running fleet.
 
 The terminal backend is selected automatically: starting inside tmux uses tmux; starting in
 iTerm2 on macOS uses iTerm2. Set `terminal.backend` explicitly when running as a daemon.
@@ -326,19 +331,19 @@ report session starts, stops, blocked prompts, compaction, and termination. A pa
 watchdog catches silent or wedged sessions when events stop flowing.
 
 To configure a sentinel, copy the shipped `prompts/sentinel.md` into your fleet's
-`prompts/` directory, then:
+`.conductor/prompts/` directory, then:
 
 1. Create a normal session with the supplied sentinel instructions:
 
    ```yaml
-   # config/sessions/watch.yaml
+   # .conductor/config/sessions/watch.yaml
    codename: watch
    repo: /absolute/path/to/a/scratch-directory
    runtime: claude-code
-   systemPromptFile: ./prompts/sentinel.md
+   systemPromptFile: ./.conductor/prompts/sentinel.md
    ```
 
-2. Set the initial designation in `config/supervisor.yaml`:
+2. Set the initial designation in `.conductor/config/supervisor.yaml`:
 
    ```yaml
    sentinel:
@@ -415,7 +420,7 @@ and reports under ignored directories do not block removal and are deleted with 
 
 ## Telegram
 
-Telegram is bundled but disabled by default. Enable it in `config/supervisor.yaml`:
+Telegram is bundled but disabled by default. Enable it in `.conductor/config/supervisor.yaml`:
 
 ```yaml
 channels:
@@ -423,12 +428,12 @@ channels:
     enabled: true
 ```
 
-`conductor init` creates `env.template` without overwriting an existing file. Copy it to the
-fleet's gitignored `.env`, restrict access, and fill in the credentials:
+`conductor init` creates `.conductor/env.template` without overwriting an existing file. Copy it to the
+fleet's gitignored `.conductor/.env`, restrict access, and fill in the credentials:
 
 ```bash
-cp env.template .env
-chmod 600 .env
+cp .conductor/env.template .conductor/.env
+chmod 600 .conductor/.env
 conductor start
 ```
 
@@ -438,9 +443,9 @@ CONDUCTOR_TELEGRAM_CHAT_ID=987654321
 ```
 
 You may instead export those variables globally from `.bashrc`, `.zshrc`, CI, or a service
-environment. Inherited variables override fleet `.env` values. The conductor does not source
+environment. Inherited variables override fleet `.conductor/.env` values. The conductor does not source
 shell startup files itself; launchd and systemd normally do not source interactive shell files,
-so a fleet `.env` is the reliable daemon fallback. Enabling Telegram without both non-blank
+so a fleet `.conductor/.env` is the reliable daemon fallback. Enabling Telegram without both non-blank
 credentials fails clearly before the adapter starts, without printing secret values.
 
 Telegram accepts the same operator commands as the local console. Messages sent with

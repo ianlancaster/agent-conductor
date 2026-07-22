@@ -1,12 +1,12 @@
 # agent-conductor supervisor config — every value shown is the default; omit what you don't change.
-# Place at <your conductor dir>/config/supervisor.yaml
+# Place at <your fleet dir>/.conductor/config/supervisor.yaml
 
 supervisor:
   heartbeatIntervalSeconds: 30
   logLevel: info
 
 paths:
-  dataDir: ./data
+  dataDir: ./.conductor/data
 
 terminal:
   # backend: iterm | tmux. Default auto-detects: tmux when the conductor is started
@@ -31,10 +31,10 @@ terminal:
     # sessionName: my-fleet       # detached-mode session name; default: conductor-<fleet slug>, unique per fleet dir
 
 # The initial stall sentinel: a session (configured like any other in
-# config/sessions/) that receives ALL stalls from auto sessions and decides
+# .conductor/config/sessions/) that receives ALL stalls from auto sessions and decides
 # what to do. The set_sentinel MCP tool can change or clear it at runtime; that
 # choice persists in the fleet database and overrides this initial value.
-# Launch it with prompts/sentinel.md as its instructions. Leave unset until you
+# Launch it with .conductor/prompts/sentinel.md as its instructions. Leave unset until you
 # have defined that session — a dangling codename only earns you a startup warning.
 # sentinel:
 #   codename: watch
@@ -106,7 +106,7 @@ runtimes:
 
 channels:
   telegram:
-    enabled: false # opt in; credentials come from fleet .env or the inherited environment
+    enabled: false # opt in; credentials come from .conductor/.env or the inherited environment
 
 spawn:
   # Where /spawn and spawn_session create a session's working directory,

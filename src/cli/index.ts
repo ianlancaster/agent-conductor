@@ -9,6 +9,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { validateConfig, loadSupervisorConfig } from '../config/loader.js';
+import { resolveFleetDataDir } from '../config/paths.js';
 import { Supervisor } from '../core/supervisor.js';
 import { Store } from '../store/index.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
@@ -26,7 +27,7 @@ program
   .name('conductor')
   .description('Lightweight supervisor for terminal coding agents')
   .version(packageJson.version)
-  .option('-C, --dir <path>', 'Fleet directory containing config/ (default: current directory)')
+  .option('-C, --dir <path>', 'Fleet directory containing .conductor/ (default: current directory)')
   .addHelpText(
     'after',
     '\nFleet controls use the shared operator command language. Run conductor start or conductor console, then /help; for one-shot use, run conductor cmd /help.',
@@ -215,7 +216,7 @@ async function runForeground(startAll: boolean): Promise<void> {
 
 program
   .command('init')
-  .description('Scaffold a fleet directory (config, sessions, and env.template)')
+  .description('Scaffold a fleet directory under .conductor/')
   .option('-s, --session <codename>', 'Also create the first session config')
   .option('-r, --repo <path>', "The session's project directory (required with --session)")
   .action((opts: { session?: string; repo?: string }) => {
@@ -249,8 +250,8 @@ program
       log('Attached to the already-running conductor (it will keep running when this console exits).');
     } else {
       // Spawn the supervisor as a hidden, headless child. Its terminal output
-      // goes to a file; the structured log is data/conductor.log as always.
-      const dataDir = join(baseDir(), config.paths.dataDir);
+      // goes to a file; the structured log shares the configured data directory.
+      const dataDir = resolveFleetDataDir(baseDir(), config.paths.dataDir);
       mkdirSync(dataDir, { recursive: true });
       const outPath = join(dataDir, 'conductor.out.log');
       const out = openSync(outPath, 'a');
@@ -272,7 +273,9 @@ program
       const deadline = Date.now() + 15_000;
       while (!(await conductorUp(base))) {
         if (Date.now() > deadline || child.exitCode !== null) {
-          throw new Error(`The conductor process failed to start — see ${outPath} and data/conductor.log`);
+          throw new Error(
+            `The conductor process failed to start — see ${outPath} and ${join(dataDir, 'conductor.log')}`,
+          );
         }
         await sleep(250);
       }
@@ -336,7 +339,7 @@ program
   .option('-n, --count <count>', 'Number of events', '20')
   .action((session: string | undefined, opts: { count: string }) => {
     const config = loadSupervisorConfig(baseDir());
-    const store = new Store(join(baseDir(), config.paths.dataDir, 'conductor.db'));
+    const store = new Store(join(resolveFleetDataDir(baseDir(), config.paths.dataDir), 'conductor.db'));
     for (const row of store.getHealthLog(session, Number.parseInt(opts.count, 10)).reverse()) {
       process.stdout.write(
         `${row.created_at}  ${row.session}  ${row.event}${row.detail !== null ? `  ${row.detail}` : ''}\n`,

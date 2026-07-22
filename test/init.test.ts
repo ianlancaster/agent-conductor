@@ -22,11 +22,16 @@ describe('initFleet', () => {
   it('scaffolds a fleet dir that immediately validates and starts warning-free', () => {
     const lines = initFleet(baseDir);
     expect(lines[0]).toMatch(/^created .*supervisor\.yaml$/);
-    expect(existsSync(join(baseDir, 'env.template'))).toBe(true);
-    expect(existsSync(join(baseDir, 'config', 'sessions'))).toBe(true);
+    expect(existsSync(join(baseDir, '.conductor', 'env.template'))).toBe(true);
+    expect(readFileSync(join(baseDir, '.conductor', '.gitignore'), 'utf8')).toBe('.env\ndata/\n');
+    expect(existsSync(join(baseDir, '.conductor', 'config', 'sessions'))).toBe(true);
+    expect(existsSync(join(baseDir, 'config'))).toBe(false);
+    expect(existsSync(join(baseDir, 'data'))).toBe(false);
     expect(validateConfig(baseDir)).toEqual([]);
     // The template must not preconfigure a dangling sentinel (startup warning).
-    expect(loadSupervisorConfig(baseDir).sentinel.codename).toBeUndefined();
+    const config = loadSupervisorConfig(baseDir);
+    expect(config.sentinel.codename).toBeUndefined();
+    expect(config.paths.dataDir).toBe('./.conductor/data');
   });
 
   it('writes a loadable first session with --session/--repo', () => {
@@ -65,6 +70,25 @@ describe('initFleet', () => {
     expect(lines.filter((l) => l.startsWith('kept')).length).toBe(3);
     expect(readFileSync(supervisorFile, 'utf8')).toContain('auto: true');
     expect(readFileSync(environmentTemplate, 'utf8')).toBe('KEEP_ME=yes\n');
+  });
+
+  it('never overwrites existing files in the preferred .conductor layout', () => {
+    const supervisorFile = join(baseDir, '.conductor', 'config', 'supervisor.yaml');
+    mkdirSync(join(baseDir, '.conductor', 'config', 'sessions'), { recursive: true });
+    writeFileSync(supervisorFile, 'defaults:\n  auto: true\n');
+    const sessionFile = join(baseDir, '.conductor', 'config', 'sessions', 'tester.yaml');
+    writeFileSync(sessionFile, `codename: tester\nrepo: ${repoDir}\n`);
+    const environmentTemplate = join(baseDir, '.conductor', 'env.template');
+    writeFileSync(environmentTemplate, 'KEEP_ME=yes\n');
+    const gitignore = join(baseDir, '.conductor', '.gitignore');
+    writeFileSync(gitignore, 'KEEP_ME_TOO=yes\n');
+
+    const lines = initFleet(baseDir, { session: 'tester', repo: repoDir });
+
+    expect(lines.filter((line) => line.startsWith('kept')).length).toBe(4);
+    expect(readFileSync(supervisorFile, 'utf8')).toContain('auto: true');
+    expect(readFileSync(environmentTemplate, 'utf8')).toBe('KEEP_ME=yes\n');
+    expect(readFileSync(gitignore, 'utf8')).toBe('KEEP_ME_TOO=yes\n');
   });
 
   it('rejects an invalid codename', () => {

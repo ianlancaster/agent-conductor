@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveFleetPaths } from '../config/paths.js';
 import { isValidCodename } from '../config/schema.js';
 
 const SUPERVISOR_TEMPLATE = `# agent-conductor supervisor config.
@@ -17,19 +18,22 @@ const SUPERVISOR_TEMPLATE = `# agent-conductor supervisor config.
 #                               # conductor is started inside tmux, else iterm on
 #                               # macOS. Daemons should set this explicitly.
 
-# Designate the initial stall sentinel — a session (defined in config/sessions/)
+# Designate the initial stall sentinel — a session (defined in .conductor/config/sessions/)
 # that receives every stall from auto sessions and decides what to do.
 # The set_sentinel MCP tool can change or clear it later, with persistence.
-# Launch it with prompts/sentinel.md as its instructions.
+# Launch it with .conductor/prompts/sentinel.md as its instructions.
 # sentinel:
 #   codename: watch
 
 # channels:
 #   telegram:
-#     enabled: true             # opt in; credentials come from .env or inherited env
+#     enabled: true             # opt in; credentials come from .conductor/.env or inherited env
 `;
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
+const CONDUCTOR_GITIGNORE = `.env
+data/
+`;
 
 function sessionTemplate(codename: string, repo: string): string {
   return `codename: ${codename}
@@ -38,7 +42,7 @@ repo: ${repo}
 # bypassPermissions: false      # optional override of defaults.bypassPermissions
 # model: claude-opus-4-8
 # effort: xhigh                  # optional per-session default; runtime/model dependent
-# systemPromptFile: ./prompts/${codename}.md
+# systemPromptFile: ./.conductor/prompts/${codename}.md
 # schedules:
 #   - cron: "0 9 * * 1-5"
 #     prompt: Review open PRs and report via send_to_operator.
@@ -51,17 +55,18 @@ export interface InitOptions {
 }
 
 /**
- * Scaffold a fleet directory: config/supervisor.yaml, config/sessions/, and
- * (optionally) a first session. Never overwrites existing files. Returns the
- * lines to print — pure enough to test without capturing stdout.
+ * Scaffold a fleet directory under .conductor/: config/supervisor.yaml,
+ * config/sessions/, env.template, and (optionally) a first session. Legacy
+ * root-level fleets are preserved in place. Never overwrites existing files.
+ * Returns the lines to print — pure enough to test without capturing stdout.
  */
 export function initFleet(baseDir: string, opts: InitOptions = {}): string[] {
   const lines: string[] = [];
-  const configDir = join(baseDir, 'config');
-  const sessionsDir = join(configDir, 'sessions');
+  const paths = resolveFleetPaths(baseDir);
+  const sessionsDir = paths.sessionsDir;
   mkdirSync(sessionsDir, { recursive: true });
 
-  const supervisorFile = join(configDir, 'supervisor.yaml');
+  const supervisorFile = paths.supervisorFile;
   if (existsSync(supervisorFile)) {
     lines.push(`kept    ${supervisorFile} (already exists)`);
   } else {
@@ -69,12 +74,22 @@ export function initFleet(baseDir: string, opts: InitOptions = {}): string[] {
     lines.push(`created ${supervisorFile}`);
   }
 
-  const environmentTemplate = join(baseDir, 'env.template');
+  const environmentTemplate = paths.environmentTemplate;
   if (existsSync(environmentTemplate)) {
     lines.push(`kept    ${environmentTemplate} (already exists)`);
   } else {
     writeFileSync(environmentTemplate, readFileSync(join(PACKAGE_ROOT, 'env.template'), 'utf8'));
     lines.push(`created ${environmentTemplate}`);
+  }
+
+  if (paths.layout === 'conductor-directory') {
+    const gitignore = join(paths.rootDir, '.gitignore');
+    if (existsSync(gitignore)) {
+      lines.push(`kept    ${gitignore} (already exists)`);
+    } else {
+      writeFileSync(gitignore, CONDUCTOR_GITIGNORE);
+      lines.push(`created ${gitignore}`);
+    }
   }
 
   let sessionCreated: string | undefined;
