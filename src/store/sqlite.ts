@@ -1,6 +1,45 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
+
+const SQLITE_EXPERIMENTAL_WARNING = 'SQLite is an experimental feature and might change at any time';
+
+type DatabaseSyncConstructor = typeof DatabaseSync;
+
+let databaseSyncConstructor: DatabaseSyncConstructor | undefined;
+
+function getDatabaseSync(): DatabaseSyncConstructor {
+  if (databaseSyncConstructor !== undefined) return databaseSyncConstructor;
+
+  // Node 22–24 prints an ExperimentalWarning when node:sqlite is first loaded.
+  // getBuiltinModule is synchronous, so intercept only that exact load-time
+  // warning and restore the process function before any other code can run.
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- restored by identity; calls use the process receiver.
+  const originalEmitWarning = process.emitWarning;
+  process.emitWarning = (warning: string | Error, ...args: unknown[]) => {
+    const message = typeof warning === 'string' ? warning : warning.message;
+    const typeOrOptions = args[0];
+    const type =
+      typeof warning === 'string'
+        ? typeof typeOrOptions === 'string'
+          ? typeOrOptions
+          : typeof typeOrOptions === 'object' && typeOrOptions !== null && 'type' in typeOrOptions
+            ? (typeOrOptions as { type?: unknown }).type
+            : undefined
+        : warning.name;
+
+    if (type === 'ExperimentalWarning' && message === SQLITE_EXPERIMENTAL_WARNING) return;
+    Reflect.apply(originalEmitWarning, process, [warning, ...args]);
+  };
+
+  try {
+    const sqlite = process.getBuiltinModule('node:sqlite');
+    databaseSyncConstructor = sqlite.DatabaseSync;
+    return databaseSyncConstructor;
+  } finally {
+    process.emitWarning = originalEmitWarning;
+  }
+}
 
 const BUSY_TIMEOUT_MS = 5_000;
 
@@ -8,6 +47,7 @@ const BUSY_TIMEOUT_MS = 5_000;
 export function openSqliteDatabase(dbPath: string): DatabaseSync {
   if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
 
+  const DatabaseSync = getDatabaseSync();
   const db = new DatabaseSync(dbPath);
   try {
     db.exec(`

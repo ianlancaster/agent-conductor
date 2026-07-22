@@ -1,9 +1,9 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Store } from '../src/store/index.js';
+import { openSqliteDatabase } from '../src/store/sqlite.js';
 
 let store: Store;
 
@@ -86,7 +86,7 @@ describe('operator requests', () => {
     const id = persisted.insertOperatorRequest('alpha', 'Choose', ['one']);
     persisted.close();
 
-    const raw = new DatabaseSync(dbPath);
+    const raw = openSqliteDatabase(dbPath);
     raw.prepare('UPDATE operator_requests SET options_json = ? WHERE id = ?').run('{secret-looking-bad-json', id);
     raw.close();
 
@@ -159,7 +159,7 @@ describe('session state', () => {
   it('migrates existing mode and pause state to auto booleans without legacy columns', () => {
     const dir = mkdtempSync(join(tmpdir(), 'conductor-store-migration-'));
     const dbPath = join(dir, 'conductor.db');
-    const legacy = new DatabaseSync(dbPath);
+    const legacy = openSqliteDatabase(dbPath);
     legacy.exec(`
       CREATE TABLE session_state (
         session TEXT PRIMARY KEY,
@@ -190,7 +190,7 @@ describe('session state', () => {
     expect(migrated.getOperatorRequest(requestId)?.options).toEqual(['Yes']);
     migrated.close();
 
-    const inspected = new DatabaseSync(dbPath);
+    const inspected = openSqliteDatabase(dbPath);
     const columns = inspected.prepare('PRAGMA table_info(session_state)').all() as { name: string }[];
     inspected.close();
     rmSync(dir, { recursive: true, force: true });
