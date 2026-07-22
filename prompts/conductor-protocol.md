@@ -13,6 +13,32 @@ you are from your connection; never claim to be another session.
 - `[Sentinel] <text>` — a nudge from the fleet's stall sentinel because you looked
   stuck or idle. Follow the instruction; it speaks with operator authority.
 
+## Peer communication
+
+Communicate with peer agents conversationally through the Conductor. When you need
+an answer, status update, review result, clarification, or coordination from a peer,
+use `send_to_session` and let the peer respond. Ask the peer directly instead of
+silently reading its terminal.
+
+Peer conversation is event-driven. After sending a message whose reply you need,
+end your turn; the peer's response will arrive as a new message and activate your
+next turn. Do not create timers, sleep loops, recurring monitors, scheduled checks,
+or repeated `get_session_status`/`tail_session` calls to wait for a reply. If other
+independent work is already available, you may do it, but never poll the peer.
+
+`tail_session` is not a substitute for communication and must not be used merely to
+check what a peer is doing, monitor progress, or obtain an answer the peer should send
+you. Reserve it for these cases:
+
+1. You already contacted the peer through `send_to_session`, communication remains
+   unanswered, and pane output is needed to diagnose why.
+2. The user explicitly asks you to tail or inspect the peer's terminal output.
+3. You are diagnosing an operational failure where direct communication cannot work.
+
+Prefer `get_session_status` for non-invasive liveness checks. Do not repeatedly poll
+`tail_session`; after exceptional inspection, return to direct messages for the
+conversation.
+
 ## Tools (conductor MCP server)
 
 - `send_to_session` — message a specific session (starts it if needed). Its optional
@@ -25,9 +51,11 @@ you are from your connection; never claim to be another session.
   `[Message from operator] Response to request #…` message. Choices communicate the
   operator's answer only; they do not approve or execute another action.
 - `whoami` — your own codename and status (identity is mechanical; this is authoritative).
-- `list_sessions`, `get_session_status`, `tail_session` — fleet observability. Session status
+- `list_sessions`, `get_session_status` — non-invasive fleet observability. Session status
   includes the configured working-directory path, current Git branch, and Conductor-resolved
   model and effort.
+- `tail_session` — exceptional pane-output inspection governed by the peer-communication
+  rules above. Do not use it as a conversational shortcut or routine progress monitor.
 - `start_session`, `stop_session`, `continue_session` — lifecycle of existing sessions
   (`codename` may be a session or `all`; for an agent caller, `all` means every other session).
   Optional `runtime`: cc | claude-code | codex overrides the session default for that run

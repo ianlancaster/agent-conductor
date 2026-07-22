@@ -3,7 +3,6 @@ import { appendFile, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/pro
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { ENVELOPE_SIGNATURE } from '../../core/utils.js';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import type { RuntimeEvent } from '../../core/types.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
@@ -126,27 +125,6 @@ const BELOW_COMPOSER_CHROME: readonly RegExp[] = [
   /esc to interrupt/iu,
   /\d+%\s+context\s+left/iu,
   /messages to be submitted after next tool call/iu, // steering-queue hint
-];
-
-/**
- * Codex's built-in empty-composer prompts (0.144.x). iTerm's AppleScript
- * capture strips the dim style that identifies these as placeholders, so the
- * plain-text fallback must recognize the finite built-in pool. Unknown text is
- * always treated as an operator draft; learning arbitrary first-seen content
- * caused the operator-clobber bug when a real draft was seen first.
- */
-const PLAIN_GHOST_HINTS: readonly RegExp[] = [
-  /^Explain this codebase$/u,
-  /^Summarize recent commits$/u,
-  /^Implement \{feature\}$/u,
-  /^Find and fix a bug in @filename$/u,
-  /^Write tests for @filename$/u,
-  /^Improve documentation in @filename$/u,
-  /^Run \/review on my current changes$/u,
-  /^Use \/skills to list available skills(?: or ask Codex to use one\.)?$/u,
-  /^Check recently modified functions for compatibility$/u,
-  /^How many files have been modified\?$/u,
-  /^Will this algorithm scale well\?$/u,
 ];
 
 interface ParsedNotifyPayload {
@@ -294,14 +272,12 @@ export class CodexRuntime implements SessionRuntime {
    *   ghost hint       `ESC[2m…ESC[0m`      dim content   — EMPTY composer
    *   operator text    unstyled content                    — a human composing
    *
-   * Plain captures (iTerm) fall back to the built-in ghost-hint pool; there a
-   * ›-row bearing an envelope signature is indistinguishable from a transcript
-   * echo (both plain `›` text), so it stays null.
+   * Plain captures (iTerm) cannot distinguish dim placeholder text from typed
+   * input, so every non-empty composer is conservatively blocked. Envelope
+   * signatures have no special status.
    */
-  parseInputState(capture: string, session?: string): InputState {
-    return capture.includes('\u001b[')
-      ? this.parseStyledInputState(capture)
-      : this.parsePlainInputState(capture, session);
+  parseInputState(capture: string, _session?: string): InputState {
+    return capture.includes('\u001b[') ? this.parseStyledInputState(capture) : this.parsePlainInputState(capture);
   }
 
   private parseStyledInputState(capture: string): InputState {
@@ -320,13 +296,12 @@ export class CodexRuntime implements SessionRuntime {
       const content = chars.slice(glyphIdx + 1).filter((c) => c.ch.trim().length > 0);
       if (content.length === 0) return 'clear';
       if (content.every((c) => c.dim)) return 'clear'; // ghost hint — dim placeholder in an empty composer
-      const contentText = plain.slice(plain.indexOf('›') + 1).trim();
-      return ENVELOPE_SIGNATURE.test(contentText) ? 'conductor-draft' : 'operator-draft';
+      return 'draft';
     }
     return null;
   }
 
-  private parsePlainInputState(capture: string, session?: string): InputState {
+  private parsePlainInputState(capture: string): InputState {
     for (const line of capture.split('\n').reverse()) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
@@ -336,9 +311,7 @@ export class CodexRuntime implements SessionRuntime {
       }
       const content = trimmed.slice('›'.length).trim();
       if (content.length === 0) return 'clear';
-      if (ENVELOPE_SIGNATURE.test(content)) return null;
-      if (session !== undefined && PLAIN_GHOST_HINTS.some((pattern) => pattern.test(content))) return 'clear';
-      return 'operator-draft';
+      return 'draft';
     }
     return null;
   }

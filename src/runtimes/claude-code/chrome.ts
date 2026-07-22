@@ -1,4 +1,3 @@
-import { ENVELOPE_SIGNATURE } from '../../core/utils.js';
 import type { InputState } from '../types.js';
 
 /** Claude Code TUI chrome patterns — lines stripped from pane captures before judgment. */
@@ -27,20 +26,10 @@ export function stripClaudeChrome(capture: string): string {
 }
 
 /**
- * Ghost/placeholder text Claude Code renders inside an EMPTY input box (e.g.
- * `❯ Try "fix lint errors"`). Pane captures are plain text, so it is
- * indistinguishable from typed input by styling — match its shape instead.
- * Treating it as typed input made an idle session read "busy" forever, so
- * deliveries only ever went out via the max-age force-flush.
- */
-const GHOST_TEXT_PATTERN = /^Try ["“'].*["”']( to .*)?$/;
-
-/**
  * Classify the Claude Code input line. Looks at the LAST prompt-glyph line
- * in the capture: empty (or the placeholder ghost text, which only appears
- * when the input is empty) is clear; a draft bearing a conductor envelope
- * signature is one of our own unsubmitted deliveries; any other draft is
- * the operator mid-composition. Null when no input line is visible.
+ * in the capture: only an empty line is clear; any visible text is a draft.
+ * Null when no input line is visible. Claude prompt suggestions are disabled
+ * at launch because plain iTerm capture cannot distinguish them from input.
  */
 export function parseClaudeInputState(capture: string): InputState {
   const lines = capture.split('\n');
@@ -53,8 +42,7 @@ export function parseClaudeInputState(capture: string): InputState {
       .slice(glyphIndex + 1)
       .replace(/[│┃|]/g, '')
       .trim();
-    if (afterGlyph.length === 0 || GHOST_TEXT_PATTERN.test(afterGlyph)) return 'clear';
-    return ENVELOPE_SIGNATURE.test(afterGlyph) ? 'conductor-draft' : 'operator-draft';
+    return afterGlyph.length === 0 ? 'clear' : 'draft';
   }
   return null;
 }

@@ -17,7 +17,7 @@ export class FakeRuntime implements SessionRuntime {
 
   readonly prepared: { session: SessionConfig; identity: IdentityEndpoints }[] = [];
   readonly launches: { session: SessionConfig; opts: LaunchOptions }[] = [];
-  /** Controls parseInputState; set to 'operator-draft' to simulate the operator typing. */
+  /** Controls parseInputState; set to 'draft' to simulate occupied input. */
   inputState: InputState = 'clear';
   readonly transcripts = new Map<string, string>();
 

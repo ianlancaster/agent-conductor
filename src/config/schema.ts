@@ -109,6 +109,7 @@ export const supervisorConfigSchema = z
     messaging: z
       .object({
         queueDrainMs: z.number().int().positive().default(2_000),
+        /** @deprecated Retained for config compatibility; occupied input is never force-delivered over. */
         queueMaxAgeMs: z.number().int().positive().default(60_000),
         tailDefaultLines: z.number().int().positive().default(30),
         tailMaxLines: z.number().int().positive().default(500),
@@ -177,6 +178,13 @@ export const supervisorConfigSchema = z
         telegram: z
           .object({
             /** Token/chat id come from env: CONDUCTOR_TELEGRAM_TOKEN / CONDUCTOR_TELEGRAM_CHAT_ID. */
+            enabled: z.boolean().default(false),
+          })
+          .strict()
+          .default({}),
+        slack: z
+          .object({
+            /** Credentials come from CONDUCTOR_SLACK_* values in the fleet environment. */
             enabled: z.boolean().default(false),
           })
           .strict()

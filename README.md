@@ -83,17 +83,17 @@ Create a fleet directory and register a project:
 ```bash
 mkdir ~/my-fleet
 cd ~/my-fleet
-
-conductor init --session alpha --repo ~/code/my-project
-conductor validate
 conductor start
 ```
 
-`conductor start` launches the supervisor and turns the current terminal into an operator
-console. At the `conductor>` prompt:
+On first use, `conductor start` creates the complete `.conductor/` scaffold without overwriting
+anything already present. It then launches the supervisor and turns the current terminal into an
+operator console. The generated `supervisor.yaml` contains the full effective configuration—including
+fleet-derived values and disabled Telegram and Slack channel blocks—instead of commented examples.
+Register and start the first project from the `conductor>` prompt:
 
 ```text
-/start alpha
+/spawn alpha --path /absolute/path/to/my-project
 /tell alpha inspect this repository and summarize its architecture
 /status
 /tail alpha 40
@@ -163,9 +163,11 @@ Session files hot-reload. Add, edit, or remove a YAML file under `.conductor/con
 restarting the conductor. Unknown configuration keys are validation errors, so stale or
 misspelled settings never fail silently.
 
-`conductor init` keeps Conductor-owned configuration, secrets, runtime state, and logs together under
-`.conductor/`; it does not create generic `config/` or `data/` directories in the fleet root. Fleets made
-by older releases continue to load from root-level `config/`, `data/`, and `.env`. See the
+`conductor start` creates any missing fleet scaffold files, including an owner-only `.conductor/.env`,
+and keeps Conductor-owned configuration,
+secrets, runtime state, and logs together under `.conductor/`; it does not create generic `config/` or
+`data/` directories in the fleet root. Existing files are never replaced. Fleets made by older releases
+continue to load from root-level `config/`, `data/`, and `.env`. See the
 [migration note](docs/getting-started.md#existing-root-level-fleets) before moving a running fleet.
 
 The terminal backend is selected automatically: starting inside tmux uses tmux; starting in
@@ -182,7 +184,7 @@ For a richer terminal footer, run this once:
 conductor statusline
 ```
 
-This optional setup is separate from `conductor init`. It configures the user-level
+This optional setup is separate from fleet startup. It configures the user-level
 Claude Code and Codex settings used by newly started sessions; restart an existing managed
 session to pick it up.
 
@@ -428,12 +430,11 @@ channels:
     enabled: true
 ```
 
-`conductor init` creates `.conductor/env.template` without overwriting an existing file. Copy it to the
-fleet's gitignored `.conductor/.env`, restrict access, and fill in the credentials:
+The first `conductor start` creates an owner-only, gitignored `.conductor/.env` with organized credential
+stubs, without overwriting an existing file. Fill in the Telegram values and restart:
 
 ```bash
-cp .conductor/env.template .conductor/.env
-chmod 600 .conductor/.env
+${EDITOR:-vi} .conductor/.env
 conductor start
 ```
 
@@ -536,9 +537,8 @@ service user's `PATH` first.
 ## CLI reference
 
 ```text
-conductor init                 scaffold a fleet directory
 conductor statusline           configure optional Claude Code and Codex status lines
-conductor start                start the supervisor and operator console
+conductor start                initialize missing fleet files, then start the supervisor and console
 conductor start --start-all    start the supervisor and every configured session
 conductor start --foreground   run the supervisor in the current process
 conductor console              attach another operator console

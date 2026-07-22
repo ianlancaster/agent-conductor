@@ -592,7 +592,7 @@ export class ConductorOperations {
       },
       {
         name: 'tail_session',
-        description: `Read trailing pane output (default ${String(this.deps.tailLimits.defaultLines)} lines, maximum ${String(this.deps.tailLimits.maxLines)}).`,
+        description: `Read trailing pane output (default ${String(this.deps.tailLimits.defaultLines)} lines, maximum ${String(this.deps.tailLimits.maxLines)}). Reserve this for user-requested inspection or diagnosing unanswered/failed peer communication; use send_to_session for normal agent conversation and status requests.`,
         audiences: BOTH,
         inputSchema: schema(
           {

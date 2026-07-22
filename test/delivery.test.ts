@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeliveryQueue } from '../src/core/delivery.js';
 import type { PaneRef } from '../src/core/types.js';
+import { parseClaudeInputState } from '../src/runtimes/claude-code/chrome.js';
+import { CodexRuntime } from '../src/runtimes/codex/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 
@@ -10,7 +12,6 @@ let backend: FakeTerminalBackend;
 let runtime: FakeRuntime;
 let queue: DeliveryQueue;
 let pane: PaneRef;
-let ready: boolean;
 let deliveryEvents: string[];
 let runtimeObservations: string[];
 
@@ -18,7 +19,6 @@ beforeEach(async () => {
   vi.useFakeTimers();
   backend = new FakeTerminalBackend();
   runtime = new FakeRuntime();
-  ready = true;
   deliveryEvents = [];
   runtimeObservations = [];
   pane = await backend.createPane('alpha', 'pane');
@@ -26,7 +26,6 @@ beforeEach(async () => {
     backend,
     runtimeFor: () => runtime,
     getPane: (session) => (session === 'alpha' ? pane : undefined),
-    isReady: () => ready,
     onRuntimeObserved: (session) => runtimeObservations.push(session),
     onDelivered: (session) => deliveryEvents.push(session),
     config: CONFIG,
@@ -51,7 +50,7 @@ describe('DeliveryQueue', () => {
   });
 
   it('queues when the input line is busy and drains when it clears', async () => {
-    runtime.inputState = 'operator-draft';
+    runtime.inputState = 'draft';
     expect(await queue.deliverOrQueue('alpha', 'one')).toBe('queued');
     expect(await queue.deliverOrQueue('alpha', 'two')).toBe('queued');
     expect(queue.pendingCount('alpha')).toBe(2);
@@ -75,7 +74,7 @@ describe('DeliveryQueue', () => {
   });
 
   it('preserves FIFO order across queued and later messages', async () => {
-    runtime.inputState = 'operator-draft';
+    runtime.inputState = 'draft';
     await queue.deliverOrQueue('alpha', 'first');
     // Input clears, but a queued message exists — new sends must not jump the queue.
     runtime.inputState = 'clear';
@@ -85,22 +84,21 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['first', 'second']);
   });
 
-  it('force-delivers after queueMaxAgeMs when a CONDUCTOR draft is stuck in the composer', async () => {
-    // A stuck conductor envelope is ours to manage — the max-age valve applies.
-    runtime.inputState = 'conductor-draft';
+  it('NEVER force-delivers over a signed Conductor draft, regardless of age', async () => {
+    runtime.inputState = 'draft';
     await queue.deliverOrQueue('alpha', 'stuck');
+    vi.advanceTimersByTime(CONFIG.queueMaxAgeMs * 10);
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    expect(queue.pendingCount('alpha')).toBe(1);
 
-    vi.advanceTimersByTime(CONFIG.queueMaxAgeMs + 1);
+    runtime.inputState = 'clear';
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['stuck']);
   });
 
-  it('NEVER force-delivers over an operator draft, no matter how overdue', async () => {
-    // Unsigned composer content is a human mid-composition. Our deliveries end
-    // with Enter — typing would submit the operator's half-typed message.
-    runtime.inputState = 'operator-draft';
+  it('NEVER force-delivers over an unsigned draft, regardless of age', async () => {
+    runtime.inputState = 'draft';
     await queue.deliverOrQueue('alpha', 'polite-one');
     await queue.deliverOrQueue('alpha', 'polite-two');
 
@@ -119,7 +117,7 @@ describe('DeliveryQueue', () => {
   });
 
   it('releases held messages on the timer as soon as the operator input clears', async () => {
-    runtime.inputState = 'operator-draft';
+    runtime.inputState = 'draft';
     await queue.deliverOrQueue('alpha', 'waiting');
     vi.advanceTimersByTime(CONFIG.queueMaxAgeMs * 2);
     await queue.drainNow();
@@ -130,29 +128,34 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['waiting']);
   });
 
-  it('never force-delivers into a booting pane, even when overdue', async () => {
+  it('never delivers into a booting or otherwise unclassified pane', async () => {
     // helper1-restart regression: notify envelopes went overdue while the pane
     // was relaunching, got typed over the boot sequence, and piled up
-    // concatenated + unsubmitted in the composer. Overdue overrides busy, not not-up.
+    // concatenated + unsubmitted in the composer.
     runtime.inputState = null;
-    ready = false;
     await queue.deliverOrQueue('alpha', 'patient');
     vi.advanceTimersByTime(CONFIG.queueMaxAgeMs + 1);
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual([]);
     expect(queue.pendingCount('alpha')).toBe(1);
 
-    // Runtime comes up → delivery proceeds.
-    ready = true;
+    // Only explicit empty composer chrome releases the message.
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    runtime.inputState = 'clear';
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['patient']);
   });
 
-  it('force-delivers overdue messages one per pass, not as a burst', async () => {
-    runtime.inputState = 'conductor-draft';
+  it('holds every queued message behind a draft, then drains one per clear pass', async () => {
+    runtime.inputState = 'draft';
     await queue.deliverOrQueue('alpha', 'old-one');
     await queue.deliverOrQueue('alpha', 'old-two');
-    vi.advanceTimersByTime(CONFIG.queueMaxAgeMs + 1);
+    vi.advanceTimersByTime(CONFIG.queueMaxAgeMs * 10);
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+
+    runtime.inputState = 'clear';
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['old-one']);
     await queue.drainNow();
@@ -160,7 +163,7 @@ describe('DeliveryQueue', () => {
   });
 
   it('drains automatically on the timer', async () => {
-    runtime.inputState = 'operator-draft';
+    runtime.inputState = 'draft';
     await queue.deliverOrQueue('alpha', 'later');
     runtime.inputState = 'clear';
     await vi.advanceTimersByTimeAsync(CONFIG.queueDrainMs + 1);
@@ -168,7 +171,7 @@ describe('DeliveryQueue', () => {
   });
 
   it('retains queued messages across an agent pane restart', async () => {
-    runtime.inputState = 'operator-draft';
+    runtime.inputState = 'draft';
     await queue.deliverOrQueue('alpha', 'doomed');
     await backend.kill(pane);
     await queue.drainNow();
@@ -181,9 +184,53 @@ describe('DeliveryQueue', () => {
     expect(queue.pendingCount('alpha')).toBe(0);
   });
 
-  it('treats unknown input state (null) as clear once the session is ready', async () => {
+  it('queues unknown input state even after the session is ready', async () => {
     runtime.inputState = null;
-    expect(await queue.deliverOrQueue('alpha', 'go')).toBe('delivered');
+    expect(await queue.deliverOrQueue('alpha', 'go')).toBe('queued');
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+
+    runtime.inputState = 'clear';
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['go']);
+  });
+
+  it.each([
+    {
+      runtimeName: 'Claude Code',
+      firstLine: '❯ a very long unsigned operator draft',
+      clearCapture: 'output\n❯ ',
+      parse: (capture: string) => parseClaudeInputState(capture),
+    },
+    {
+      runtimeName: 'Codex',
+      firstLine: '› a very long unsigned operator draft',
+      clearCapture: 'output\n› \n  gpt-5.6 medium · /repo',
+      parse: (capture: string) =>
+        new CodexRuntime({ config: { binary: 'codex', toolTimeoutSec: 600 }, baseDir: '/tmp' }).parseInputState(
+          capture,
+        ),
+    },
+  ])('does not clobber a multiline $runtimeName draft whose prompt glyph scrolled out of capture', async (sample) => {
+    runtime.parseInputState = sample.parse;
+    backend.setPaneContent(
+      pane.id,
+      [sample.firstLine, ...Array.from({ length: 30 }, (_, index) => `  continuation line ${String(index)}`)].join(
+        '\n',
+      ),
+    );
+
+    // Delivery captures only the trailing 10 lines. The opening composer
+    // glyph is outside that window, so the runtime returns unknown. Unknown
+    // must queue indefinitely, never fall through readiness to a write.
+    expect(await queue.deliverOrQueue('alpha', 'incoming peer message')).toBe('queued');
+    vi.advanceTimersByTime(CONFIG.queueMaxAgeMs * 100);
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+
+    backend.setPaneContent(pane.id, sample.clearCapture);
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['incoming peer message']);
   });
 
   it('queues while the session is booting: no runtime chrome AND not yet ready', async () => {
@@ -191,13 +238,14 @@ describe('DeliveryQueue', () => {
     // shell executing the launch command splices into it. No chrome (null) +
     // no lifecycle event yet must queue, not type.
     runtime.inputState = null;
-    ready = false;
     expect(await queue.deliverOrQueue('alpha', 'PING-42')).toBe('queued');
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual([]);
 
-    // An independent runtime observation arrives → ready → next drain delivers.
-    ready = true;
+    // No lifecycle/readiness signal can override uncertain input.
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    runtime.inputState = 'clear';
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['PING-42']);
   });
@@ -205,14 +253,20 @@ describe('DeliveryQueue', () => {
   it('visible runtime chrome proves the process is up even before any event', async () => {
     // Codex sends no start event — a visible, empty input line must unblock delivery.
     runtime.inputState = 'clear';
-    ready = false;
     expect(await queue.deliverOrQueue('alpha', 'go')).toBe('delivered');
     expect(runtimeObservations).toEqual(['alpha']);
   });
 
-  it('treats capture failures as clear rather than blocking forever (when ready)', async () => {
+  it('queues on capture failure and releases only after a clear capture', async () => {
+    const capture = backend.capture.bind(backend);
     backend.capture = () => Promise.reject(new Error('osascript exploded'));
-    expect(await queue.deliverOrQueue('alpha', 'resilient')).toBe('delivered');
+    expect(await queue.deliverOrQueue('alpha', 'resilient')).toBe('queued');
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+
+    backend.capture = capture;
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['resilient']);
   });
 
   it('queues instead of rejecting when the direct write throws (H1)', async () => {
@@ -231,7 +285,7 @@ describe('DeliveryQueue', () => {
   });
 
   it('retains a queued item when its drain write throws, then retries it', async () => {
-    runtime.inputState = 'operator-draft';
+    runtime.inputState = 'draft';
     const receipts: string[] = [];
     await queue.deliverOrQueue('alpha', 'important', { onDelivered: () => receipts.push('done') });
     runtime.inputState = 'clear';

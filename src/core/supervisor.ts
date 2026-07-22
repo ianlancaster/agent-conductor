@@ -140,7 +140,6 @@ export class Supervisor {
       backend: this.backend,
       runtimeFor: (session) => this.runtimeFor(session),
       getPane: (session) => this.lifecycle.getPane(session),
-      isReady: (session) => this.states.isReady(session),
       onRuntimeObserved: (session) => {
         this.markRuntimeObserved(session);
       },

@@ -1,8 +1,8 @@
 # Connect Agent Conductor to Slack
 
-> Availability: this guide is the setup contract for the planned built-in Slack adapter. The adapter is
-> not present in the current release yet; until its implementation lands, `channels.slack` is not a valid
-> configuration key.
+> Availability: this guide is the setup contract for the planned built-in Slack adapter. The scaffolded
+> `channels.slack.enabled` setting is accepted now, but enabling it fails clearly until the implementation
+> lands.
 
 The Slack adapter gives one authorized operator a private App Home conversation with a Conductor fleet.
 It supports the same operator commands as the local console and Telegram, ordinary conversation with the
@@ -145,11 +145,11 @@ channels:
     enabled: true
 ```
 
-Put the two tokens and the authorized member ID in the fleet's `.conductor/.env`:
+Put the two tokens and the authorized member ID in the owner-only, gitignored `.conductor/.env` created
+automatically by the first `conductor start`:
 
 ```bash
-cp .conductor/env.template .conductor/.env
-chmod 600 .conductor/.env
+${EDITOR:-vi} .conductor/.env
 ```
 
 ```dotenv
@@ -247,7 +247,7 @@ update `.conductor/.env`, and restart Conductor. To shut the integration off imm
 
 | Symptom                                               | Check                                                                                                                                                                                                             |
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Slack config is rejected                              | The Slack adapter has not landed in your installed Agent Conductor version, or `channels.slack` contains a key other than `enabled`.                                                                              |
+| Slack startup says the adapter is not included        | The Slack adapter has not landed in your installed Agent Conductor version. Keep `channels.slack.enabled: false` until it is installed.                                                                           |
 | Slack package or `undici` cannot be found             | Slack's three runtime packages are optional dependencies installed by default. Reinstall without `--omit=optional`/`--no-optional`; the required set is `@slack/socket-mode`, `@slack/web-api`, and `undici`.     |
 | `invalid_auth` or startup authentication failure      | Confirm the `xapp-` value is in `CONDUCTOR_SLACK_APP_TOKEN` and the `xoxb-` value is in `CONDUCTOR_SLACK_BOT_TOKEN`; check for whitespace and revoked tokens.                                                     |
 | `missing_scope`                                       | Confirm the three bot scopes in the manifest, then reinstall/re-authorize the app and replace the bot token if Slack issued a new one.                                                                            |

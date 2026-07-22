@@ -85,8 +85,7 @@ beforeEach(async () => {
     backend,
     runtimeFor: () => runtime,
     getPane: (session) => lifecycle.getPane(session),
-    isReady: (session) => states.isReady(session),
-    config: { queueDrainMs: 2_000, queueMaxAgeMs: 60_000 },
+    config: { queueDrainMs: 2_000 },
   });
   const messaging = new Messaging({
     store,

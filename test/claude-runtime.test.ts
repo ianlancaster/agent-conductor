@@ -74,7 +74,9 @@ describe('buildLaunchCommand', () => {
     });
     const command = custom.buildLaunchCommand(session, identity, {});
     expect(command).not.toContain('IS_DEMO');
-    expect(command).not.toContain('CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION');
+    // Suggestions remain disabled even with full chrome because plain iTerm
+    // capture cannot distinguish placeholder text from a real operator draft.
+    expect(command).toContain(`export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION='false'`);
   });
 
   it('passes the session model — the cc-conductor bug fix', () => {
@@ -219,7 +221,7 @@ describe('parseEvent', () => {
 describe('chrome parsing', () => {
   it('detects a clear input line', () => {
     expect(parseClaudeInputState('some output\n│ ❯ │')).toBe('clear');
-    expect(parseClaudeInputState('some output\n❯ half-typed messa')).toBe('operator-draft');
+    expect(parseClaudeInputState('some output\n❯ half-typed messa')).toBe('draft');
     expect(parseClaudeInputState('no prompt glyph anywhere')).toBeNull();
   });
 
@@ -227,25 +229,19 @@ describe('chrome parsing', () => {
     expect(parseClaudeInputState('❯ old submitted line\noutput\n❯ ')).toBe('clear');
   });
 
-  it('treats the ghost placeholder as an EMPTY input line', () => {
-    // Claude renders suggestion ghost text inside an empty input box. Plain
-    // captures can't see the dim styling, and reading it as typed input made
-    // idle sessions look busy forever (tester Issue #3).
-    expect(parseClaudeInputState('output\n│ ❯ Try "fix lint errors" │')).toBe('clear');
-    expect(parseClaudeInputState('output\n❯ Try “refactor the parser” to get started')).toBe('clear');
-    // Real typed text that merely starts with Try but has no quote is busy.
-    expect(parseClaudeInputState('output\n❯ Try harder next time')).toBe('operator-draft');
+  it('treats every non-empty composer as a draft, including suggestion-shaped text', () => {
+    // Suggestions are disabled at launch. If suggestion-shaped text is still
+    // visible, safety wins: iTerm cannot prove whether it was typed.
+    expect(parseClaudeInputState('output\n│ ❯ Try "fix lint errors" │')).toBe('draft');
+    expect(parseClaudeInputState('output\n❯ Try “refactor the parser” to get started')).toBe('draft');
+    expect(parseClaudeInputState('output\n❯ Try harder next time')).toBe('draft');
   });
 
-  it('tells a stuck conductor envelope apart from an operator draft by its signature', () => {
-    // Every conductor delivery is signed; an unsigned draft is a human's and
-    // must never be typed over (our deliveries end with Enter and would
-    // submit it). A signed draft is our own unsubmitted delivery.
-    expect(parseClaudeInputState('output\n❯ [Message from operator] do the thing')).toBe('conductor-draft');
-    expect(parseClaudeInputState('output\n❯ [Broadcast from tester] heads up')).toBe('conductor-draft');
-    expect(parseClaudeInputState('output\n❯ [Stall] session=alpha kind=idle …')).toBe('conductor-draft');
-    // Unsigned content — even mentioning a codename — is the operator's.
-    expect(parseClaudeInputState('output\n❯ tell tester to [Message me back]')).toBe('operator-draft');
+  it('ignores signatures when classifying occupied input', () => {
+    expect(parseClaudeInputState('output\n❯ [Message from operator] do the thing')).toBe('draft');
+    expect(parseClaudeInputState('output\n❯ [Broadcast from tester] heads up')).toBe('draft');
+    expect(parseClaudeInputState('output\n❯ [Stall] session=alpha kind=idle …')).toBe('draft');
+    expect(parseClaudeInputState('output\n❯ tell tester to [Message me back]')).toBe('draft');
   });
 
   it('strips trailing chrome but keeps content', () => {

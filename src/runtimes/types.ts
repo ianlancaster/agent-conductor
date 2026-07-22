@@ -36,15 +36,12 @@ export interface LaunchOptions {
 
 /**
  * What the runtime's visible input line holds.
- * - `'clear'`           — empty (or only the runtime's own placeholder hint): safe to type.
- * - `'operator-draft'`  — UNSIGNED, unsubmitted content: a human is composing.
- *   Delivery must never type over it — our deliveries end with Enter, which
- *   would submit the operator's half-typed message.
- * - `'conductor-draft'` — an unsubmitted conductor delivery (starts with an
- *   envelope signature); ours to manage.
- * - `null`              — cannot be determined from this capture (no input chrome visible).
+ * - `'clear'` — the composer is visibly and unambiguously empty: safe to type.
+ * - `'draft'` — the composer contains any text. Its source, signature, age,
+ *   and length are deliberately irrelevant; delivery must queue indefinitely.
+ * - `null` — cannot be determined from this capture. Delivery must queue.
  */
-export type InputState = 'clear' | 'operator-draft' | 'conductor-draft' | null;
+export type InputState = 'clear' | 'draft' | null;
 
 /**
  * The seam between the conductor and a specific agent CLI (Claude Code, Codex).

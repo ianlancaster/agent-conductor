@@ -59,6 +59,11 @@ describe('Supervisor construction', () => {
     expect(() => new Supervisor(baseDir, { env: {} })).toThrow(/CONDUCTOR_TELEGRAM_TOKEN.*CHAT_ID.*missing or blank/);
   });
 
+  it('fails clearly when Slack is enabled before the optional adapter is installed', () => {
+    writeConfig('terminal:\n  backend: tmux\nchannels:\n  slack:\n    enabled: true\n', {});
+    expect(() => new Supervisor(baseDir, { env: {} })).toThrow(/does not include the Slack adapter yet/);
+  });
+
   it('honors injected/global environment over fleet .env for configured channels', () => {
     writeConfig('terminal:\n  backend: tmux\nchannels:\n  telegram:\n    enabled: true\n', {});
     writeFileSync(join(baseDir, '.env'), 'CONDUCTOR_TELEGRAM_TOKEN=file-token\nCONDUCTOR_TELEGRAM_CHAT_ID=file-chat\n');
