@@ -319,6 +319,11 @@ Every fleet command works identically in the console, via `conductor cmd '<comma
 over Telegram. Slack exposes the same commands with an `!` prefix inside its private App Home
 conversation. `/clear` is local to the interactive console.
 
+Run `conductor status` from the fleet directory for a read-only live panel that shows the
+canonical `/status` output and whether the conductor is online. It keeps retrying across
+conductor restarts; press `q` to exit. Use `conductor status --once` for a single interactive
+snapshot. Piped or redirected status output is automatically one-shot.
+
 ## Troubleshooting
 
 | Symptom                                                 | Likely cause                                                                           |
