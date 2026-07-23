@@ -3,7 +3,9 @@ import { formatTerminalReply } from './terminal-format.js';
 
 const ALT_SCREEN_ON = '\u001b[?1049h';
 const ALT_SCREEN_OFF = '\u001b[?1049l';
-const CLEAR_SCREEN = '\u001b[2J\u001b[H';
+// Clear both the visible viewport and terminal history before every frame.
+// This is the same sequence as the console's proven `/clear` implementation.
+const CLEAR_SCREEN = '\u001b[2J\u001b[3J\u001b[H';
 const HIDE_CURSOR = '\u001b[?25l';
 const SHOW_CURSOR = '\u001b[?25h';
 const BOLD = '\u001b[1m';
