@@ -14,7 +14,7 @@ import { Supervisor } from '../core/supervisor.js';
 import { Store } from '../store/index.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
 import { ensureFleetScaffold } from './scaffold.js';
-import { parseStatusInterval, runStatusDashboard } from './live-status.js';
+import { DEFAULT_STATUS_INTERVAL, parseStatusInterval, runStatusDashboard } from './live-status.js';
 import { configureStatusLines } from './statusline.js';
 import { formatFeedPayload, formatTerminalReply } from './terminal-format.js';
 
@@ -327,7 +327,7 @@ program
   .command('status [session]')
   .description('Show a live fleet status view from the running conductor')
   .option('--once', 'Print one status snapshot and exit')
-  .option('-i, --interval <duration>', 'Live refresh interval (for example 2s or 500ms)', '2s')
+  .option('-i, --interval <duration>', 'Live refresh interval (for example 15s or 500ms)', DEFAULT_STATUS_INTERVAL)
   .action(async (session: string | undefined, opts: { once?: boolean; interval: string }) => {
     const command = session === undefined ? '/status' : `/status ${session}`;
     if (opts.once === true || process.stdin.isTTY !== true || process.stdout.isTTY !== true) {

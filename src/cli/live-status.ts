@@ -17,6 +17,8 @@ const DIM = '\u001b[2m';
 const NORMAL = '\u001b[22m';
 const DEFAULT_FOREGROUND = '\u001b[39m';
 
+export const DEFAULT_STATUS_INTERVAL = '15s';
+
 export type StatusConnection = 'checking' | 'online' | 'offline';
 
 export interface StatusDashboardState {
