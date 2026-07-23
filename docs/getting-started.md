@@ -119,7 +119,7 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
 
    `/tell` delivers your message into the session's pane. The session replies **in its own
    pane** unless it uses `send_to_operator`; that tool sends its reply to every connected
-   operator adapter, including the local console and Telegram (Step 3).
+   operator adapter, including the local console and any enabled Telegram or Slack channel.
 
 **If this step fails**, it's almost always one of: `claude` not on PATH, the `repo:` path
 doesn't exist, or iTerm2 automation permission (macOS will prompt the first time
@@ -309,21 +309,23 @@ uninstall` removes it. (Requires `pnpm build` + `pnpm link --global` first, so t
   service runs the compiled binary.)
 - **Multiple fleets**: just use separate fleet directories — ports, tmux session names,
   and daemon service names are derived per fleet dir, so nothing collides. Telegram
-  needs a distinct bot token per fleet (Telegram allows one poller per token).
+  needs a distinct bot token per fleet (Telegram allows one poller per token). Slack needs
+  a separate app per running fleet because Socket Mode distributes events across connections.
 
 ## Command reference
 
 `/help` lists everything in the console. Full reference is in the [README](../README.md).
 Every fleet command works identically in the console, via `conductor cmd '<command>'`, and
-over Telegram. `/clear` is local to the interactive console.
+over Telegram. Slack exposes the same commands with an `!` prefix inside its private App Home
+conversation. `/clear` is local to the interactive console.
 
 ## Troubleshooting
 
-| Symptom                                                | Likely cause                                                                           |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------- |
-| `command not found: conductor`                         | `pnpm link --global` not run, or use `-C`/`npx tsx` (README Install)                   |
-| `conductor validate` says OK but nothing is configured | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                       |
-| Pane never launches / hangs on start                   | `claude`/`codex` not on PATH, or bad `repo:` path                                      |
-| macOS dialog on first start                            | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)     |
-| Auto session stalls but nothing happens                | No sentinel configured/running, or the sentinel lacks `systemPromptFile`               |
-| Session replies in its pane but not on Telegram        | Expected — it must use `send_to_operator`; check the protocol prompt is being injected |
+| Symptom                                                 | Likely cause                                                                           |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `command not found: conductor`                          | `pnpm link --global` not run, or use `-C`/`npx tsx` (README Install)                   |
+| `conductor validate` says OK but nothing is configured  | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                       |
+| Pane never launches / hangs on start                    | `claude`/`codex` not on PATH, or bad `repo:` path                                      |
+| macOS dialog on first start                             | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)     |
+| Auto session stalls but nothing happens                 | No sentinel configured/running, or the sentinel lacks `systemPromptFile`               |
+| Session replies in its pane but not on a remote channel | Expected — it must use `send_to_operator`; check the protocol prompt is being injected |
