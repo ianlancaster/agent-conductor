@@ -70,6 +70,13 @@ export interface SessionRuntime {
    */
   parseInputState(capture: string, session?: string): InputState;
 
+  /**
+   * Resolve a visually ambiguous input state with runtime-owned external
+   * evidence. Used by Codex on plain iTerm captures, where ANSI styling is
+   * unavailable but the rollout can prove a visible row was already submitted.
+   */
+  resolveInputState?(capture: string, session: string, parsed: InputState): Promise<InputState>;
+
   /** Strip runtime-specific terminal chrome from a pane capture. */
   stripChrome(capture: string): string;
 

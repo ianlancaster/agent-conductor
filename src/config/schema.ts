@@ -20,6 +20,12 @@ export const DEFAULT_CLAUDE_CODE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'm
 
 export const DEFAULT_CODEX_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 
+export const DEFAULT_SPAWN_TEMPLATES = {
+  agent: {
+    source: 'https://github.com/ianlancaster/cognitive-agent-template',
+  },
+} as const;
+
 const stringHints = (defaults: readonly string[]) => z.array(z.string().trim().min(1)).default([...defaults]);
 
 /** Codenames become URL path segments, filenames, and tmux targets — keep them boring. */
@@ -38,6 +44,20 @@ export const scheduleEntrySchema = z
     prompt: z.string(),
     paused: z.boolean().default(false),
     freshContext: z.boolean().default(false),
+  })
+  .strict();
+
+export const spawnTemplateSchema = z
+  .object({
+    /** Git clone-compatible URL or path. Relative paths resolve from the fleet directory. */
+    source: z.string().trim().min(1),
+    /** Optional branch, tag, or commit checked out after cloning. */
+    ref: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((value) => !value.startsWith('-'), 'template ref must not begin with a dash')
+      .optional(),
   })
   .strict();
 
@@ -245,6 +265,15 @@ export const supervisorConfigSchema = z
         dirPattern: z.string().default('./{codename}'),
         /** Marker file that flags a repo as an agent project (display-only 🤖). */
         markerFile: z.string().default('.agent-marker'),
+        /** Registered Git-backed workspace templates selectable by name at spawn time. */
+        templates: z
+          .record(
+            z.string().regex(CODENAME_PATTERN, 'template name must be alphanumeric with dashes/underscores'),
+            spawnTemplateSchema,
+          )
+          .default(DEFAULT_SPAWN_TEMPLATES),
+        /** Bound remote clone and optional ref checkout operations. */
+        templateCloneTimeoutSeconds: z.number().positive().default(120),
       })
       .strict()
       .default({}),
@@ -254,6 +283,7 @@ export const supervisorConfigSchema = z
 export type ScheduleEntry = z.infer<typeof scheduleEntrySchema>;
 export type RuntimeName = z.infer<typeof runtimeSchema>;
 export type SessionConfig = z.infer<typeof sessionConfigSchema>;
+export type SpawnTemplate = z.infer<typeof spawnTemplateSchema>;
 
 /** Raw parse output — instance-scoped fields may be absent (loader derives them per fleet dir). */
 export type SupervisorConfigInput = z.infer<typeof supervisorConfigSchema>;

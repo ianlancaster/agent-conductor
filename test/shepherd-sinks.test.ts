@@ -75,6 +75,8 @@ beforeEach(async () => {
       defaultBypassPermissions: true,
       markerFile: '.agent-marker',
       spawnDirPattern: './{codename}',
+      spawnTemplates: {},
+      templateCloneTimeoutMs: 5_000,
     },
     baseDir: '/tmp',
     sessionConfigDir: '/tmp/sessions',

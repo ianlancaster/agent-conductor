@@ -220,6 +220,7 @@ Common examples:
 /broadcast <message>
 /respond <request-id> <option-number>
 /message-status <message-id>
+/cancel-message <message-id>
 /tail <session> [lines]
 /type <session> <text>
 
@@ -230,7 +231,7 @@ Common examples:
 /fleet-watch <arm|disarm|list> ...
 /tag <session> [text]
 
-/spawn <name> [--runtime <runtime>] [--path <dir>] [--model <model>]
+/spawn <name> [--runtime <runtime>] [--path <dir>] [--model <model>] [--template <name>]
               [--worktree <repo>] [--branch <name>]
               [--bypass-permissions|--require-permissions] [placement]
 /teardown <name> [--delete]
@@ -271,28 +272,29 @@ authoritative machine-readable reference, including argument schemas.
 
 These operations are available through both MCP and operator adapters:
 
-| MCP operation        | Operator command      | Purpose                                                        |
-| -------------------- | --------------------- | -------------------------------------------------------------- |
-| `send_to_session`    | `/tell`               | Send a signed message; starts a stopped recipient when needed  |
-| `get_message_status` | `/message-status`     | Inspect a direct-message receipt as pending or delivered       |
-| `broadcast`          | `/broadcast`          | Message every active session except the sender                 |
-| `start_session`      | `/start`              | Start sessions, optionally overriding runtime and effort       |
-| `stop_session`       | `/stop`               | Stop one session or all sessions                               |
-| `continue_session`   | `/continue`           | Continue sessions, optionally overriding runtime and effort    |
-| `spawn_session`      | `/spawn`              | Create, register, and start a session or worktree session      |
-| `teardown_session`   | `/teardown`           | Stop and deregister a session; optionally remove its directory |
-| `toggle_auto`        | `/auto`               | Toggle automatic stall routing                                 |
-| `pause_session`      | `/pause`              | Suppress schedules and stall routing temporarily               |
-| `resume_session`     | `/resume`             | Resume schedules and configured stall routing                  |
-| `set_sentinel`       | `/sentinel`           | Set or clear the fleet sentinel                                |
-| `arm_fleet_watch`    | `/fleet-watch arm`    | Alert when every watched session remains stalled               |
-| `disarm_fleet_watch` | `/fleet-watch disarm` | Remove a fleet stall watch                                     |
-| `list_fleet_watches` | `/fleet-watch list`   | Inspect fleet stall watches                                    |
-| `set_tag`            | `/tag`                | Set or clear a status label                                    |
-| `list_sessions`      | `/status`             | Show fleet status                                              |
-| `get_session_status` | `/status <session>`   | Show detailed status for one session                           |
-| `tail_session`       | `/tail`               | Read trailing pane output                                      |
-| `type_in_pane`       | `/type`               | Type raw text immediately, bypassing envelope and safety queue |
+| MCP operation        | Operator command      | Purpose                                                             |
+| -------------------- | --------------------- | ------------------------------------------------------------------- |
+| `send_to_session`    | `/tell`               | Send a signed message; starts a stopped recipient when needed       |
+| `get_message_status` | `/message-status`     | Inspect receipt state and the latest delivery-loop decision         |
+| `cancel_message`     | `/cancel-message`     | Cancel a pending direct message before its pane write begins        |
+| `broadcast`          | `/broadcast`          | Message every active session except the sender                      |
+| `start_session`      | `/start`              | Start sessions, optionally overriding runtime and effort            |
+| `stop_session`       | `/stop`               | Stop one session or all sessions                                    |
+| `continue_session`   | `/continue`           | Continue sessions, optionally overriding runtime and effort         |
+| `spawn_session`      | `/spawn`              | Create, register, and start an empty, template, or worktree session |
+| `teardown_session`   | `/teardown`           | Stop and deregister a session; optionally remove its directory      |
+| `toggle_auto`        | `/auto`               | Toggle automatic stall routing                                      |
+| `pause_session`      | `/pause`              | Suppress schedules and stall routing temporarily                    |
+| `resume_session`     | `/resume`             | Resume schedules and configured stall routing                       |
+| `set_sentinel`       | `/sentinel`           | Set or clear the fleet sentinel                                     |
+| `arm_fleet_watch`    | `/fleet-watch arm`    | Alert when every watched session remains stalled                    |
+| `disarm_fleet_watch` | `/fleet-watch disarm` | Remove a fleet stall watch                                          |
+| `list_fleet_watches` | `/fleet-watch list`   | Inspect fleet stall watches                                         |
+| `set_tag`            | `/tag`                | Set or clear a status label                                         |
+| `list_sessions`      | `/status`             | Show fleet status                                                   |
+| `get_session_status` | `/status <session>`   | Show detailed status for one session                                |
+| `tail_session`       | `/tail`               | Read trailing pane output                                           |
+| `type_in_pane`       | `/type`               | Type raw text immediately, bypassing envelope and safety queue      |
 
 ### Session-only tools
 
@@ -309,7 +311,11 @@ action.
 1–128 character `idempotencyKey` is scoped to the mechanically assigned sender; retrying the
 same key returns the original receipt without inserting or delivering another message. A
 `queued` receipt is already persisted and remains pending across agent or conductor restarts.
-It can be inspected with `get_message_status` or `/message-status`. `type_in_pane` is intentionally different: it writes immediately for
+It can be inspected with `get_message_status` or `/message-status`; status includes
+`deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`. Before falling back to raw pane
+input, the sender can use `cancel_message` or `/cancel-message` to prevent a later queued
+delivery. Cancellation succeeds only while the receipt is pending and its pane write has not
+begun. `type_in_pane` is intentionally different: it writes immediately for
 interactive prompts and slash commands, so callers must avoid using it while the operator is
 composing in that pane.
 
@@ -390,7 +396,26 @@ entries can also be disabled with `paused: true`. Set `freshContext: true` to st
 session and start a new run with the scheduled prompt. Missed triggers are never backfilled:
 the conductor only runs cron events reached while it is running.
 
-## Worktrees and spawned sessions
+## Templates, worktrees, and spawned sessions
+
+Register any number of Git-backed templates in `.conductor/config/supervisor.yaml`:
+
+```yaml
+spawn:
+  templates:
+    agent:
+      source: https://github.com/ianlancaster/cognitive-agent-template
+      # ref: main # optional branch, tag, or commit
+```
+
+The `agent` entry above is the built-in default. Select it with `/spawn researcher -t agent` or
+the `spawn_session.template` argument. `--path` still overrides the destination. Conductor accepts
+configured HTTPS/SSH Git sources and local paths, clones into an empty destination, and names the
+source remote `template` so `origin` remains available for the new project. It does not execute
+scripts or interpret template contents. A configured `ref` is checked out after cloning; omit it
+to use the source's default branch. Template and worktree sources are mutually exclusive.
+Supervisor configuration changes take effect after restart. Because the resulting workspace is a
+Git repository, guarded `/teardown --delete` deregisters it but leaves its directory intact.
 
 Create an isolated worktree session without cloning the repository again:
 

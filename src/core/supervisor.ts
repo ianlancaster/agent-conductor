@@ -134,7 +134,15 @@ export class Supervisor {
         claudeJsonPath: options.claudeJsonPath,
       }),
     );
-    this.runtimes.set('codex', new CodexRuntime({ config: this.config.runtimes.codex, baseDir, protocolPath }));
+    this.runtimes.set(
+      'codex',
+      new CodexRuntime({
+        config: this.config.runtimes.codex,
+        baseDir,
+        protocolPath,
+        sessionDataDir: join(dataDir, 'sessions'),
+      }),
+    );
 
     this.delivery = new DeliveryQueue({
       backend: this.backend,
@@ -171,6 +179,8 @@ export class Supervisor {
         defaultBypassPermissions: this.config.defaults.bypassPermissions,
         markerFile: this.config.spawn.markerFile,
         spawnDirPattern: this.config.spawn.dirPattern,
+        spawnTemplates: this.config.spawn.templates,
+        templateCloneTimeoutMs: this.config.spawn.templateCloneTimeoutSeconds * 1000,
       },
       baseDir,
       sessionConfigDir: sessionConfigDir(baseDir),

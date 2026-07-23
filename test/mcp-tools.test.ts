@@ -24,6 +24,7 @@ let sessions: Map<string, SessionConfig>;
 let tools: McpToolDefinition[];
 let sentinel: StallSentinelRouter;
 let operations: ConductorOperations;
+let runtime: FakeRuntime;
 
 function tool(name: string): McpToolDefinition {
   const found = tools.find((t) => t.name === name);
@@ -38,7 +39,7 @@ function sessionConfig(codename: string): SessionConfig {
 beforeEach(() => {
   store = new Store(':memory:');
   const backend = new FakeTerminalBackend();
-  const runtime = new FakeRuntime();
+  runtime = new FakeRuntime();
   states = new SessionStateManager(store, false);
   sessions = new Map([
     ['alpha', sessionConfig('alpha')],
@@ -68,6 +69,8 @@ beforeEach(() => {
       defaultBypassPermissions: true,
       markerFile: '.agent-marker',
       spawnDirPattern: './{codename}',
+      spawnTemplates: { agent: { source: 'https://example.invalid/template.git' } },
+      templateCloneTimeoutMs: 5_000,
     },
     baseDir: '/tmp',
     sessionConfigDir: '/tmp/sessions',
@@ -190,6 +193,10 @@ describe('surface contract', () => {
     expect((startProperties.runtime as { enum?: string[] }).enum).toEqual(['claude-code', 'cc', 'codex']);
     expect(spawnProperties).not.toHaveProperty('prompt');
     expect(spawnProperties).toHaveProperty('worktreeRepo');
+    expect(spawnProperties.template).toMatchObject({
+      type: 'string',
+      enum: ['agent'],
+    });
     expect(spawnProperties).toHaveProperty('branch');
     expect(spawnProperties).toHaveProperty('bypassPermissions');
     expect(spawnProperties).toHaveProperty('effort');
@@ -236,16 +243,36 @@ describe('surface contract', () => {
       status: 'delivered',
       deduplicated: false,
     });
-    expect(JSON.parse(await tool('get_message_status').handler({ messageId: 1 }, 'alpha'))).toMatchObject({
+    const status = JSON.parse(await tool('get_message_status').handler({ messageId: 1 }, 'alpha')) as {
+      deliveredAt: unknown;
+      lastFlushAttempt: unknown;
+    };
+    expect(status).toMatchObject({
       id: 1,
       sender: 'alpha',
       recipient: 'beta',
       status: 'delivered',
+      flushSkipReason: null,
     });
+    expect(status.deliveredAt).toBeTypeOf('string');
+    expect(status.lastFlushAttempt).toBeTypeOf('string');
     await expect(tool('get_message_status').handler({ messageId: 1 }, 'watch')).resolves.toBe(
       'Message #1 was not found.',
     );
     await expect(tool('get_message_status').handler({ messageId: 1.5 }, 'alpha')).rejects.toThrow(/positive integer/);
+  });
+
+  it('cancels only pending outbound receipts', async () => {
+    await tool('start_session').handler({ codename: 'beta' }, 'alpha');
+    runtime.inputState = 'draft';
+    await tool('send_to_session').handler({ codename: 'beta', message: 'queued' }, 'alpha');
+
+    await expect(tool('cancel_message').handler({ messageId: 1 }, 'beta')).resolves.toBe('Message #1 was not found.');
+    await expect(tool('cancel_message').handler({ messageId: 1 }, 'alpha')).resolves.toBe('Message #1 cancelled.');
+    expect(JSON.parse(await tool('get_message_status').handler({ messageId: 1 }, 'alpha'))).toMatchObject({
+      status: 'cancelled',
+    });
+    await expect(tool('cancel_message').handler({ messageId: 0 }, 'alpha')).rejects.toThrow(/at least 1/);
   });
 
   it('defines and enforces the idempotent message receipt contract', async () => {

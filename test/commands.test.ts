@@ -36,6 +36,18 @@ function writeSessionConfig(codename: string): void {
   writeFileSync(join(baseDir, 'config', 'sessions', `${codename}.yaml`), `codename: ${codename}\nrepo: ${repo}\n`);
 }
 
+const gitEnv: NodeJS.ProcessEnv = { ...process.env };
+for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
+  delete gitEnv[key];
+}
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', ['-C', cwd, '-c', 'user.name=test', '-c', 'user.email=test@example.com', ...args], {
+    encoding: 'utf8',
+    env: gitEnv,
+  });
+}
+
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-cmd-'));
   mkdirSync(join(baseDir, 'config', 'sessions'), { recursive: true });
@@ -78,6 +90,8 @@ beforeEach(() => {
       defaultBypassPermissions: true,
       markerFile: '.agent-marker',
       spawnDirPattern: './spawned/{codename}',
+      spawnTemplates: { local: { source: './template-source' } },
+      templateCloneTimeoutMs: 5_000,
     },
     baseDir,
     sessionConfigDir: join(baseDir, 'config', 'sessions'),
@@ -425,6 +439,7 @@ describe('help', () => {
     expect(help).toContain('  -P/--pane · -T/--tab · -W/--window\n  -H/--headless — detached tmux pane');
     expect(help).toContain('    -r/--runtime cc|claude-code|codex');
     expect(help).toContain('-e/--effort <level>');
+    expect(help).toContain('-t/--template <name>');
     expect(help).toContain('/fleet-watch arm <name> <session,session> [confirmation-seconds]');
     expect(help).not.toContain('*Sessions*');
     expect(help).not.toContain('`/status');
@@ -444,6 +459,38 @@ describe('spawn and teardown', () => {
     expect(teardown).toContain('Directory deleted');
     expect(existsSync(spawnedDir)).toBe(false);
     expect(sessions.has('newbie')).toBe(false);
+  });
+
+  it('spawns from a registered template through the short flag', async () => {
+    const source = join(baseDir, 'template-source');
+    mkdirSync(source);
+    git(source, 'init', '-b', 'main');
+    writeFileSync(join(source, 'README.md'), 'template content\n');
+    writeFileSync(join(source, '.agent-marker'), '');
+    git(source, 'add', '.');
+    git(source, 'commit', '-m', 'template baseline');
+
+    const reply = await router.route('/spawn templated -t local');
+    expect(reply).toContain('Spawned templated');
+    const spawnedDir = join(baseDir, 'spawned', 'templated');
+    expect(readFileSync(join(spawnedDir, 'README.md'), 'utf8')).toBe('template content\n');
+    expect(git(spawnedDir, 'remote', 'get-url', 'template').trim()).toBe(source);
+    expect(sessions.get('templated')?.repo).toBe(spawnedDir);
+
+    await router.route('/teardown templated');
+  });
+
+  it('rejects unknown templates and template/worktree combinations before creating a destination', async () => {
+    expect(await router.route('/spawn unknown-template --template missing')).toContain("'template' must be one of");
+    expect(existsSync(join(baseDir, 'spawned', 'unknown-template'))).toBe(false);
+
+    const combined = await router.route('/spawn combined --template local --worktree ./repo');
+    expect(combined).toContain('mutually exclusive');
+    expect(existsSync(join(baseDir, 'spawned', 'combined'))).toBe(false);
+
+    const branched = await router.route('/spawn branched-template --template local --branch other');
+    expect(branched).toContain('applies only to a worktree');
+    expect(existsSync(join(baseDir, 'spawned', 'branched-template'))).toBe(false);
   });
 
   it('spawns a codex session via --runtime and records it in the config', async () => {
@@ -550,15 +597,6 @@ describe('spawn and teardown', () => {
   it('keeps a dirty worktree registered, then removes it cleanly while retaining its branch', async () => {
     const repo = join(baseDir, 'main-repo');
     mkdirSync(repo);
-    const gitEnv = { ...process.env };
-    for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
-      delete gitEnv[key];
-    }
-    const git = (cwd: string, ...args: string[]): string =>
-      execFileSync('git', ['-C', cwd, '-c', 'user.name=test', '-c', 'user.email=test@example.com', ...args], {
-        encoding: 'utf8',
-        env: gitEnv,
-      });
     git(repo, 'init', '-b', 'main');
     writeFileSync(join(repo, 'README.md'), 'main\n');
     git(repo, 'add', '.');

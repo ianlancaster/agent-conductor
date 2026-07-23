@@ -20,9 +20,13 @@ export interface MessageRow {
   recipient: string;
   type: 'message' | 'broadcast';
   content: string;
-  status: 'pending' | 'delivered';
+  status: 'pending' | 'delivered' | 'cancelled';
   idempotency_key: string | null;
   created_at: string;
+  delivered_at: string | null;
+  last_flush_attempt_at: string | null;
+  flush_skip_reason: string | null;
+  cancelled_at: string | null;
 }
 
 export interface MessageInsertResult {
@@ -156,6 +160,12 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE session_state ADD COLUMN active_effort TEXT;
   `,
+  `
+  ALTER TABLE messages ADD COLUMN delivered_at TEXT;
+  ALTER TABLE messages ADD COLUMN last_flush_attempt_at TEXT;
+  ALTER TABLE messages ADD COLUMN flush_skip_reason TEXT;
+  ALTER TABLE messages ADD COLUMN cancelled_at TEXT;
+  `,
 ];
 
 export class Store {
@@ -255,7 +265,32 @@ export class Store {
   }
 
   markMessageDelivered(id: number): void {
-    this.db.prepare("UPDATE messages SET status = 'delivered' WHERE id = ?").run(id);
+    this.db
+      .prepare(
+        "UPDATE messages SET status = 'delivered', delivered_at = datetime('now'), " +
+          "last_flush_attempt_at = datetime('now'), flush_skip_reason = NULL WHERE id = ? AND status = 'pending'",
+      )
+      .run(id);
+  }
+
+  recordMessageFlushAttempt(id: number, skipReason: string | null): void {
+    this.db
+      .prepare(
+        "UPDATE messages SET last_flush_attempt_at = datetime('now'), flush_skip_reason = ? " +
+          "WHERE id = ? AND status = 'pending'",
+      )
+      .run(skipReason, id);
+  }
+
+  markMessageCancelled(id: number): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE messages SET status = 'cancelled', cancelled_at = datetime('now') " +
+            "WHERE id = ? AND status = 'pending'",
+        )
+        .run(id).changes === 1
+    );
   }
 
   getMessage(id: number): MessageRow | undefined {

@@ -1,23 +1,6 @@
-import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
-
-/**
- * Run git with any inherited GIT_* repo-scoping env stripped. When the
- * conductor (or its test suite) runs inside a git hook, git exports
- * GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE pointing at the OUTER repo — inheriting
- * them would make these commands operate on the wrong repository.
- */
-function git(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  const env = { ...process.env };
-  for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
-    delete env[key];
-  }
-  return execFileAsync('git', args, { env });
-}
+import { runGit } from './git.js';
 
 /** Parse the `gitdir: <path>` pointer inside a worktree's .git FILE. */
 export function parseGitdirPointer(content: string): string | null {
@@ -93,12 +76,12 @@ export async function addWorktree(repo: string, dir: string, branch: string): Pr
   const args = exists
     ? ['-C', repo, 'worktree', 'add', '--', dir, branch]
     : ['-C', repo, 'worktree', 'add', '-b', branch, '--', dir];
-  await git(args);
+  await runGit(args);
 }
 
 async function branchExists(repo: string, branch: string): Promise<boolean> {
   try {
-    await git(['-C', repo, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+    await runGit(['-C', repo, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
     return true;
   } catch {
     return false;
@@ -112,8 +95,8 @@ export async function removeWorktree(dir: string): Promise<string | null> {
   if (pointer === null) throw new Error(`${dir}/.git has no gitdir pointer`);
   const mainRepo = mainRepoFromGitdir(pointer);
   if (mainRepo === null) throw new Error(`Cannot locate the main repository for worktree ${dir}`);
-  const { stdout } = await git(['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD']);
+  const { stdout } = await runGit(['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD']);
   const branch = stdout.trim();
-  await git(['-C', mainRepo, 'worktree', 'remove', dir]);
+  await runGit(['-C', mainRepo, 'worktree', 'remove', dir]);
   return branch === 'HEAD' || branch.length === 0 ? null : branch;
 }

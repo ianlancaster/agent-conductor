@@ -45,8 +45,26 @@ describe('DeliveryQueue', () => {
     expect(deliveryEvents).toEqual(['alpha']);
   });
 
+  it("delivers to Codex's plain-text idle placeholder on iTerm", async () => {
+    runtime.parseInputState = (capture: string, session?: string) =>
+      new CodexRuntime({ config: { binary: 'codex', toolTimeoutSec: 600 }, baseDir: '/tmp' }).parseInputState(
+        capture,
+        session,
+      );
+    backend.setPaneContent(pane.id, "finished previous turn\n\n› What's on your mind?\n  gpt-5.6 medium · /repo");
+
+    await expect(queue.deliverOrQueue('alpha', 'the stalled envelope')).resolves.toBe('delivered');
+    expect(backend.panes.get(pane.id)?.received).toEqual(['the stalled envelope']);
+  });
+
   it('returns no-pane for sessions without a pane', async () => {
     expect(await queue.deliverOrQueue('ghost', 'hello')).toBe('no-pane');
+  });
+
+  it('keeps a durable no-pane delivery in the periodic queue during a restart', async () => {
+    expect(await queue.deliverOrQueue('ghost', 'survive restart', { deliveryId: 42 })).toBe('queued');
+    expect(queue.pendingCount('ghost')).toBe(1);
+    expect(queue.cancel('ghost', 42)).toBe('cancelled');
   });
 
   it('queues when the input line is busy and drains when it clears', async () => {
@@ -71,6 +89,47 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['one', 'two']);
     expect(queue.pendingCount('alpha')).toBe(0);
     expect(deliveryEvents).toEqual(['alpha', 'alpha']);
+  });
+
+  it('reports why a flush was skipped and clears the reason on delivery', async () => {
+    const attempts: (string | null)[] = [];
+    runtime.inputState = 'draft';
+    await queue.deliverOrQueue('alpha', 'observable', {
+      deliveryId: 42,
+      onAttempt: (reason) => attempts.push(reason),
+    });
+    expect(attempts).toEqual(['input-occupied']);
+
+    runtime.inputState = 'clear';
+    await queue.drainNow();
+    expect(attempts).toEqual(['input-occupied', null]);
+  });
+
+  it('cancels a queued delivery by durable receipt id', async () => {
+    runtime.inputState = 'draft';
+    await queue.deliverOrQueue('alpha', 'do not send', { deliveryId: 42 });
+    expect(queue.cancel('alpha', 42)).toBe('cancelled');
+
+    runtime.inputState = 'clear';
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    expect(queue.pendingCount('alpha')).toBe(0);
+  });
+
+  it('refuses cancellation once a pane write has begun', async () => {
+    let releaseWrite: (() => void) | undefined;
+    backend.run = async () => {
+      await new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+    };
+    const delivery = queue.deliverOrQueue('alpha', 'already going', { deliveryId: 42 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(releaseWrite).toBeDefined();
+    expect(queue.cancel('alpha', 42)).toBe('in-flight');
+    releaseWrite?.();
+    await expect(delivery).resolves.toBe('delivered');
   });
 
   it('preserves FIFO order across queued and later messages', async () => {

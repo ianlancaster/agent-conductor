@@ -3,14 +3,15 @@ import { existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:f
 import { isAbsolute, join, resolve } from 'node:path';
 import yaml from 'js-yaml';
 import { log } from '../logger.js';
-import { isValidCodename, type SessionConfig } from '../config/schema.js';
+import { isValidCodename, type SessionConfig, type SpawnTemplate } from '../config/schema.js';
 import type { SessionRuntime, IdentityEndpoints } from '../runtimes/types.js';
 import type { Store } from '../store/index.js';
 import type { TerminalBackend } from '../terminals/types.js';
 import type { SessionStateManager } from './state.js';
 import { truncate } from './utils.js';
 import type { PaneRef, Placement } from './types.js';
-import { addWorktree, isWorktree, removeWorktree } from './worktree.js';
+import { materializeWorkspace, type WorkspaceSource } from './workspace.js';
+import { isWorktree, removeWorktree } from './worktree.js';
 
 export interface StartOptions {
   prompt?: string;
@@ -37,6 +38,8 @@ export interface SpawnOptions {
   bypassPermissions?: boolean;
   /** Create the session's directory as a git worktree of this repository. */
   worktreeRepo?: string;
+  /** Materialize the session directory from a registered Git template. */
+  template?: string;
   /** Branch for the worktree (default: the codename). */
   branch?: string;
   /** Create the pane in the detached fleet session (tmux only). */
@@ -59,6 +62,8 @@ export interface LifecycleDeps {
     defaultBypassPermissions: boolean;
     markerFile: string;
     spawnDirPattern: string;
+    spawnTemplates: Record<string, SpawnTemplate>;
+    templateCloneTimeoutMs: number;
   };
   baseDir: string;
   sessionConfigDir: string;
@@ -86,6 +91,10 @@ export class Lifecycle {
   /** Runtime supervising the current run, falling back to the session's configured default. */
   runtimeNameFor(codename: string): SessionConfig['runtime'] | undefined {
     return this.deps.states.get(codename)?.runtime ?? this.deps.sessions().get(codename)?.runtime;
+  }
+
+  templateNames(): string[] {
+    return Object.keys(this.deps.config.spawnTemplates).sort();
   }
 
   /** Adopt a surviving pane after a conductor restart. */
@@ -303,15 +312,38 @@ export class Lifecycle {
     if (opts.runtime !== undefined && !SPAWNABLE_RUNTIMES.includes(opts.runtime)) {
       return `Unknown runtime '${opts.runtime}'. Available: ${SPAWNABLE_RUNTIMES.join(', ')}.`;
     }
+    if (opts.template !== undefined && opts.worktreeRepo !== undefined) {
+      return 'Template and worktree sources are mutually exclusive.';
+    }
+    if (opts.template !== undefined && opts.branch !== undefined) {
+      return 'A spawn branch applies only to a worktree source, not a template.';
+    }
+
+    const template = opts.template === undefined ? undefined : this.deps.config.spawnTemplates[opts.template];
+    if (opts.template !== undefined && template === undefined) {
+      const available = this.templateNames();
+      return available.length > 0
+        ? `Unknown template '${opts.template}'. Available: ${available.join(', ')}.`
+        : `Unknown template '${opts.template}'. No spawn templates are configured.`;
+    }
 
     const rawDir = opts.path ?? this.deps.config.spawnDirPattern.replace('{codename}', codename);
     const dir = isAbsolute(rawDir) ? rawDir : resolve(this.deps.baseDir, rawDir);
+    let workspaceSource: WorkspaceSource;
     if (opts.worktreeRepo !== undefined) {
       const repo = isAbsolute(opts.worktreeRepo) ? opts.worktreeRepo : resolve(this.deps.baseDir, opts.worktreeRepo);
-      await addWorktree(repo, dir, opts.branch ?? codename);
+      workspaceSource = { kind: 'worktree', repo, branch: opts.branch ?? codename };
+    } else if (template !== undefined) {
+      workspaceSource = {
+        kind: 'template',
+        template,
+        baseDir: this.deps.baseDir,
+        timeoutMs: this.deps.config.templateCloneTimeoutMs,
+      };
     } else {
-      mkdirSync(dir, { recursive: true });
+      workspaceSource = { kind: 'empty' };
     }
+    await materializeWorkspace(dir, workspaceSource);
 
     // Serialize with js-yaml, never string interpolation: a model/effort value
     // containing a newline would otherwise inject arbitrary YAML keys.

@@ -119,3 +119,11 @@ spawn:
   # New branches start at the source repository's current HEAD; no fetch is performed.
   dirPattern: './{codename}'
   markerFile: .agent-marker # presence marks a repo as an agent project (🤖) in status
+  # Git-backed workspace templates selectable with /spawn --template or spawn_session.template.
+  # Sources may be HTTPS/SSH URLs, scp-style Git sources, absolute paths, or paths relative to the fleet dir.
+  # Conductor clones without running repository scripts and names the source remote "template".
+  templates:
+    agent:
+      source: https://github.com/ianlancaster/cognitive-agent-template
+      # ref: main # optional branch, tag, or commit
+  templateCloneTimeoutSeconds: 120

@@ -206,6 +206,7 @@ export class ConductorOperations {
   }
 
   private buildDefinitions(): OperationDefinition[] {
+    const templateNames = this.deps.lifecycle.templateNames();
     return [
       {
         name: 'send_to_session',
@@ -328,7 +329,7 @@ export class ConductorOperations {
       {
         name: 'spawn_session',
         description:
-          "Create, register, and start a session. The destination is path or spawn.dirPattern; relative destinations resolve from the fleet directory. A new worktree branch starts at the source repository's current HEAD; existing branches are checked out as-is.",
+          "Create, register, and start a session from an empty directory, registered template, or Git worktree. The destination is path or spawn.dirPattern; relative destinations resolve from the fleet directory. A new worktree branch starts at the source repository's current HEAD; existing branches are checked out as-is.",
         audiences: BOTH,
         inputSchema: schema(
           {
@@ -343,6 +344,12 @@ export class ConductorOperations {
             bypassPermissions: bypassPermissionsProperty,
             model: stringProperty(runtimeHintDescription('model', this.deps.modelHints)),
             effort: stringProperty(runtimeHintDescription('effort', this.deps.effortHints)),
+            template: {
+              ...stringProperty(
+                `Registered Git template${templateNames.length > 0 ? ` (${templateNames.join(', ')})` : ' (none configured)'}`,
+              ),
+              ...(templateNames.length > 0 ? { enum: templateNames } : {}),
+            },
             worktreeRepo: stringProperty('Existing source repository from which to create a linked worktree'),
             branch: stringProperty(
               "Worktree branch (default: codename); a missing branch is created at the source repository's current HEAD",
@@ -359,6 +366,7 @@ export class ConductorOperations {
             bypassPermissions: typeof args.bypassPermissions === 'boolean' ? args.bypassPermissions : undefined,
             model: optionalString(args, 'model'),
             effort: optionalString(args, 'effort'),
+            template: optionalString(args, 'template'),
             worktreeRepo: optionalString(args, 'worktreeRepo'),
             branch: optionalString(args, 'branch'),
             placement: placement(args),
@@ -388,7 +396,7 @@ export class ConductorOperations {
       },
       {
         name: 'get_message_status',
-        description: 'Inspect the durable pending/delivered status of a direct message by its receipt id.',
+        description: 'Inspect a direct-message receipt, including delivery time and the latest flush decision.',
         audiences: BOTH,
         inputSchema: schema({ messageId: { type: 'number', minimum: 1, description: 'Message receipt id' } }, [
           'messageId',
@@ -399,6 +407,24 @@ export class ConductorOperations {
             throw new InvalidRequestError("'messageId' is required and must be a positive integer");
           }
           return this.deps.messaging.messageStatus(
+            messageId,
+            actor.audience === 'session' ? actor.codename : undefined,
+          );
+        },
+      },
+      {
+        name: 'cancel_message',
+        description: 'Cancel a pending direct message by receipt id before it begins writing to the recipient pane.',
+        audiences: BOTH,
+        inputSchema: schema({ messageId: { type: 'number', minimum: 1, description: 'Message receipt id' } }, [
+          'messageId',
+        ]),
+        handler: async (args, actor) => {
+          const messageId = args.messageId;
+          if (typeof messageId !== 'number' || !Number.isInteger(messageId) || messageId < 1) {
+            throw new InvalidRequestError("'messageId' is required and must be a positive integer");
+          }
+          return this.deps.messaging.cancelMessage(
             messageId,
             actor.audience === 'session' ? actor.codename : undefined,
           );
