@@ -1,13 +1,19 @@
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ChannelAdapter, ChannelMessage } from '../channels/types.js';
 import { renderChannelMessage } from '../channels/render.js';
 import { buildConfiguredChannels } from '../channels/configured.js';
 import { resolveFleetEnvironment } from '../config/environment.js';
 import { fleetSlug } from '../config/instance.js';
-import { sessionConfigDir, loadSessionConfigs, loadSupervisorConfig } from '../config/loader.js';
-import { resolveFleetDataDir } from '../config/paths.js';
+import {
+  sessionConfigDir,
+  loadSessionConfigs,
+  loadSupervisorConfig,
+  validateFederationExposure,
+} from '../config/loader.js';
+import { resolveFleetDataDir, resolveFleetPaths } from '../config/paths.js';
 import type { SessionConfig, SupervisorConfig } from '../config/schema.js';
 import { ConfigWatcher } from '../config/watcher.js';
 import { initLogger, log } from '../logger.js';
@@ -17,11 +23,16 @@ import { ClaudeCodeRuntime } from '../runtimes/claude-code/index.js';
 import { CodexRuntime } from '../runtimes/codex/index.js';
 import type { SessionRuntime } from '../runtimes/types.js';
 import { Store } from '../store/index.js';
+import { buildFederationOperatorCommands } from '../federation/commands.js';
+import { LocalFederationAdapter } from '../federation/local.js';
+import { FederationOperations } from '../federation/operations.js';
+import { FederationService, federationInstanceId } from '../federation/service.js';
 import { ITermBackend } from '../terminals/iterm/index.js';
 import { TmuxBackend } from '../terminals/tmux/index.js';
 import type { TerminalBackend } from '../terminals/types.js';
 import { CommandRouter } from './commands.js';
 import { DeliveryQueue } from './delivery.js';
+import { ConductorDocumentation } from './documentation.js';
 import { HealthMonitor } from './health.js';
 import { identityFor } from './identity.js';
 import { Lifecycle } from './lifecycle.js';
@@ -50,6 +61,8 @@ export interface SupervisorOptions {
   env?: NodeJS.ProcessEnv;
   /** Override Claude's state path when embedding the conductor (primarily for isolated tests). */
   claudeJsonPath?: string;
+  /** Inject a terminal adapter when embedding or testing. */
+  terminalBackend?: TerminalBackend;
 }
 
 /** Thin orchestrator: constructs the modules, wires the seams, owns the loops. */
@@ -67,6 +80,8 @@ export class Supervisor {
   private readonly sentinel: StallSentinelRouter;
   private readonly messaging: Messaging;
   private readonly operations: ConductorOperations;
+  private readonly federationService: FederationService | undefined;
+  private readonly federationOperations: FederationOperations | undefined;
   private readonly operatorRequests: OperatorRequests;
   private readonly commands: CommandRouter;
   private readonly mcpServer: ConductorMcpServer;
@@ -85,6 +100,7 @@ export class Supervisor {
     this.env = resolveFleetEnvironment(baseDir, options.env ?? process.env);
     this.config = loadSupervisorConfig(baseDir, this.env);
     const dataDir = resolveFleetDataDir(baseDir, this.config.paths.dataDir);
+    const fleetPaths = resolveFleetPaths(baseDir);
     initLogger({ level: this.config.supervisor.logLevel, filePath: join(dataDir, 'conductor.log') });
     this.lock = new FleetLock(join(dataDir, 'conductor.lock'));
     this.channelCandidates = [
@@ -96,13 +112,18 @@ export class Supervisor {
       tolerant: true,
       defaultRuntime: this.config.defaults.runtime,
     });
+    const federationProblems = validateFederationExposure(this.config, this.sessions);
+    if (federationProblems.length > 0) {
+      throw new Error(`Invalid federation configuration: ${federationProblems.join('; ')}`);
+    }
     this.store = new Store(join(dataDir, 'conductor.db'));
     this.states = new SessionStateManager(this.store, this.config.defaults.auto);
     const storedSentinel = this.store.getWorkspaceValue<string | null>(SENTINEL_WORKSPACE_KEY);
 
     const fleetId = fleetSlug(baseDir);
     this.backend =
-      this.config.terminal.backend === 'tmux'
+      options.terminalBackend ??
+      (this.config.terminal.backend === 'tmux'
         ? new TmuxBackend({
             store: this.store,
             config: {
@@ -123,7 +144,7 @@ export class Supervisor {
             store: this.store,
             config: { ...this.config.terminal.iterm, windowName: this.config.terminal.windowName, fleetId },
             env: this.env,
-          });
+          }));
 
     const protocolPath = this.resolveProtocolPath();
     this.runtimes.set(
@@ -203,6 +224,54 @@ export class Supervisor {
       sessions: () => this.sessions,
       startSession: (codename, opts) => this.lifecycle.start(codename, opts),
     });
+
+    if (this.config.federation.local.enabled) {
+      const instanceId = federationInstanceId(this.store);
+      const serviceRef: { current?: FederationService } = {};
+      const currentService = (): FederationService => {
+        if (serviceRef.current === undefined) throw new Error('Federation service is not initialized.');
+        return serviceRef.current;
+      };
+      const configuredRegistry = this.config.federation.local.registryDir;
+      const registryDir =
+        configuredRegistry === null
+          ? join(homedir(), '.agent-conductor', 'federation')
+          : isAbsolute(configuredRegistry)
+            ? configuredRegistry
+            : resolve(baseDir, configuredRegistry);
+      const adapter = new LocalFederationAdapter({
+        registryDir,
+        instanceId,
+        fleet: this.config.federation.name,
+        ...(this.config.federation.description !== undefined
+          ? { description: this.config.federation.description }
+          : {}),
+        heartbeatMs: this.config.federation.local.heartbeatSeconds * 1000,
+        staleAfterMs: this.config.federation.local.staleAfterSeconds * 1000,
+        exposedDirectory: () => currentService().exposedDirectory(instanceId),
+        accept: (source, message) => currentService().acceptInbound(source, message),
+        status: (source, sourceSession, messageId) =>
+          Promise.resolve(currentService().inboundStatus(source, sourceSession, messageId)),
+      });
+      const service = new FederationService({
+        store: this.store,
+        messaging: this.messaging,
+        states: this.states,
+        sessions: () => this.sessions,
+        adapter,
+        config: {
+          fleet: this.config.federation.name,
+          ...(this.config.federation.description !== undefined
+            ? { description: this.config.federation.description }
+            : {}),
+          exposedSessions: this.config.federation.sessions.expose,
+          sessionDescriptions: this.config.federation.sessions.descriptions,
+        },
+      });
+      serviceRef.current = service;
+      this.federationService = service;
+      this.federationOperations = new FederationOperations(service);
+    }
     this.operatorRequests = new OperatorRequests({
       store: this.store,
       messaging: this.messaging,
@@ -287,8 +356,17 @@ export class Supervisor {
       summon: (session) => this.paneAction(session, 'summon'),
       banish: (session) => this.paneAction(session, 'banish'),
       setSentinel: (session) => this.setSentinel(session),
+      getDocumentation: (topic) =>
+        new ConductorDocumentation({
+          referencePath: join(PACKAGE_ROOT, 'docs', 'agent-guide.md'),
+          fleetDir: baseDir,
+          fleetPaths,
+        }).read(topic),
     });
-    this.commands = new CommandRouter(this.operations);
+    this.commands = new CommandRouter(
+      this.operations,
+      this.federationOperations === undefined ? [] : buildFederationOperatorCommands(this.federationOperations),
+    );
 
     this.scheduler = new Scheduler({
       sessions: () => this.sessions,
@@ -313,12 +391,13 @@ export class Supervisor {
         this.handleRuntimeEvent(session, body);
       },
       onCommand: (line, interactionId) => this.commands.route(line, `cli:${interactionId}`),
-      tools: buildMcpTools(this.operations),
+      tools: buildMcpTools(this.operations, this.federationOperations),
     });
 
-    this.watcher = new ConfigWatcher(sessionConfigDir(baseDir));
+    this.watcher = new ConfigWatcher(sessionConfigDir(baseDir), [resolveFleetPaths(baseDir).supervisorFile]);
     this.watcher.onChange(() => {
       this.reloadSessions();
+      this.reloadFederationPolicy();
     });
 
     for (const [codename, session] of this.sessions) {
@@ -373,9 +452,11 @@ export class Supervisor {
 
     await this.mcpServer.start();
     try {
+      await this.federationService?.start();
       await this.connectChannels();
     } catch (error) {
       await this.rollbackChannelStartup();
+      await this.federationService?.stop();
       await this.mcpServer.stop();
       throw error;
     }
@@ -414,6 +495,9 @@ export class Supervisor {
     this.scheduler.stop();
     this.health.stop();
     this.sentinel.stop();
+    // Close peer ingress before the final-hop queue. Otherwise a peer request
+    // racing channel shutdown can recreate delivery work against a closing Store.
+    await this.federationService?.stop();
     this.delivery.stop();
     const stoppedChannels = this.channels.splice(0);
     const stopResults = await Promise.allSettled(stoppedChannels.map((channel) => channel.stop()));
@@ -439,10 +523,11 @@ export class Supervisor {
   /** Force a config reload synchronously. Exposed for tests (normally driven by the watcher). */
   reloadSessionsForTest(): void {
     this.reloadSessions();
+    this.reloadFederationPolicy();
   }
 
   statusReport(codename?: string): string {
-    return statusReport(
+    const report = statusReport(
       {
         sessions: () => this.sessions,
         getState: (name) => this.states.get(name),
@@ -452,6 +537,17 @@ export class Supervisor {
         sentinelCodename: () => this.sentinel.sentinelCodename(),
       },
       codename,
+    );
+    if (codename !== undefined || this.federationService === undefined) return report;
+    const health = this.federationService.health();
+    const contact =
+      health.lastContactAt === null ? 'none' : `${formatDuration(Math.max(0, Date.now() - health.lastContactAt))} ago`;
+    const oldest = health.oldestPendingAgeMs === null ? 'none' : formatDuration(health.oldestPendingAgeMs);
+    return (
+      `${report}\n\nFederation:\n` +
+      `  ${health.adapter} · ${health.running ? 'running' : 'stopped'} · last contact: ${contact}` +
+      ` · queued: ${String(health.queued)} · received: ${String(health.received)}` +
+      ` · oldest pending: ${oldest} · last error: ${health.lastErrorCode ?? 'none'}`
     );
   }
 
@@ -669,6 +765,40 @@ export class Supervisor {
     this.scheduler.rebuild();
   }
 
+  private reloadFederationPolicy(): void {
+    let fresh: SupervisorConfig;
+    try {
+      fresh = loadSupervisorConfig(this.baseDir, this.env);
+    } catch (error) {
+      log().warn(
+        'federation',
+        `Supervisor config failed to parse — keeping last-good federation policy: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+    const problems = validateFederationExposure(fresh, this.sessions);
+    if (problems.length > 0) {
+      log().warn('federation', `Invalid federation policy — keeping last-good policy: ${problems.join('; ')}`);
+      return;
+    }
+    if (
+      fresh.federation.local.enabled !== this.config.federation.local.enabled ||
+      fresh.federation.name !== this.config.federation.name
+    ) {
+      log().warn('federation', 'Federation enablement and name changes require a Conductor restart.');
+    }
+    if (this.federationService === undefined) return;
+    this.federationService.updatePolicy({
+      ...(fresh.federation.description !== undefined ? { description: fresh.federation.description } : {}),
+      exposedSessions: fresh.federation.sessions.expose,
+      sessionDescriptions: fresh.federation.sessions.descriptions,
+    });
+    this.config.federation.description = fresh.federation.description;
+    this.config.federation.sessions = fresh.federation.sessions;
+  }
+
   private resolveProtocolPath(): string | undefined {
     const candidates = [
       join(this.baseDir, 'prompts', 'conductor-protocol.md'),
@@ -676,4 +806,11 @@ export class Supervisor {
     ];
     return candidates.find((candidate) => existsSync(candidate));
   }
+}
+
+function formatDuration(milliseconds: number): string {
+  if (milliseconds < 1_000) return `${String(Math.round(milliseconds))}ms`;
+  if (milliseconds < 60_000) return `${String(Math.round(milliseconds / 1_000))}s`;
+  if (milliseconds < 3_600_000) return `${String(Math.round(milliseconds / 60_000))}m`;
+  return `${String(Math.round(milliseconds / 3_600_000))}h`;
 }

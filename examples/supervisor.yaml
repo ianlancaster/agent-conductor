@@ -110,6 +110,20 @@ channels:
   slack:
     enabled: false # opt in; credentials come from .conductor/.env or the inherited environment
 
+# Optional same-machine Conductor-to-Conductor discovery and durable messaging.
+# Disabled and invisible by default. See guides/local-federation.md.
+federation:
+  # name: my-fleet # default: stable slug derived from this fleet directory
+  # description: Public fleet role # deliberately visible to same-UID peer Conductors
+  sessions:
+    expose: [] # list codenames explicitly, or use ['*'] deliberately
+    descriptions: {} # public descriptions; keys must also be exposed
+  local:
+    enabled: false
+    registryDir: null # null uses ~/.agent-conductor/federation
+    heartbeatSeconds: 5
+    staleAfterSeconds: 20
+
 spawn:
   # Where /spawn and spawn_session create a session's working directory,
   # resolved relative to the fleet dir; {codename} is substituted.

@@ -11,7 +11,10 @@ export class ConfigWatcher {
   private readonly listeners: (() => void)[] = [];
   private timer: NodeJS.Timeout | undefined;
 
-  constructor(private readonly dir: string) {
+  constructor(
+    private readonly dir: string,
+    private readonly files: readonly string[] = [],
+  ) {
     this.snapshot();
   }
 
@@ -58,14 +61,22 @@ export class ConfigWatcher {
 
   private scan(): Map<string, number> {
     const result = new Map<string, number>();
-    if (!existsSync(this.dir)) return result;
-    for (const entry of readdirSync(this.dir)) {
-      if (!entry.endsWith('.yaml') && !entry.endsWith('.yml')) continue;
-      const file = join(this.dir, entry);
+    if (existsSync(this.dir)) {
+      for (const entry of readdirSync(this.dir)) {
+        if (!entry.endsWith('.yaml') && !entry.endsWith('.yml')) continue;
+        const file = join(this.dir, entry);
+        try {
+          result.set(file, statSync(file).mtimeMs);
+        } catch {
+          // File deleted between readdir and stat — treated as absent.
+        }
+      }
+    }
+    for (const file of this.files) {
       try {
         result.set(file, statSync(file).mtimeMs);
       } catch {
-        // File deleted between readdir and stat — treated as absent.
+        // An absent optional watched file is represented by its absence.
       }
     }
     return result;

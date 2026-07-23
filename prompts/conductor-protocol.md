@@ -7,8 +7,9 @@ you are from your connection; never claim to be another session.
 ## Messages you may receive
 
 - `[Message from <sender>]` — a direct message from another session or the operator.
-  Handle it, then continue your work. Reply with `send_to_session` (to sessions) or
-  `send_to_operator` (to the operator).
+  A federated sender is qualified as `<session>@<fleet>`. Handle it, then continue
+  your work. Reply with `send_to_session` for local sessions, `send_to_peer` for
+  qualified peer addresses, or `send_to_operator` for the operator.
 - `[Broadcast from <sender>]` — fleet-wide announcement. Act only if relevant to you.
 - `[Sentinel] <text>` — a nudge from the fleet's stall sentinel because you looked
   stuck or idle. Follow the instruction; it speaks with operator authority.
@@ -41,9 +42,22 @@ conversation.
 
 ## Tools (conductor MCP server)
 
+- `get_conductor_docs` — list or lazily read topics from the version-matched
+  extended Conductor handbook. Call it without `topic` to discover the available
+  topics and this fleet's authoritative configuration paths, then load only what
+  is relevant. Use it when the task would benefit from recipes, configuration,
+  worktrees, supervision, schedules, operator channels, PR Shepherd, federation,
+  adapter guidance, or troubleshooting; do not preload every topic.
 - `send_to_session` — message a specific session (starts it if needed). Its optional
   `idempotencyKey` is sender-scoped and returns the original structured receipt on retry.
   A `queued` or `delivered` receipt means the message is durably persisted. Preferred.
+- `list_peers` — when local federation is enabled, list explicitly exposed sessions
+  in other Conductor fleets. Copy exact addresses; do not synthesize them.
+- `send_to_peer` — when local federation is enabled, durably message an exact
+  `<session>@<fleet>` address from `list_peers`. It never starts the peer. Your own
+  session must be explicitly exposed, so the qualified envelope sender remains replyable.
+- `get_peer_message_status` — inspect this Conductor's durable queued, received,
+  delivered, expired, or failed state for a federated message.
 - `broadcast` — message ALL active sessions except you. Use carefully and sparingly.
 - `send_to_operator` — message the operator, signed with your codename. For a question,
   optionally pass `options` with 1–8 short, unique choices. The call returns a request ID;
@@ -97,3 +111,8 @@ conversation.
    `send_to_operator` — text you print in the terminal does not reach them.
 4. Keep your tag up to date with `set_tag` so the fleet status stays readable.
 5. Never impersonate other sessions or fabricate messages from them.
+6. Reply to a federated message by copying its exact qualified envelope sender into
+   `send_to_peer`. Use `send_to_session` only for bare local codenames.
+7. Before helping maintain Conductor configuration, call `get_conductor_docs` without
+   a topic and use the returned fleet paths. Treat the fleet environment file as
+   secret: never print, quote, summarize, or message its values.

@@ -142,18 +142,19 @@ files as public compatibility decisions even before the first stable release.
 A functional change is finished only when every applicable way to configure, invoke,
 understand, and recover it agrees. Review each of these explicitly:
 
-| Surface                       | Typical locations and questions                                                                                                               |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Canonical behavior            | Does `ConductorOperations` or the owning core module contain the shared policy and authorization?                                             |
-| Session tools                 | Do MCP schemas, descriptions, typed errors, and `prompts/conductor-protocol.md` reflect the behavior?                                         |
-| Operator controls             | Do `buildOperatorCommands`, aliases, validation, `/help`, the local console, and one-shot commands agree?                                     |
-| Adapters                      | Do all bundled channels and the injected `ChannelAdapter` contract carry the same semantics where applicable? Are provider limits kept local? |
-| Runtime and terminal adapters | Does runtime/backend-specific detection or launch behavior live behind the correct interface, with capability differences explicit?           |
-| Configuration                 | Are Zod schemas strict, defaults safe, scaffolded YAML complete, examples current, and secrets kept in environment mechanisms?                |
-| Persistence and lifecycle     | Is a migration append-only? Are restart, retry, deduplication, shutdown, and partial-failure behavior defined?                                |
-| Public package                | Are exports, optional dependency loading, packed files, and backwards compatibility correct?                                                  |
-| Documentation                 | Are README reference sections, setup/troubleshooting guides, migrations, generated prompts, and manual shakedowns updated?                    |
-| Verification                  | Do focused tests, surface-contract tests, integration tests, the full gauntlet, and any required manual checks prove the same contract?       |
+| Surface                       | Typical locations and questions                                                                                                                |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Canonical behavior            | Does `ConductorOperations` or the owning core module contain the shared policy and authorization?                                              |
+| Session tools                 | Do MCP schemas, descriptions, typed errors, and `prompts/conductor-protocol.md` reflect the behavior?                                          |
+| Operator controls             | Do `buildOperatorCommands`, aliases, validation, `/help`, the local console, and one-shot commands agree?                                      |
+| Adapters                      | Do all bundled channels and the injected `ChannelAdapter` contract carry the same semantics where applicable? Are provider limits kept local?  |
+| Runtime and terminal adapters | Does runtime/backend-specific detection or launch behavior live behind the correct interface, with capability differences explicit?            |
+| Configuration                 | Are Zod schemas strict, defaults safe, scaffolded YAML complete, examples current, and secrets kept in environment mechanisms?                 |
+| Persistence and lifecycle     | Is a migration append-only? Are restart, retry, deduplication, shutdown, and partial-failure behavior defined?                                 |
+| Public package                | Are exports, optional dependency loading, packed files, and backwards compatibility correct?                                                   |
+| Documentation                 | Are README reference sections, setup/troubleshooting guides, migrations, generated prompts, and manual shakedowns updated?                     |
+| Managed-agent reference       | Does `docs/agent-guide.md` teach agents to discover, compose, configure, and troubleshoot the capability without bloating the injected prompt? |
+| Verification                  | Do focused tests, surface-contract tests, integration tests, the full gauntlet, and any required manual checks prove the same contract?        |
 
 Not every capability belongs in every audience or transport. An intentional exception is
 acceptable; silent drift is not. Document important differences and pin them with tests.

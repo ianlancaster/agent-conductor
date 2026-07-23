@@ -1,0 +1,675 @@
+# Agent Conductor Handbook for Managed Agents
+
+This is the version-matched, extended operating reference for agents running under Agent
+Conductor. The injected protocol remains the authority for identity, communication, and safety.
+Use the session-only `get_conductor_docs` tool to load this guide one topic at a time. Calling it
+without a topic also returns the current fleet's authoritative configuration paths.
+
+<!-- conductor-topic:overview -->
+
+## Orientation and feature map
+
+Agent Conductor is a mechanical supervisor for fleets of terminal coding agents. It does not call
+an LLM or decide how work should be done. It supplies small primitives that agents and operators
+compose:
+
+- **Lifecycle:** register, start, stop, continue, spawn, and safely tear down sessions.
+- **Communication:** durable signed messages between sessions and selectable requests to the
+  operator.
+- **Observability:** structured session status, runtime events, tags, and diagnostic pane tails.
+- **Supervision:** optional auto stall routing to a normal agent designated as the sentinel.
+- **Scheduling:** cron-driven prompts using the same lifecycle and protected delivery mechanisms.
+- **Workspaces:** empty directories, configured Git templates, and linked Git worktrees.
+- **Operator channels:** the local console plus optional Telegram, Slack, or injected adapters.
+- **Federation:** optional messages-only communication between explicitly exposed sessions in
+  separate local Conductor fleets.
+- **PR Shepherd:** a separate opt-in GitHub polling service that can notify a coordinator through
+  Conductor.
+- **Status lines:** optional Claude Code and Codex footer configuration for runtime and repository
+  context.
+
+The most important architectural distinctions are:
+
+1. `send_to_session` is a protected, durable local-fleet conversation primitive.
+2. `type_in_pane` is immediate terminal control and can overwrite pending operator input.
+3. Auto mode routes detected stalls; it does not give Conductor autonomous judgment.
+4. The sentinel is an ordinary agent that supplies that judgment through ordinary tools.
+5. Operator channels transport the canonical command surface; they do not implement separate
+   fleet behavior.
+6. Federation transports messages only. It is not cross-fleet lifecycle or terminal control.
+
+Start with `whoami`, `list_sessions`, and `get_session_status` when you need orientation. Use
+`get_conductor_docs` without a topic to discover this handbook's topics and the exact paths for
+the active fleet. Load only the sections relevant to the current task.
+
+Authoritative references shipped with the package:
+
+- `README.md`: product overview and complete public surface
+- `docs/getting-started.md`: operator onboarding
+- `examples/supervisor.yaml`: every supervisor setting and effective default
+- `prompts/conductor-protocol.md`: mandatory managed-session protocol
+- `prompts/sentinel.md`: baseline sentinel role
+- `guides/telegram-adapter.md` and `guides/slack-adapter.md`: external operator channels
+- `guides/local-federation.md`: same-machine fleet federation
+- `docs/pr-shepherd.md`: standalone PR Shepherd
+
+<!-- conductor-topic:fleet-configuration -->
+
+## Fleet configuration and safe maintenance
+
+A modern fleet keeps its files under `<fleet>/.conductor/`:
+
+```text
+.conductor/
+├── .env
+├── env.template
+├── config/
+│   ├── supervisor.yaml
+│   └── sessions/
+│       ├── coordinator.yaml
+│       └── reviewer.yaml
+└── data/
+    ├── conductor.db
+    ├── conductor.log
+    └── sessions/
+```
+
+`get_conductor_docs` without a topic returns the exact `fleetDir`, `supervisorConfig`,
+`sessionsDir`, `environmentFile`, and installed handbook path for the current instance. Do not
+guess a fleet path from the session working directory: a session may run in a project or worktree
+far from the fleet directory.
+
+`conductor start` creates missing scaffold files but never overwrites existing configuration or
+secrets. Session YAML files hot-reload. Adding, editing, or removing a file under
+`.conductor/config/sessions/` updates the roster without restarting, subject to last-good handling
+for invalid edits and active removed sessions. Most supervisor settings require a restart;
+federation exposure and public descriptions hot-reload, while federation enablement and name do
+not.
+
+A session file has this shape:
+
+```yaml
+codename: reviewer
+repo: /absolute/path/to/project
+runtime: codex
+model: provider/model-id
+effort: high
+additionalDirs: []
+systemPromptFile: /optional/path/to/instructions.md
+schedules: []
+```
+
+Important rules:
+
+- Configuration is strict. Unknown or misspelled keys are errors.
+- Prefer absolute project paths. Relative paths are resolved according to the documented config
+  loader rules, not the agent's current shell.
+- Model and effort values are intentional free text. Availability lists are hints, not allowlists.
+- A session's `systemPromptFile` is appended after the mandatory Conductor protocol. Use it for a
+  role such as sentinel policy, not to replace identity or safety rules.
+- Secrets belong in `.conductor/.env`, never supervisor or session YAML. The environment file may
+  contain channel credentials; never print, quote, summarize, or message its values.
+- Fleet-specific workflow belongs in session prompts, templates, or configuration—not in the
+  reusable Conductor source.
+
+Before proposing or making config changes:
+
+1. Call `get_conductor_docs` without a topic and use the returned paths.
+2. Read the existing supervisor and relevant session files.
+3. Preserve unrelated settings and comments.
+4. Consult the matching example or guide.
+5. Run `conductor -C <fleetDir> validate`.
+6. State whether the change hot-reloads or needs a deliberate restart.
+7. Never restart a live fleet merely to test a speculative edit; coordinate with the operator.
+
+Older fleets may use root-level `config/`, `data/`, and `.env`. The returned paths are
+authoritative. Do not migrate a live legacy fleet by moving files ad hoc; follow
+`docs/getting-started.md`.
+
+<!-- conductor-topic:communication -->
+
+## Communication, receipts, and operator escalation
+
+Use direct messages for ordinary peer interaction:
+
+```json
+send_to_session({
+  "codename": "reviewer",
+  "message": "Please review the proposed API change.",
+  "idempotencyKey": "api-review-v1"
+})
+```
+
+Conductor mechanically signs the message and starts a stopped local recipient if necessary. The
+receiver sees `[Message from <sender>] ...`. Never add your own signature.
+
+After sending, end the turn. The peer's response arrives as a new message and activates the next
+turn. Do not create timers, sleep loops, schedules, or repeated status checks for ordinary agent
+conversation. Use `tail_session` only when the user asks for it or direct communication remains
+unanswered and diagnosis is necessary.
+
+Direct-message receipts are durable:
+
+- `queued` means Conductor persisted the message and owns delivery.
+- `delivered` means protected pane submission completed.
+- `get_message_status` reports delivery time and the latest queue decision.
+- `cancel_message` can cancel a pending receipt before its pane write starts.
+- Reusing a sender-scoped `idempotencyKey` returns the original receipt.
+
+The delivery queue will not write over any text waiting in the recipient's composer. It waits
+without a force-delivery deadline. Do not bypass that protection with `type_in_pane` merely because
+a message is queued. `type_in_pane` exists for deliberate terminal control such as answering a
+runtime prompt or entering a slash command; it can clobber operator input.
+
+Use `broadcast` only when every active session genuinely needs the same information. Prefer direct
+messages for assignments, answers, and coordination.
+
+Use `send_to_operator` when a decision, credential, approval, policy choice, or human-only action is
+required:
+
+```json
+send_to_operator({
+  "message": "The migration is ready. Which rollout should I use?",
+  "options": ["Shadow first", "Deploy now", "Hold"]
+})
+```
+
+The request returns immediately. Continue independent work or end the turn; the selected response
+arrives asynchronously. Choices communicate the operator's answer only. They do not create an
+approval or command-execution system.
+
+If the operator contacted you through Telegram or Slack, reply through `send_to_operator`; terminal
+output is not delivered to remote channels. Keep questions self-contained and explain what is
+blocked, what was verified, and what each choice changes.
+
+<!-- conductor-topic:lifecycle -->
+
+## Session lifecycle, placement, models, and status
+
+Registered sessions are durable configuration; running panes are processes. Use the smallest
+lifecycle action that matches the intent:
+
+- `start_session`: start a fresh process for a registered session.
+- `stop_session`: stop its current process but keep registration and workspace.
+- `continue_session`: resume that runtime's most recent conversation.
+- `spawn_session`: create a workspace, write session configuration, and start it.
+- `teardown_session`: stop and deregister; optionally remove a Conductor-owned safe workspace.
+
+Claude Code and Codex maintain separate conversation histories. Continuing with a runtime override
+resumes that runtime's history, not the other runtime's conversation.
+
+Model and effort resolution:
+
+1. Per-run lifecycle argument
+2. Session configuration
+3. Runtime default in `supervisor.yaml`
+4. Runtime CLI default
+
+Model and effort strings pass through without allowlist validation so newly released and
+third-party models remain usable. `get_session_status` reports what Conductor resolved; it may show
+`null` when the runtime owns selection.
+
+Placement is `pane`, `tab`, or `window`. With the tmux backend, `headless: true` puts the pane in
+the detached fleet session. Operator-only `/summon` and `/banish` move supported panes into or out
+of view without stopping them.
+
+Use:
+
+- `list_sessions` for a fleet overview.
+- `get_session_status` for structured status, path, branch, runtime, model, effort, readiness,
+  activity, tag, pause, and auto state.
+- `set_tag` for a short human-readable current-purpose label.
+- `tail_session` only for explicit inspection or communication failure diagnosis.
+
+Optional richer terminal footers are installed with:
+
+```bash
+conductor statusline
+```
+
+Claude Code then shows model, context, cost, project, linked-worktree detection, branch, and change
+counts. Codex uses its supported native status-line fields. Existing sessions must be restarted to
+pick up user-level status-line changes.
+
+<!-- conductor-topic:worktrees -->
+
+## Worktrees, templates, and full-fleet workspace patterns
+
+`spawn_session` supports three workspace sources:
+
+1. An empty destination directory.
+2. A registered Git template cloned from `spawn.templates`.
+3. A linked Git worktree created from `worktreeRepo`.
+
+For parallel work on one repository, worktrees are usually the strongest isolation primitive:
+
+```json
+spawn_session({
+  "codename": "reviewer",
+  "runtime": "codex",
+  "worktreeRepo": "/path/to/canonical-repo",
+  "branch": "review-pass"
+})
+```
+
+If the branch does not exist, it is created from the source repository's current `HEAD`. Conductor
+does not fetch or silently update the base. If freshness matters, update the canonical source
+before spawning or explicitly prepare the new branch afterward.
+
+Worktree practices:
+
+- Do not run `git checkout main` when `main` is checked out in the canonical worktree. Use
+  `origin/main` as a diff/rebase base or create a separate branch.
+- A fresh worktree contains tracked files only. Gitignored files such as `.env.local`,
+  `.claude/settings.local.json`, `node_modules`, build outputs, and local reports are absent.
+- Run the repository's bootstrap/install step before assigning build work.
+- Multiple advisor sessions may intentionally attach to one host session's path. Current session
+  configuration does not persist workspace ownership, so an attached session must be torn down
+  without `deleteDir`; otherwise it may attempt to remove the host worktree. Let the session that
+  originally spawned the worktree perform final deletion.
+- Teardown refuses a dirty worktree and leaves it registered for recovery.
+- Gitignored files do not make Git report the worktree dirty. They are deleted when the worktree
+  is successfully removed; archive anything durable first.
+- A successful worktree teardown removes the worktree but keeps its Git branch.
+- Starting Codex may add `AGENTS.override.md` to the repository's tracked `.gitignore`. Until that
+  generated exclusion moves to a non-dirtying Git mechanism, inspect and restore or deliberately
+  commit that line before expecting an otherwise untouched worktree to tear down cleanly.
+
+A useful full-fleet pattern is:
+
+1. Keep one canonical repository session for branch management and final integration.
+2. Spawn implementation or review sessions into dedicated worktrees.
+3. Give one primary session responsibility for synthesis and operator communication.
+4. Use direct messages for findings instead of reading peer terminals.
+5. Keep secondary sessions alive until their findings are resolved when continued dialogue may be
+   useful.
+6. Tear down temporary worktrees only after checking status, preserving reports, and confirming
+   no other registered session uses the target.
+
+Templates are better when the task needs a fresh clone of a reusable starting repository rather
+than shared Git object history. Template sources and optional refs are registered in
+`supervisor.yaml`; Conductor does not run repository scripts. Template registry changes require a
+restart.
+
+<!-- conductor-topic:supervision -->
+
+## Auto mode, sentinels, fleet watches, and escalation policy
+
+Auto is one boolean per session. When off, stalls are operator-driven. When on, mechanical stall
+detection routes events to the designated sentinel. Auto does not authorize arbitrary action and
+does not make Conductor an LLM workflow engine.
+
+The sentinel is a normal managed session with `prompts/sentinel.md` appended through
+`systemPromptFile`. Start it before enabling auto on workers. It receives self-contained stall
+events and may:
+
+- message the stalled session for clarification or a safe next step;
+- inspect structured status;
+- ask the operator;
+- deliberately take no action when the stop is expected.
+
+A good fleet-specific sentinel prompt adds policy rather than implementation:
+
+- which stalls may be safely nudged;
+- which repositories or actions require operator approval;
+- how long to tolerate expected idle states;
+- what evidence to include in escalation;
+- when a worker may be restarted or continued;
+- which conditions must never be handled automatically.
+
+Keep the policy general enough to reason from evidence. Do not encode brittle pane-text strings or
+turn the sentinel into a timer loop. The Conductor sends new events; the sentinel reacts.
+
+Recommended escalation composition:
+
+1. Sentinel receives `[Stall]` or `[Fleet Stall]`.
+2. It checks the event details and `get_session_status`.
+3. If clarification can resolve it, it uses `send_to_session`.
+4. It ends its turn and waits for the reply event.
+5. If judgment, permission, or human-only access is required, it uses `send_to_operator` with a
+   concise summary and mutually exclusive choices.
+6. It records a useful tag or messages the worker with the decision.
+
+`pause_session` is separate from auto. Pause temporarily suppresses both schedules and stall
+routing without changing the configured auto state. Use it for maintenance, intentional waiting,
+or operator review; `resume_session` restores the prior behavior.
+
+Fleet watches detect campaign-level failure. Arm one over at least two workers when individual
+stalls are normal but all workers stalled together requires attention. After every member is
+stalled for the configured confirmation interval, Conductor sends one fleet alert to the sentinel,
+or directly to the operator if no sentinel exists. Watches are process-local and should not be
+treated as durable workflow definitions.
+
+<!-- conductor-topic:scheduling -->
+
+## Cron schedules and recurring agent work
+
+Schedules live in session YAML and send prompts through existing lifecycle and protected delivery
+primitives:
+
+```yaml
+schedules:
+  - label: weekday review
+    cron: '0 9 * * 1-5'
+    prompt: Review open pull requests and report important findings to the operator.
+    paused: false
+    freshContext: false
+```
+
+The cron expression uses the Conductor process's local timezone. Each entry has:
+
+- `label`: optional operator-readable name.
+- `cron`: required Croner-compatible expression.
+- `prompt`: the task delivered to the session.
+- `paused`: disables only that schedule entry.
+- `freshContext`: stops an active process and starts a fresh conversation with the prompt.
+
+Behavior:
+
+- An active session receives a normal protected message.
+- An inactive session starts with the scheduled prompt.
+- Schedules targeting the same session are serialized.
+- Overlap protection prevents one cron entry from running over itself.
+- Pausing the session with `pause_session` suppresses all its schedules until resumed.
+- Schedule configuration hot-reloads with its session file.
+
+Use schedules for genuinely time-driven work: periodic inbox triage, daily status synthesis, or a
+maintenance check. Do not use them to poll peers during conversation; direct replies already wake
+the recipient's next turn. Do not schedule an agent merely to recreate a service that belongs in a
+deterministic adapter or daemon.
+
+Use `freshContext: true` when every run should be independent and accumulated conversation context
+would be harmful. Use `false` when continuity is valuable. A fresh context stops the existing
+runtime, so avoid it when the agent may have uncommitted interactive work at the scheduled time.
+
+<!-- conductor-topic:operator-channels -->
+
+## Operator console, Telegram, Slack, and injected channels
+
+All operator interfaces use one canonical command router:
+
+- the console opened by `conductor start`;
+- additional `conductor console` clients;
+- `conductor cmd '<command>'`;
+- Telegram;
+- Slack;
+- externally injected `ChannelAdapter` implementations.
+
+Run `/help` in an operator interface for generated command syntax. Slack uses `!` in its private App
+Home DM because slash-prefixed input belongs to Slack; the canonical command remains the same.
+Free text is sent to the current `/talk` target.
+
+Telegram is a private bot long-polling adapter. It requires one token and authorized chat ID per
+fleet. Follow `guides/telegram-adapter.md`.
+
+Slack is a private App Home Socket Mode adapter. It requires one Slack app per running fleet,
+because sharing an app silently load-balances events between connections. Follow
+`guides/slack-adapter.md`.
+
+Both adapters:
+
+- authenticate one configured operator;
+- expose the canonical command and talk flow;
+- receive Conductor notifications;
+- render selectable `send_to_operator` choices;
+- keep credentials in `.conductor/.env`;
+- can run alongside one another.
+
+Responses are first-response-wins across connected interfaces. A selectable operator request is a
+communication primitive, not an approval ledger.
+
+Operator-channel troubleshooting should stay transport-specific. Do not duplicate lifecycle or
+message policy inside an adapter. If an agent appears to reply only in its terminal, remind it to
+use `send_to_operator`; terminal output is not automatically forwarded.
+
+<!-- conductor-topic:pr-shepherd -->
+
+## PR Shepherd and coordinator patterns
+
+PR Shepherd V2 is a separate, optional executable shipped in the same package. Starting Conductor
+does not start or configure it. It has its own YAML profile, SQLite database, process lifecycle,
+poll interval, GitHub authentication, and automation policy.
+
+Its useful composition with Conductor is:
+
+```text
+GitHub → PR Shepherd policy engine → durable Conductor message → coordinator agent
+```
+
+The coordinator receives factual PR events and uses ordinary Conductor primitives to inspect work,
+spawn reviewers, request operator decisions, or coordinate fixes. Organization-specific guidance
+belongs in the Shepherd profile's per-event `guidance` map, not in the reusable engine.
+
+Safe adoption:
+
+1. Authenticate and validate `gh`.
+2. Copy `examples/pr-shepherd.yaml` outside the repository.
+3. Start with `bootstrap: baseline-only`.
+4. Keep delivery at `stdout` and automation at `notify` or `off`.
+5. Run one explicit poll and inspect events, status, and inbox.
+6. Enable Conductor delivery only after the shadow output is correct.
+7. Move automation policies to `execute` independently.
+
+PR Shepherd does not decide the depth of a code review. A coordinator can compose that policy from
+PR facts: inexpensive review for ordinary changes, a specialist review for material risk, or
+paired independent reviewers for critical changes. Keep such judgment in the coordinator's
+instructions, not hard-coded into Shepherd.
+
+See `docs/pr-shepherd.md` for the complete schema, delivery contract, event types, automation
+semantics, and operational commands.
+
+<!-- conductor-topic:federation -->
+
+## Local federation and the remote boundary
+
+Local federation connects separate Conductor instances running as the same OS user on one machine.
+It is optional, disabled by default, and messages-only.
+
+Each instance registers an owner-only heartbeat and loopback endpoint under
+`~/.agent-conductor/federation/`. Peers authenticate to one another, fetch current explicitly
+exposed rosters, and address sessions as `<session>@<fleet>`.
+
+Agents use:
+
+- `list_peers` to discover exact replyable addresses;
+- `send_to_peer` for durable cross-fleet messages;
+- `get_peer_message_status` for queued, received, delivered, expired, or failed state.
+
+The receiving agent sees `[Message from session@fleet] ...` and replies by copying that exact
+address into `send_to_peer`. Federation never starts, tails, types into, or controls the peer.
+
+Only exposed sessions are visible and reachable. Published metadata is intentionally limited to
+public descriptions, codename, presence, and capabilities. Paths, tags, branches, models, output,
+and work content remain private.
+
+Local credentials prevent accidental identity confusion but are not a security boundary against
+another process running as the same OS user. The server binds to loopback. Do not expose it to a
+network or use local federation across OS users.
+
+**Remote federation is not implemented in the current release.** There is no supported gateway,
+public remote MCP, network authentication, or cross-machine setup to enable. Do not open the local
+federation port or registry to approximate it. The planned remote architecture is a separate
+authenticated, outbound-connected, durable relay and will require its own threat model and setup
+guide when implemented.
+
+See `guides/local-federation.md` for configuration, exposure, delivery semantics, and the two-fleet
+shakedown.
+
+<!-- conductor-topic:recipes -->
+
+## Composable fleet recipes
+
+These are patterns built from primitives, not special workflow features.
+
+### Primary and independent reviewer
+
+1. Spawn an implementer and reviewer into separate worktrees.
+2. Tell the implementer the task through `send_to_session`.
+3. Ask the reviewer to inspect the branch independently and report to the designated primary.
+4. Let them converse through direct messages; do not tail them as a substitute.
+5. Have the primary synthesize disagreements and use `send_to_operator` for decisions.
+6. Preserve reviewer sessions until the report is accepted if follow-up dialogue may be needed.
+
+### Sentinel-managed autonomous workers
+
+1. Configure and start one sentinel with a fleet-specific escalation policy.
+2. Enable auto only for workers whose stalls should be routed.
+3. Arm a fleet watch if “all workers stopped” is materially different from one normal stall.
+4. Let the sentinel ask workers directly, then escalate evidence and options to the operator.
+5. Pause sessions during intentional waits or maintenance rather than toggling away their auto
+   policy.
+
+### Scheduled coordinator
+
+1. Give a coordinator a recurring schedule with a precise, bounded prompt.
+2. Let it inspect status or an external inbox.
+3. Have it directly message relevant sessions or send a concise operator summary.
+4. Use `freshContext` only when each run must be independent.
+5. Avoid schedules for peer-response polling.
+
+### Shared-worktree advisors
+
+1. Let one host session own the worktree.
+2. Attach read-only or advisory sessions to the same path when intentional.
+3. Give the host responsibility for edits and cleanup.
+4. Communicate findings by message to avoid hidden parallel changes.
+5. Tear attached advisors down with `deleteDir: false`; only the original host should perform
+   final workspace deletion.
+
+### Cross-fleet specialist
+
+1. Expose only the coordinator and specialist sessions.
+2. Discover with `list_peers`.
+3. Send a self-contained assignment to the exact qualified address.
+4. End the turn and await the federated reply.
+5. Track durable status only when delivery is uncertain.
+
+The product principle behind every recipe is the same: use small mechanical operations for
+identity, persistence, lifecycle, and routing; leave prioritization and judgment to agents and the
+operator.
+
+<!-- conductor-topic:adapters -->
+
+## Building and connecting adapters
+
+Choose the narrowest extension seam:
+
+- `ChannelAdapter`: an external operator transport.
+- `SessionRuntime`: a new agent CLI.
+- `TerminalBackend`: a new pane/process host.
+- `FederationAdapter`: peer discovery, authentication, and durable message transport.
+- Control-surface adapter: another rendering of canonical `ConductorOperations`.
+
+An adapter translates environment-specific mechanics. It must not fork core policy.
+
+For an operator channel:
+
+1. Implement `ChannelAdapter`.
+2. Derive a stable conversation identity from authenticated transport metadata.
+3. Authenticate or allowlist before invoking handlers.
+4. Route commands and free text through `ChannelHandlers`.
+5. Keep protocol classification separate from network I/O.
+6. Bound requests, isolate update failures, make start/stop idempotent, and handle provider retry
+   behavior.
+7. Render semantic `ChannelMessage.actions` using native buttons when available.
+8. Keep secrets outside YAML and logs.
+9. Test pure parsing/formatting, a scripted network double, the real supervisor pipeline through a
+   fake channel, and a manual real-service shakedown.
+10. Inject external adapters with `new Supervisor(baseDir, { channels: [...] })`.
+
+Bundled adapters may add strict, disabled-by-default configuration and environment discovery.
+External adapters should use their host application's secret/config mechanism and do not need to
+be added to Conductor core.
+
+For a new control primitive, add one canonical `ConductorOperations` definition and then audit
+every applicable surface: MCP, operator commands and help, adapters, schema, examples, prompts,
+exports, persistence, tests, and docs. An intentional audience difference is valid; accidental
+surface drift is not.
+
+Before changing the repository, read `CLAUDE.md` and `CONTRIBUTING.md`. They are the mandatory
+architecture and product contract for all contributors, regardless of agent runtime.
+
+<!-- conductor-topic:troubleshooting -->
+
+## Troubleshooting and operational footguns
+
+### The global CLI does not reflect source changes
+
+`conductor` runs compiled `dist/` code. After pulling or editing the repository:
+
+```bash
+pnpm build
+pnpm link --global
+```
+
+A running process still holds its old code until deliberately restarted.
+
+### The wrong fleet responds
+
+Fleet selection comes from the working directory or `-C`:
+
+```bash
+conductor -C /path/to/fleet validate
+conductor -C /path/to/fleet status
+```
+
+Use the `fleetDir` returned by `get_conductor_docs`, not the session repository path.
+
+### A message remains queued
+
+Inspect `get_message_status`. Any text in the target composer prevents protected delivery,
+regardless of age or length. Ask the operator to submit or clear it. Do not bypass the queue unless
+raw terminal control is explicitly intended. For federation, use `get_peer_message_status` and
+distinguish peer offline (`queued`) from destination accepted but local pane pending (`received`).
+
+### A peer is silent
+
+First use direct communication and end the turn. If no reply arrives after a meaningful interval,
+check `get_session_status`. Tail only for explicit user-requested inspection or to diagnose failed
+communication. Do not install a polling timer.
+
+### A worktree cannot be removed
+
+Check `git status`. Conductor refuses dirty worktrees. Commit, stash, or deliberately remove user
+changes, then retry teardown. Remember that ignored files are not reported as dirty and will be
+deleted with a successful worktree removal. A Codex-prepared worktree may contain a generated
+`.gitignore` edit for `AGENTS.override.md`; restore or deliberately commit it before teardown.
+
+If a session was attached by `path` to another session's worktree, do not use `deleteDir` on the
+attached session. Deregister it without deletion and let the original host session own cleanup;
+workspace ownership is not yet persisted for attached sessions.
+
+### A new worktree cannot build
+
+Fresh worktrees omit ignored/untracked dependencies and local settings. Run the project's bootstrap
+step, restore only the required non-secret local configuration, and compare against `origin/main`
+instead of checking out a branch already held by the canonical worktree.
+
+### Auto stalls go nowhere
+
+Confirm the session has auto enabled, the sentinel is designated and running, and its session uses
+the sentinel prompt. Without a sentinel, stalls go to operator channels. Use structured status and
+health logs before interpreting pane output.
+
+### A remote-channel operator receives no agent reply
+
+The agent must call `send_to_operator`. Text printed in its pane is not automatically forwarded.
+Check adapter startup, credentials, authorized identity, and the adapter-specific guide.
+
+### Configuration changes fail or disappear
+
+Run `conductor -C <fleetDir> validate`. Unknown keys are rejected. Hot reload retains last-good
+session and federation policy when an edit is invalid. Some supervisor settings require restart;
+do not assume every YAML edit is live.
+
+### Local peers are missing
+
+Both instances must enable local federation, share the registry location, be running, have unique
+fleet names, and explicitly expose sessions. Use exact addresses returned by `list_peers`.
+
+### Remote federation cannot connect
+
+Remote federation is not implemented. Do not expose the local loopback protocol to a network.
+
+For deeper operator onboarding, read `docs/getting-started.md`. For service-specific problems, use
+the Telegram, Slack, local federation, or PR Shepherd guide.

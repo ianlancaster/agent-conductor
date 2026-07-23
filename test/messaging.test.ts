@@ -124,6 +124,14 @@ describe('Messaging durable delivery recovery', () => {
     expect(store.getMessage(1)?.status).toBe('pending');
   });
 
+  it('directs qualified targets to federation instead of conditionally changing send_to_session semantics', async () => {
+    const queue = makeQueue(new FakeRuntime(), 'missing-pane');
+    const messaging = makeMessaging(queue);
+    await expect(messaging.sendToSession('alpha', 'beta@other-fleet', 'hello')).rejects.toThrow(
+      /Use send_to_peer.*send_to_session is local/,
+    );
+  });
+
   it('returns the original receipt on retry even when the recipient left the roster', async () => {
     const pane = await backend.createPane('beta', 'pane');
     states.setSession('beta', pane.id);
@@ -138,6 +146,70 @@ describe('Messaging durable delivery recovery', () => {
       ...first,
       deduplicated: true,
     });
+  });
+
+  it('accepts a federated final hop without starting a stopped recipient and deduplicates retries', async () => {
+    const queue = makeQueue(new FakeRuntime(), 'missing-pane');
+    let starts = 0;
+    const messaging = new Messaging({
+      store,
+      delivery: queue,
+      states,
+      sessions: () => sessions,
+      startSession: async () => {
+        starts += 1;
+        return 'beta started.';
+      },
+    });
+    const first = await messaging.acceptInboundFederated({
+      messageId: '11111111-1111-4111-8111-111111111111',
+      sourceInstanceId: '22222222-2222-4222-8222-222222222222',
+      sourceAddress: 'alpha@other',
+      recipient: 'beta',
+      message: 'peer hello',
+      receivedAt: 100,
+      expiresAt: Date.now() + 60_000,
+    });
+    const repeated = await messaging.acceptInboundFederated({
+      messageId: '11111111-1111-4111-8111-111111111111',
+      sourceInstanceId: '22222222-2222-4222-8222-222222222222',
+      sourceAddress: 'alpha@other',
+      recipient: 'beta',
+      message: 'changed',
+      receivedAt: 200,
+      expiresAt: Date.now() + 60_000,
+    });
+    expect(first).toEqual({
+      messageId: '11111111-1111-4111-8111-111111111111',
+      status: 'received',
+      deduplicated: false,
+    });
+    expect(repeated).toMatchObject({ status: 'received', deduplicated: true });
+    expect(starts).toBe(0);
+    expect(states.get('beta')?.running).toBe(false);
+    expect(store.getPendingMessages('beta')).toHaveLength(1);
+  });
+
+  it('delivers an accepted federated final hop through the protected queue when the recipient is running', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const queue = makeQueue(new FakeRuntime(), pane.id);
+    const messaging = makeMessaging(queue);
+
+    await expect(
+      messaging.acceptInboundFederated({
+        messageId: '22222222-2222-4222-8222-222222222222',
+        sourceInstanceId: '33333333-3333-4333-8333-333333333333',
+        sourceAddress: 'alpha@other',
+        recipient: 'beta',
+        message: 'peer hello',
+        receivedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+      }),
+    ).resolves.toMatchObject({ status: 'delivered', deduplicated: false });
+    expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha@other] peer hello']);
+    expect(store.getFederationInboxMessage('22222222-2222-4222-8222-222222222222')?.status).toBe('delivered');
   });
 
   function makeQueue(runtime: FakeRuntime, paneId: string): DeliveryQueue {

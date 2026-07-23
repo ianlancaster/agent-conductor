@@ -158,6 +158,7 @@ beforeEach(() => {
       if (codename !== undefined && !states.has(codename)) throw new Error(`Unknown session: ${codename}`);
       sentinel.setSentinel(codename);
     },
+    getDocumentation: async (topic) => `docs:${topic ?? 'index'}`,
   });
   router = new CommandRouter(operations);
 });

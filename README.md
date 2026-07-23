@@ -24,6 +24,8 @@ Running one coding agent is simple. Running several introduces a few practical p
   attention without requiring a human to watch every pane.
 - **Operator access:** the same fleet controls work in the local console, Telegram, Slack,
   and injected operator adapters.
+- **Federation:** optional same-machine discovery and durable messaging connects explicitly
+  exposed sessions across otherwise isolated Conductor fleets.
 
 Agent Conductor handles those mechanics and leaves judgment to the agents and operator.
 
@@ -42,6 +44,8 @@ Agent Conductor handles those mechanics and leaves judgment to the agents and op
  Telegram ─────────┼─ operator adapter
  Slack ────────────┼─ operator adapter
  Other channels ───┘
+
+ Local peers ── federation adapter ── durable message bridge ── protected pane delivery
 ```
 
 The canonical operation registry owns behavior, validation, descriptions, and MCP schemas.
@@ -177,6 +181,28 @@ iTerm2 on macOS uses iTerm2. Set `terminal.backend` explicitly when running as a
 For a guided first fleet, including a sentinel and Telegram, see
 [Getting Started](docs/getting-started.md).
 
+Every managed agent also receives a session-only `get_conductor_docs` tool. It exposes the
+version-matched [extended agent handbook](docs/agent-guide.md) as lazy topics and returns the
+active fleet's authoritative configuration paths. The small injected protocol tells agents when
+to consult it without preloading the full handbook into every context.
+
+## Documentation
+
+- [Getting Started](docs/getting-started.md) — build a first fleet, sentinel, remote channel,
+  schedules, worktrees, and daemon.
+- [Managed-agent handbook](docs/agent-guide.md) — feature map, composition recipes,
+  configuration maintenance, adapters, and troubleshooting; also available lazily through
+  `get_conductor_docs`.
+- [Complete supervisor example](examples/supervisor.yaml) — every setting and effective default.
+- [Telegram adapter](guides/telegram-adapter.md) and [Slack adapter](guides/slack-adapter.md) —
+  least-privilege external operator setup.
+- [Local federation](guides/local-federation.md) — same-machine discovery and durable messaging
+  between isolated fleets.
+- [PR Shepherd V2](docs/pr-shepherd.md) — standalone GitHub polling, policy, and Conductor
+  delivery.
+- [Contributor guide](CONTRIBUTING.md) and [architecture guide](CLAUDE.md) — mandatory context
+  for extending the product.
+
 ## Optional runtime status lines
 
 For a richer terminal footer, run this once:
@@ -304,9 +330,27 @@ These operations are available through both MCP and operator adapters:
 | `tail_session`       | `/tail`               | Read trailing pane output                                           |
 | `type_in_pane`       | `/type`               | Type raw text immediately, bypassing envelope and safety queue      |
 
+When local federation is enabled, three additional messages-only primitives appear:
+
+| MCP operation             | Operator command       | Purpose                                                        |
+| ------------------------- | ---------------------- | -------------------------------------------------------------- |
+| `list_peers`              | `/peers`               | List explicitly exposed sessions and exact qualified addresses |
+| `send_to_peer`            | `/tell-peer`           | Durably message an exposed peer without starting it            |
+| `get_peer_message_status` | `/peer-message-status` | Inspect queued, received, delivered, expired, or failed state  |
+
+Federated addresses use `session@fleet`. `send_to_session` remains local and may start its
+target; `send_to_peer` is deliberately separate and never changes peer lifecycle. See the
+[local federation guide](guides/local-federation.md).
+
+Remote gateway federation is not implemented in the current release. Do not expose the local
+loopback protocol or same-UID registry to a network as a substitute.
+
 ### Session-only tools
 
 - `whoami` returns the caller identity derived from its MCP connection.
+- `get_conductor_docs` lists or reads one topic from the version-matched extended handbook and
+  returns the active fleet's configuration paths. It is intentionally lazy so agents can discover
+  recipes and troubleshooting without carrying the entire guide in every system prompt.
 - `send_to_operator` sends a signed message to connected operator adapters. Its optional
   `options` array carries 1–8 short, unique choices and returns a request ID.
 
@@ -422,7 +466,8 @@ configured HTTPS/SSH Git sources and local paths, clones into an empty destinati
 source remote `template` so `origin` remains available for the new project. It does not execute
 scripts or interpret template contents. A configured `ref` is checked out after cloning; omit it
 to use the source's default branch. Template and worktree sources are mutually exclusive.
-Supervisor configuration changes take effect after restart. Because the resulting workspace is a
+Supervisor configuration changes take effect after restart, except local-federation exposure and public
+descriptions, which use last-good hot reload. Because the resulting workspace is a
 Git repository, guarded `/teardown --delete` deregisters it but leaves its directory intact.
 
 Create an isolated worktree session without cloning the repository again:
@@ -490,7 +535,9 @@ from any interface wins and returns to the requesting session as an ordinary ope
 This records an answer only; it is not an approval or escalation queue.
 
 Telegram permits only one long-polling process per bot token. Use a separate bot token for
-each concurrently running fleet.
+each concurrently running fleet. The complete BotFather, private-chat authorization, verification,
+security, and troubleshooting walkthrough is in the
+[Telegram adapter guide](guides/telegram-adapter.md).
 
 ## Slack
 
@@ -621,6 +668,11 @@ Session identity is mechanical within the conductor: the codename comes from the
 wired into that session, not from tool arguments. There is not yet per-session bearer
 authentication, so another trusted local process could call a session endpoint directly.
 Run the conductor only on a trusted machine and do not expose its HTTP port publicly.
+
+Local federation also binds only to loopback. Its owner-only registry credential mechanically maps
+requests to fleets, but any process running as the same OS user can read that credential. It prevents
+accidental cross-wiring; it is not a sandbox boundary. Session exposure is default-deny, and federated
+peers receive messages-only access—never lifecycle or terminal control.
 
 Codex sessions receive isolated `CODEX_HOME` directories so `resume --last` cannot select
 another managed session's history. Before every start or continue, the conductor ensures an

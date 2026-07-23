@@ -122,6 +122,28 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['[Stall] incoming']);
   });
 
+  it('rechecks a durable cancellation policy before draining a previously safe message', async () => {
+    runtime.inputState = 'draft';
+    let expired = false;
+    let cancellations = 0;
+    expect(
+      await queue.deliverOrQueue('alpha', 'expires while queued', {
+        deliveryId: 42,
+        shouldCancel: () => expired,
+        onCancelled: () => {
+          cancellations += 1;
+        },
+      }),
+    ).toBe('queued');
+
+    expired = true;
+    runtime.inputState = 'clear';
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    expect(queue.pendingCount('alpha')).toBe(0);
+    expect(cancellations).toBe(1);
+  });
+
   it('reports why a flush was skipped and clears the reason on delivery', async () => {
     const attempts: (string | null)[] = [];
     runtime.inputState = 'draft';

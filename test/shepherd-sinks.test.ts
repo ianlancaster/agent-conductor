@@ -127,6 +127,7 @@ beforeEach(async () => {
     summon: async () => '',
     banish: async () => '',
     setSentinel: () => undefined,
+    getDocumentation: async (topic) => `docs:${topic ?? 'index'}`,
   });
   server = new ConductorMcpServer({
     port: PORT,

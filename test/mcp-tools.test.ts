@@ -138,6 +138,7 @@ beforeEach(() => {
       store.setWorkspaceValue('sentinel.codename', codename ?? null);
       sentinel.setSentinel(codename);
     },
+    getDocumentation: async (topic) => `docs:${topic ?? 'index'}`,
   });
   tools = buildMcpTools(operations);
 });
@@ -162,11 +163,22 @@ describe('surface contract', () => {
     const operatorNames = buildOperatorCommands(operations).flatMap((command) => command.operations);
     expect(mcpNames).toContain('whoami');
     expect(mcpNames).toContain('send_to_operator');
+    expect(mcpNames).toContain('get_conductor_docs');
     expect(mcpNames).not.toContain('summon_session');
     expect(mcpNames).not.toContain('respond_to_operator_request');
     expect(operatorNames).toContain('summon_session');
     expect(operatorNames).toContain('respond_to_operator_request');
     expect(operatorNames).not.toContain('whoami');
+    expect(operatorNames).not.toContain('get_conductor_docs');
+  });
+
+  it('exposes the lazy Conductor handbook to sessions with discoverable topics', async () => {
+    const docs = tool('get_conductor_docs');
+    const properties = docs.inputSchema.properties as Record<string, { enum?: string[] }>;
+    expect(properties.topic?.enum).toContain('worktrees');
+    expect(properties.topic?.enum).toContain('troubleshooting');
+    expect(await docs.handler({}, 'alpha')).toBe('docs:index');
+    expect(await docs.handler({ topic: 'supervision' }, 'alpha')).toBe('docs:supervision');
   });
 
   it('keeps removed conveniences and duplicate tools out of the MCP surface', () => {
@@ -200,6 +212,10 @@ describe('surface contract', () => {
     expect(spawnProperties).toHaveProperty('branch');
     expect(spawnProperties).toHaveProperty('bypassPermissions');
     expect(spawnProperties).toHaveProperty('effort');
+  });
+
+  it('defaults every existing core operation to never federated', () => {
+    expect(operations.definitions().every((definition) => definition.federation === 'never')).toBe(true);
   });
 
   it('validates arguments in the shared layer for every adapter', async () => {
