@@ -1,5 +1,10 @@
 import type { PaneRef, Placement } from '../../src/core/types.js';
-import type { CreatePaneOptions, TerminalBackend, TerminalCapabilities } from '../../src/terminals/types.js';
+import type {
+  CreatePaneOptions,
+  DeliveryCapture,
+  TerminalBackend,
+  TerminalCapabilities,
+} from '../../src/terminals/types.js';
 
 export interface FakePane {
   session: string;
@@ -56,6 +61,17 @@ export class FakeTerminalBackend implements TerminalBackend {
     const p = this.mustGet(pane);
     p.received.push(text);
     p.lines.push(...text.split('\n'));
+  }
+
+  async captureForDelivery(pane: PaneRef, lines: number): Promise<DeliveryCapture> {
+    const content = this.mustGet(pane).lines.join('\n');
+    return { content: content.split('\n').slice(-lines).join('\n'), token: content };
+  }
+
+  async submitIfUnchanged(pane: PaneRef, text: string, token: string): Promise<boolean> {
+    if (this.mustGet(pane).lines.join('\n') !== token) return false;
+    await this.run(pane, text);
+    return true;
   }
 
   async capture(pane: PaneRef, lines: number): Promise<string> {

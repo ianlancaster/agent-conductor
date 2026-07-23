@@ -5,6 +5,16 @@ export interface TerminalCapabilities {
   headless: boolean;
 }
 
+/**
+ * One pane observation used for a protected delivery decision. `token` is an
+ * opaque backend-owned revision: when supplied, submitIfUnchanged can reject
+ * the write if anything (including operator typing) changed after capture.
+ */
+export interface DeliveryCapture {
+  content: string;
+  token: string;
+}
+
 export interface CreatePaneOptions {
   /**
    * Create the pane in the detached fleet session instead of the operator's
@@ -54,6 +64,14 @@ export interface TerminalBackend {
 
   /** Deliver subsequent input. Must be safe for multiline/long text (bracketed paste). */
   run(pane: PaneRef, text: string): Promise<void>;
+
+  /**
+   * Optional compare-and-submit path for autonomous delivery. The capture and
+   * token must describe the same pane observation. submitIfUnchanged returns
+   * false without writing when the pane changed after that observation.
+   */
+  captureForDelivery?(pane: PaneRef, lines: number): Promise<DeliveryCapture>;
+  submitIfUnchanged?(pane: PaneRef, text: string, token: string): Promise<boolean>;
 
   /** Trailing `lines` of pane content. */
   capture(pane: PaneRef, lines: number): Promise<string>;

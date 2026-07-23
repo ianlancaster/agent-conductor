@@ -91,6 +91,37 @@ describe('DeliveryQueue', () => {
     expect(deliveryEvents).toEqual(['alpha', 'alpha']);
   });
 
+  it('does not clobber text typed after the clear-composer capture', async () => {
+    runtime.parseInputState = (capture: string) => parseClaudeInputState(capture);
+    backend.setPaneContent(pane.id, 'output\n❯ ');
+    const captureForDelivery = backend.captureForDelivery.bind(backend);
+    let first = true;
+    backend.captureForDelivery = async (target, lines) => {
+      const observation = await captureForDelivery(target, lines);
+      if (first) {
+        first = false;
+        // Reproduce the operator beginning a draft after delivery observed an
+        // empty composer but before it attempted the pane write.
+        backend.setPaneContent(pane.id, 'output\n❯ operator draft must survive');
+      }
+      return observation;
+    };
+
+    const attempts: (string | null)[] = [];
+    expect(
+      await queue.deliverOrQueue('alpha', '[Stall] incoming', {
+        onAttempt: (reason) => attempts.push(reason),
+      }),
+    ).toBe('queued');
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    expect(queue.pendingCount('alpha')).toBe(1);
+    expect(attempts).toEqual(['pane-changed']);
+
+    backend.setPaneContent(pane.id, 'output\n❯ ');
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['[Stall] incoming']);
+  });
+
   it('reports why a flush was skipped and clears the reason on delivery', async () => {
     const attempts: (string | null)[] = [];
     runtime.inputState = 'draft';
@@ -317,13 +348,13 @@ describe('DeliveryQueue', () => {
   });
 
   it('queues on capture failure and releases only after a clear capture', async () => {
-    const capture = backend.capture.bind(backend);
-    backend.capture = () => Promise.reject(new Error('osascript exploded'));
+    const captureForDelivery = backend.captureForDelivery.bind(backend);
+    backend.captureForDelivery = () => Promise.reject(new Error('osascript exploded'));
     expect(await queue.deliverOrQueue('alpha', 'resilient')).toBe('queued');
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual([]);
 
-    backend.capture = capture;
+    backend.captureForDelivery = captureForDelivery;
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['resilient']);
   });

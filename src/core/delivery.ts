@@ -12,6 +12,7 @@ export type DeliverySkipReason =
   | 'capture-failed'
   | 'composer-not-visible'
   | 'input-occupied'
+  | 'pane-changed'
   | 'write-failed';
 
 export type CancellationResult = 'cancelled' | 'in-flight' | 'not-found';
@@ -23,6 +24,13 @@ export type CancellationResult = 'cancelled' | 'in-flight' | 'not-found';
  *   capture failed. Never type: uncertainty must queue rather than clobber.
  */
 type TypingState = 'clear' | 'blocked';
+
+interface TypingObservation {
+  state: TypingState;
+  skipReason: DeliverySkipReason | null;
+  /** Opaque terminal revision used for an atomic compare-and-submit. */
+  token?: string;
+}
 
 interface QueuedMessage {
   text: string;
@@ -98,13 +106,17 @@ export class DeliveryQueue {
       return 'cancelled';
     }
     if ((existing === undefined || existing.length === 0) && classification?.state === 'clear') {
-      this.recordAttempt(session, options.onAttempt, null);
       if (options.deliveryId !== undefined) {
         this.assessing.delete(options.deliveryId);
         this.delivering.add(options.deliveryId);
       }
       try {
-        await this.deps.backend.run(pane, text);
+        const writeSkipReason = await this.submitIfStillClear(session, pane, text, classification);
+        if (writeSkipReason !== null) {
+          this.recordAttempt(session, options.onAttempt, writeSkipReason);
+          return this.enqueue(session, text, options, existing);
+        }
+        this.recordAttempt(session, options.onAttempt, null);
         this.recordDelivered(session, options.onDelivered);
         return 'delivered';
       } catch (err) {
@@ -185,13 +197,17 @@ export class DeliveryQueue {
       const classification = await this.typingState(session, pane);
       // Cancellation can remove the item while capture is in flight.
       if (queue[0] !== oldest) continue;
-      this.recordAttempt(session, oldest.onAttempt, classification.skipReason);
       if (classification.state === 'clear') {
         // One message per pass: each submit gets a full drain interval to be
         // processed before the next one is typed.
         try {
           if (oldest.deliveryId !== undefined) this.delivering.add(oldest.deliveryId);
-          await this.deps.backend.run(pane, oldest.text);
+          const writeSkipReason = await this.submitIfStillClear(session, pane, oldest.text, classification);
+          if (writeSkipReason !== null) {
+            this.recordAttempt(session, oldest.onAttempt, writeSkipReason);
+            continue;
+          }
+          this.recordAttempt(session, oldest.onAttempt, null);
           // Remove only AFTER a successful write. Shifting first silently lost
           // the message whenever iTerm/osascript failed during a drain.
           queue.shift();
@@ -208,6 +224,7 @@ export class DeliveryQueue {
         if (queue.length === 0) this.queues.delete(session);
         else this.ensureTimer();
       } else {
+        this.recordAttempt(session, oldest.onAttempt, classification.skipReason);
         log().debug('delivery', `${session}: input is occupied or uncertain — holding ${queue.length} message(s)`);
       }
     }
@@ -246,28 +263,56 @@ export class DeliveryQueue {
    * Classify the pane for typing. The only safe state is an explicitly empty
    * runtime composer. Any text, missing chrome, or capture failure blocks.
    */
-  private async typingState(
-    session: string,
-    pane: PaneRef,
-  ): Promise<{ state: TypingState; skipReason: DeliverySkipReason | null }> {
+  private async typingState(session: string, pane: PaneRef): Promise<TypingObservation> {
     const runtime = this.deps.runtimeFor(session);
     if (runtime === undefined) return { state: 'blocked', skipReason: 'runtime-unavailable' };
     try {
-      const capture =
-        runtime.capabilities.styledCapture && this.deps.backend.captureStyled !== undefined
-          ? await this.deps.backend.captureStyled(pane, 10)
-          : await this.deps.backend.capture(pane, 10);
+      let capture: string;
+      let token: string | undefined;
+      if (runtime.capabilities.styledCapture && this.deps.backend.captureStyled !== undefined) {
+        capture = await this.deps.backend.captureStyled(pane, 10);
+      } else if (this.deps.backend.captureForDelivery !== undefined) {
+        const observation = await this.deps.backend.captureForDelivery(pane, 10);
+        capture = observation.content;
+        token = observation.token;
+      } else {
+        capture = await this.deps.backend.capture(pane, 10);
+      }
       let state = runtime.parseInputState(capture, session);
       if (state !== 'clear' && runtime.resolveInputState !== undefined) {
         state = await runtime.resolveInputState(capture, session, state);
       }
       if (state === null) return { state: 'blocked', skipReason: 'composer-not-visible' };
       this.deps.onRuntimeObserved?.(session);
-      if (state === 'clear') return { state: 'clear', skipReason: null };
+      if (state === 'clear') {
+        return { state: 'clear', skipReason: null, ...(token !== undefined ? { token } : {}) };
+      }
       return { state: 'blocked', skipReason: 'input-occupied' };
     } catch {
       return { state: 'blocked', skipReason: 'capture-failed' };
     }
+  }
+
+  /**
+   * Close the observation/write race. Backends with an atomic compare-and-submit
+   * use their opaque capture token; other backends get a mandatory second
+   * composer classification immediately before the write. Any change fails
+   * closed and leaves the message queued.
+   */
+  private async submitIfStillClear(
+    session: string,
+    pane: PaneRef,
+    text: string,
+    observation: TypingObservation,
+  ): Promise<DeliverySkipReason | null> {
+    if (observation.token !== undefined && this.deps.backend.submitIfUnchanged !== undefined) {
+      return (await this.deps.backend.submitIfUnchanged(pane, text, observation.token)) ? null : 'pane-changed';
+    }
+
+    const confirmation = await this.typingState(session, pane);
+    if (confirmation.state !== 'clear') return confirmation.skipReason ?? 'pane-changed';
+    await this.deps.backend.run(pane, text);
+    return null;
   }
 
   private async safeIsAlive(pane: PaneRef): Promise<boolean> {

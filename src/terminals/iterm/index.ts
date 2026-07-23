@@ -6,7 +6,7 @@ import type { PaneRef, Placement } from '../../core/types.js';
 import { sleep } from '../../core/utils.js';
 import { log } from '../../logger.js';
 import type { Store } from '../../store/index.js';
-import type { TerminalBackend, TerminalCapabilities } from '../types.js';
+import type { DeliveryCapture, TerminalBackend, TerminalCapabilities } from '../types.js';
 import { ttyHasForegroundJob } from '../process.js';
 import {
   buildCloseSessionScript,
@@ -58,6 +58,7 @@ export interface ITermBackendOptions {
 /** Store keys replacing the old workspace.json. */
 const WINDOW_ID_KEY = 'iterm.windowId';
 const PANES_KEY = 'iterm.panes';
+const PANE_CHANGED_RESULT = '__CONDUCTOR_ITERM_PANE_CHANGED__';
 
 /**
  * iTerm2 TerminalBackend, driven via async AppleScript (execFile, never execSync —
@@ -205,6 +206,15 @@ export class ITermBackend implements TerminalBackend {
     // from swallowing the separately submitted carriage return, especially
     // for Codex and slash commands.
     await this.deliver(pane.id, text, true);
+  }
+
+  async captureForDelivery(pane: PaneRef, lines: number): Promise<DeliveryCapture> {
+    const contents = await this.sessionContents(pane.id);
+    return { content: tailLines(contents, lines), token: contents };
+  }
+
+  async submitIfUnchanged(pane: PaneRef, text: string, token: string): Promise<boolean> {
+    return this.deliver(pane.id, text, true, token);
   }
 
   async capture(pane: PaneRef, lines: number): Promise<string> {
@@ -408,21 +418,35 @@ export class ITermBackend implements TerminalBackend {
    * through a temp file (`write contents of file`) because `write text`
    * truncates long strings; multi-line/long content is bracketed-paste wrapped.
    */
-  private async deliver(sessionId: string, text: string, alwaysBracketed: boolean): Promise<void> {
+  private async deliver(
+    sessionId: string,
+    text: string,
+    alwaysBracketed: boolean,
+    expectedContents?: string,
+  ): Promise<boolean> {
     const bracketed = alwaysBracketed || shouldUseBracketedPaste(text, this.config.bracketedPasteThreshold);
     // A trailing newline inside bracketed paste is inert content; the separate
     // CR below is the sole submit. This is the known-good cc-conductor path.
     const content = bracketed ? bracketedPastePayload(text) : text;
     const path = await this.writeTempContent(content);
+    const expectedPath = expectedContents !== undefined ? await this.writeTempContent(expectedContents) : undefined;
     try {
-      await this.inSession(
+      const guard =
+        expectedPath === undefined
+          ? ''
+          : `set expectedContents to read POSIX file "${escapeAppleScript(expectedPath)}"
+         if ((contents as string) & (ASCII character 10)) is not expectedContents then return "${PANE_CHANGED_RESULT}"`;
+      const result = await this.inSession(
         sessionId,
-        `write contents of file "${escapeAppleScript(path)}" newline false
+        `${guard}
+         write contents of file "${escapeAppleScript(path)}" newline false
          delay ${bracketed ? 0.1 : 0.2}
          write text (ASCII character 13)`,
       );
+      return result.trim() !== PANE_CHANGED_RESULT;
     } finally {
       await unlink(path).catch(() => undefined);
+      if (expectedPath !== undefined) await unlink(expectedPath).catch(() => undefined);
     }
   }
 
