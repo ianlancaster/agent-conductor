@@ -37,6 +37,8 @@ interface QueuedMessage {
   deliveryId?: number;
   onAttempt?: (skipReason: DeliverySkipReason | null) => void;
   onDelivered?: () => void;
+  shouldCancel?: () => boolean;
+  onCancelled?: () => void;
 }
 
 export interface DeliveryOptions {
@@ -46,6 +48,10 @@ export interface DeliveryOptions {
   onAttempt?: (skipReason: DeliverySkipReason | null) => void;
   /** Receipt callback invoked exactly once, after the pane write succeeds. */
   onDelivered?: () => void;
+  /** Durable policy guard checked immediately before every possible pane write. */
+  shouldCancel?: () => boolean;
+  /** Called when shouldCancel prevents delivery. */
+  onCancelled?: () => void;
 }
 
 export interface DeliveryDeps {
@@ -86,6 +92,10 @@ export class DeliveryQueue {
   constructor(private readonly deps: DeliveryDeps) {}
 
   async deliverOrQueue(session: string, text: string, options: DeliveryOptions = {}): Promise<DeliveryResult> {
+    if (options.shouldCancel?.() === true) {
+      options.onCancelled?.();
+      return 'cancelled';
+    }
     if (options.deliveryId !== undefined) this.assessing.add(options.deliveryId);
     const pane = this.deps.getPane(session);
     if (pane === undefined) {
@@ -103,6 +113,11 @@ export class DeliveryQueue {
       existing === undefined || existing.length === 0 ? await this.typingState(session, pane) : undefined;
     if (options.deliveryId !== undefined && this.cancellationRequested.delete(options.deliveryId)) {
       this.assessing.delete(options.deliveryId);
+      return 'cancelled';
+    }
+    if (options.shouldCancel?.() === true) {
+      this.assessing.delete(options.deliveryId ?? -1);
+      options.onCancelled?.();
       return 'cancelled';
     }
     if ((existing === undefined || existing.length === 0) && classification?.state === 'clear') {
@@ -194,9 +209,21 @@ export class DeliveryQueue {
         this.queues.delete(session);
         continue;
       }
+      if (oldest.shouldCancel?.() === true) {
+        queue.shift();
+        oldest.onCancelled?.();
+        if (queue.length === 0) this.queues.delete(session);
+        continue;
+      }
       const classification = await this.typingState(session, pane);
       // Cancellation can remove the item while capture is in flight.
       if (queue[0] !== oldest) continue;
+      if (oldest.shouldCancel?.() === true) {
+        queue.shift();
+        oldest.onCancelled?.();
+        if (queue.length === 0) this.queues.delete(session);
+        continue;
+      }
       if (classification.state === 'clear') {
         // One message per pass: each submit gets a full drain interval to be
         // processed before the next one is typed.
@@ -251,6 +278,8 @@ export class DeliveryQueue {
       ...(options.deliveryId !== undefined ? { deliveryId: options.deliveryId } : {}),
       ...(options.onAttempt !== undefined ? { onAttempt: options.onAttempt } : {}),
       ...(options.onDelivered !== undefined ? { onDelivered: options.onDelivered } : {}),
+      ...(options.shouldCancel !== undefined ? { shouldCancel: options.shouldCancel } : {}),
+      ...(options.onCancelled !== undefined ? { onCancelled: options.onCancelled } : {}),
     });
     this.queues.set(session, queue);
     if (options.deliveryId !== undefined) this.assessing.delete(options.deliveryId);

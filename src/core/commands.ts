@@ -11,7 +11,7 @@ export function tokenize(line: string): string[] {
   return tokens;
 }
 
-type CommandGroup = 'Sessions' | 'Conversation' | 'Modes' | 'Lifecycle';
+export type CommandGroup = 'Sessions' | 'Conversation' | 'Modes' | 'Lifecycle' | 'Federation';
 
 export interface OperatorCommandDefinition {
   command: string;
@@ -415,11 +415,13 @@ function parseSpawn(args: string[]): Record<string, unknown> {
 
 export function renderOperatorHelp(commands: readonly OperatorCommandDefinition[]): string {
   const lines: string[] = [];
-  const groups: CommandGroup[] = ['Sessions', 'Conversation', 'Modes', 'Lifecycle'];
+  const groups: CommandGroup[] = ['Sessions', 'Conversation', 'Modes', 'Lifecycle', 'Federation'];
   for (const group of groups) {
+    const candidates = commands.filter((candidate) => candidate.group === group);
+    if (candidates.length === 0) continue;
     if (lines.length > 0) lines.push('');
     lines.push(`${group}:`);
-    for (const command of commands.filter((candidate) => candidate.group === group)) {
+    for (const command of candidates) {
       lines.push(`  ${command.usage} — ${command.description}`);
       lines.push(...(command.details ?? []));
     }
@@ -446,8 +448,11 @@ export class CommandRouter {
   private readonly commandIndex = new Map<string, OperatorCommandDefinition>();
   private readonly talkTargets = new Map<string, string>();
 
-  constructor(private readonly operations: ConductorOperations) {
-    this.commands = buildOperatorCommands(operations);
+  constructor(
+    private readonly operations: ConductorOperations,
+    additionalCommands: readonly OperatorCommandDefinition[] = [],
+  ) {
+    this.commands = [...buildOperatorCommands(operations), ...additionalCommands];
     for (const command of this.commands) {
       this.commandIndex.set(command.command, command);
       for (const alias of command.aliases ?? []) this.commandIndex.set(alias, command);

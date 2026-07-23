@@ -63,6 +63,58 @@ export interface OperatorRequestRow {
   resolvedAt: string | null;
 }
 
+export type FederationMessageState = 'queued' | 'received' | 'delivered' | 'expired' | 'failed';
+
+export interface FederationOutboxRow {
+  message_id: string;
+  sender_session: string;
+  destination_address: string;
+  destination_instance_id: string;
+  content: string;
+  idempotency_key: string | null;
+  state: FederationMessageState;
+  attempt_count: number;
+  next_attempt_at: number;
+  last_error_code: string | null;
+  expires_at: number;
+  created_at: number;
+  updated_at: number;
+  received_at: number | null;
+  delivered_at: number | null;
+}
+
+export interface FederationInboxRow {
+  message_id: string;
+  source_instance_id: string;
+  source_address: string;
+  recipient_session: string;
+  local_message_id: number;
+  received_at: number;
+  expires_at: number;
+}
+
+export interface FederationOutboxInsertResult {
+  row: FederationOutboxRow;
+  deduplicated: boolean;
+}
+
+export interface FederationInboxInsertResult {
+  row: FederationInboxRow;
+  localMessage: MessageRow;
+  deduplicated: boolean;
+}
+
+export interface FederationOutboxHealth {
+  queued: number;
+  received: number;
+  oldestPendingAt: number | null;
+}
+
+export interface FederationCleanupResult {
+  outbox: number;
+  inbox: number;
+}
+
 /** Versioned migrations. Append only — never edit an existing entry (post first release). */
 const MIGRATIONS: string[] = [
   `
@@ -165,6 +217,42 @@ const MIGRATIONS: string[] = [
   ALTER TABLE messages ADD COLUMN last_flush_attempt_at TEXT;
   ALTER TABLE messages ADD COLUMN flush_skip_reason TEXT;
   ALTER TABLE messages ADD COLUMN cancelled_at TEXT;
+  `,
+  `
+  CREATE TABLE federation_outbox (
+    message_id TEXT PRIMARY KEY,
+    sender_session TEXT NOT NULL,
+    destination_address TEXT NOT NULL,
+    destination_instance_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    idempotency_key TEXT,
+    state TEXT NOT NULL DEFAULT 'queued',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL,
+    last_error_code TEXT,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    received_at INTEGER,
+    delivered_at INTEGER
+  );
+  CREATE UNIQUE INDEX idx_federation_outbox_sender_idempotency
+    ON federation_outbox(sender_session, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+  CREATE INDEX idx_federation_outbox_due
+    ON federation_outbox(state, next_attempt_at);
+
+  CREATE TABLE federation_inbox (
+    message_id TEXT PRIMARY KEY,
+    source_instance_id TEXT NOT NULL,
+    source_address TEXT NOT NULL,
+    recipient_session TEXT NOT NULL,
+    local_message_id INTEGER NOT NULL UNIQUE REFERENCES messages(id),
+    received_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_federation_inbox_recipient
+    ON federation_inbox(recipient_session, received_at);
   `,
 ];
 
@@ -306,6 +394,215 @@ export class Store {
     return this.db
       .prepare("SELECT * FROM messages WHERE type = 'message' AND status = 'pending' ORDER BY id")
       .all() as unknown as MessageRow[];
+  }
+
+  // ── federation ───────────────────────────────────────────────────────────
+
+  insertFederationOutbox(input: {
+    messageId: string;
+    senderSession: string;
+    destinationAddress: string;
+    destinationInstanceId: string;
+    content: string;
+    idempotencyKey?: string;
+    now: number;
+    expiresAt: number;
+  }): FederationOutboxInsertResult {
+    return withTransaction(this.db, () => {
+      if (input.idempotencyKey !== undefined) {
+        const existing = this.getFederationOutboxByIdempotencyKey(input.senderSession, input.idempotencyKey);
+        if (existing !== undefined) return { row: existing, deduplicated: true };
+      }
+      this.db
+        .prepare(
+          `INSERT INTO federation_outbox (
+             message_id, sender_session, destination_address, destination_instance_id, content,
+             idempotency_key, next_attempt_at, expires_at, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.messageId,
+          input.senderSession,
+          input.destinationAddress,
+          input.destinationInstanceId,
+          input.content,
+          input.idempotencyKey ?? null,
+          input.now,
+          input.expiresAt,
+          input.now,
+          input.now,
+        );
+      const row = this.getFederationOutbox(input.messageId);
+      if (row === undefined) throw new Error(`Federated message ${input.messageId} was not persisted.`);
+      return { row, deduplicated: false };
+    });
+  }
+
+  getFederationOutbox(messageId: string): FederationOutboxRow | undefined {
+    return this.db.prepare('SELECT * FROM federation_outbox WHERE message_id = ?').get(messageId) as
+      FederationOutboxRow | undefined;
+  }
+
+  getFederationOutboxByIdempotencyKey(senderSession: string, idempotencyKey: string): FederationOutboxRow | undefined {
+    return this.db
+      .prepare('SELECT * FROM federation_outbox WHERE sender_session = ? AND idempotency_key = ?')
+      .get(senderSession, idempotencyKey) as FederationOutboxRow | undefined;
+  }
+
+  getDueFederationOutbox(now: number, limit: number): FederationOutboxRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM federation_outbox
+         WHERE state IN ('queued', 'received') AND next_attempt_at <= ?
+         ORDER BY next_attempt_at, created_at
+         LIMIT ?`,
+      )
+      .all(now, limit) as unknown as FederationOutboxRow[];
+  }
+
+  getFederationOutboxHealth(): FederationOutboxHealth {
+    const row = this.db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN state = 'queued' THEN 1 ELSE 0 END) AS queued,
+           SUM(CASE WHEN state = 'received' THEN 1 ELSE 0 END) AS received,
+           MIN(CASE WHEN state IN ('queued', 'received') THEN created_at END) AS oldest_pending_at
+         FROM federation_outbox`,
+      )
+      .get() as { queued: number | null; received: number | null; oldest_pending_at: number | null };
+    return {
+      queued: row.queued ?? 0,
+      received: row.received ?? 0,
+      oldestPendingAt: row.oldest_pending_at,
+    };
+  }
+
+  recordFederationOutboxAttempt(messageId: string, nextAttemptAt: number, updatedAt: number, errorCode?: string): void {
+    this.db
+      .prepare(
+        `UPDATE federation_outbox
+         SET attempt_count = attempt_count + 1, next_attempt_at = ?, last_error_code = ?, updated_at = ?
+         WHERE message_id = ? AND state IN ('queued', 'received')`,
+      )
+      .run(nextAttemptAt, errorCode ?? null, updatedAt, messageId);
+  }
+
+  scheduleFederationStatusCheck(messageId: string, nextAttemptAt: number, updatedAt: number): void {
+    this.db
+      .prepare(
+        `UPDATE federation_outbox
+         SET next_attempt_at = ?, last_error_code = NULL, updated_at = ?
+         WHERE message_id = ? AND state = 'received'`,
+      )
+      .run(nextAttemptAt, updatedAt, messageId);
+  }
+
+  markFederationOutboxReceived(messageId: string, now: number, nextStatusAt: number): void {
+    this.db
+      .prepare(
+        `UPDATE federation_outbox
+         SET state = 'received', received_at = COALESCE(received_at, ?), next_attempt_at = ?,
+             last_error_code = NULL, updated_at = ?
+         WHERE message_id = ? AND state = 'queued'`,
+      )
+      .run(now, nextStatusAt, now, messageId);
+  }
+
+  markFederationOutboxTerminal(
+    messageId: string,
+    state: Extract<FederationMessageState, 'delivered' | 'expired' | 'failed'>,
+    now: number,
+    errorCode?: string,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE federation_outbox
+         SET state = ?, delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END,
+             last_error_code = ?, updated_at = ?
+         WHERE message_id = ? AND state NOT IN ('delivered', 'expired', 'failed')`,
+      )
+      .run(state, state, now, errorCode ?? null, now, messageId);
+  }
+
+  acceptFederatedInbound(input: {
+    messageId: string;
+    sourceInstanceId: string;
+    sourceAddress: string;
+    recipientSession: string;
+    content: string;
+    receivedAt: number;
+    expiresAt: number;
+  }): FederationInboxInsertResult {
+    return withTransaction(this.db, () => {
+      const existing = this.getFederationInbox(input.messageId);
+      if (existing !== undefined) {
+        const localMessage = this.getMessage(existing.local_message_id);
+        if (localMessage === undefined) throw new Error(`Federation inbox ${input.messageId} has no local message.`);
+        return { row: existing, localMessage, deduplicated: true };
+      }
+      const localMessageId = this.insertMessage(
+        input.sourceAddress,
+        input.recipientSession,
+        'message',
+        input.content,
+        `fed:${input.messageId}`,
+      );
+      const localMessage = this.getMessage(localMessageId);
+      if (localMessage === undefined) throw new Error(`Federation inbox ${input.messageId} has no local message.`);
+      this.db
+        .prepare(
+          `INSERT INTO federation_inbox
+             (message_id, source_instance_id, source_address, recipient_session, local_message_id, received_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.messageId,
+          input.sourceInstanceId,
+          input.sourceAddress,
+          input.recipientSession,
+          localMessage.id,
+          input.receivedAt,
+          input.expiresAt,
+        );
+      const row = this.getFederationInbox(input.messageId);
+      if (row === undefined) throw new Error(`Federation inbox ${input.messageId} was not persisted.`);
+      return { row, localMessage, deduplicated: false };
+    });
+  }
+
+  getFederationInbox(messageId: string): FederationInboxRow | undefined {
+    return this.db.prepare('SELECT * FROM federation_inbox WHERE message_id = ?').get(messageId) as
+      FederationInboxRow | undefined;
+  }
+
+  getFederationInboxByLocalMessage(localMessageId: number): FederationInboxRow | undefined {
+    return this.db.prepare('SELECT * FROM federation_inbox WHERE local_message_id = ?').get(localMessageId) as
+      FederationInboxRow | undefined;
+  }
+
+  getFederationInboxMessage(messageId: string): MessageRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT messages.* FROM federation_inbox
+         JOIN messages ON messages.id = federation_inbox.local_message_id
+         WHERE federation_inbox.message_id = ?`,
+      )
+      .get(messageId) as MessageRow | undefined;
+  }
+
+  cleanupFederationHistory(cutoff: number): FederationCleanupResult {
+    return withTransaction(this.db, () => {
+      const outbox = this.db
+        .prepare(
+          `DELETE FROM federation_outbox
+           WHERE state IN ('delivered', 'expired', 'failed') AND updated_at < ?`,
+        )
+        .run(cutoff);
+      // Local messages remain under the core message-retention policy. This
+      // removes only expired federation correlation/dedup metadata.
+      const inbox = this.db.prepare('DELETE FROM federation_inbox WHERE expires_at < ?').run(cutoff);
+      return { outbox: Number(outbox.changes), inbox: Number(inbox.changes) };
+    });
   }
 
   // ── operator requests ────────────────────────────────────────────────────

@@ -7,6 +7,11 @@ Do them in order — each step assumes the previous one worked.
 Prerequisites and install are in the [README](../README.md). This guide assumes
 `conductor` is on your PATH. Create a fleet directory and start it:
 
+Managed Claude Code and Codex sessions receive a small mandatory protocol plus the session-only
+`get_conductor_docs` tool. The tool lists version-matched handbook topics and the active fleet's
+authoritative configuration paths, so an agent can help operate or maintain Conductor without
+preloading the full [managed-agent handbook](agent-guide.md).
+
 ```bash
 mkdir ~/fleet && cd ~/fleet
 conductor start
@@ -164,7 +169,8 @@ because the sentinel is not running.)
    change it immediately; omit the session to clear it. Tool-set choices persist across
    restarts.
 
-4. Restart the conductor (supervisor.yaml is not hot-reloaded; session files are):
+4. Restart the conductor (session files and local-federation exposure/public descriptions hot-reload;
+   other supervisor settings do not):
 
    ```
    /start watch            # bring the sentinel up first
@@ -187,9 +193,12 @@ stalls, the conductor alerts you directly.
 
 ## Step 3 — Remote control over Telegram
 
+This is the compact setup path. The [Telegram adapter guide](../guides/telegram-adapter.md)
+covers token handling, private-chat ID discovery, security, verification, and troubleshooting.
+
 1. Create a bot with [@BotFather](https://t.me/BotFather), copy the token.
-2. Get your chat id: message your bot, then open
-   `https://api.telegram.org/bot<TOKEN>/getUpdates` and read `message.chat.id`.
+2. Message the bot, then use the environment-safe `getUpdates` command in the
+   [Telegram adapter guide](../guides/telegram-adapter.md) and copy `message.chat.id`.
 3. Enable the bundled adapter in `.conductor/config/supervisor.yaml`:
 
    ```yaml
@@ -295,6 +304,10 @@ primitive, not an approval or execution queue.
   preserved; otherwise the generated file is added to the repo's `.gitignore` automatically.
   Each Codex session gets an isolated `CODEX_HOME` so sessions don't cross, plus a mechanically
   scoped Conductor MCP endpoint and lifecycle notify hook.
+
+To connect explicitly exposed sessions across two Conductor fleets owned by the same OS user,
+follow the [local federation guide](../guides/local-federation.md). Federation is disabled by
+default, uses qualified `session@fleet` addresses, and never starts a peer session.
 
 ---
 

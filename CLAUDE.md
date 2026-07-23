@@ -66,8 +66,15 @@ tested against in-memory fakes (`test/fakes/`).
   (canonical control plane), commands (operator adapter), scheduler, state, status, worktree.
 - `src/mcp/` — HTTP JSON-RPC server. **Identity is mechanical**: the codename comes from the
   URL path (`/mcp/<codename>`, `/events/<codename>`), never from request contents.
-- `src/store/` — single SQLite store (runs, messages, health_log, session_state,
-  workspace KV). Migrations are append-only entries in `MIGRATIONS`.
+- `src/federation/` — optional bidirectional agent-to-agent boundary. The core service owns
+  exposure policy, durable receipts, routing, and final-hop integration; adapters own peer
+  discovery, authentication, and transport. It is deliberately not an operator channel.
+- `docs/agent-guide.md` + `src/core/documentation.ts` — version-matched, topic-marked operating
+  reference exposed lazily to managed sessions through `get_conductor_docs`. Keep the injected
+  protocol concise; put extended feature explanations, composition recipes, and troubleshooting
+  here. The tool also returns authoritative fleet paths without reading secret values.
+- `src/store/` — single SQLite store (runs, messages, federation inbox/outbox, health_log,
+  session_state, workspace KV). Migrations are append-only entries in `MIGRATIONS`.
 - `src/config/` — zod schemas; every tunable has a default in `schema.ts`. One mtime watcher
   feeds both roster reload and scheduler rebuild.
 
@@ -88,6 +95,9 @@ that owns the environment-specific behavior:
   generated identity/hook configuration, lifecycle-event parsing, and terminal UI parsing.
 - **Terminal backend** (`TerminalBackend`) — owns pane creation, process interaction, capture,
   rediscovery, and backend capabilities.
+- **Federation adapter** (`FederationAdapter`) — discovers and authenticates peer Conductors
+  and transports versioned durable messages. Federation is messages-only and default-deny;
+  adapters must not bypass exposure policy, forge caller identity, or call lifecycle controls.
 
 Built-in channels ship in this package and may discover opt-in configuration outside the
 core. External channels are ordinary `ChannelAdapter` instances injected through
@@ -123,6 +133,9 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
   `new Supervisor(baseDir, { channels: [...] })`. Built-in environment/config discovery is
   only needed when shipping the adapter inside this package.
 - **New runtime/backend**: implement the interface in its directory and add fake-based tests.
+- **New federation transport**: preserve `FederationService` address, exposure, receipt,
+  expiry, and no-auto-start semantics. Derive peer identity from authenticated transport
+  state, keep transport errors typed, and prove retry/idempotency through a real seam test.
 
 ### Change-completeness checklist
 
@@ -137,6 +150,8 @@ For every user-visible change, decide explicitly whether each row applies:
 - public exports and package contents;
 - focused unit tests, seam-level integration tests, failure paths, and manual shakedowns;
 - README, task-specific setup guide, troubleshooting, migration notes, and changeset.
+- `docs/agent-guide.md` when managed agents need to understand, compose, configure, or
+  troubleshoot the changed capability.
 
 “Not applicable” is valid when a transport or audience should not have a capability, but the
 difference must be deliberate, tested where important, and documented where users will see it.

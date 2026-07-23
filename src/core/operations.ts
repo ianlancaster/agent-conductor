@@ -1,4 +1,5 @@
 import type { RuntimeName, SessionConfig } from '../config/schema.js';
+import { CONDUCTOR_DOC_TOPICS } from './documentation.js';
 import type { Lifecycle } from './lifecycle.js';
 import type { Messaging } from './messaging.js';
 import type { MessageReceipt } from './messaging.js';
@@ -7,33 +8,21 @@ import type { StallSentinelRouter } from './sentinel.js';
 import type { SessionStateManager } from './state.js';
 import { InvalidRequestError } from './errors.js';
 import type { Placement } from './types.js';
+import {
+  operationSchema as schema,
+  optionalString,
+  requireString,
+  stringProperty,
+  validateOperationInput,
+  type JsonPropertySchema,
+  type OperationInputSchema,
+} from './operation-schema.js';
+
+export type { JsonPropertySchema, OperationInputSchema } from './operation-schema.js';
 
 export type OperationAudience = 'operator' | 'session';
 
 export type OperationActor = { audience: 'operator'; id: string } | { audience: 'session'; codename: string };
-
-export interface JsonPropertySchema {
-  type: 'string' | 'boolean' | 'number' | 'array';
-  description?: string;
-  enum?: readonly string[];
-  minimum?: number;
-  minLength?: number;
-  maxLength?: number;
-  minItems?: number;
-  maxItems?: number;
-  items?: {
-    type: 'string';
-    minLength?: number;
-    maxLength?: number;
-  };
-}
-
-export interface OperationInputSchema {
-  type: 'object';
-  properties: Record<string, JsonPropertySchema>;
-  required?: string[];
-  additionalProperties: false;
-}
 
 export interface OperationDefinition {
   name: string;
@@ -42,6 +31,8 @@ export interface OperationDefinition {
   inputSchema: OperationInputSchema;
   /** The actor's identity is applied mechanically to messages made by this operation. */
   signedIdentity?: boolean;
+  /** Cross-fleet command exposure is default-deny. Messaging phases expose no core operation. */
+  federation?: 'never' | 'exposable';
   handler(args: Record<string, unknown>, actor: OperationActor): Promise<string | MessageReceipt>;
 }
 
@@ -64,17 +55,12 @@ export interface ConductorOperationDeps {
   summon(codename: string): Promise<string>;
   banish(codename: string): Promise<string>;
   setSentinel(codename: string | undefined): void;
+  getDocumentation(topic?: string): Promise<string>;
 }
 
 const BOTH = ['operator', 'session'] as const;
 const SESSION_ONLY = ['session'] as const;
 const OPERATOR_ONLY = ['operator'] as const;
-
-const stringProperty = (description?: string): JsonPropertySchema => ({
-  type: 'string',
-  minLength: 1,
-  ...(description !== undefined ? { description } : {}),
-});
 
 const optionsProperty: JsonPropertySchema = {
   type: 'array',
@@ -105,28 +91,6 @@ const runtimeProperty: JsonPropertySchema = {
   enum: ['claude-code', 'cc', 'codex'],
   description: "Runtime for this run; cc aliases claude-code (default: the session's configured runtime)",
 };
-
-function schema(properties: Record<string, JsonPropertySchema> = {}, required: string[] = []): OperationInputSchema {
-  return {
-    type: 'object',
-    properties,
-    ...(required.length > 0 ? { required } : {}),
-    additionalProperties: false,
-  };
-}
-
-function requireString(args: Record<string, unknown>, name: string): string {
-  const value = args[name];
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new InvalidRequestError(`'${name}' is required and must be a non-empty string`);
-  }
-  return value;
-}
-
-function optionalString(args: Record<string, unknown>, name: string): string | undefined {
-  const value = args[name];
-  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
-}
 
 function optionalStringArray(args: Record<string, unknown>, name: string): string[] | undefined {
   const value = args[name];
@@ -176,7 +140,10 @@ export class ConductorOperations {
   private readonly byName: Map<string, OperationDefinition>;
 
   constructor(private readonly deps: ConductorOperationDeps) {
-    const definitions = this.buildDefinitions();
+    const definitions = this.buildDefinitions().map((definition) => ({
+      ...definition,
+      federation: definition.federation ?? ('never' as const),
+    }));
     this.byName = new Map(definitions.map((definition) => [definition.name, definition]));
   }
 
@@ -201,7 +168,7 @@ export class ConductorOperations {
     if (!definition.audiences.includes(actor.audience)) {
       throw new Error(`${name} is not available to ${actor.audience} callers`);
     }
-    this.validate(definition, args);
+    validateOperationInput(definition.name, definition.inputSchema, args);
     return definition.handler(args, actor);
   }
 
@@ -594,6 +561,20 @@ export class ConductorOperations {
         },
       },
       {
+        name: 'get_conductor_docs',
+        description:
+          'List or lazily read the version-matched Agent Conductor handbook, including fleet recipes, configuration paths, adapters, worktrees, scheduling, supervision, federation, and troubleshooting.',
+        audiences: SESSION_ONLY,
+        inputSchema: schema({
+          topic: {
+            type: 'string',
+            enum: CONDUCTOR_DOC_TOPICS,
+            description: 'Optional handbook topic; omit to list topics and authoritative fleet paths',
+          },
+        }),
+        handler: (args) => this.deps.getDocumentation(optionalString(args, 'topic')),
+      },
+      {
         name: 'list_sessions',
         description:
           'List all registered sessions with runtime status, working-directory path, and current Git branch.',
@@ -696,55 +677,6 @@ export class ConductorOperations {
   private noSelf(actor: OperationActor, codename: string, verb: string): void {
     if (actor.audience === 'session' && actor.codename === codename) {
       throw new InvalidRequestError(`You cannot ${verb} yourself.`);
-    }
-  }
-
-  private validate(definition: OperationDefinition, args: Record<string, unknown>): void {
-    const { properties, required = [] } = definition.inputSchema;
-    for (const name of required) {
-      if (args[name] === undefined) throw new InvalidRequestError(`'${name}' is required`);
-    }
-    for (const [name, value] of Object.entries(args)) {
-      const property = properties[name];
-      if (property === undefined) throw new InvalidRequestError(`Unknown argument '${name}' for ${definition.name}`);
-      if (value === undefined) continue;
-      const matchesType = property.type === 'array' ? Array.isArray(value) : typeof value === property.type;
-      if (!matchesType || (property.type === 'number' && !Number.isFinite(value))) {
-        throw new InvalidRequestError(`'${name}' must be a ${property.type}`);
-      }
-      if (typeof value === 'string') {
-        if (property.minLength !== undefined && value.trim().length < property.minLength) {
-          throw new InvalidRequestError(`'${name}' must be a non-empty string`);
-        }
-        if (property.maxLength !== undefined && value.length > property.maxLength) {
-          throw new InvalidRequestError(`'${name}' must be at most ${String(property.maxLength)} characters`);
-        }
-        if (property.enum !== undefined && !property.enum.includes(value)) {
-          throw new InvalidRequestError(`'${name}' must be one of: ${property.enum.join(', ')}`);
-        }
-      }
-      if (typeof value === 'number' && property.minimum !== undefined && value < property.minimum) {
-        throw new InvalidRequestError(`'${name}' must be at least ${String(property.minimum)}`);
-      }
-      if (Array.isArray(value)) {
-        if (property.minItems !== undefined && value.length < property.minItems) {
-          throw new InvalidRequestError(`'${name}' must contain at least ${String(property.minItems)} item(s)`);
-        }
-        if (property.maxItems !== undefined && value.length > property.maxItems) {
-          throw new InvalidRequestError(`'${name}' must contain at most ${String(property.maxItems)} item(s)`);
-        }
-        for (const item of value) {
-          if (typeof item !== 'string') throw new InvalidRequestError(`'${name}' items must be strings`);
-          if (property.items?.minLength !== undefined && item.trim().length < property.items.minLength) {
-            throw new InvalidRequestError(`'${name}' items must be non-empty strings`);
-          }
-          if (property.items?.maxLength !== undefined && item.trim().length > property.items.maxLength) {
-            throw new InvalidRequestError(
-              `'${name}' items must be at most ${String(property.items.maxLength)} characters`,
-            );
-          }
-        }
-      }
     }
   }
 }

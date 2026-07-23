@@ -76,6 +76,100 @@ describe('messages', () => {
   });
 });
 
+describe('federation persistence', () => {
+  it('deduplicates sender-scoped outbox keys and preserves explicit receipt transitions', () => {
+    const first = store.insertFederationOutbox({
+      messageId: '11111111-1111-4111-8111-111111111111',
+      senderSession: 'alpha',
+      destinationAddress: 'beta@other',
+      destinationInstanceId: 'instance-b',
+      content: 'first',
+      idempotencyKey: 'stable',
+      now: 100,
+      expiresAt: 1_000,
+    });
+    const duplicate = store.insertFederationOutbox({
+      messageId: '22222222-2222-4222-8222-222222222222',
+      senderSession: 'alpha',
+      destinationAddress: 'beta@other',
+      destinationInstanceId: 'instance-b',
+      content: 'changed',
+      idempotencyKey: 'stable',
+      now: 200,
+      expiresAt: 2_000,
+    });
+    expect(first.deduplicated).toBe(false);
+    expect(duplicate).toEqual({ row: first.row, deduplicated: true });
+
+    store.markFederationOutboxReceived(first.row.message_id, 300, 400);
+    expect(store.getFederationOutbox(first.row.message_id)).toMatchObject({
+      state: 'received',
+      received_at: 300,
+      next_attempt_at: 400,
+    });
+    store.markFederationOutboxTerminal(first.row.message_id, 'delivered', 500);
+    expect(store.getFederationOutbox(first.row.message_id)).toMatchObject({
+      state: 'delivered',
+      delivered_at: 500,
+    });
+  });
+
+  it('atomically deduplicates inbound federation ids with one final-hop message', () => {
+    const first = store.acceptFederatedInbound({
+      messageId: '11111111-1111-4111-8111-111111111111',
+      sourceInstanceId: '22222222-2222-4222-8222-222222222222',
+      sourceAddress: 'alpha@other',
+      recipientSession: 'beta',
+      content: 'hello',
+      receivedAt: 100,
+      expiresAt: 1_000,
+    });
+    const duplicate = store.acceptFederatedInbound({
+      messageId: '11111111-1111-4111-8111-111111111111',
+      sourceInstanceId: '22222222-2222-4222-8222-222222222222',
+      sourceAddress: 'forged@different',
+      recipientSession: 'beta',
+      content: 'changed',
+      receivedAt: 200,
+      expiresAt: 2_000,
+    });
+    expect(first.deduplicated).toBe(false);
+    expect(duplicate.deduplicated).toBe(true);
+    expect(duplicate.row).toEqual(first.row);
+    expect(duplicate.localMessage).toEqual(first.localMessage);
+    expect(store.getPendingMessages('beta')).toHaveLength(1);
+    expect(store.getFederationInboxMessage(first.row.message_id)?.content).toBe('hello');
+  });
+
+  it('cleans terminal federation metadata without deleting the final-hop message', () => {
+    const outbound = store.insertFederationOutbox({
+      messageId: '33333333-3333-4333-8333-333333333333',
+      senderSession: 'alpha',
+      destinationAddress: 'beta@other',
+      destinationInstanceId: '44444444-4444-4444-8444-444444444444',
+      content: 'outbound',
+      now: 100,
+      expiresAt: 1_000,
+    });
+    store.markFederationOutboxTerminal(outbound.row.message_id, 'delivered', 200);
+    const inbound = store.acceptFederatedInbound({
+      messageId: '55555555-5555-4555-8555-555555555555',
+      sourceInstanceId: '66666666-6666-4666-8666-666666666666',
+      sourceAddress: 'beta@other',
+      recipientSession: 'alpha',
+      content: 'inbound',
+      receivedAt: 100,
+      expiresAt: 1_000,
+    });
+
+    expect(store.cleanupFederationHistory(199)).toEqual({ outbox: 0, inbox: 0 });
+    expect(store.cleanupFederationHistory(1_001)).toEqual({ outbox: 1, inbox: 1 });
+    expect(store.getFederationOutbox(outbound.row.message_id)).toBeUndefined();
+    expect(store.getFederationInbox(inbound.row.message_id)).toBeUndefined();
+    expect(store.getMessage(inbound.localMessage.id)?.content).toBe('inbound');
+  });
+});
+
 describe('operator requests', () => {
   it('round-trips requests and enforces atomic claim/finalize transitions', () => {
     const id = store.insertOperatorRequest('alpha', 'Deploy?', ['Staging', 'Production']);
