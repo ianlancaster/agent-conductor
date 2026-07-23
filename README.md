@@ -22,8 +22,8 @@ Running one coding agent is simple. Running several introduces a few practical p
   sharing a chat transcript.
 - **Supervision:** an auto session that stops, blocks, compacts, or wedges needs
   attention without requiring a human to watch every pane.
-- **Operator access:** the same fleet controls should work in a local console, Telegram,
-  and future operator adapters.
+- **Operator access:** the same fleet controls work in the local console, Telegram, Slack,
+  and injected operator adapters.
 
 Agent Conductor handles those mechanics and leaves judgment to the agents and operator.
 
@@ -40,7 +40,8 @@ Agent Conductor handles those mechanics and leaves judgment to the agents and op
                                     │  │
  Operator console ─┐                │  └─ lifecycle events + pane watchdog
  Telegram ─────────┼─ operator adapter
- Future channels ──┘
+ Slack ────────────┼─ operator adapter
+ Other channels ───┘
 ```
 
 The canonical operation registry owns behavior, validation, descriptions, and MCP schemas.
@@ -61,7 +62,7 @@ tools: message the session, ask the operator, or do nothing.
 - `curl` for runtime lifecycle hooks
 - GitHub CLI (`gh`) only when using the optional PR Shepherd
 
-Telegram is optional.
+Telegram and Slack are optional.
 
 ## Install from source
 
@@ -205,6 +206,7 @@ The same command language works in:
 - an additional console opened by `conductor console`
 - one-shot commands such as `conductor cmd /status`
 - Telegram
+- Slack (using `!` instead of `/` for commands inside the private App Home conversation)
 - injected `ChannelAdapter` implementations
 
 Common examples:
@@ -632,9 +634,23 @@ pnpm format:check
 pnpm test
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for extension boundaries, testing expectations,
-configuration and migration rules, and the pull-request workflow. The canonical architecture
-and invariants are documented in [CLAUDE.md](CLAUDE.md).
+The global `conductor` command runs compiled `dist/` code, not the TypeScript source. After
+pulling or changing code, refresh it before black-box CLI testing:
+
+```bash
+pnpm build
+pnpm link --global
+conductor --help
+```
+
+Use `pnpm cli <arguments>` when you intentionally want to execute source through `tsx`.
+Rebuilding does not replace code already loaded by a running Conductor; restart only the
+fleet you intend to test, at a safe point.
+
+Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and the canonical architecture
+guide in [CLAUDE.md](CLAUDE.md). They define the open-source/generalization contract,
+extension boundaries, applicable-surface audit, testing expectations, configuration and
+migration rules, and pull-request workflow.
 
 The test suite uses in-memory terminal, runtime, and channel adapters, plus real HTTP and
 tmux integration tests. Contract tests ensure every shared operation appears through both

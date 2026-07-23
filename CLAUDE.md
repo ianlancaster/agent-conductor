@@ -3,15 +3,53 @@
 Lightweight supervisor for terminal coding agents (Claude Code, Codex). Product principle:
 **primitive-first, adapter-driven, no gold-plating** (no dashboards or workflow systems).
 
+> **Mandatory context:** Read this file and [CONTRIBUTING.md](CONTRIBUTING.md) completely
+> before planning or changing the repository. They are the working contract for human and
+> agent contributors.
+
+## Mandatory project frame
+
+Agent Conductor is an open-source product intended for many people, runtimes, terminals,
+workflows, and fleet layouts. It is not a checked-in version of one operator's setup.
+
+- Build generally useful, plainly named behavior. Never bake in a local path, organization,
+  private workflow, preferred model, specific fleet, or personal configuration.
+- Prefer a small, composable primitive over a narrow workflow. When users legitimately need
+  different behavior, expose a coherent setting with a safe default, strict validation, a
+  generated example, and documentation. Do not add speculative or dead configuration knobs.
+- Keep one strong canonical core. Environment- and provider-specific behavior belongs behind
+  the narrowest existing adapter seam. Adapters translate; they do not fork conductor policy.
+- Treat clarity as a product feature. Avoid clever, opaque, or unnecessarily indirect
+  implementations. Public types, errors, help, configuration, and docs must make the feature
+  understandable without knowledge of the original contributor's fleet.
+- A feature is not complete when only one entry point works. Audit every applicable vector:
+  core operation, operator command and `/help`, session MCP, bundled and injected adapters,
+  configuration/schema/scaffold/examples, generated prompts, public exports, persistence,
+  tests, README, and setup or migration guides. Explicitly document intentional capability
+  differences instead of allowing accidental drift.
+- Code quality is non-negotiable: preserve invariants and compatibility, isolate side effects,
+  test failure and recovery paths, and run the full repository quality gate.
+
+Fleet-specific policy belongs in fleet YAML, environment variables, prompt files, templates,
+or an injected adapter—not in the reusable core. If a proposed feature cannot be explained
+without referring to one private deployment, generalize the underlying primitive first.
+
 ## Quick reference
 
 ```bash
 pnpm typecheck && pnpm lint && pnpm format:check && pnpm test   # the pre-commit gauntlet
-pnpm dev                  # run from source (tsx)
-pnpm cli start            # conductor CLI from source
+pnpm cli start            # conductor CLI from source (tsx)
+pnpm test:watch           # focused development test loop
+pnpm build && pnpm link --global  # refresh the compiled global CLI
 ```
 
 Husky runs all four checks on commit; `SKIP_HOOKS=1 git commit` is the escape hatch.
+
+`conductor` runs compiled `dist/` code. Source edits do not change that binary until
+`pnpm build`; use `pnpm link --global` after initial setup, pulling a new checkout, or
+changing package/bin metadata. A running Conductor process keeps its loaded code until it
+is deliberately restarted—never restart an operator's fleet merely to test a build unless
+that disruption is in scope.
 
 ## Architecture
 
@@ -21,7 +59,8 @@ tested against in-memory fakes (`test/fakes/`).
 - `src/terminals/` — **TerminalBackend**: `iterm/` (AppleScript, async), `tmux/` (headless).
 - `src/runtimes/` — **SessionRuntime**: `claude-code/` (hooks via `--settings`, MCP via
   `--mcp-config`), `codex/` (`-c` config overrides, `notify`, AGENTS.override.md injection).
-- `src/channels/` — **ChannelAdapter**: `telegram/` (dependency-free long-polling).
+- `src/channels/` — **ChannelAdapter**: `telegram/` (dependency-free long-polling),
+  `slack/` (optional Socket Mode SDK, loaded lazily).
 - `src/core/` — supervisor (wiring only), lifecycle, delivery (typing-aware queue), health
   (event-driven + pane-diff fallback), sentinel (stall routing), messaging, operations
   (canonical control plane), commands (operator adapter), scheduler, state, status, worktree.
@@ -42,7 +81,7 @@ that owns the environment-specific behavior:
   `CommandRouter` maps operator text commands to the same definitions. The local console is
   a native client of `/cmd` plus the `/feed` SSE stream, not a `ChannelAdapter`.
 - **Operator channel** (`ChannelAdapter`) — transports operator commands, free text, and
-  conductor notifications over an external service such as Telegram. It owns transport
+  conductor notifications over an external service such as Telegram or Slack. It owns transport
   parsing, authentication/allowlisting, API limits, and retries; it must not reimplement
   conductor policy or canonical operations.
 - **Session runtime** (`SessionRuntime`) — integrates an agent CLI and owns launch syntax,
@@ -74,7 +113,8 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
 
 - **New control primitive**: add one definition to `ConductorOperations` with its audiences,
   schema, and handler; map its operator syntax in `buildOperatorCommands`. MCP rendering is
-  automatic. Update README/protocol docs and the surface-contract test.
+  automatic. Update `/help`, README/protocol docs, relevant channel behavior, and the
+  surface-contract test. Verify all applicable callers expose the same semantics.
 - **New per-session setting**: `SessionState` in core/types.ts → SessionStateManager (+ persist
   fields in store session_state) → status.ts → the relevant canonical operation.
 - **New channel**: implement `ChannelAdapter`, keep protocol classification separate from
@@ -83,6 +123,23 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
   `new Supervisor(baseDir, { channels: [...] })`. Built-in environment/config discovery is
   only needed when shipping the adapter inside this package.
 - **New runtime/backend**: implement the interface in its directory and add fake-based tests.
+
+### Change-completeness checklist
+
+For every user-visible change, decide explicitly whether each row applies:
+
+- canonical core behavior and authorization;
+- operator commands, aliases, validation, and generated `/help`;
+- session MCP schemas/descriptions and `prompts/conductor-protocol.md`;
+- every built-in adapter plus the public injected-adapter contract;
+- strict configuration schema, scaffolded defaults, examples, environment template, and secrets;
+- store migrations, restart/recovery behavior, and backwards compatibility;
+- public exports and package contents;
+- focused unit tests, seam-level integration tests, failure paths, and manual shakedowns;
+- README, task-specific setup guide, troubleshooting, migration notes, and changeset.
+
+“Not applicable” is valid when a transport or audience should not have a capability, but the
+difference must be deliberate, tested where important, and documented where users will see it.
 
 ### Operator-channel checklist
 
@@ -108,8 +165,9 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
 Vitest. Fakes for the three seams make full pipelines testable: see commands.test.ts
 (mini-conductor from real modules + fakes) and health/sentinel/delivery tests (fake timers).
 The MCP server is tested over real HTTP. Worktree tests run real git, and the tmux E2E suite
-exercises real panes and a fake agent process. AppleScript and Telegram-network behavior stay
-behind pure helpers and adapter tests; real-runtime/backend shakedowns live under `test/manual/`.
+exercises real panes and a fake agent process. AppleScript and operator-channel network
+behavior stay behind pure helpers and adapter tests; real-runtime/backend/service shakedowns
+live under `test/manual/`.
 
 For an operator channel, cover four layers as applicable: pure inbound classification and
 outbound formatting; a scripted network/API double; `FakeChannel` integration through the

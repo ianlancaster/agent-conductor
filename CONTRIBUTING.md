@@ -4,15 +4,42 @@ Thanks for helping improve Agent Conductor. The project is intentionally small: 
 reliable lifecycle, messaging, observability, and stall-routing primitives for terminal agent
 fleets without becoming a workflow engine or making LLM decisions itself.
 
-Read [CLAUDE.md](CLAUDE.md) before changing code. Despite the filename, it is the canonical
-developer guide for every contributor and coding agent. It documents the architecture,
-invariants, extension seams, and testing strategy.
+Read this file and [CLAUDE.md](CLAUDE.md) completely before planning or changing code.
+Despite its filename, `CLAUDE.md` is the canonical architecture guide for every human and
+coding agent. This is mandatory context, not optional reference material.
+
+## Project contract
+
+Agent Conductor is an open-source product, not a repository for one person's fleet. A change
+should make sense to a new user with a different directory layout, organization, runtime,
+terminal, model, and operator channel.
+
+- Keep features general and understandable. Do not commit private fleet configuration,
+  organization-specific rules, local paths, credentials, or assumptions about one workflow.
+- Prefer flexible primitives and safe defaults over hard-coded narrow behavior. Configuration
+  should represent a real user choice, remain small and coherent, and be discoverable in the
+  generated scaffold and docs. Avoid knobs that no implementation genuinely consumes.
+- Keep shared policy in the core and provider-specific mechanics in adapters. Reuse the
+  canonical operation, message, state, and rendering contracts instead of creating parallel
+  implementations.
+- Optimize for legibility. Names, types, errors, configuration, and control flow should reveal
+  intent. Do not hide ordinary product behavior behind unnecessary indirection or obscure
+  abstractions.
+- Treat compatibility and recovery as product behavior. Existing fleets, persisted stores,
+  queued messages, optional integrations, and long-running processes must fail safely and
+  explain what an operator should do next.
+
+Fleet-specific behavior belongs in `.conductor/config/`, environment variables, prompts,
+templates, or an externally injected adapter. If a use case is too specific for the public
+core, expose the reusable primitive that enables it rather than checking in the private policy.
 
 ## Development setup
 
 Agent Conductor requires Node.js 22.13 or newer (23.4 or newer on the non-LTS Node 23 line) and pnpm.
 
 ```bash
+git clone https://github.com/ianlancaster/agent-conductor.git
+cd agent-conductor
 pnpm install
 pnpm typecheck
 pnpm lint
@@ -22,6 +49,28 @@ pnpm test
 
 Those four checks are the pre-commit quality gate and run in CI. The test suite includes a
 real tmux E2E suite when tmux is installed.
+
+### Source execution versus the linked CLI
+
+`pnpm cli <arguments>` executes the TypeScript source through `tsx`. The global `conductor`
+command executes compiled JavaScript from `dist/`. After pulling or changing source, rebuild
+before testing the global command:
+
+```bash
+pnpm build
+pnpm link --global
+conductor --help
+```
+
+The global link usually needs to be created only once per checkout, but running both commands
+is the reliable refresh after a pull, a new checkout, or changes to package/bin metadata.
+Rebuilding does not update a process that is already running; restart the intended fleet
+explicitly when safe. Do not restart, stop, or repoint a contributor's live fleet as an
+incidental test step.
+
+Run fleet commands from the fleet directory or pass `-C /path/to/fleet`. Otherwise Conductor
+will correctly target a different `.conductor/` directory. Keep development fixtures and test
+fleets out of the repository unless they are intentionally generic and committed test data.
 
 ## Choosing the right extension point
 
@@ -44,19 +93,51 @@ canonical operator commands. Adapters with native controls may render them as bu
 text-only adapters should use `renderChannelMessage`. Never put transport-specific callback
 payloads or core policy in the shared message contract.
 
+Before adding a new abstraction, identify the second concrete consumer and explain why an
+existing seam cannot own the behavior. Repeated code at a genuine provider boundary may be
+clearer than a generic framework; repeated conductor policy is not.
+
 ## Making a change
 
 1. Inspect the current worktree and preserve unrelated changes.
-2. Add or update focused tests with the implementation.
-3. Update user documentation and `prompts/conductor-protocol.md` when a public operation or
-   session-facing behavior changes.
-4. Run the full quality gate.
-5. Add a changeset with `pnpm changeset` for a user-facing change. Internal refactors and
-   test-only changes generally do not need one.
+2. Read the implementation, tests, configuration, help, and docs at the relevant seam before
+   proposing a new pattern.
+3. State the general user need and choose the narrowest canonical extension point.
+4. Add or update focused tests with the implementation, including failure and recovery paths.
+5. Complete the applicable-surface audit below.
+6. Run the full quality gate and review the final diff for unrelated or deployment-specific data.
+7. Add a changeset with `pnpm changeset` for a user-facing change. Internal refactors and
+   test-only or documentation-only changes generally do not need one.
 
 Public package exports live in `src/index.ts`. Treat changes to exported interfaces,
 configuration schemas, operation schemas, command syntax, persisted data, and generated
 files as public compatibility decisions even before the first stable release.
+
+## Applicable-surface audit
+
+A functional change is finished only when every applicable way to configure, invoke,
+understand, and recover it agrees. Review each of these explicitly:
+
+| Surface                       | Typical locations and questions                                                                                                               |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Canonical behavior            | Does `ConductorOperations` or the owning core module contain the shared policy and authorization?                                             |
+| Session tools                 | Do MCP schemas, descriptions, typed errors, and `prompts/conductor-protocol.md` reflect the behavior?                                         |
+| Operator controls             | Do `buildOperatorCommands`, aliases, validation, `/help`, the local console, and one-shot commands agree?                                     |
+| Adapters                      | Do all bundled channels and the injected `ChannelAdapter` contract carry the same semantics where applicable? Are provider limits kept local? |
+| Runtime and terminal adapters | Does runtime/backend-specific detection or launch behavior live behind the correct interface, with capability differences explicit?           |
+| Configuration                 | Are Zod schemas strict, defaults safe, scaffolded YAML complete, examples current, and secrets kept in environment mechanisms?                |
+| Persistence and lifecycle     | Is a migration append-only? Are restart, retry, deduplication, shutdown, and partial-failure behavior defined?                                |
+| Public package                | Are exports, optional dependency loading, packed files, and backwards compatibility correct?                                                  |
+| Documentation                 | Are README reference sections, setup/troubleshooting guides, migrations, generated prompts, and manual shakedowns updated?                    |
+| Verification                  | Do focused tests, surface-contract tests, integration tests, the full gauntlet, and any required manual checks prove the same contract?       |
+
+Not every capability belongs in every audience or transport. An intentional exception is
+acceptable; silent drift is not. Document important differences and pin them with tests.
+
+Any feature that requires external setup, credentials, operating-system permissions, a
+service manifest, migration, or non-obvious lifecycle must include a clear, copyable guide.
+Guides should cover prerequisites, least-privilege setup, verification, limitations,
+troubleshooting, and safe teardown without assuming access to the author's environment.
 
 ## Testing expectations
 
@@ -76,6 +157,11 @@ Use the narrowest test that proves the behavior, then add an integration test at
 Tests must not require real credentials, contact production services, or depend on a
 developer's global runtime configuration.
 
+Keep tests deterministic and isolated: use temporary directories, ephemeral ports, fake
+clocks where appropriate, and unique tmux resources. If a real-service behavior cannot be
+automated safely, isolate its logic behind a testable seam and add a manual shakedown under
+`test/manual/`.
+
 ## Persistence and configuration
 
 SQLite migrations in `src/store/index.ts` are append-only. Add a new `MIGRATIONS` entry;
@@ -84,6 +170,10 @@ never edit a migration that may already have run in a user's fleet.
 All configuration is validated with strict Zod schemas. Unknown keys should remain errors,
 and every optional setting needs a default or a clearly defined absence behavior. Secrets do
 not belong in YAML, fixtures, logs, examples, or committed environment files.
+
+Generated scaffold files are part of the user interface. A new fleet should receive a usable
+configuration that states its effective defaults; do not hide important behavior exclusively
+in code defaults or fully commented examples. Existing files must not be overwritten.
 
 ## Security and reliability
 
@@ -101,4 +191,5 @@ not belong in YAML, fixtures, logs, examples, or committed environment files.
 
 Keep changes focused and explain both the user-visible outcome and the architectural seam
 used. Call out migrations, public API changes, new dependencies, manual verification, and
-known limitations explicitly.
+known limitations explicitly. Confirm that no private configuration, secrets, local paths,
+or organization-specific policy entered the diff.
