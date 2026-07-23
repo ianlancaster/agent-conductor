@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { appendFile, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -26,6 +26,8 @@ export interface CodexRuntimeOptions {
   baseDir: string;
   /** Path to the conductor protocol prompt inlined into AGENTS.override.md. */
   protocolPath?: string;
+  /** Fleet data/sessions directory, used to inspect this runtime's isolated rollout. */
+  sessionDataDir?: string;
 }
 
 const PROTOCOL_PLACEHOLDER =
@@ -127,9 +129,41 @@ const BELOW_COMPOSER_CHROME: readonly RegExp[] = [
   /messages to be submitted after next tool call/iu, // steering-queue hint
 ];
 
+/**
+ * Codex's built-in empty-composer prompts. iTerm's AppleScript capture strips
+ * the dim style that normally proves these are placeholders, so the plain-text
+ * fallback has to recognize the finite built-in pool. Unknown content remains
+ * a draft; in particular, we never learn arbitrary first-seen text.
+ */
+const PLAIN_GHOST_HINTS: readonly RegExp[] = [
+  /^What['’]s on your mind\?$/u,
+  /^Explain this codebase$/u,
+  /^Summarize recent commits$/u,
+  /^Implement \{feature\}$/u,
+  /^Find and fix a bug in @filename$/u,
+  /^Write tests for @filename$/u,
+  /^Improve documentation in @filename$/u,
+  /^Run \/review on my current changes$/u,
+  /^Use \/skills to list available skills(?: or ask Codex to use one\.)?$/u,
+  /^Check recently modified functions for compatibility$/u,
+  /^How many files have been modified\?$/u,
+  /^Will this algorithm scale well\?$/u,
+];
+
 interface ParsedNotifyPayload {
   readonly type: string;
   readonly record: Record<string, unknown>;
+}
+
+interface RolloutInputEvidence {
+  idle: boolean;
+  lastUserMessage: string | null;
+}
+
+interface CachedRolloutInputEvidence extends RolloutInputEvidence {
+  path: string;
+  size: number;
+  mtimeMs: number;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -179,6 +213,66 @@ function assistantTextFromRolloutLine(line: unknown): string | null {
   return texts.length > 0 ? texts.join('\n') : null;
 }
 
+/** Extract submitted user text from one rollout JSONL line, or null. */
+function userTextFromRolloutLine(line: unknown): string | null {
+  const record = asRecord(line);
+  if (record === null) return null;
+  const payload = asRecord(record.payload) ?? record;
+  if (payload.type !== 'message' || payload.role !== 'user') return null;
+  const content = payload.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return null;
+  const texts: string[] = [];
+  for (const item of content) {
+    const itemRecord = asRecord(item);
+    if (itemRecord === null || (itemRecord.type !== 'input_text' && itemRecord.type !== 'text')) continue;
+    if (typeof itemRecord.text === 'string') texts.push(itemRecord.text);
+  }
+  return texts.length > 0 ? texts.join('\n') : null;
+}
+
+function normalizeWrappedText(text: string): string {
+  return text.replace(/\s+/gu, ' ').replace(/-\s+/gu, '-').trim();
+}
+
+function wrappedComparisonKey(text: string): string {
+  // iTerm inserts capture-only whitespace when a long unbroken token (notably
+  // a filesystem path) wraps at the terminal edge. Whitespace-free comparison
+  // is safe here because both sides must still match at least 16 visible chars.
+  return text.replace(/\s+/gu, '');
+}
+
+/**
+ * Extract the bottom-most visible Codex input/transcript block without footer
+ * chrome. iTerm inserts line breaks at terminal wrapping boundaries.
+ */
+function visibleInputBlock(capture: string): string | null {
+  const lines = capture.split('\n');
+  let end = lines.length;
+  while (end > 0) {
+    const line = lines[end - 1]?.trim() ?? '';
+    if (line.length === 0 || BELOW_COMPOSER_CHROME.some((pattern) => pattern.test(line))) end -= 1;
+    else break;
+  }
+  if (end === 0) return null;
+  let start = end - 1;
+  while (start >= 0 && !(lines[start]?.trimStart().startsWith('›') ?? false)) start -= 1;
+  const promptVisible = start >= 0;
+  // Delivery captures only the trailing pane rows. A long submitted message can
+  // push its leading › outside that window, leaving only wrapped continuation
+  // rows above the footer. Keep that suffix for rollout comparison; without an
+  // exact submitted-message match the resolver still returns the blocked state.
+  if (!promptVisible) start = 0;
+  while (start < end && (lines[start]?.trim().length ?? 0) === 0) start += 1;
+  if (start >= end) return null;
+  const block = lines.slice(start, end);
+  const first = block[0];
+  if (first === undefined) return null;
+  if (promptVisible) block[0] = first.trimStart().slice('›'.length);
+  const normalized = normalizeWrappedText(block.join('\n'));
+  return normalized.length > 0 ? normalized : null;
+}
+
 /**
  * OpenAI Codex CLI runtime.
  *
@@ -197,11 +291,14 @@ export class CodexRuntime implements SessionRuntime {
   private readonly settings: CodexRuntimeSettings;
   private readonly baseDir: string;
   private readonly protocolPath: string | undefined;
+  private readonly sessionDataDir: string | undefined;
+  private readonly rolloutInputCache = new Map<string, CachedRolloutInputEvidence>();
 
   constructor(opts: CodexRuntimeOptions) {
     this.settings = opts.config;
     this.baseDir = opts.baseDir;
     this.protocolPath = opts.protocolPath;
+    this.sessionDataDir = opts.sessionDataDir;
   }
 
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
@@ -273,11 +370,14 @@ export class CodexRuntime implements SessionRuntime {
    *   operator text    unstyled content                    — a human composing
    *
    * Plain captures (iTerm) cannot distinguish dim placeholder text from typed
-   * input, so every non-empty composer is conservatively blocked. Envelope
-   * signatures have no special status.
+   * input, so they recognize only Codex's exact built-in placeholder strings.
+   * All other non-empty content is conservatively blocked. Envelope signatures
+   * have no special status.
    */
-  parseInputState(capture: string, _session?: string): InputState {
-    return capture.includes('\u001b[') ? this.parseStyledInputState(capture) : this.parsePlainInputState(capture);
+  parseInputState(capture: string, session?: string): InputState {
+    return capture.includes('\u001b[')
+      ? this.parseStyledInputState(capture)
+      : this.parsePlainInputState(capture, session);
   }
 
   private parseStyledInputState(capture: string): InputState {
@@ -301,7 +401,7 @@ export class CodexRuntime implements SessionRuntime {
     return null;
   }
 
-  private parsePlainInputState(capture: string): InputState {
+  private parsePlainInputState(capture: string, session?: string): InputState {
     for (const line of capture.split('\n').reverse()) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
@@ -311,9 +411,30 @@ export class CodexRuntime implements SessionRuntime {
       }
       const content = trimmed.slice('›'.length).trim();
       if (content.length === 0) return 'clear';
+      if (session !== undefined && PLAIN_GHOST_HINTS.some((pattern) => pattern.test(content))) return 'clear';
       return 'draft';
     }
     return null;
+  }
+
+  async resolveInputState(capture: string, session: string, parsed: InputState): Promise<InputState> {
+    if (parsed === 'clear' || capture.includes('\u001b[') || this.sessionDataDir === undefined) return parsed;
+    // A visible spinner is authoritative: submitted text may match the rollout,
+    // but Codex is still processing it and the composer is not available.
+    if (/\bWorking\b|esc to interrupt/iu.test(capture)) return parsed;
+
+    const visible = visibleInputBlock(capture);
+    if (visible === null || visible.length < 16) return parsed;
+    const evidence = await this.readRolloutInputEvidence(session);
+    if (!evidence.idle || evidence.lastUserMessage === null) return parsed;
+    const submitted = wrappedComparisonKey(evidence.lastUserMessage);
+    const visibleKey = wrappedComparisonKey(visible);
+    // Captures are tail-limited, so a very long submitted row may show only a
+    // prefix or suffix. Requiring 16 visible characters avoids treating short,
+    // coincidental operator drafts as transcript proof.
+    return submitted === visibleKey || submitted.startsWith(visibleKey) || submitted.endsWith(visibleKey)
+      ? 'clear'
+      : parsed;
   }
 
   stripChrome(capture: string): string {
@@ -379,6 +500,61 @@ export class CodexRuntime implements SessionRuntime {
 
   private codexHomePath(identity: IdentityEndpoints): string {
     return path.join(identity.configDir, CODEX_HOME_DIR);
+  }
+
+  private async readRolloutInputEvidence(session: string): Promise<RolloutInputEvidence> {
+    if (this.sessionDataDir === undefined) return { idle: false, lastUserMessage: null };
+    const root = path.join(this.sessionDataDir, session, CODEX_HOME_DIR, 'sessions');
+    let entries: string[];
+    try {
+      entries = await readdir(root, { recursive: true });
+    } catch {
+      return { idle: false, lastUserMessage: null };
+    }
+    const relative = entries.filter((entry) => path.basename(entry).startsWith('rollout-') && entry.endsWith('.jsonl'));
+    relative.sort();
+    const newest = relative[relative.length - 1];
+    if (newest === undefined) return { idle: false, lastUserMessage: null };
+    const rolloutPath = path.join(root, newest);
+
+    let metadata: { size: number; mtimeMs: number };
+    try {
+      const result = await stat(rolloutPath);
+      metadata = { size: result.size, mtimeMs: result.mtimeMs };
+    } catch {
+      return { idle: false, lastUserMessage: null };
+    }
+    const cached = this.rolloutInputCache.get(session);
+    if (cached?.path === rolloutPath && cached.size === metadata.size && cached.mtimeMs === metadata.mtimeMs) {
+      return cached;
+    }
+
+    let raw: string;
+    try {
+      raw = await readFile(rolloutPath, 'utf8');
+    } catch {
+      return { idle: false, lastUserMessage: null };
+    }
+    let idle = false;
+    let lastUserMessage: string | null = null;
+    for (const line of raw.split('\n')) {
+      if (line.trim().length === 0) continue;
+      let parsedLine: unknown;
+      try {
+        parsedLine = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const userMessage = userTextFromRolloutLine(parsedLine);
+      if (userMessage !== null) lastUserMessage = userMessage;
+      const record = asRecord(parsedLine);
+      const payload = record === null ? null : (asRecord(record.payload) ?? record);
+      if (payload?.type === 'task_started') idle = false;
+      else if (payload?.type === 'task_complete' || payload?.type === 'turn_aborted') idle = true;
+    }
+    const evidence: CachedRolloutInputEvidence = { path: rolloutPath, ...metadata, idle, lastUserMessage };
+    this.rolloutInputCache.set(session, evidence);
+    return evidence;
   }
 
   /**

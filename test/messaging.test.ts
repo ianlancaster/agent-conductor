@@ -79,6 +79,51 @@ describe('Messaging durable delivery recovery', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] once']);
   });
 
+  it('exposes flush diagnostics and cancels a pending receipt without later delivery', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const runtime = new FakeRuntime();
+    runtime.inputState = 'draft';
+    const queue = makeQueue(runtime, pane.id);
+    const messaging = makeMessaging(queue);
+
+    expect(await messaging.sendToSession('alpha', 'beta', 'fallback candidate')).toMatchObject({
+      messageId: 1,
+      status: 'queued',
+    });
+    expect(JSON.parse(messaging.messageStatus(1, 'alpha'))).toMatchObject({
+      status: 'pending',
+      deliveredAt: null,
+      flushSkipReason: 'input-occupied',
+    });
+    expect(messaging.cancelMessage(1, 'alpha')).toBe('Message #1 cancelled.');
+    const cancelledStatus = JSON.parse(messaging.messageStatus(1, 'alpha')) as { cancelledAt: unknown };
+    expect(cancelledStatus).toMatchObject({
+      status: 'cancelled',
+      inMemoryPendingForRecipient: 0,
+    });
+    expect(cancelledStatus.cancelledAt).toBeTypeOf('string');
+
+    runtime.inputState = 'clear';
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+  });
+
+  it("does not let a recipient cancel another sender's receipt", async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const runtime = new FakeRuntime();
+    runtime.inputState = 'draft';
+    const queue = makeQueue(runtime, pane.id);
+    const messaging = makeMessaging(queue);
+
+    await messaging.sendToSession('alpha', 'beta', 'sender owns cancellation');
+    expect(messaging.cancelMessage(1, 'beta')).toBe('Message #1 was not found.');
+    expect(store.getMessage(1)?.status).toBe('pending');
+  });
+
   it('returns the original receipt on retry even when the recipient left the roster', async () => {
     const pane = await backend.createPane('beta', 'pane');
     states.setSession('beta', pane.id);

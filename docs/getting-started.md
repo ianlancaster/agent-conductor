@@ -252,9 +252,17 @@ primitive, not an approval or execution queue.
 - **Spawn a throwaway session**: `/spawn scratch` makes a directory, registers a config,
   and starts it; then `/tell scratch investigate X` gives it work. `/teardown scratch
 --delete` reverses it. Every flag has a short alias (`-r` runtime, `-m` model, `-e` effort, `-d` path,
-  `-w` worktree, `-b` branch, `-D` delete; placement `-P`/`-T`/`-W`) — `/help` lists them.
+  `-t` template, `-w` worktree, `-b` branch, `-D` delete; placement `-P`/`-T`/`-W`) — `/help` lists them.
   `--runtime codex` spawns a Codex session instead of Claude Code; `--runtime cc` is shorthand
   for `--runtime claude-code` on spawn, start, and continue commands.
+- **Template sessions**: `/spawn researcher --template agent` clones a registered Git source,
+  registers the normal session config, and starts it. The `agent` template is configured by
+  default; add, replace, or disable entries under `spawn.templates` in
+  `.conductor/config/supervisor.yaml`. HTTPS/SSH sources and local paths are supported; an optional
+  `ref` selects a branch, tag, or commit. The source remote is named `template`, repository scripts
+  are not run, and `--template` cannot be combined with `--worktree`. Template registry changes
+  take effect after restarting the conductor. Guarded `/teardown --delete` leaves a template clone
+  intact because it is a Git repository.
 - **Switch runtime for one run**: the session file remains the default, but `/start alpha
 --runtime codex` or `/continue alpha --runtime claude-code` launches that run with the
   other agent. A model configured for the default runtime is ignored during an override so

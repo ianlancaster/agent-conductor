@@ -3,7 +3,18 @@ import type { SessionRuntime } from '../runtimes/types.js';
 import type { TerminalBackend } from '../terminals/types.js';
 import type { PaneRef } from './types.js';
 
-export type DeliveryResult = 'delivered' | 'queued' | 'no-pane';
+export type DeliveryResult = 'delivered' | 'queued' | 'cancelled' | 'no-pane';
+
+export type DeliverySkipReason =
+  | 'no-pane'
+  | 'pane-not-alive'
+  | 'runtime-unavailable'
+  | 'capture-failed'
+  | 'composer-not-visible'
+  | 'input-occupied'
+  | 'write-failed';
+
+export type CancellationResult = 'cancelled' | 'in-flight' | 'not-found';
 
 /**
  * What the pane tells us about typing into it right now.
@@ -15,10 +26,16 @@ type TypingState = 'clear' | 'blocked';
 
 interface QueuedMessage {
   text: string;
+  deliveryId?: number;
+  onAttempt?: (skipReason: DeliverySkipReason | null) => void;
   onDelivered?: () => void;
 }
 
 export interface DeliveryOptions {
+  /** Durable receipt id, used to cancel a queued delivery without matching text. */
+  deliveryId?: number;
+  /** Receipt callback invoked for every classification/write attempt. */
+  onAttempt?: (skipReason: DeliverySkipReason | null) => void;
   /** Receipt callback invoked exactly once, after the pane write succeeds. */
   onDelivered?: () => void;
 }
@@ -54,15 +71,38 @@ export class DeliveryQueue {
   private readonly queues = new Map<string, QueuedMessage[]>();
   private timer: NodeJS.Timeout | undefined;
   private inFlight: Promise<void> | undefined;
+  private readonly assessing = new Set<number>();
+  private readonly cancellationRequested = new Set<number>();
+  private readonly delivering = new Set<number>();
 
   constructor(private readonly deps: DeliveryDeps) {}
 
   async deliverOrQueue(session: string, text: string, options: DeliveryOptions = {}): Promise<DeliveryResult> {
+    if (options.deliveryId !== undefined) this.assessing.add(options.deliveryId);
     const pane = this.deps.getPane(session);
-    if (pane === undefined) return 'no-pane';
+    if (pane === undefined) {
+      this.assessing.delete(options.deliveryId ?? -1);
+      this.recordAttempt(session, options.onAttempt, 'no-pane');
+      // Durable deliveries stay in the periodic sweep while a restart swaps
+      // panes. Ephemeral callers (broadcasts/schedules) keep the historical
+      // no-pane result rather than accumulating an unreceipted queue.
+      if (options.deliveryId !== undefined) return this.enqueue(session, text, options);
+      return 'no-pane';
+    }
 
     const existing = this.queues.get(session);
-    if ((existing === undefined || existing.length === 0) && (await this.typingState(session, pane)) === 'clear') {
+    const classification =
+      existing === undefined || existing.length === 0 ? await this.typingState(session, pane) : undefined;
+    if (options.deliveryId !== undefined && this.cancellationRequested.delete(options.deliveryId)) {
+      this.assessing.delete(options.deliveryId);
+      return 'cancelled';
+    }
+    if ((existing === undefined || existing.length === 0) && classification?.state === 'clear') {
+      this.recordAttempt(session, options.onAttempt, null);
+      if (options.deliveryId !== undefined) {
+        this.assessing.delete(options.deliveryId);
+        this.delivering.add(options.deliveryId);
+      }
       try {
         await this.deps.backend.run(pane, text);
         this.recordDelivered(session, options.onDelivered);
@@ -74,19 +114,35 @@ export class DeliveryQueue {
           'delivery',
           `${session}: direct delivery failed, queueing: ${err instanceof Error ? err.message : String(err)}`,
         );
+        this.recordAttempt(session, options.onAttempt, 'write-failed');
+      } finally {
+        if (options.deliveryId !== undefined) this.delivering.delete(options.deliveryId);
       }
+    } else if (classification !== undefined) {
+      this.recordAttempt(session, options.onAttempt, classification.skipReason);
     }
 
-    const queue = existing ?? [];
-    queue.push({ text, onDelivered: options.onDelivered });
-    this.queues.set(session, queue);
-    this.ensureTimer();
-    log().debug('delivery', `${session}: input busy — queued message (${queue.length} pending)`);
-    return 'queued';
+    return this.enqueue(session, text, options, existing);
   }
 
   pendingCount(session: string): number {
     return this.queues.get(session)?.length ?? 0;
+  }
+
+  /** Cancel a durable message while it is assessing or waiting in memory. */
+  cancel(session: string, deliveryId: number): CancellationResult {
+    if (this.delivering.has(deliveryId)) return 'in-flight';
+    if (this.assessing.has(deliveryId)) {
+      this.cancellationRequested.add(deliveryId);
+      return 'cancelled';
+    }
+    const queue = this.queues.get(session);
+    const index = queue?.findIndex((message) => message.deliveryId === deliveryId) ?? -1;
+    if (queue === undefined || index < 0) return 'not-found';
+    queue.splice(index, 1);
+    if (queue.length === 0) this.queues.delete(session);
+    if (this.queues.size === 0) this.stop();
+    return 'cancelled';
   }
 
   stop(): void {
@@ -118,6 +174,7 @@ export class DeliveryQueue {
         // Durable direct messages are also recovered from SQLite after a
         // conductor restart, so neither lifecycle boundary loses them.
         log().debug('delivery', `${session}: no live pane — holding ${queue.length} queued message(s)`);
+        this.recordAttempt(session, queue[0]?.onAttempt, pane === undefined ? 'no-pane' : 'pane-not-alive');
         continue;
       }
       const oldest = queue[0];
@@ -125,21 +182,28 @@ export class DeliveryQueue {
         this.queues.delete(session);
         continue;
       }
-      const state = await this.typingState(session, pane);
-      if (state === 'clear') {
+      const classification = await this.typingState(session, pane);
+      // Cancellation can remove the item while capture is in flight.
+      if (queue[0] !== oldest) continue;
+      this.recordAttempt(session, oldest.onAttempt, classification.skipReason);
+      if (classification.state === 'clear') {
         // One message per pass: each submit gets a full drain interval to be
         // processed before the next one is typed.
         try {
+          if (oldest.deliveryId !== undefined) this.delivering.add(oldest.deliveryId);
           await this.deps.backend.run(pane, oldest.text);
           // Remove only AFTER a successful write. Shifting first silently lost
           // the message whenever iTerm/osascript failed during a drain.
           queue.shift();
           this.recordDelivered(session, oldest.onDelivered);
         } catch (err) {
+          this.recordAttempt(session, oldest.onAttempt, 'write-failed');
           log().warn(
             'delivery',
             `${session}: delivery failed; retaining for retry: ${err instanceof Error ? err.message : String(err)}`,
           );
+        } finally {
+          if (oldest.deliveryId !== undefined) this.delivering.delete(oldest.deliveryId);
         }
         if (queue.length === 0) this.queues.delete(session);
         else this.ensureTimer();
@@ -158,25 +222,51 @@ export class DeliveryQueue {
     this.timer.unref();
   }
 
+  private enqueue(
+    session: string,
+    text: string,
+    options: DeliveryOptions,
+    existing = this.queues.get(session),
+  ): 'queued' {
+    const queue = existing ?? [];
+    queue.push({
+      text,
+      ...(options.deliveryId !== undefined ? { deliveryId: options.deliveryId } : {}),
+      ...(options.onAttempt !== undefined ? { onAttempt: options.onAttempt } : {}),
+      ...(options.onDelivered !== undefined ? { onDelivered: options.onDelivered } : {}),
+    });
+    this.queues.set(session, queue);
+    if (options.deliveryId !== undefined) this.assessing.delete(options.deliveryId);
+    this.ensureTimer();
+    log().debug('delivery', `${session}: input busy or unavailable — queued message (${queue.length} pending)`);
+    return 'queued';
+  }
+
   /**
    * Classify the pane for typing. The only safe state is an explicitly empty
    * runtime composer. Any text, missing chrome, or capture failure blocks.
    */
-  private async typingState(session: string, pane: PaneRef): Promise<TypingState> {
+  private async typingState(
+    session: string,
+    pane: PaneRef,
+  ): Promise<{ state: TypingState; skipReason: DeliverySkipReason | null }> {
     const runtime = this.deps.runtimeFor(session);
-    if (runtime === undefined) return 'blocked';
+    if (runtime === undefined) return { state: 'blocked', skipReason: 'runtime-unavailable' };
     try {
       const capture =
         runtime.capabilities.styledCapture && this.deps.backend.captureStyled !== undefined
           ? await this.deps.backend.captureStyled(pane, 10)
           : await this.deps.backend.capture(pane, 10);
-      const state = runtime.parseInputState(capture, session);
-      if (state === null) return 'blocked';
+      let state = runtime.parseInputState(capture, session);
+      if (state !== 'clear' && runtime.resolveInputState !== undefined) {
+        state = await runtime.resolveInputState(capture, session, state);
+      }
+      if (state === null) return { state: 'blocked', skipReason: 'composer-not-visible' };
       this.deps.onRuntimeObserved?.(session);
-      if (state === 'clear') return 'clear';
-      return 'blocked';
+      if (state === 'clear') return { state: 'clear', skipReason: null };
+      return { state: 'blocked', skipReason: 'input-occupied' };
     } catch {
-      return 'blocked';
+      return { state: 'blocked', skipReason: 'capture-failed' };
     }
   }
 
@@ -200,6 +290,22 @@ export class DeliveryQueue {
       log().error(
         'delivery',
         `${session}: delivered but receipt update failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private recordAttempt(
+    session: string,
+    receipt: ((skipReason: DeliverySkipReason | null) => void) | undefined,
+    skipReason: DeliverySkipReason | null,
+  ): void {
+    if (receipt === undefined) return;
+    try {
+      receipt(skipReason);
+    } catch (err) {
+      log().error(
+        'delivery',
+        `${session}: flush-attempt receipt update failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

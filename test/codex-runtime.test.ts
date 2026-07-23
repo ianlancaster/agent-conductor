@@ -410,12 +410,13 @@ describe('parseInputState', () => {
     expect(runtime.parseInputState('some output\n\n› \n  ⏎ send   Ctrl+J newline')).toBe('clear');
   });
 
-  it('blocks on all non-empty plain-text composer content', () => {
+  it('recognizes exact built-in plain-text ghost hints without learning arbitrary content', () => {
     const fresh = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
     // iTerm strips the dim styling that identifies placeholders, so safety
-    // requires treating even suggestion-shaped plain text as occupied input.
-    expect(fresh.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('draft');
-    expect(fresh.parseInputState('› Explain this codebase', 'alpha')).toBe('draft');
+    // requires an explicit finite pool rather than learning first-seen text.
+    expect(fresh.parseInputState("› What's on your mind?", 'alpha')).toBe('clear');
+    expect(fresh.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
+    expect(fresh.parseInputState('› Explain this codebase', 'alpha')).toBe('clear');
     expect(fresh.parseInputState('› refactor the parser', 'alpha')).toBe('draft');
     expect(fresh.parseInputState('› my half-typed operator draft', 'beta')).toBe('draft');
     expect(fresh.parseInputState('› ', 'alpha')).toBe('clear');
@@ -498,6 +499,103 @@ describe('parseInputState — styled captures (tmux -e)', () => {
     const capture = `${BOLD_GLYPH} \u001b[38;5;2mgreen typed text\u001b[0m`;
     expect(runtime.parseInputState(capture, 'alpha')).toBe('draft');
   });
+});
+
+describe('resolveInputState — plain iTerm transcript evidence', () => {
+  let workDir: string;
+  let rolloutDir: string;
+
+  beforeEach(async () => {
+    workDir = await mkdtemp(path.join(tmpdir(), 'codex-input-evidence-'));
+    rolloutDir = path.join(workDir, 'alpha', 'codex-home', 'sessions', '2026', '07', '23');
+    await mkdir(rolloutDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  it('releases an aborted submitted row that remains at the bottom of an idle Codex pane', async () => {
+    const submitted =
+      '[Message from beta] Ack: inbound works. My outbound direct-message path is still broken; inspect /workspace/projects/alpha.';
+    await writeInputRollout(submitted, 'turn_aborted');
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base', sessionDataDir: workDir });
+    const capture = [
+      '› [Message from beta] Ack: inbound works. My outbound direct-',
+      '  message path is still broken; inspect /workspace/',
+      '  projects/alpha.',
+      '',
+      '  codex-test high · Context 42% used · alpha',
+    ].join('\n');
+    const parsed = runtime.parseInputState(capture, 'alpha');
+
+    expect(parsed).toBeNull();
+    await expect(runtime.resolveInputState(capture, 'alpha', parsed)).resolves.toBe('clear');
+  });
+
+  it('releases the submitted suffix when terminal wrapping pushes the prompt glyph outside the capture', async () => {
+    const submitted =
+      '[Message from beta] This deliberately long submitted message has a unique ending that remains visible after the leading prompt and earlier wrapped rows scroll outside the ten-line delivery capture.';
+    await writeInputRollout(submitted, 'turn_aborted');
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base', sessionDataDir: workDir });
+    const capture = [
+      '  unique ending that remains visible after the leading prompt and earlier wrapped rows',
+      '  scroll outside the ten-line delivery capture.',
+      '',
+      '  codex-test high · Context 42% used · alpha',
+    ].join('\n');
+    const parsed = runtime.parseInputState(capture, 'alpha');
+
+    expect(parsed).toBeNull();
+    await expect(runtime.resolveInputState(capture, 'alpha', parsed)).resolves.toBe('clear');
+  });
+
+  it('does not release matching submitted text while its turn is still active', async () => {
+    const submitted = '[Message from operator] investigate the delivery queue';
+    await writeInputRollout(submitted, 'task_started');
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base', sessionDataDir: workDir });
+    const capture = `› ${submitted}\n  codex-test high · alpha`;
+    const parsed = runtime.parseInputState(capture, 'alpha');
+
+    expect(parsed).toBe('draft');
+    await expect(runtime.resolveInputState(capture, 'alpha', parsed)).resolves.toBe('draft');
+  });
+
+  it('keeps an unrelated operator draft blocked after the previous turn ended', async () => {
+    await writeInputRollout('[Message from operator] previous submitted text', 'task_complete');
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base', sessionDataDir: workDir });
+    const capture = '› my precious unsent operator draft\n  codex-test high · alpha';
+    const parsed = runtime.parseInputState(capture, 'alpha');
+
+    expect(parsed).toBe('draft');
+    await expect(runtime.resolveInputState(capture, 'alpha', parsed)).resolves.toBe('draft');
+  });
+
+  it('keeps a glyph-less multiline operator draft blocked after the previous turn ended', async () => {
+    await writeInputRollout('[Message from operator] previous submitted text', 'task_complete');
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base', sessionDataDir: workDir });
+    const capture = [
+      '  continuation of my precious unsent operator draft',
+      '  with enough text to push its prompt glyph outside capture',
+      '  codex-test high · alpha',
+    ].join('\n');
+    const parsed = runtime.parseInputState(capture, 'alpha');
+
+    expect(parsed).toBeNull();
+    await expect(runtime.resolveInputState(capture, 'alpha', parsed)).resolves.toBeNull();
+  });
+
+  async function writeInputRollout(message: string, finalEvent: 'task_started' | 'task_complete' | 'turn_aborted') {
+    const lines = [
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: message }] },
+      }),
+      ...(finalEvent === 'task_started' ? [] : [JSON.stringify({ type: 'event_msg', payload: { type: finalEvent } })]),
+    ];
+    await writeFile(path.join(rolloutDir, 'rollout-2026-07-23T03-27-52-test.jsonl'), `${lines.join('\n')}\n`);
+  }
 });
 
 describe('stripChrome', () => {

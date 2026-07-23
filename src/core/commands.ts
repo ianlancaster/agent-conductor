@@ -254,6 +254,20 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       },
     },
     {
+      command: 'cancel-message',
+      operations: ['cancel_message'],
+      group: 'Conversation',
+      usage: '/cancel-message <message-id>',
+      description: operationDescription(operations, 'cancel_message'),
+      invoke: (args, actor) => {
+        const messageId = Number(args[0]);
+        if (args.length !== 1 || !Number.isInteger(messageId) || messageId < 1) {
+          usage('/cancel-message <message-id>');
+        }
+        return invoke('cancel_message', { messageId }, actor);
+      },
+    },
+    {
       command: 'auto',
       operations: ['toggle_auto'],
       group: 'Modes',
@@ -330,7 +344,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       description: operationDescription(operations, 'spawn_session'),
       details: [
         '    -r/--runtime cc|claude-code|codex · -m/--model <model> · -e/--effort <level>',
-        '    -d/--path <dir> · -w/--worktree <repo> · -b/--branch <name>',
+        '    -d/--path <dir> · -t/--template <name> · -w/--worktree <repo> · -b/--branch <name>',
         '    --bypass-permissions · --require-permissions',
       ],
       invoke: (args, actor) => invoke('spawn_session', parseSpawn(args), actor),
@@ -372,6 +386,8 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     '-e': 'effort',
     '--worktree': 'worktreeRepo',
     '-w': 'worktreeRepo',
+    '--template': 'template',
+    '-t': 'template',
     '--branch': 'branch',
     '-b': 'branch',
   };
@@ -387,7 +403,9 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     }
     const value = parsed.rest[index + 1];
     if (flag === undefined || value === undefined || flags[flag] === undefined) {
-      usage('/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-w repo] [-b branch] [placement]');
+      usage(
+        '/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-t template] [-w repo] [-b branch] [placement]',
+      );
     }
     output[flags[flag]] = value;
     index += 2;

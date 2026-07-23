@@ -62,6 +62,8 @@ beforeEach(() => {
       },
       markerFile: '.agent-marker',
       spawnDirPattern: './spawned/{codename}',
+      spawnTemplates: {},
+      templateCloneTimeoutMs: 5_000,
     },
     baseDir,
     sessionConfigDir: join(baseDir, 'config', 'sessions'),

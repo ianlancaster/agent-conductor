@@ -64,8 +64,9 @@ conversation.
   out of the operator's view — tmux backend only.
 - `spawn_session` — create + start a brand-new session. Args: `codename` (required),
   `runtime` (cc | claude-code | codex, default from supervisor config), `model`, `effort`, `path`,
-  `placement`, `headless`, and optional `bypassPermissions`. Set `worktreeRepo` to create its
-  directory as a git worktree (`branch` defaults to the codename). The destination is `path` or
+  `placement`, `headless`, and optional `bypassPermissions`. Set `template` to clone a registered
+  Git template, or `worktreeRepo` to create a linked worktree (`branch` defaults to the codename);
+  template and worktree sources are mutually exclusive. The destination is `path` or
   the fleet's `spawn.dirPattern`; a new branch starts at the source repository's current HEAD,
   while an existing branch is checked out as-is. `teardown_session` reverses it; `deleteDir`
   removes safe directories. Dirty worktrees are left registered and untouched, but Git-ignored
@@ -79,7 +80,10 @@ conversation.
   group of sessions and escalate when every member remains stalled together. With no sentinel,
   the alert goes directly to the operator.
 - `set_tag` — set or clear a status label; status results include the current label.
-- `get_message_status` — inspect whether a durable direct-message receipt is pending or delivered.
+- `get_message_status` — inspect whether a durable direct-message receipt is pending, delivered,
+  or cancelled, including its last flush attempt and skip reason.
+- `cancel_message` — cancel your own pending direct message by receipt id. Use this before a
+  raw `type_in_pane` fallback so the queued envelope cannot arrive later as a duplicate.
 - `type_in_pane` — raw immediate text into a peer's terminal (answering prompts, slash commands).
   It deliberately bypasses the protected delivery queue and can overwrite an operator draft.
 

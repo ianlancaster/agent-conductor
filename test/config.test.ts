@@ -18,6 +18,7 @@ import {
   DEFAULT_CLAUDE_CODE_MODELS,
   DEFAULT_CODEX_EFFORTS,
   DEFAULT_CODEX_MODELS,
+  DEFAULT_SPAWN_TEMPLATES,
 } from '../src/config/schema.js';
 
 let baseDir: string;
@@ -57,9 +58,43 @@ describe('loadSupervisorConfig', () => {
     expect(config.runtimes.codex.availableEfforts).toEqual(DEFAULT_CODEX_EFFORTS);
     expect(config.runtimes.codex.defaultEffort).toBeUndefined();
     expect(config.spawn.markerFile).toBe('.agent-marker');
+    expect(config.spawn.templates).toEqual(DEFAULT_SPAWN_TEMPLATES);
+    expect(config.spawn.templateCloneTimeoutSeconds).toBe(120);
     expect(config.channels.telegram.enabled).toBe(false);
     expect(config.channels.slack.enabled).toBe(false);
     expect(config.paths.dataDir).toBe('./data');
+  });
+
+  it('accepts a configurable template registry and permits explicitly disabling all templates', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'spawn:\n  templates:\n    review:\n      source: ../review-template\n      ref: stable\n  templateCloneTimeoutSeconds: 45\n',
+    );
+    const configured = loadSupervisorConfig(baseDir);
+    expect(configured.spawn.templates).toEqual({
+      review: { source: '../review-template', ref: 'stable' },
+    });
+    expect(configured.spawn.templateCloneTimeoutSeconds).toBe(45);
+
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'spawn:\n  templates: {}\n');
+    expect(loadSupervisorConfig(baseDir).spawn.templates).toEqual({});
+  });
+
+  it('rejects malformed template registry entries', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'spawn:\n  templates:\n    "../unsafe":\n      source: https://example.invalid/template.git\n',
+    );
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/template name/);
+
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'spawn:\n  templates:\n    empty:\n      source: ""\n');
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/source/);
+
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'spawn:\n  templates:\n    unsafe-ref:\n      source: ./template\n      ref: --orphan\n',
+    );
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/template ref/);
   });
 
   it('uses the hidden data directory for the preferred .conductor layout', () => {

@@ -43,8 +43,26 @@ describe('messages', () => {
     const id = store.insertMessage('alpha', 'beta', 'message', 'heads up');
     expect(store.getPendingMessages('beta').map((row) => row.id)).toEqual([id]);
     expect(store.getMessage(id)?.status).toBe('pending');
+    store.recordMessageFlushAttempt(id, 'input-occupied');
+    expect(store.getMessage(id)).toMatchObject({ flush_skip_reason: 'input-occupied' });
     store.markMessageDelivered(id);
-    expect(store.getMessage(id)?.status).toBe('delivered');
+    const delivered = store.getMessage(id);
+    expect(delivered).toMatchObject({
+      status: 'delivered',
+      flush_skip_reason: null,
+    });
+    expect(delivered?.delivered_at).toBeTypeOf('string');
+    expect(delivered?.last_flush_attempt_at).toBeTypeOf('string');
+    expect(store.getPendingMessages('beta')).toEqual([]);
+  });
+
+  it('cancels only pending messages', () => {
+    const id = store.insertMessage('alpha', 'beta', 'message', 'fallback race');
+    expect(store.markMessageCancelled(id)).toBe(true);
+    expect(store.markMessageCancelled(id)).toBe(false);
+    const cancelled = store.getMessage(id);
+    expect(cancelled).toMatchObject({ status: 'cancelled' });
+    expect(cancelled?.cancelled_at).toBeTypeOf('string');
     expect(store.getPendingMessages('beta')).toEqual([]);
   });
 
