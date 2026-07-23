@@ -1,7 +1,12 @@
 import { PassThrough } from 'node:stream';
 import type { ReadStream, WriteStream } from 'node:tty';
 import { describe, expect, it } from 'vitest';
-import { parseStatusInterval, renderStatusDashboard, runStatusDashboard } from '../src/cli/live-status.js';
+import {
+  DEFAULT_STATUS_INTERVAL,
+  parseStatusInterval,
+  renderStatusDashboard,
+  runStatusDashboard,
+} from '../src/cli/live-status.js';
 
 const options = {
   command: '/status',
@@ -10,6 +15,10 @@ const options = {
 };
 
 describe('parseStatusInterval', () => {
+  it('defaults the live view to a fifteen-second cadence', () => {
+    expect(parseStatusInterval(DEFAULT_STATUS_INTERVAL)).toBe(15_000);
+  });
+
   it('accepts seconds and milliseconds with safe bounds', () => {
     expect(parseStatusInterval('2')).toBe(2000);
     expect(parseStatusInterval('1.5s')).toBe(1500);

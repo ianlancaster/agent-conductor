@@ -212,7 +212,7 @@ The same command language works in:
 For a read-only live view in its own terminal panel, run `conductor status`. It shows the
 canonical `/status` output, marks the conductor online or offline, and reconnects after a
 restart. Press `q` to leave the view. Redirected output remains one-shot; use `--once` to
-request the same behavior interactively or `--interval <duration>` to change the two-second
+request the same behavior interactively or `--interval <duration>` to change the fifteen-second
 refresh cadence.
 
 Common examples:
