@@ -33,6 +33,30 @@ Fleet-specific behavior belongs in `.conductor/config/`, environment variables, 
 templates, or an externally injected adapter. If a use case is too specific for the public
 core, expose the reusable primitive that enables it rather than checking in the private policy.
 
+### Feature bar: primitive-first, composable, and minimal
+
+The maintainers should say no or defer when a request adds permanent surface area without
+strengthening a broadly useful primitive. Configuration does not make a narrow feature
+general; every option, command, state field, and abstraction carries ongoing compatibility,
+documentation, and testing cost.
+
+Data-safety, security, and correctness fixes clear this bar by default; cosmetic
+conveniences do not, however configurable.
+
+Decline a feature unless all five conditions hold:
+
+1. solves a recurring product need rather than one fleet's workflow;
+2. cannot already be composed from the existing operations and adapters;
+3. belongs in Conductor's mechanical orchestration role rather than agent judgment or policy;
+4. fits the narrowest existing seam without duplicating core behavior; and
+5. is supported by concrete recurrence—multiple fleets or users, or a reproducible
+   defect—rather than one hypothetical workflow.
+
+Prefer improving an existing primitive over adding a parallel convenience. Defer speculative
+extension points until there is a concrete second consumer. Reject workflow engines, hidden
+policy, provider assumptions in the core, and cosmetic features whose complexity outweighs
+their operational value.
+
 ## Development setup
 
 Agent Conductor requires Node.js 22.13 or newer (23.4 or newer on the non-LTS Node 23 line) and pnpm.
