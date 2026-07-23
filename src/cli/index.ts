@@ -14,6 +14,7 @@ import { Supervisor } from '../core/supervisor.js';
 import { Store } from '../store/index.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
 import { ensureFleetScaffold } from './scaffold.js';
+import { parseStatusInterval, runStatusDashboard } from './live-status.js';
 import { configureStatusLines } from './statusline.js';
 import { formatFeedPayload, formatTerminalReply } from './terminal-format.js';
 
@@ -77,7 +78,7 @@ async function conductorUp(base: string): Promise<boolean> {
 }
 
 /** POST one command line to a running conductor's /cmd endpoint. */
-async function sendCommand(line: string): Promise<string> {
+async function sendCommand(line: string, signal?: AbortSignal): Promise<string> {
   const url = `${cmdUrl()}/cmd`;
   let response: Response;
   try {
@@ -85,6 +86,7 @@ async function sendCommand(line: string): Promise<string> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command: line, interactionId }),
+      ...(signal !== undefined ? { signal } : {}),
     });
   } catch {
     throw new Error(
@@ -323,11 +325,24 @@ program
 
 program
   .command('status [session]')
-  .description('Show fleet status from the running conductor')
-  .action(async (session: string | undefined) => {
+  .description('Show a live fleet status view from the running conductor')
+  .option('--once', 'Print one status snapshot and exit')
+  .option('-i, --interval <duration>', 'Live refresh interval (for example 2s or 500ms)', '2s')
+  .action(async (session: string | undefined, opts: { once?: boolean; interval: string }) => {
     const command = session === undefined ? '/status' : `/status ${session}`;
-    const reply = await sendCommand(command);
-    process.stdout.write(`${formatTerminalReply(command, reply, process.stdout.isTTY === true)}\n`);
+    if (opts.once === true || process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+      const reply = await sendCommand(command);
+      process.stdout.write(`${formatTerminalReply(command, reply, process.stdout.isTTY === true)}\n`);
+      return;
+    }
+
+    setTerminalTitle(`status — ${basename(baseDir())}`);
+    await runStatusDashboard({
+      command,
+      fleetDir: baseDir(),
+      intervalMs: parseStatusInterval(opts.interval),
+      fetchStatus: (signal) => sendCommand(command, signal),
+    });
   });
 
 program

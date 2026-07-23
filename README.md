@@ -209,6 +209,12 @@ The same command language works in:
 - Slack (using `!` instead of `/` for commands inside the private App Home conversation)
 - injected `ChannelAdapter` implementations
 
+For a read-only live view in its own terminal panel, run `conductor status`. It shows the
+canonical `/status` output, marks the conductor online or offline, and reconnects after a
+restart. Press `q` to leave the view. Redirected output remains one-shot; use `--once` to
+request the same behavior interactively or `--interval <duration>` to change the two-second
+refresh cadence.
+
 Common examples:
 
 ```text
@@ -597,7 +603,7 @@ conductor start --start-all    start the supervisor and every configured session
 conductor start --foreground   run the supervisor in the current process
 conductor console              attach another operator console
 conductor cmd /status          send one operator command
-conductor status [session]     show fleet status
+conductor status [session]     show live fleet status (one-shot when piped or with --once)
 conductor logs [session]       show recent health events
 conductor validate             validate configuration
 conductor daemon install       install a user service
