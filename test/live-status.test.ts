@@ -128,6 +128,7 @@ describe('runStatusDashboard', () => {
     expect(io.rawMode()).toBe(false);
     expect(io.input.isPaused()).toBe(true);
     expect(io.outputText()).toContain('\u001b[?1049h\u001b[?25l');
+    expect(io.outputText().split('\u001b[2J\u001b[3J\u001b[H')).toHaveLength(4);
     expect(io.outputText()).toContain('\u001b[?25h\u001b[?1049l');
   });
 
