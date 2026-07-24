@@ -68,4 +68,24 @@ describe('agent documentation', () => {
     await expect(documentation().read('not-real')).rejects.toThrow(InvalidRequestError);
     await expect(documentation().read('not-real')).rejects.toThrow('Available topics:');
   });
+
+  it('keeps live status, maintenance commands, and health semantics discoverable', async () => {
+    const operator = JSON.parse(await documentation().read('operator-channels')) as { content: string };
+    expect(operator.content).toContain('conductor status [session]');
+    expect(operator.content).toContain('default refresh interval is 15 seconds');
+    expect(operator.content).toContain('conductor logs [session]');
+    expect(operator.content).toContain('conductor validate');
+    expect(operator.content).toContain('conductor daemon install');
+
+    const lifecycle = JSON.parse(await documentation().read('lifecycle')) as { content: string };
+    expect(lifecycle.content).toContain('`idle`:');
+    expect(lifecycle.content).toContain('`stalled`:');
+    expect(lifecycle.content).toContain('`health.idleConfirmMs`');
+
+    const supervision = JSON.parse(await documentation().read('supervision')) as { content: string };
+    expect(supervision.content).toContain('does not semantically decide');
+    expect(supervision.content).toContain('`blocked` immediately');
+    expect(supervision.content).toContain('`silent`');
+    expect(supervision.content).toContain('Codex currently reports completed turns');
+  });
 });

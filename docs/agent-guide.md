@@ -109,6 +109,12 @@ Important rules:
   role such as sentinel policy, not to replace identity or safety rules.
 - Secrets belong in `.conductor/.env`, never supervisor or session YAML. The environment file may
   contain channel credentials; never print, quote, summarize, or message its values.
+- `defaults.bypassPermissions` controls the fleet launch default, and a session's
+  `bypassPermissions` may override it. Bypassing removes the runtime's approval and sandbox
+  protections; preserve or change it only as an explicit operator security decision.
+- Keep `mcp.host` on loopback. Managed-session identity is mechanically scoped by endpoint, but the
+  local HTTP surface is not a security boundary against other processes running as the same user.
+  Never expose it publicly or bind it to an untrusted network.
 - Fleet-specific workflow belongs in session prompts, templates, or configuration—not in the
   reusable Conductor source.
 
@@ -152,7 +158,8 @@ Direct-message receipts are durable:
 
 - `queued` means Conductor persisted the message and owns delivery.
 - `delivered` means protected pane submission completed.
-- `get_message_status` reports delivery time and the latest queue decision.
+- `get_message_status` reports `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`, so a
+  sender can distinguish a queue that has not run from one waiting on occupied input.
 - `cancel_message` can cancel a pending receipt before its pane write starts.
 - Reusing a sender-scoped `idempotencyKey` returns the original receipt.
 
@@ -220,6 +227,22 @@ Use:
   activity, tag, pause, and auto state.
 - `set_tag` for a short human-readable current-purpose label.
 - `tail_session` only for explicit inspection or communication failure diagnosis.
+
+Activity labels are mechanical runtime-health states, not judgments about whether an agent's answer
+was good or its task is complete:
+
+- `working`: a turn started or the fallback watchdog observed changing pane output.
+- `idle`: the runtime reported a normal completed turn and no new lifecycle event arrived during
+  `health.idleConfirmMs` (15 seconds by default). The process remains alive and is normally waiting
+  at its prompt.
+- `stalled`: Conductor received a non-idle stall signal (`blocked` or `compaction`) or the fallback
+  watchdog found a `silent`, unchanged pane. The process may still be alive, but the condition may
+  need inspection.
+- `stopped`: no active runtime process is available for that registered session.
+
+A later turn, visible work, or lifecycle restart returns an idle or stalled session to `working`.
+The `activity` field intentionally collapses the actionable stall kinds into `stalled`; health logs
+and sentinel events retain the more specific kind.
 
 Optional richer terminal footers are installed with:
 
@@ -307,6 +330,26 @@ events and may:
 - inspect structured status;
 - ask the operator;
 - deliberately take no action when the stop is expected.
+
+Conductor does not semantically decide whether a completed turn is actionable. A normal runtime
+stop starts the `health.idleConfirmMs` quiet timer. If it expires, Conductor records an `idle` stall,
+captures the last assistant message, and—when auto is enabled—routes that evidence to the sentinel.
+The sentinel then decides whether completed work needs no action, an unfinished plan needs a precise
+nudge, or an ambiguous state needs inspection or operator judgment.
+
+Other stall kinds come from mechanical signals:
+
+- Claude Code `Notification` hooks become `blocked` immediately.
+- Claude Code `PreCompact` hooks become `compaction` immediately.
+- Missing or stale lifecycle events enable the pane-diff fallback; an unchanged capture for
+  `health.stallBeatsThreshold` checks becomes `silent`.
+- Codex currently reports completed turns but not the same blocked/compaction lifecycle events as
+  Claude Code, so its unusual stuck states rely more heavily on the fallback watchdog and sentinel
+  inspection.
+
+`toggle_auto` controls routing, while `set_sentinel`, `arm_fleet_watch`, `disarm_fleet_watch`, and
+`list_fleet_watches` manage the destination and campaign-level escalation. These operations do not
+change the underlying mechanical health classification.
 
 A good fleet-specific sentinel prompt adds policy rather than implementation:
 
@@ -398,6 +441,30 @@ All operator interfaces use one canonical command router:
 Run `/help` in an operator interface for generated command syntax. Slack uses `!` in its private App
 Home DM because slash-prefixed input belongs to Slack; the canonical command remains the same.
 Free text is sent to the current `/talk` target.
+
+For a dedicated read-only panel, run:
+
+```bash
+conductor status [session]
+```
+
+It renders the canonical `/status` response as one in-place frame, reports whether the Conductor is
+online or offline, and reconnects after a restart. The default refresh interval is 15 seconds; use
+`--interval <duration>` to override it, `--once` for one snapshot, and `q` to leave the live view.
+Redirected output is automatically one-shot.
+
+Other local maintenance commands remain outside the operator command router:
+
+- `conductor logs [session]` reads recent persisted health events without requiring a live process.
+- `conductor validate` checks supervisor and session configuration.
+- `conductor daemon install` and `conductor daemon uninstall` manage the user-level launchd or
+  systemd service.
+- `conductor statusline` configures optional runtime footers; it does not show fleet status.
+
+Operator-only conversation and pane controls are intentionally not session MCP tools. `/talk`
+selects the recipient for operator free text, `/respond` answers a selectable agent request, and
+`/summon` or `/banish` changes supported pane visibility without changing process lifecycle. Use
+`/help` for their current syntax and backend capability notes.
 
 Telegram is a private bot long-polling adapter. It requires one token and authorized chat ID per
 fleet. Follow `guides/telegram-adapter.md`.
