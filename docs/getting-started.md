@@ -20,6 +20,8 @@ conductor start
 The first start creates every missing fleet scaffold file automatically, then opens the operator console.
 Existing configuration and secrets are never overwritten. A new `supervisor.yaml` records the complete
 effective defaults, including the values derived for this fleet and disabled Telegram and Slack blocks.
+It also creates an inert `config/pr-shepherd.yaml` profile. That profile is safe to inspect and edit but
+cannot poll until `profile.githubUser` is configured; PR Shepherd remains disabled in the supervisor.
 
 ---
 
@@ -33,6 +35,7 @@ effective defaults, including the values derived for this fleet and disabled Tel
     ├── .gitignore             # ignores only .env and data/
     ├── config/
     │   ├── supervisor.yaml    # fleet-wide settings
+    │   ├── pr-shepherd.yaml   # inert, copy-once optional Shepherd profile
     │   └── sessions/
     │       ├── alpha.yaml     # one file per session (hot-reloaded)
     │       └── watch.yaml     # the stall sentinel (later)

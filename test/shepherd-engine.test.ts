@@ -16,6 +16,7 @@ class FakeGitHub implements GitHubProvider {
   readonly discoveries = new Map<DiscoveryKind, DiscoveryResult<PullRequestSummary>>();
   readonly details = new Map<string, PullRequestDetails>();
   readonly mutations: GitHubMutation[] = [];
+  mutationError: Error | undefined;
   discoverCalls = 0;
 
   async discover(kind: DiscoveryKind): Promise<DiscoveryResult<PullRequestSummary>> {
@@ -30,6 +31,7 @@ class FakeGitHub implements GitHubProvider {
   }
 
   async mutate(mutation: GitHubMutation): Promise<void> {
+    if (this.mutationError !== undefined) throw this.mutationError;
     this.mutations.push(mutation);
   }
 }
@@ -397,24 +399,188 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
-  it('only requests a direct branch update after auto-merge is enabled', async () => {
+  it('enqueues a ready merge-queue PR while behind without updating its branch', async () => {
     const github = new FakeGitHub();
-    const behind = pr({ mergeStateStatus: 'BEHIND' });
+    setDiscovery(
+      github,
+      'authored',
+      pr({
+        mergeStateStatus: 'BEHIND',
+        reviews: [
+          {
+            id: 'approval',
+            author: 'reviewer',
+            state: 'APPROVED',
+            body: '',
+            submittedAt: '2026-07-20T09:00:00Z',
+          },
+        ],
+      }),
+    );
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute', branchUpdate: 'execute' } }),
+      github,
+      store,
+      () => new Date('2026-07-20T10:00:00Z'),
+    );
+    await engine.pollOnce();
+    expect(github.mutations).toEqual([
+      { type: 'enable-auto-merge', pr: { repo: 'acme/api', number: 7 }, mergeMethod: 'squash' },
+    ]);
+    store.close();
+  });
+
+  it('updates a direct PR before auto-merge readiness and does not require auto-merge first', async () => {
+    const github = new FakeGitHub();
+    const behind = pr({
+      mergeStateStatus: 'BEHIND',
+      reviews: [
+        {
+          id: 'approval',
+          author: 'reviewer',
+          state: 'APPROVED',
+          body: '',
+          submittedAt: '2026-07-20T09:00:00Z',
+        },
+      ],
+    });
     setDiscovery(github, 'authored', behind);
     const store = new SqliteShepherdStore(':memory:');
     const engine = new ShepherdEngine(
-      config({ automation: { branchUpdate: 'execute' } }),
+      config({ automation: { branchUpdate: 'execute', autoMerge: 'execute' } }),
+      github,
+      store,
+      () => new Date('2026-07-20T10:00:00Z'),
+    );
+    await engine.pollOnce();
+    expect(github.mutations).toEqual([{ type: 'update-branch', pr: { repo: 'acme/api', number: 7 } }]);
+    expect(store.listEvents().some((event) => event.type === 'auto-merge-decision')).toBe(false);
+    store.close();
+  });
+
+  it('reports a behind direct branch once per head when branch updates are off', async () => {
+    const github = new FakeGitHub();
+    setDiscovery(github, 'authored', pr({ mergeStateStatus: 'BEHIND' }));
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ automation: { branchUpdate: 'off' } }),
+      github,
+      store,
+      () => new Date('2026-07-20T10:00:00Z'),
+    );
+    await engine.pollOnce();
+    await engine.pollOnce();
+    expect(github.mutations).toEqual([]);
+    expect(store.listEvents().filter((event) => event.type === 'branch-behind')).toHaveLength(1);
+    store.close();
+  });
+
+  it('defers BEHIND+UNKNOWN and re-evaluates when mergeability becomes known', async () => {
+    const github = new FakeGitHub();
+    const approval = {
+      id: 'approval',
+      author: 'reviewer',
+      state: 'APPROVED' as const,
+      body: '',
+      submittedAt: '2026-07-20T09:00:00Z',
+    };
+    setDiscovery(github, 'authored', pr({ mergeStateStatus: 'BEHIND', mergeable: 'UNKNOWN', reviews: [approval] }));
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ automation: { branchUpdate: 'execute', autoMerge: 'execute' } }),
       github,
       store,
       () => new Date('2026-07-20T10:00:00Z'),
     );
     await engine.pollOnce();
     expect(github.mutations).toEqual([]);
+    expect(store.listEvents()).toEqual([]);
 
-    setDiscovery(github, 'authored', pr({ ...behind, autoMergeRequest: { mergeMethod: 'SQUASH' } }));
+    setDiscovery(github, 'authored', pr({ mergeStateStatus: 'CLEAN', mergeable: 'MERGEABLE', reviews: [approval] }));
+    await engine.pollOnce();
+    expect(github.mutations).toEqual([
+      { type: 'enable-auto-merge', pr: { repo: 'acme/api', number: 7 }, mergeMethod: 'squash' },
+    ]);
+    store.close();
+  });
+
+  it('reports CONFLICTING and blocks enqueue even with approvals and green checks', async () => {
+    const github = new FakeGitHub();
+    setDiscovery(
+      github,
+      'authored',
+      pr({
+        mergeable: 'CONFLICTING',
+        reviews: [
+          {
+            id: 'approval',
+            author: 'reviewer',
+            state: 'APPROVED',
+            body: '',
+            submittedAt: '2026-07-20T09:00:00Z',
+          },
+        ],
+      }),
+    );
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute' } }),
+      github,
+      store,
+      () => new Date('2026-07-20T10:00:00Z'),
+    );
+    await engine.pollOnce();
+    expect(github.mutations).toEqual([]);
+    expect(store.listEvents().map((event) => event.type)).toEqual(['conflict']);
+    store.close();
+  });
+
+  it('cancels a failed enqueue retry when the PR becomes conflicting', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    const github = new FakeGitHub();
+    const approval = {
+      id: 'approval',
+      author: 'reviewer',
+      state: 'APPROVED' as const,
+      body: '',
+      submittedAt: '2026-07-20T09:00:00Z',
+    };
+    setDiscovery(github, 'authored', pr({ reviews: [approval] }));
+    github.mutationError = new Error('temporary queue rejection');
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute' } }),
+      github,
+      store,
+      () => now,
+    );
     await engine.pollOnce();
 
-    expect(github.mutations).toEqual([{ type: 'update-branch', pr: { repo: 'acme/api', number: 7 } }]);
+    github.mutationError = undefined;
+    now = new Date(now.getTime() + 10_000);
+    setDiscovery(github, 'authored', pr({ mergeable: 'CONFLICTING', reviews: [approval] }));
+    await engine.pollOnce();
+
+    expect(github.mutations).toEqual([]);
+    expect(store.listEntities<{ status: string }>('action')[0]?.value.status).toBe('cancelled');
+    expect(store.listEvents().some((event) => event.type === 'conflict')).toBe(true);
+    store.close();
+  });
+
+  it('parks a repeatedly failing branch update and emits one failure fact', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    const github = new FakeGitHub();
+    github.mutationError = new Error('update rejected');
+    setDiscovery(github, 'authored', pr({ mergeStateStatus: 'BEHIND' }));
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(config({ automation: { branchUpdate: 'execute' } }), github, store, () => now);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await engine.pollOnce();
+      now = new Date(now.getTime() + 10 * 60_000);
+    }
+    expect(store.listEvents().filter((event) => event.type === 'branch-update-failed')).toHaveLength(1);
+    expect(store.listEntities<{ status: string }>('action')[0]?.value.status).toBe('failed');
     store.close();
   });
 

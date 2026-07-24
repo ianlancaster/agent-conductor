@@ -1,18 +1,38 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import { loadShepherdConfig, type ConfigOverrides, type ShepherdConfig } from './config.js';
+import { mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { ensureShepherdScaffold } from '../cli/scaffold.js';
+import { resolveFleetPaths } from '../config/paths.js';
+import { assertShepherdProfileReady, loadShepherdConfig, type ConfigOverrides, type ShepherdConfig } from './config.js';
 import { ShepherdEngine } from './engine.js';
 import { GhGitHubProvider } from './github.js';
 import { ConductorCoordinatorSink, StdoutCoordinatorSink } from './sinks.js';
 import { ShepherdService } from './service.js';
 import { SqliteShepherdStore } from './store.js';
+import { ShepherdRuntimeReporter, ShepherdServiceLock, serviceLockPath } from './runtime.js';
 
 interface CommonOptions {
-  config: string;
+  config?: string;
   githubUser?: string;
   coordinatorSession?: string;
   conductorEndpoint?: string;
   databasePath?: string;
+}
+
+const program = new Command()
+  .name('pr-shepherd')
+  .description('PR Shepherd V2')
+  .version('2.0.0')
+  .option('-C, --dir <path>', 'Fleet directory (default: current directory)');
+
+function fleetDir(): string {
+  const directory = program.opts<{ dir?: string }>().dir;
+  return directory === undefined ? process.cwd() : resolve(directory);
+}
+
+function configPath(options: CommonOptions): string {
+  return options.config === undefined ? resolveFleetPaths(fleetDir()).shepherdConfigFile : resolve(options.config);
 }
 
 function overrides(options: CommonOptions): ConfigOverrides {
@@ -25,7 +45,7 @@ function overrides(options: CommonOptions): ConfigOverrides {
 }
 
 function config(options: CommonOptions): ShepherdConfig {
-  return loadShepherdConfig(options.config, overrides(options));
+  return loadShepherdConfig(configPath(options), overrides(options));
 }
 
 function print(value: unknown): void {
@@ -34,7 +54,7 @@ function print(value: unknown): void {
 
 function common(command: Command): Command {
   return command
-    .requiredOption('-c, --config <path>', 'Path to the strict V2 YAML profile')
+    .option('-c, --config <path>', 'Path to the strict V2 YAML profile (default: fleet profile)')
     .option('--github-user <username>', 'Override profile.githubUser')
     .option('--coordinator-session <codename>', 'Override the Conductor recipient')
     .option('--conductor-endpoint <url>', 'Override the localhost Conductor endpoint')
@@ -45,18 +65,44 @@ function build(options: CommonOptions): {
   service: ShepherdService;
   store: SqliteShepherdStore;
   engine: ShepherdEngine;
+  lock: ShepherdServiceLock;
 } {
+  const path = configPath(options);
+  assertShepherdProfileReady(path);
   const resolved = config(options);
-  const store = new SqliteShepherdStore(resolved.databasePath);
-  const engine = new ShepherdEngine(resolved, new GhGitHubProvider(resolved), store);
-  const sink =
-    resolved.delivery.type === 'conductor'
-      ? new ConductorCoordinatorSink(resolved.delivery.endpoint)
-      : new StdoutCoordinatorSink();
-  return { service: new ShepherdService(resolved, engine, store, sink), store, engine };
+  mkdirSync(dirname(resolved.databasePath), { recursive: true });
+  const token = process.env.PR_SHEPHERD_LAUNCH_TOKEN ?? `standalone-${String(process.pid)}`;
+  const lock = new ShepherdServiceLock(serviceLockPath(resolved.databasePath), path, process.pid, token);
+  lock.acquire();
+  let store: SqliteShepherdStore | undefined;
+  try {
+    store = new SqliteShepherdStore(resolved.databasePath);
+    const engine = new ShepherdEngine(resolved, new GhGitHubProvider(resolved), store);
+    const sink =
+      resolved.delivery.type === 'conductor'
+        ? new ConductorCoordinatorSink(resolved.delivery.endpoint)
+        : new StdoutCoordinatorSink();
+    const reporter = new ShepherdRuntimeReporter(resolved.databasePath, path, token);
+    return {
+      service: new ShepherdService(resolved, engine, store, sink, reporter, () => lock.assertOwned()),
+      store,
+      engine,
+      lock,
+    };
+  } catch (error) {
+    lock.release();
+    store?.close();
+    throw error;
+  }
 }
 
-const program = new Command().name('pr-shepherd').description('PR Shepherd V2').version('2.0.0');
+program
+  .command('init')
+  .description('Create the fleet PR Shepherd profile without replacing an existing file')
+  .action(() => {
+    const created = ensureShepherdScaffold(fleetDir());
+    print(created === undefined ? 'PR Shepherd profile already exists; left unchanged.' : `Created ${created}`);
+  });
 
 common(program.command('validate').description('Validate a V2 YAML profile')).action((options: CommonOptions) => {
   const resolved = config(options);
@@ -70,17 +116,18 @@ common(
     .option('--once', 'Required for explicit one-shot polling'),
 ).action(async (options: CommonOptions & { once?: boolean }) => {
   if (options.once !== true) throw new Error('Use pr-shepherd poll --once for one-shot polling.');
-  const { service, store } = build(options);
+  const { service, store, lock } = build(options);
   try {
     print(await service.pollAndDeliver());
   } finally {
+    lock.release();
     store.close();
   }
 });
 
 common(program.command('start').description('Run the serialized polling service')).action(
   async (options: CommonOptions) => {
-    const { service, store } = build(options);
+    const { service, store, lock } = build(options);
     const abort = new AbortController();
     const shutdown = (): void => {
       service.stop();
@@ -91,6 +138,7 @@ common(program.command('start').description('Run the serialized polling service'
     try {
       await service.start(abort.signal);
     } finally {
+      lock.release();
       store.close();
     }
   },

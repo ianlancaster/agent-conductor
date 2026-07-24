@@ -196,8 +196,8 @@ to consult it without preloading the full handbook into every context.
 - [Complete supervisor example](examples/supervisor.yaml) — every setting and effective default.
 - [Telegram adapter](guides/telegram-adapter.md) and [Slack adapter](guides/slack-adapter.md) —
   least-privilege external operator setup.
-- [PR Shepherd V2](docs/pr-shepherd.md) — standalone GitHub polling, policy, and Conductor
-  delivery.
+- [PR Shepherd V2](docs/pr-shepherd.md) — standalone or Conductor-managed GitHub polling,
+  policy, and Conductor delivery.
 - [Contributor guide](CONTRIBUTING.md) and [architecture guide](CLAUDE.md) — mandatory context
   for extending the product.
 
@@ -356,11 +356,11 @@ composing in that pane.
 
 ## PR Shepherd V2
 
-The package also ships the opt-in `pr-shepherd` executable, a standalone GitHub polling
-service with a pure policy engine, strict YAML profiles, SQLite event/outbox persistence, and
-optional durable delivery to a Conductor coordinator session. Installing or starting
-Conductor never starts or initializes Shepherd; it runs only when explicitly invoked and has
-its own configuration, database, process lifecycle, and shutdown. See the complete
+The package also ships the opt-in `pr-shepherd` GitHub polling service with a pure policy engine,
+strict YAML profiles, SQLite event/outbox persistence, and optional durable delivery to a
+Conductor coordinator session. `conductor start` copy-once scaffolds an inert profile beside the
+supervisor. After a safe shadow run, a root-level `shepherd` block can opt into Conductor-owned
+start/stop; managed operation is headless by default and its health appears in `/status`. See the complete
 [getting-started and configuration guide](docs/pr-shepherd.md) and
 [generic example profile](examples/pr-shepherd.yaml).
 

@@ -33,6 +33,7 @@ import { OperatorRequests } from './operator-requests.js';
 import { StallSentinelRouter } from './sentinel.js';
 import { SessionStateManager } from './state.js';
 import { resolvedSessionEffort, resolvedSessionModel, statusReport } from './status.js';
+import { ShepherdManager } from './shepherd-manager.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 const SENTINEL_WORKSPACE_KEY = 'sentinel.codename';
@@ -77,6 +78,7 @@ export class Supervisor {
   private readonly mcpServer: ConductorMcpServer;
   private readonly scheduler: Scheduler;
   private readonly watcher: ConfigWatcher;
+  private readonly shepherd: ShepherdManager;
   private readonly channelCandidates: ChannelAdapter[];
   private readonly channels: ChannelAdapter[] = [];
   private readonly channelFailures = new Map<string, string>();
@@ -90,6 +92,7 @@ export class Supervisor {
   ) {
     this.env = resolveFleetEnvironment(baseDir, options.env ?? process.env);
     this.config = loadSupervisorConfig(baseDir, this.env);
+    this.shepherd = new ShepherdManager(this.config.shepherd);
     const dataDir = resolveFleetDataDir(baseDir, this.config.paths.dataDir);
     const fleetPaths = resolveFleetPaths(baseDir);
     initLogger({ level: this.config.supervisor.logLevel, filePath: join(dataDir, 'conductor.log') });
@@ -431,6 +434,7 @@ export class Supervisor {
 
     this.watcher.start(heartbeatMs);
     this.scheduler.rebuild();
+    await this.shepherd.start();
 
     if (opts.startAll === true) {
       for (const codename of this.sessions.keys()) {
@@ -458,6 +462,7 @@ export class Supervisor {
     this.health.stop();
     this.sentinel.stop();
     this.delivery.stop();
+    await this.shepherd.stop();
     const stoppedChannels = this.channels.splice(0);
     const stopResults = await Promise.allSettled(stoppedChannels.map((channel) => channel.stop()));
     for (const [index, result] of stopResults.entries()) {
@@ -498,7 +503,22 @@ export class Supervisor {
     );
     if (codename !== undefined) return report;
     const fleetWatchMarker = this.sentinel.isFleetWatchEnabled() ? ' 🔄' : '';
-    return [`Agent Conductor Status${fleetWatchMarker}`, report].join('\n\n');
+    const shepherd = this.shepherd.status();
+    const shepherdReport = [
+      'PR Shepherd:',
+      `  state: ${shepherd.state}`,
+      `  presentation: ${shepherd.presentation}`,
+      `  config: ${shepherd.configPath}`,
+      ...(shepherd.pid === null ? [] : [`  pid: ${String(shepherd.pid)}`]),
+      ...(shepherd.lastSuccessAt === null ? [] : [`  last success: ${shepherd.lastSuccessAt}`]),
+      ...(shepherd.detail === null ? [] : [`  detail: ${shepherd.detail}`]),
+    ].join('\n');
+    return [`Agent Conductor Status${fleetWatchMarker}`, report, shepherdReport].join('\n\n');
+  }
+
+  /** Structured companion status for embedding and tests. */
+  shepherdStatus(): ReturnType<ShepherdManager['status']> {
+    return this.shepherd.status();
   }
 
   private async tail(codename: string, lines: number): Promise<string> {

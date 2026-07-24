@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import yaml from 'js-yaml';
 import { z } from 'zod';
 import { SHEPHERD_EVENT_TYPES } from './types.js';
@@ -146,6 +146,41 @@ export function loadShepherdConfig(
   cliOverrides: ConfigOverrides = {},
   env: NodeJS.ProcessEnv = process.env,
 ): ShepherdConfig {
-  const raw = yaml.load(readFileSync(resolve(configPath), 'utf8'));
-  return parseShepherdConfig(raw, { ...environmentOverrides(env), ...cliOverrides });
+  const resolvedPath = resolve(configPath);
+  let text: string;
+  try {
+    text = readFileSync(resolvedPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        `PR Shepherd profile is missing at ${resolvedPath}. Run pr-shepherd init -C <fleetDir> or conductor start to recreate it.`,
+      );
+    }
+    throw error;
+  }
+  const parsed = parseShepherdConfig(yaml.load(text), { ...environmentOverrides(env), ...cliOverrides });
+  parsed.databasePath = resolve(dirname(resolvedPath), parsed.databasePath);
+  return parsed;
+}
+
+export function assertShepherdProfileReady(configPath: string): void {
+  const resolvedPath = resolve(configPath);
+  let text: string;
+  try {
+    text = readFileSync(resolvedPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        `PR Shepherd profile is missing at ${resolvedPath}. Run pr-shepherd init -C <fleetDir> or conductor start to recreate it.`,
+      );
+    }
+    throw error;
+  }
+  const markerPresent = text.includes('agent-conductor-pr-shepherd-scaffold: identity-required');
+  const parsed = parseShepherdConfig(yaml.load(text));
+  if (markerPresent || parsed.profile.githubUser === 'CHANGE_ME') {
+    throw new Error(
+      `Set profile.githubUser in ${resolvedPath} and remove its identity-required marker before polling or starting PR Shepherd.`,
+    );
+  }
 }

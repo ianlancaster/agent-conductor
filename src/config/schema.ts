@@ -152,6 +152,14 @@ export const supervisorConfigSchema = z
       })
       .strict()
       .default({}),
+    shepherd: z
+      .object({
+        enabled: z.boolean().default(false),
+        configPath: z.string().min(1).nullable().default(null),
+        presentation: z.enum(['headless', 'panel']).default('headless'),
+      })
+      .strict()
+      .default({}),
     terminal: z
       .object({
         /** Default: auto-detected — tmux when the conductor is launched inside tmux ($TMUX), else iterm on macOS, tmux elsewhere. */
@@ -288,11 +296,12 @@ export type SpawnTemplate = z.infer<typeof spawnTemplateSchema>;
 export type SupervisorConfigInput = z.infer<typeof supervisorConfigSchema>;
 
 /** Fully-resolved config: the loader fills port/windowName/sessionName/backend from per-fleet derivation. */
-export type SupervisorConfig = Omit<SupervisorConfigInput, 'mcp' | 'terminal'> & {
+export type SupervisorConfig = Omit<SupervisorConfigInput, 'mcp' | 'terminal' | 'shepherd'> & {
   mcp: SupervisorConfigInput['mcp'] & { port: number };
   terminal: Omit<SupervisorConfigInput['terminal'], 'backend' | 'windowName' | 'tmux'> & {
     backend: 'iterm' | 'tmux';
     windowName: string;
     tmux: SupervisorConfigInput['terminal']['tmux'] & { sessionName: string };
   };
+  shepherd: Omit<SupervisorConfigInput['shepherd'], 'configPath'> & { configPath: string };
 };

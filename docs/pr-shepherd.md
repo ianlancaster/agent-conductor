@@ -2,7 +2,11 @@
 
 PR Shepherd V2 is an opt-in GitHub polling service shipped with Agent Conductor. It keeps pull-request policy and delivery durability in its own SQLite database, and can either print fact-only events or send them to a coordinator through Conductor's protected `send_to_session` operation.
 
-Installing or starting Agent Conductor does not start, initialize, configure, or poll PR Shepherd. The `pr-shepherd` executable runs only when invoked explicitly, uses a separate configuration file and database, and is stopped independently. Conductor itself remains fully usable without it.
+`conductor start` copy-once scaffolds an inert PR Shepherd profile beside `supervisor.yaml`. It
+never overwrites an existing profile and never polls GitHub until the identity is configured.
+Shepherd may still run standalone, or Conductor can own its lifecycle through an opt-in root
+`shepherd` block. The managed default is headless; companion failure is reported in `/status`
+without taking down Conductor.
 
 ## Prerequisites
 
@@ -25,10 +29,12 @@ The linked package provides both `conductor` and `pr-shepherd`. The Shepherd is 
 
 ## Safe first run
 
-1. Copy the generic example outside the repository and set your GitHub username:
+1. Start Conductor once, edit the generated profile, and remove its
+   `identity-required` marker after replacing `CHANGE_ME`:
 
    ```bash
-   cp examples/pr-shepherd.yaml shepherd.yaml
+   conductor start
+   ${EDITOR:-vi} .conductor/config/pr-shepherd.yaml
    ```
 
 2. For an observation-only rollout, set:
@@ -48,30 +54,40 @@ The linked package provides both `conductor` and `pr-shepherd`. The Shepherd is 
 
    ```bash
    gh auth status
-   pr-shepherd validate --config shepherd.yaml
+   pr-shepherd -C /path/to/fleet validate
    ```
 
 4. Run one poll. With stdout delivery and `notify`/`off` automation, this does not modify GitHub or contact Conductor:
 
    ```bash
-   pr-shepherd poll --once --config shepherd.yaml
+   pr-shepherd -C /path/to/fleet poll --once
    ```
 
 5. Inspect persisted state and recent events:
 
    ```bash
-   pr-shepherd status --config shepherd.yaml
-   pr-shepherd events --config shepherd.yaml --limit 50
-   pr-shepherd inbox --config shepherd.yaml
+   pr-shepherd -C /path/to/fleet status
+   pr-shepherd -C /path/to/fleet events --limit 50
+   pr-shepherd -C /path/to/fleet inbox
    ```
 
-6. Once the observed decisions are correct, run the polling service under your process manager:
+6. Once the observed decisions are correct, enable the managed companion and restart Conductor:
 
    ```bash
-   pr-shepherd start --config shepherd.yaml
+   shepherd:
+     enabled: true
+     configPath: null
+     presentation: headless
    ```
 
-`SIGINT` and `SIGTERM` stop the service cleanly. Conductor does not supervise or restart it.
+Conductor starts Shepherd after its own control plane is ready and stops it during shutdown.
+`pr-shepherd init -C <fleet>` recreates only a missing profile and never overwrites one. Profile
+and supervisor changes take effect after a deliberate Conductor restart.
+
+Fleet status reports the managed companion as `disabled`, `config-invalid`, `panel-unsupported`,
+`starting`, `healthy`, `stale`, `restarting`, `failed`, or `stopped`, with its resolved profile,
+PID, last successful heartbeat, and bounded diagnostic detail when applicable. `failed` means the
+bounded crash-restart policy gave up; fix the reported cause and restart Conductor.
 
 ## Configuration reference
 
@@ -86,7 +102,7 @@ Configuration is strict, versioned YAML: unknown keys and unknown guidance event
 | `github.defaultRepo`                    | Optional profile metadata for a primary repository; default `null`.                                                                    |
 | `github.includeOwners` / `includeRepos` | Optional owner and repository allowlists. Empty lists allow all repositories.                                                          |
 | `github.excludeOwners` / `excludeRepos` | Owner and repository denylists applied after includes.                                                                                 |
-| `github.mode`                           | `direct` or `merge-queue`; default `direct`. Branch updates are not requested in merge-queue mode.                                     |
+| `github.mode`                           | `direct` or `merge-queue`; default `direct`. Direct updates behind PRs first; queue mode avoids merely-behind updates.                 |
 | `github.mergeMethod`                    | `squash`, `merge`, or `rebase`; default `squash`.                                                                                      |
 | `checks.required`                       | If non-empty, only these check names determine readiness.                                                                              |
 | `checks.ignored`                        | Check names removed before evaluation.                                                                                                 |
@@ -106,7 +122,7 @@ Configuration is strict, versioned YAML: unknown keys and unknown guidance event
 | `delivery.endpoint`                     | Required for Conductor delivery and restricted to a localhost URL.                                                                     |
 | `delivery.coordinatorSession`           | Required Conductor recipient for all Shepherd events.                                                                                  |
 | `guidance`                              | Optional text keyed by emitted event type and appended to the generic fact message.                                                    |
-| `databasePath`                          | Independent SQLite database; default `./data/pr-shepherd-v2.db`.                                                                       |
+| `databasePath`                          | Independent SQLite database, resolved relative to the profile; default `./data/pr-shepherd-v2.db`.                                     |
 
 Each bot entry supports:
 
@@ -127,7 +143,7 @@ Coordinator and endpoint overrides apply only when YAML already declares `delive
 
 ## Events and organization-specific guidance
 
-The engine emits generic facts for CI failures, review feedback, bot findings, human comments, approvals, conflicts, merges, staleness, review dispatch/completion, scoped re-review, reviewer escalation, and automation decisions. Production messages contain no hard-coded organization, repository, bot, CI-command, or worker-routing policy.
+The engine emits generic facts for CI failures, review feedback, bot findings, human comments, approvals, conflicts, merges, staleness, review dispatch/completion, scoped re-review, reviewer escalation, automation decisions, `branch-behind`, and `branch-update-failed`. Production messages contain no hard-coded organization, repository, bot, CI-command, or worker-routing policy.
 
 Put private workflow instructions in `guidance`, for example:
 
@@ -140,6 +156,11 @@ guidance:
 Repository scope is applied in GitHub search queries and again to returned objects. Every search page is consumed. A truncated or incomplete search logs a coverage warning and disables absence-based cleanup for that cycle.
 
 Staleness is measured from GitHub's `updatedAt`, so comments and other activity restart the window even when the head SHA is unchanged. Business-day escalation counts elapsed instants falling Monday through Friday in the configured IANA timezone; it does not imply working hours or a holiday calendar.
+
+Direct mode withholds readiness while a mergeable PR is behind and refreshes it according to
+`automation.branchUpdate`. Queue mode may enqueue a ready, mergeable `BEHIND` PR without updating
+it first. `UNKNOWN` waits. Each transition into `CONFLICTING` emits a `conflict` fact and requires
+coordinator/operator resolution; Shepherd does not invent merge-conflict policy.
 
 In reviewer-comment `notify` mode, escalation timing starts when the decision is emitted. In `execute` mode it starts after the idempotent comment is confirmed. With reviewer-comment automation `off`, no comment decision or mutation is produced, but an enabled reviewer-nudge feature still starts escalation timing when a fix is detected.
 
@@ -154,12 +175,13 @@ For rollout, first compare `baseline-only` stdout behavior with the system being
 ## Command reference
 
 ```bash
-pr-shepherd validate --config shepherd.yaml
-pr-shepherd poll --once --config shepherd.yaml
-pr-shepherd start --config shepherd.yaml
-pr-shepherd status --config shepherd.yaml
-pr-shepherd events --config shepherd.yaml --limit 50
-pr-shepherd inbox --config shepherd.yaml
+pr-shepherd -C /path/to/fleet init
+pr-shepherd -C /path/to/fleet validate
+pr-shepherd -C /path/to/fleet poll --once
+pr-shepherd -C /path/to/fleet start
+pr-shepherd -C /path/to/fleet status
+pr-shepherd -C /path/to/fleet events --limit 50
+pr-shepherd -C /path/to/fleet inbox
 ```
 
 All commands accept these optional overrides:

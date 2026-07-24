@@ -68,6 +68,7 @@ export class ConductorDocumentation {
     const context = {
       fleetDir: this.options.fleetDir,
       supervisorConfig: this.options.fleetPaths.supervisorFile,
+      shepherdConfig: this.options.fleetPaths.shepherdConfigFile,
       sessionsDir: this.options.fleetPaths.sessionsDir,
       environmentFile: this.options.fleetPaths.environmentFile,
       referencePath: this.options.referencePath,

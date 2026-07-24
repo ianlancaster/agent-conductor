@@ -13,6 +13,8 @@ export const SHEPHERD_EVENT_TYPES = [
   'reviewer-escalation',
   'auto-merge-decision',
   'branch-update-decision',
+  'branch-behind',
+  'branch-update-failed',
   'reviewer-comment-decision',
 ] as const;
 

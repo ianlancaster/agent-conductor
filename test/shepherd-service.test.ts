@@ -26,6 +26,29 @@ function seed(store: SqliteShepherdStore): void {
 }
 
 describe('Shepherd outbox delivery', () => {
+  it('checks service-lock ownership before polling', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    let polls = 0;
+    const worker = new ShepherdService(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      {
+        pollOnce: () => {
+          polls += 1;
+          return Promise.resolve({ discovered: 0, emitted: 0, mutations: 0, warnings: [] });
+        },
+      },
+      store,
+      { send: () => Promise.resolve(undefined) },
+      undefined,
+      () => {
+        throw new Error('lock lost');
+      },
+    );
+    await expect(worker.pollAndDeliver()).rejects.toThrow('lock lost');
+    expect(polls).toBe(0);
+    store.close();
+  });
+
   it('retries an ambiguous failure with the exact persisted idempotency key', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-20T00:00:00Z'));
