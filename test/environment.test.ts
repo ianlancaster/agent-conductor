@@ -30,10 +30,10 @@ describe('resolveFleetEnvironment', () => {
     expect(inherited).toEqual({ PATH: '/bin' });
   });
 
-  it('lets inherited shell, CI, or service values override .conductor/.env', () => {
+  it('lets .conductor/.env override stale inherited shell, CI, or service values', () => {
     writeFileSync(join(baseDir, '.conductor', '.env'), 'VALUE=from-file\nFILE_ONLY=yes\n');
     expect(resolveFleetEnvironment(baseDir, { VALUE: 'from-parent' })).toMatchObject({
-      VALUE: 'from-parent',
+      VALUE: 'from-file',
       FILE_ONLY: 'yes',
     });
   });
@@ -63,7 +63,7 @@ describe('buildConfiguredChannels', () => {
       buildConfiguredChannels(config, {
         CONDUCTOR_TELEGRAM_TOKEN: 'token',
         CONDUCTOR_TELEGRAM_CHAT_ID: '123',
-      }),
+      }).channels,
     ).toEqual([]);
   });
 
@@ -73,33 +73,44 @@ describe('buildConfiguredChannels', () => {
       'channels:\n  telegram:\n    enabled: true\n',
     );
     const config = loadSupervisorConfig(baseDir, {});
-    const channels = buildConfiguredChannels(config, {
+    const resolution = buildConfiguredChannels(config, {
       CONDUCTOR_TELEGRAM_TOKEN: 'token',
       CONDUCTOR_TELEGRAM_CHAT_ID: '123',
     });
-    expect(channels.map((channel) => channel.name)).toEqual(['telegram']);
+    expect(resolution.channels.map((channel) => channel.name)).toEqual(['telegram']);
+    expect(resolution.unavailable).toEqual([]);
   });
 
   it('constructs Slack only when explicitly enabled with all three credentials', () => {
     writeFileSync(join(baseDir, '.conductor', 'config', 'supervisor.yaml'), 'channels:\n  slack:\n    enabled: true\n');
     const config = loadSupervisorConfig(baseDir, {});
-    const channels = buildConfiguredChannels(config, {
+    const resolution = buildConfiguredChannels(config, {
       CONDUCTOR_SLACK_APP_TOKEN: 'xapp-test',
       CONDUCTOR_SLACK_BOT_TOKEN: 'xoxb-test',
       CONDUCTOR_SLACK_OPERATOR_USER_ID: 'U123',
     });
-    expect(channels.map((channel) => channel.name)).toEqual(['slack']);
+    expect(resolution.channels.map((channel) => channel.name)).toEqual(['slack']);
+    expect(resolution.unavailable).toEqual([]);
   });
 
-  it('composes enabled adapters and reports all missing channel credentials together', () => {
+  it('composes enabled adapters and degrades missing channel credentials independently', () => {
     writeFileSync(
       join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
       'channels:\n  telegram:\n    enabled: true\n  slack:\n    enabled: true\n',
     );
     const config = loadSupervisorConfig(baseDir, {});
-    expect(() => buildConfiguredChannels(config, {})).toThrow(
-      /CONDUCTOR_TELEGRAM_TOKEN.*CONDUCTOR_TELEGRAM_CHAT_ID.*CONDUCTOR_SLACK_BOT_TOKEN.*CONDUCTOR_SLACK_APP_TOKEN.*CONDUCTOR_SLACK_OPERATOR_USER_ID/,
-    );
+    const unavailable = buildConfiguredChannels(config, {}).unavailable;
+    expect(unavailable).toEqual([
+      {
+        name: 'telegram',
+        reason: 'missing or blank: CONDUCTOR_TELEGRAM_TOKEN, CONDUCTOR_TELEGRAM_CHAT_ID',
+      },
+      {
+        name: 'slack',
+        reason:
+          'missing or blank: CONDUCTOR_SLACK_BOT_TOKEN, CONDUCTOR_SLACK_APP_TOKEN, CONDUCTOR_SLACK_OPERATOR_USER_ID',
+      },
+    ]);
     expect(
       buildConfiguredChannels(config, {
         CONDUCTOR_TELEGRAM_TOKEN: 'telegram-secret',
@@ -107,27 +118,25 @@ describe('buildConfiguredChannels', () => {
         CONDUCTOR_SLACK_APP_TOKEN: 'xapp-secret',
         CONDUCTOR_SLACK_BOT_TOKEN: 'xoxb-secret',
         CONDUCTOR_SLACK_OPERATOR_USER_ID: 'U123',
-      }).map((channel) => channel.name),
+      }).channels.map((channel) => channel.name),
     ).toEqual(['telegram', 'slack']);
   });
 
-  it('rejects missing or blank enabled credentials without reflecting values', () => {
+  it('reports missing or blank enabled credentials without reflecting values', () => {
     writeFileSync(
       join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
       'channels:\n  telegram:\n    enabled: true\n',
     );
     const config = loadSupervisorConfig(baseDir, {});
 
-    expect(() =>
+    expect(
       buildConfiguredChannels(config, {
         CONDUCTOR_TELEGRAM_TOKEN: 'super-secret',
         CONDUCTOR_TELEGRAM_CHAT_ID: '   ',
-      }),
-    ).toThrow(/CONDUCTOR_TELEGRAM_CHAT_ID.*missing or blank/);
-    try {
-      buildConfiguredChannels(config, { CONDUCTOR_TELEGRAM_TOKEN: 'super-secret' });
-    } catch (error) {
-      expect(String(error)).not.toContain('super-secret');
-    }
+      }).unavailable,
+    ).toEqual([{ name: 'telegram', reason: 'missing or blank: CONDUCTOR_TELEGRAM_CHAT_ID' }]);
+    expect(JSON.stringify(buildConfiguredChannels(config, { CONDUCTOR_TELEGRAM_TOKEN: 'super-secret' }))).not.toContain(
+      'super-secret',
+    );
   });
 });

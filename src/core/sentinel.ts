@@ -7,12 +7,17 @@ import type { PaneRef, StallKind } from './types.js';
 
 const SENTINEL_DOWN_WARN_INTERVAL_MS = 10 * 60 * 1000;
 
+function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  return a.size === b.size && [...a].every((item) => b.has(item));
+}
+
 export interface SentinelDeps {
   config: {
     captureLines: number;
     suppressWindowMs: number;
     suppressSimilarity: number;
     sentinelCodename: string | undefined;
+    fleetStallThresholdSeconds: number;
   };
   backend: TerminalBackend;
   runtimeFor(session: string): SessionRuntime | undefined;
@@ -23,31 +28,9 @@ export interface SentinelDeps {
   deliver(session: string, text: string): Promise<unknown>;
   notifyOperator(text: string): Promise<unknown>;
   logEvent(session: string, event: string, detail?: string): void;
-}
-
-export interface FleetWatch {
-  name: string;
-  sessions: string[];
-  thresholdSeconds: number;
-}
-
-export interface FleetWatchStatus extends FleetWatch {
-  state: 'watching' | 'confirming' | 'reported';
-  stalledSessions: string[];
-  allStalledForSeconds: number;
-}
-
-export interface FleetWatchMembershipChange {
-  name: string;
-  removedSessions: string[];
-  remainingSessions: string[];
-  action: 'continued' | 'invalidated';
-}
-
-interface FleetWatchState extends FleetWatch {
-  allStalledAt: number | undefined;
-  notified: boolean;
-  timer: NodeJS.Timeout | undefined;
+  initialFleetWatchEnabled?: boolean;
+  initialSessions?: Iterable<string>;
+  onFleetWatchChanged?(enabled: boolean): void;
 }
 
 /**
@@ -65,10 +48,17 @@ export class StallSentinelRouter {
   private lastSentinelDownWarnAt = 0;
   private sentinel: string | undefined;
   private readonly stalledSessions = new Set<string>();
-  private readonly fleetWatches = new Map<string, FleetWatchState>();
+  private registeredSessions: Set<string>;
+  private fleetWatchEnabled: boolean;
+  private fleetAllStalledAt: number | undefined;
+  private fleetNotified = false;
+  private fleetTimer: NodeJS.Timeout | undefined;
 
   constructor(private readonly deps: SentinelDeps) {
     this.sentinel = deps.config.sentinelCodename;
+    this.registeredSessions = new Set(deps.initialSessions ?? []);
+    this.fleetWatchEnabled = deps.initialFleetWatchEnabled ?? false;
+    this.evaluateFleetWatch();
   }
 
   sentinelCodename(): string | undefined {
@@ -76,11 +66,10 @@ export class StallSentinelRouter {
   }
 
   setSentinel(codename: string | undefined): void {
-    if (codename !== undefined && this.isFleetWatched(codename)) {
-      throw new Error(`${codename} is part of an armed fleet watch and cannot also be its stall sentinel.`);
-    }
     this.sentinel = codename;
     this.lastSentinelDownWarnAt = 0;
+    this.resetFleetConfirmation();
+    this.evaluateFleetWatch();
   }
 
   /** A new run must not inherit duplicate suppression from the previous run. */
@@ -94,121 +83,34 @@ export class StallSentinelRouter {
     return this.sentinel !== undefined && caller === this.sentinel;
   }
 
-  armFleetWatch(watch: FleetWatch): void {
-    const sessions = [...new Set(watch.sessions)];
-    if (sessions.length < 2) throw new Error('A fleet watch needs at least two distinct sessions.');
-    if (sessions.some((session) => this.isSentinel(session))) {
-      throw new Error('The stall sentinel cannot be included in a fleet watch.');
-    }
-    this.disarmFleetWatch(watch.name);
-    const state: FleetWatchState = {
-      name: watch.name,
-      sessions,
-      thresholdSeconds: watch.thresholdSeconds,
-      allStalledAt: undefined,
-      notified: false,
-      timer: undefined,
-    };
-    this.fleetWatches.set(watch.name, state);
-    this.evaluateFleetWatch(state);
+  toggleFleetWatch(): boolean {
+    this.fleetWatchEnabled = !this.fleetWatchEnabled;
+    this.resetFleetConfirmation();
+    this.evaluateFleetWatch();
+    this.deps.onFleetWatchChanged?.(this.fleetWatchEnabled);
+    return this.fleetWatchEnabled;
   }
 
-  disarmFleetWatch(name: string): boolean {
-    const watch = this.fleetWatches.get(name);
-    if (watch === undefined) return false;
-    if (watch.timer !== undefined) clearTimeout(watch.timer);
-    return this.fleetWatches.delete(name);
+  isFleetWatchEnabled(): boolean {
+    return this.fleetWatchEnabled;
   }
 
-  listFleetWatches(): FleetWatchStatus[] {
-    const now = Date.now();
-    return [...this.fleetWatches.values()].map((watch) => ({
-      name: watch.name,
-      sessions: [...watch.sessions],
-      thresholdSeconds: watch.thresholdSeconds,
-      state: watch.notified ? 'reported' : watch.allStalledAt !== undefined ? 'confirming' : 'watching',
-      stalledSessions: watch.sessions.filter((session) => this.stalledSessions.has(session)),
-      allStalledForSeconds:
-        watch.allStalledAt === undefined ? 0 : Math.max(0, Math.floor((now - watch.allStalledAt) / 1000)),
-    }));
-  }
-
-  isFleetWatched(session: string): boolean {
-    return [...this.fleetWatches.values()].some((watch) => watch.sessions.includes(session));
-  }
-
-  /**
-   * Reconcile process-local watches with the durable session registry.
-   *
-   * Losing one ephemeral member must not silently destroy a still-useful
-   * safety watch. Retain valid watches over their remaining members and make
-   * every membership change visible to the sentinel/operator. A watch that
-   * falls below the two-member invariant is explicitly invalidated.
-   */
-  async reconcileFleetWatches(validSessions: ReadonlySet<string>): Promise<FleetWatchMembershipChange[]> {
-    const changes: FleetWatchMembershipChange[] = [];
-    const retained: FleetWatchState[] = [];
-
-    for (const watch of [...this.fleetWatches.values()]) {
-      const removedSessions = watch.sessions.filter((session) => !validSessions.has(session));
-      if (removedSessions.length === 0) continue;
-
-      const remainingSessions = watch.sessions.filter((session) => validSessions.has(session));
-      this.cancelFleetConfirmation(watch);
-      watch.notified = false;
-
-      if (remainingSessions.length >= 2) {
-        watch.sessions = remainingSessions;
-        retained.push(watch);
-        changes.push({
-          name: watch.name,
-          removedSessions,
-          remainingSessions,
-          action: 'continued',
-        });
-      } else {
-        this.disarmFleetWatch(watch.name);
-        changes.push({
-          name: watch.name,
-          removedSessions,
-          remainingSessions,
-          action: 'invalidated',
-        });
-      }
-    }
-
+  setRegisteredSessions(sessions: Iterable<string>): void {
+    const next = new Set(sessions);
+    if (setsEqual(this.registeredSessions, next)) return;
+    this.registeredSessions = next;
     for (const session of [...this.stalledSessions]) {
-      if (!validSessions.has(session)) this.stalledSessions.delete(session);
+      if (!next.has(session)) this.stalledSessions.delete(session);
     }
-
-    for (const watch of retained) {
-      if (this.fleetWatches.get(watch.name) === watch) this.evaluateFleetWatch(watch);
-    }
-    // Membership notifications are important observability, but an adapter
-    // failure must never prevent the retained safety watch from evaluating.
-    const notifications = await Promise.allSettled(
-      changes.map((change) => this.reportFleetWatchMembershipChange(change)),
-    );
-    for (const [index, result] of notifications.entries()) {
-      if (result.status !== 'rejected') continue;
-      log().warn(
-        'sentinel',
-        `Fleet-watch membership notification failed for '${changes[index]?.name ?? 'unknown'}': ${
-          result.reason instanceof Error ? result.reason.message : String(result.reason)
-        }`,
-      );
-    }
-    return changes;
+    this.resetFleetConfirmation();
+    this.evaluateFleetWatch();
   }
 
   /** Any successfully submitted work clears fleet-stall state and rearms affected watches. */
   noteWorking(session: string): void {
     if (!this.stalledSessions.delete(session)) return;
-    for (const watch of this.fleetWatches.values()) {
-      if (!watch.sessions.includes(session)) continue;
-      this.cancelFleetConfirmation(watch);
-      watch.notified = false;
-    }
+    if (!this.fleetMembers().includes(session)) return;
+    this.resetFleetConfirmation();
   }
 
   async handleStall(session: string, kind: StallKind, info: StallInfo): Promise<void> {
@@ -228,9 +130,7 @@ export class StallSentinelRouter {
     // boundary before recording the new stall.
     if (this.stalledSessions.has(session)) this.noteWorking(session);
     this.stalledSessions.add(session);
-    for (const watch of this.fleetWatches.values()) {
-      if (watch.sessions.includes(session)) this.evaluateFleetWatch(watch);
-    }
+    this.evaluateFleetWatch();
 
     if (!this.deps.isAuto(session) || this.deps.isPaused(session)) {
       log().debug('sentinel', `${session}: ${kind} stall ignored (auto is off or paused)`);
@@ -284,75 +184,64 @@ export class StallSentinelRouter {
   }
 
   stop(): void {
-    for (const watch of this.fleetWatches.values()) {
-      if (watch.timer !== undefined) clearTimeout(watch.timer);
-    }
+    if (this.fleetTimer !== undefined) clearTimeout(this.fleetTimer);
   }
 
-  private evaluateFleetWatch(watch: FleetWatchState): void {
-    if (watch.notified || watch.allStalledAt !== undefined) return;
-    if (!watch.sessions.every((session) => this.stalledSessions.has(session))) return;
+  private fleetMembers(): string[] {
+    return [...this.registeredSessions].filter((session) => !this.isSentinel(session));
+  }
 
-    watch.allStalledAt = Date.now();
-    if (watch.thresholdSeconds <= 0) {
-      void this.reportFleetStall(watch);
+  private evaluateFleetWatch(): void {
+    if (!this.fleetWatchEnabled || this.fleetNotified || this.fleetAllStalledAt !== undefined) return;
+    const sessions = this.fleetMembers();
+    if (sessions.length < 2 || !sessions.every((session) => this.stalledSessions.has(session))) return;
+
+    this.fleetAllStalledAt = Date.now();
+    if (this.deps.config.fleetStallThresholdSeconds <= 0) {
+      void this.reportFleetStall();
       return;
     }
-    watch.timer = setTimeout(() => {
-      watch.timer = undefined;
-      if (!watch.sessions.every((session) => this.stalledSessions.has(session))) return;
-      void this.reportFleetStall(watch);
-    }, watch.thresholdSeconds * 1000);
-    watch.timer.unref();
+    this.fleetTimer = setTimeout(() => {
+      this.fleetTimer = undefined;
+      const currentSessions = this.fleetMembers();
+      if (currentSessions.length < 2 || !currentSessions.every((session) => this.stalledSessions.has(session))) {
+        this.fleetAllStalledAt = undefined;
+        return;
+      }
+      void this.reportFleetStall();
+    }, this.deps.config.fleetStallThresholdSeconds * 1000);
+    this.fleetTimer.unref();
   }
 
-  private cancelFleetConfirmation(watch: FleetWatchState): void {
-    if (watch.timer !== undefined) clearTimeout(watch.timer);
-    watch.timer = undefined;
-    watch.allStalledAt = undefined;
+  private resetFleetConfirmation(): void {
+    if (this.fleetTimer !== undefined) clearTimeout(this.fleetTimer);
+    this.fleetTimer = undefined;
+    this.fleetAllStalledAt = undefined;
+    this.fleetNotified = false;
   }
 
-  private async reportFleetStall(watch: FleetWatchState): Promise<void> {
-    if (watch.notified || !watch.sessions.every((session) => this.stalledSessions.has(session))) return;
-    watch.notified = true;
-    const detail = `all stalled for ${String(watch.thresholdSeconds)}s: ${watch.sessions.join(', ')}`;
-    this.deps.logEvent(`fleet:${watch.name}`, 'fleet_stall', detail);
+  private async reportFleetStall(): Promise<void> {
+    const sessions = this.fleetMembers();
+    if (this.fleetNotified || sessions.length < 2 || !sessions.every((session) => this.stalledSessions.has(session))) {
+      return;
+    }
+    this.fleetNotified = true;
+    const thresholdSeconds = this.deps.config.fleetStallThresholdSeconds;
+    const detail = `all stalled for ${String(thresholdSeconds)}s: ${sessions.join(', ')}`;
+    this.deps.logEvent('fleet', 'fleet_stall', detail);
 
     const sentinel = this.sentinel;
     if (sentinel === undefined) {
-      await this.deps.notifyOperator(`🚨 Fleet '${watch.name}' stalled: ${watch.sessions.join(', ')}.`);
+      await this.deps.notifyOperator(`🚨 Fleet stalled: ${sessions.join(', ')}.`);
       return;
     }
     if (!(await this.deps.isActive(sentinel))) {
       await this.deps.notifyOperator(
-        `🚨 Fleet '${watch.name}' stalled (${watch.sessions.join(', ')}) but sentinel ${sentinel} is not running.`,
+        `🚨 Fleet stalled (${sessions.join(', ')}) but sentinel ${sentinel} is not running.`,
       );
       return;
     }
-    await this.deps.deliver(sentinel, fleetStallEnvelope(watch.name, watch.sessions, watch.thresholdSeconds));
-  }
-
-  private async reportFleetWatchMembershipChange(change: FleetWatchMembershipChange): Promise<void> {
-    const removed = change.removedSessions.join(',');
-    const remaining = change.remainingSessions.length > 0 ? change.remainingSessions.join(',') : 'none';
-    const continued = change.action === 'continued';
-    const text = continued
-      ? `[Fleet Watch] watch=${change.name} membership changed: removed=${removed} remaining=${remaining}. Watch continues with the same confirmation threshold.`
-      : `[Fleet Watch] watch=${change.name} invalidated: removed=${removed} remaining=${remaining}. At least two registered sessions are required; re-arm after choosing a valid group.`;
-    const event = continued ? 'fleet_watch_membership_changed' : 'fleet_watch_invalidated';
-    this.deps.logEvent(`fleet:${change.name}`, event, `removed ${removed}; remaining ${remaining}`);
-    log().warn('sentinel', text);
-
-    const sentinel = this.sentinel;
-    if (sentinel === undefined) {
-      await this.deps.notifyOperator(`⚠️ ${text}`);
-      return;
-    }
-    if (!(await this.deps.isActive(sentinel))) {
-      await this.deps.notifyOperator(`⚠️ ${text} Sentinel ${sentinel} is not running.`);
-      return;
-    }
-    await this.deps.deliver(sentinel, text);
+    await this.deps.deliver(sentinel, fleetStallEnvelope(sessions, thresholdSeconds));
   }
 
   private async captureStripped(session: string): Promise<string> {

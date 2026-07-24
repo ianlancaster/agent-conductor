@@ -4,10 +4,8 @@ import yaml from 'js-yaml';
 import type { ZodError } from 'zod';
 import { log } from '../logger.js';
 import { deriveInstanceDefaults } from './instance.js';
-import { fleetSlug } from './instance.js';
 import { resolveFleetPaths } from './paths.js';
 import { sessionConfigSchema, supervisorConfigSchema, type SessionConfig, type SupervisorConfig } from './schema.js';
-import { MAX_FEDERATION_DIRECTORY_ENTRIES } from '../federation/types.js';
 
 export interface LoadedConfig {
   supervisor: SupervisorConfig;
@@ -69,37 +67,7 @@ export function loadSupervisorConfig(baseDir: string, env: NodeJS.ProcessEnv = p
   config.terminal.backend ??= detectBackend(env);
   config.terminal.windowName ??= derived.windowName;
   config.terminal.tmux.sessionName ??= derived.tmuxSessionName;
-  config.federation.name ??= fleetSlug(baseDir);
   return config as SupervisorConfig;
-}
-
-export function validateFederationExposure(config: SupervisorConfig, sessions: Map<string, SessionConfig>): string[] {
-  const exposed = new Set(
-    config.federation.sessions.expose.includes('*') ? sessions.keys() : config.federation.sessions.expose,
-  );
-  const problems: string[] = [];
-  if (exposed.size > MAX_FEDERATION_DIRECTORY_ENTRIES) {
-    problems.push(
-      `federation.sessions.expose expands to ${String(exposed.size)} sessions; ` +
-        `the maximum is ${String(MAX_FEDERATION_DIRECTORY_ENTRIES)}`,
-    );
-  }
-  for (const codename of exposed) {
-    if (!sessions.has(codename)) problems.push(`federation.sessions.expose contains unknown session '${codename}'`);
-    if (`${codename}@${config.federation.name}`.length > 128) {
-      problems.push(`federation address '${codename}@${config.federation.name}' exceeds 128 characters`);
-    }
-  }
-  for (const codename of Object.keys(config.federation.sessions.descriptions)) {
-    if (!sessions.has(codename)) {
-      problems.push(`federation.sessions.descriptions contains unknown session '${codename}'`);
-    } else if (!exposed.has(codename)) {
-      problems.push(
-        `federation.sessions.descriptions.${codename} requires '${codename}' in federation.sessions.expose`,
-      );
-    }
-  }
-  return problems;
 }
 
 export function parseSessionConfig(
@@ -175,10 +143,8 @@ export function loadConfig(baseDir: string, opts: { tolerant?: boolean } = {}): 
 export function validateConfig(baseDir: string): string[] {
   const problems: string[] = [];
   let defaultRuntime: SessionConfig['runtime'] = 'claude-code';
-  let supervisor: SupervisorConfig | undefined;
   try {
-    supervisor = loadSupervisorConfig(baseDir);
-    defaultRuntime = supervisor.defaults.runtime;
+    defaultRuntime = loadSupervisorConfig(baseDir).defaults.runtime;
   } catch (err) {
     problems.push(err instanceof Error ? err.message : String(err));
   }
@@ -190,7 +156,6 @@ export function validateConfig(baseDir: string): string[] {
     if (!problems.includes(message)) problems.push(message);
     return problems;
   }
-  const parsedSessions = new Map<string, SessionConfig>();
   if (existsSync(dir)) {
     const seen = new Set<string>();
     for (const entry of readdirSync(dir).sort()) {
@@ -201,12 +166,10 @@ export function validateConfig(baseDir: string): string[] {
         const session = parseSessionConfig(raw, file, baseDir, defaultRuntime);
         if (seen.has(session.codename)) problems.push(`${file}: duplicate codename '${session.codename}'`);
         seen.add(session.codename);
-        parsedSessions.set(session.codename, session);
       } catch (err) {
         problems.push(`${file}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
-  if (supervisor !== undefined) problems.push(...validateFederationExposure(supervisor, parsedSessions));
   return problems;
 }

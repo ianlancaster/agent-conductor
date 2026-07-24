@@ -69,9 +69,10 @@ CONDUCTOR_TELEGRAM_CHAT_ID=987654321
 ```
 
 `conductor start` creates inert stubs when these files are missing. The live `.env` is owner-only
-and gitignored. Inherited process variables override fleet-file values; launchd and systemd
-normally do not load interactive shell startup files, so the fleet environment is the reliable
-daemon fallback.
+and gitignored. Fleet-file values override inherited process values, so editing the file and
+restarting reliably replaces stale credentials from a long-lived parent process. launchd and systemd
+normally do not load interactive shell startup files, so the fleet environment is also the reliable
+daemon source.
 
 Validate before restarting:
 
@@ -79,18 +80,26 @@ Validate before restarting:
 conductor -C /path/to/fleet validate
 ```
 
-Enabling the channel without both nonblank values fails clearly without printing either secret.
+Enabling the channel without both nonblank values marks Telegram unavailable without printing either
+secret. The core Conductor still starts, so session lifecycle and agent-to-agent messaging do not depend
+on an optional provider.
+At startup, Conductor validates the token with Telegram before reporting the channel as connected.
+An invalid, stale, or revoked token therefore degrades Telegram immediately with replacement guidance.
+Use the startup log to verify that the Telegram channel connected or to diagnose a rejected configuration.
 
 ## 4. Start and use it
 
 Restart the intended fleet. In the bot's private chat, try:
 
 ```text
-/help
+/start
 /status
 /talk alpha
 Please summarize your current progress.
 ```
+
+Telegram uses `/start` as its required conversation handshake. A bare `/start` returns the fleet
+status followed by command help; `/start <session|all>` keeps the normal Conductor lifecycle behavior.
 
 After `/talk alpha`, ordinary text goes to `alpha` until the conversation target changes. To send a
 literal slash-leading line to the target session without treating it as an operator command, double
@@ -125,7 +134,8 @@ environment, and restart the fleet.
 
 | Symptom                                      | Check                                                                                                     |
 | -------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Startup reports missing variables            | Fill both `CONDUCTOR_TELEGRAM_TOKEN` and `CONDUCTOR_TELEGRAM_CHAT_ID`, or disable the channel.            |
+| Status reports missing variables/unavailable | Fill both `CONDUCTOR_TELEGRAM_TOKEN` and `CONDUCTOR_TELEGRAM_CHAT_ID`, or disable the channel.            |
+| Log says Telegram rejected the bot token     | Copy or generate the current token in BotFather, update the fleet environment, and restart.               |
 | Bot never responds                           | Confirm the user sent the bot a first message, the chat ID is from that private chat, and the fleet runs. |
 | Log repeatedly reports Telegram 409          | Another process polls the token. Give every concurrently running fleet its own bot.                       |
 | `getUpdates` reports an active webhook       | Remove the webhook or use a fresh dedicated bot; long polling and webhooks cannot run together.           |

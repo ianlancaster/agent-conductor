@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Supervisor } from '../src/core/supervisor.js';
 import type { ChannelAdapter, ChannelHandlers, ChannelMessage } from '../src/channels/types.js';
+import { Store } from '../src/store/index.js';
 
 let baseDir: string;
 let supervisor: Supervisor | undefined;
@@ -42,6 +43,7 @@ describe('Supervisor construction', () => {
     supervisor = new Supervisor(baseDir);
 
     const status = supervisor.statusReport();
+    expect(status).toMatch(/^Agent Conductor Status\n/);
     expect(status).toContain('Sessions:');
     expect(status).toContain('alpha');
     expect(status).toContain('watch');
@@ -56,38 +58,56 @@ describe('Supervisor construction', () => {
     expect(supervisor.statusReport()).not.toContain('sentinel');
   });
 
-  it('fails fast when Telegram is enabled without both credentials', () => {
-    writeConfig('terminal:\n  backend: tmux\nchannels:\n  telegram:\n    enabled: true\n', {});
-    expect(() => new Supervisor(baseDir, { env: {} })).toThrow(/CONDUCTOR_TELEGRAM_TOKEN.*CHAT_ID.*missing or blank/);
-  });
-
-  it('fails clearly when Slack is enabled without its credentials', () => {
-    writeConfig('terminal:\n  backend: tmux\nchannels:\n  slack:\n    enabled: true\n', {});
-    expect(() => new Supervisor(baseDir, { env: {} })).toThrow(
-      /CONDUCTOR_SLACK_BOT_TOKEN.*CONDUCTOR_SLACK_APP_TOKEN.*CONDUCTOR_SLACK_OPERATOR_USER_ID/,
+  it('keeps the core available when Telegram is enabled without both credentials', async () => {
+    const port = await freePort();
+    writeConfig(
+      `terminal:\n  backend: tmux\nmcp:\n  port: ${String(port)}\nchannels:\n  telegram:\n    enabled: true\n`,
+      {},
     );
+    supervisor = new Supervisor(baseDir, { env: {} });
+    await supervisor.start();
+    await expect(fetch(`http://127.0.0.1:${String(port)}/health`)).resolves.toMatchObject({ ok: true });
   });
 
-  it('rolls back started channels and the MCP listener when a later channel fails startup', async () => {
+  it('keeps the core available when Slack is enabled without its credentials', async () => {
+    const port = await freePort();
+    writeConfig(
+      `terminal:\n  backend: tmux\nmcp:\n  port: ${String(port)}\nchannels:\n  slack:\n    enabled: true\n`,
+      {},
+    );
+    supervisor = new Supervisor(baseDir, { env: {} });
+    await supervisor.start();
+    await expect(fetch(`http://127.0.0.1:${String(port)}/health`)).resolves.toMatchObject({ ok: true });
+  });
+
+  it('isolates a channel startup failure and exposes health only after it settles', async () => {
     const port = await freePort();
     writeConfig(`terminal:\n  backend: tmux\nmcp:\n  port: ${String(port)}\n`, {});
     const first = new ControlledChannel('first');
-    const failure = new ControlledChannel('failure', new Error('Slack preflight failed'));
+    let releaseFailure: (() => void) | undefined;
+    const failureGate = new Promise<void>((resolve) => {
+      releaseFailure = resolve;
+    });
+    const failure = new ControlledChannel(
+      'failure',
+      new Error('Slack preflight failed'),
+      undefined,
+      async () => failureGate,
+    );
     supervisor = new Supervisor(baseDir, {
       channels: [first, failure],
       includeConfiguredChannels: false,
       env: {},
     });
 
-    await expect(supervisor.start()).rejects.toThrow('Slack preflight failed');
-    expect(first.stopCount).toBe(1);
-    expect(failure.stopCount).toBe(0);
-    await expect(canListen(port)).resolves.toBe(true);
-
-    // Failed startup released the fleet lock as well as the port.
-    await supervisor.stop();
-    supervisor = new Supervisor(baseDir, { channels: [], includeConfiguredChannels: false, env: {} });
-    await supervisor.start();
+    const starting = supervisor.start();
+    await until(() => failure.startCount === 1);
+    await expect(conductorReachable(port)).resolves.toBe(false);
+    releaseFailure?.();
+    await starting;
+    expect(first.stopCount).toBe(0);
+    expect(failure.stopCount).toBe(1);
+    await expect(fetch(`http://127.0.0.1:${String(port)}/health`)).resolves.toMatchObject({ ok: true });
   });
 
   it('fans operator notifications out concurrently across adapters', async () => {
@@ -124,7 +144,36 @@ describe('Supervisor construction', () => {
     expect((await response).status).toBe(200);
   });
 
-  it('honors injected/global environment over fleet .env for configured channels', () => {
+  it('reports NOT delivered when every operator send fails', async () => {
+    const port = await freePort();
+    writeConfig(`terminal:\n  backend: tmux\nmcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const broken = new ControlledChannel('broken', undefined, async () => {
+      throw new Error('transport unavailable');
+    });
+    supervisor = new Supervisor(baseDir, {
+      channels: [broken],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+
+    const response = await fetch(`http://127.0.0.1:${String(port)}/mcp/alpha`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'send_to_operator', arguments: { message: 'Important update' } },
+      }),
+    });
+    const payload = (await response.json()) as { result: { content: { text: string }[] } };
+    expect(payload.result.content[0]?.text).toMatch(/^NOT delivered:/);
+  });
+
+  it('constructs configured channels when fleet credentials override inherited values', () => {
     writeConfig('terminal:\n  backend: tmux\nchannels:\n  telegram:\n    enabled: true\n', {});
     writeFileSync(join(baseDir, '.env'), 'CONDUCTOR_TELEGRAM_TOKEN=file-token\nCONDUCTOR_TELEGRAM_CHAT_ID=file-chat\n');
     supervisor = new Supervisor(baseDir, {
@@ -203,6 +252,40 @@ describe('Supervisor construction', () => {
     expect(status).toContain('"tag": "carry-over"');
   });
 
+  it('persists the fleet-watch toggle across supervisor instances', async () => {
+    writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43394\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+      beta: `codename: beta\nrepo: ${baseDir}\n`,
+    });
+    supervisor = new Supervisor(baseDir);
+    expect(await supervisor.command('/fleet-watch')).toBe('Fleet watch on.');
+    await supervisor.stop();
+
+    supervisor = new Supervisor(baseDir);
+    expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status 🔄\n/);
+    expect(await supervisor.command('/fleet-watch')).toBe('Fleet watch off.');
+    await supervisor.stop();
+
+    supervisor = new Supervisor(baseDir);
+    expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status\n/);
+  });
+
+  it('migrates an existing named fleet watch to the fleet-wide toggle', () => {
+    writeConfig('terminal:\n  backend: tmux\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+      beta: `codename: beta\nrepo: ${baseDir}\n`,
+    });
+    const store = new Store(join(baseDir, 'data', 'conductor.db'));
+    store.setWorkspaceValue('sentinel.fleetWatches', [
+      { name: 'legacy', sessions: ['alpha', 'beta'], thresholdSeconds: 60 },
+    ]);
+    store.close();
+
+    supervisor = new Supervisor(baseDir);
+
+    expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status 🔄\n/);
+  });
+
   it('persists a tool-set sentinel override and a cleared designation', async () => {
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43398\nsentinel:\n  codename: watch\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
@@ -250,19 +333,25 @@ describe('Supervisor construction', () => {
     expect(supervisor.statusReport()).toContain('No sessions configured');
   });
 
-  it('retains a fleet watch over remaining members when a session config is removed', async () => {
+  it('keeps fleet watch enabled as registered membership changes', async () => {
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43394\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
       beta: `codename: beta\nrepo: ${baseDir}\n`,
       gamma: `codename: gamma\nrepo: ${baseDir}\n`,
     });
     supervisor = new Supervisor(baseDir);
-    expect(await supervisor.command('/fleet-watch arm release alpha,beta,gamma 60')).toContain("'release' armed");
+    expect(await supervisor.command('/fleet-watch')).toBe('Fleet watch on.');
 
     rmSync(join(baseDir, 'config', 'sessions', 'gamma.yaml'));
     supervisor.reloadSessionsForTest();
 
-    expect(await supervisor.command('/fleet-watch list')).toContain('sessions alpha,beta');
+    expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status 🔄\n/);
+    await supervisor.stop();
+
+    supervisor = new Supervisor(baseDir);
+    expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status 🔄\n/);
+    await supervisor.command('/fleet-watch');
+    expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status\n/);
   });
 
   it('groups marker-file repos under the Agents header in status', () => {
@@ -286,15 +375,19 @@ describe('Supervisor construction', () => {
 
 class ControlledChannel implements ChannelAdapter {
   readonly sent: ChannelMessage[] = [];
+  startCount = 0;
   stopCount = 0;
 
   constructor(
     readonly name: string,
     private readonly startError?: Error,
     private readonly onSend?: (message: ChannelMessage) => Promise<void>,
+    private readonly onStart?: () => Promise<void>,
   ) {}
 
   async start(_handlers: ChannelHandlers): Promise<void> {
+    this.startCount += 1;
+    await this.onStart?.();
     if (this.startError !== undefined) throw this.startError;
   }
 
@@ -320,12 +413,12 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 
-async function canListen(port: number): Promise<boolean> {
-  const server = createServer();
-  return new Promise((resolve) => {
-    server.once('error', () => resolve(false));
-    server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
-  });
+async function conductorReachable(port: number): Promise<boolean> {
+  try {
+    return (await fetch(`http://127.0.0.1:${String(port)}/health`)).ok;
+  } catch {
+    return false;
+  }
 }
 
 async function until(condition: () => boolean, timeoutMs = 2_000): Promise<void> {

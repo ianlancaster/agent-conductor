@@ -2,4 +2,4 @@
 'agent-conductor': patch
 ---
 
-Prevent queued iTerm messages from being silently lost, restore immediate raw pane typing, add durable message receipts and recovery, and correct cross-runtime activity/input detection.
+Prevent queued iTerm messages from being silently lost within a running Conductor, restore immediate raw pane typing, add observable message receipts, and correct cross-runtime activity/input detection.

@@ -12,17 +12,9 @@ Each stall arrives as one self-contained message:
 
     [Stall] session=<codename> kind=<idle|blocked|compaction|silent> last: <the truncated last message it stalled on>
 
-An armed fleet watch may also send:
+Fleet watch may also send:
 
-    [Fleet Stall] watch=<name> sessions=<comma-separated codenames> all-stalled-for=<seconds>s Investigate immediately.
-
-Roster churn may send a control notice:
-
-    [Fleet Watch] watch=<name> membership changed: removed=<sessions> remaining=<sessions>. ...
-    [Fleet Watch] watch=<name> invalidated: removed=<sessions> remaining=<sessions>. ...
-
-A membership-changed watch remains armed over the named sessions. An invalidated watch has fewer
-than two members and no longer protects the fleet; tell the operator or re-arm a suitable group.
+    [Fleet Stall] sessions=<comma-separated codenames> all-stalled-for=<seconds>s Investigate immediately.
 
 Treat a fleet stall as higher priority than an individual idle report: inspect the
 listed sessions, restart coordination where possible, and contact the operator if

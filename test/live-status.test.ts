@@ -56,6 +56,21 @@ describe('renderStatusDashboard', () => {
     expect(view).toContain('q quit · r refresh');
   });
 
+  it('shows enabled fleet watch immediately after the online indicator', () => {
+    const view = renderStatusDashboard(
+      {
+        connection: 'online',
+        status: 'Agent Conductor Status 🔄\n\nSessions:\n  alpha - CC · 🟡 idle - auto 🔄',
+      },
+      options,
+      false,
+    );
+    expect(view).toContain('Agent Conductor Status  ● ONLINE 🔄 fleet watch on');
+    expect(view).not.toContain('Agent Conductor Status 🔄');
+    expect(view.match(/Agent Conductor Status/gu)).toHaveLength(1);
+    expect(view).toContain('alpha - CC · 🟡 idle - auto 🔄');
+  });
+
   it('keeps the last good snapshot visible while offline', () => {
     const view = renderStatusDashboard(
       {

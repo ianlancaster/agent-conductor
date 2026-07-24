@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { get } from 'node:http';
 import { ConductorMcpServer, type McpToolDefinition } from '../src/mcp/server.js';
 import { InvalidRequestError } from '../src/core/errors.js';
 
@@ -58,6 +59,7 @@ beforeEach(async () => {
       commands.push({ line, interactionId: commandInteractionId });
       return Promise.resolve(`ran: ${line}`);
     },
+    feedHeartbeatMs: 10,
   });
   await server.start();
 });
@@ -106,6 +108,27 @@ describe('operator feed', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(server.feedClientCount()).toBe(0);
     expect(server.pushToFeed({ text: 'anyone?' })).toBe(false);
+  });
+
+  it('keeps an idle feed alive with SSE heartbeat comments', async () => {
+    const buffer = await new Promise<string>((resolve, reject) => {
+      let settled = false;
+      const request = get(`${BASE}/feed`, (response) => {
+        response.setEncoding('utf8');
+        let received = '';
+        response.on('data', (chunk: string) => {
+          received += chunk;
+          if (!received.includes(': heartbeat\n\n')) return;
+          settled = true;
+          response.destroy();
+          resolve(received);
+        });
+      });
+      request.on('error', (error) => {
+        if (!settled) reject(error);
+      });
+    });
+    expect(buffer).toContain(': heartbeat\n\n');
   });
 
   it('rejects cross-origin feed subscriptions', async () => {

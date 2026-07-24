@@ -11,7 +11,7 @@ export function tokenize(line: string): string[] {
   return tokens;
 }
 
-export type CommandGroup = 'Sessions' | 'Conversation' | 'Modes' | 'Lifecycle' | 'Federation';
+export type CommandGroup = 'Sessions' | 'Conversation' | 'Modes' | 'Lifecycle';
 
 export interface OperatorCommandDefinition {
   command: string;
@@ -290,37 +290,13 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
     },
     {
       command: 'fleet-watch',
-      operations: ['arm_fleet_watch', 'disarm_fleet_watch', 'list_fleet_watches'],
+      operations: ['toggle_fleet_watch'],
       group: 'Modes',
-      usage: '/fleet-watch <arm|disarm|list> ...',
-      description: 'Arm, disarm, or inspect fleet-wide stall detection.',
-      details: [
-        '    /fleet-watch arm <name> <session,session> [confirmation-seconds]',
-        '    /fleet-watch disarm <name> · /fleet-watch list',
-      ],
+      usage: '/fleet-watch',
+      description: operationDescription(operations, 'toggle_fleet_watch'),
       invoke: (args, actor) => {
-        const action = args[0];
-        if (action === 'list' && args.length === 1) return invoke('list_fleet_watches', {}, actor);
-        if (action === 'disarm' && args.length === 2 && args[1] !== undefined) {
-          return invoke('disarm_fleet_watch', { name: args[1] }, actor);
-        }
-        if (action === 'arm' && (args.length === 3 || args.length === 4)) {
-          const name = args[1];
-          const sessions = args[2];
-          if (name === undefined || sessions === undefined) {
-            usage('/fleet-watch arm <name> <session,session> [confirmation-seconds]');
-          }
-          const thresholdSeconds = args[3] === undefined ? undefined : Number(args[3]);
-          if (thresholdSeconds !== undefined && (!Number.isFinite(thresholdSeconds) || thresholdSeconds < 0)) {
-            throw new Error('confirmation-seconds must be zero or a positive number');
-          }
-          return invoke(
-            'arm_fleet_watch',
-            { name, sessions, ...(thresholdSeconds !== undefined ? { thresholdSeconds } : {}) },
-            actor,
-          );
-        }
-        usage('/fleet-watch <arm <name> <session,session> [seconds]|disarm <name>|list>');
+        if (args.length !== 0) usage('/fleet-watch');
+        return invoke('toggle_fleet_watch', {}, actor);
       },
     },
     {
@@ -415,7 +391,7 @@ function parseSpawn(args: string[]): Record<string, unknown> {
 
 export function renderOperatorHelp(commands: readonly OperatorCommandDefinition[]): string {
   const lines: string[] = [];
-  const groups: CommandGroup[] = ['Sessions', 'Conversation', 'Modes', 'Lifecycle', 'Federation'];
+  const groups: CommandGroup[] = ['Sessions', 'Conversation', 'Modes', 'Lifecycle'];
   for (const group of groups) {
     const candidates = commands.filter((candidate) => candidate.group === group);
     if (candidates.length === 0) continue;

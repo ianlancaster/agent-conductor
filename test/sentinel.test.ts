@@ -16,9 +16,16 @@ let panes: Map<string, string>;
 function makeRouter(
   sentinelCodename: string | undefined,
   isActive: (session: string) => boolean | Promise<boolean> = (session) => activeSessions.has(session),
+  fleetStallThresholdSeconds = 0,
 ): StallSentinelRouter {
   return new StallSentinelRouter({
-    config: { captureLines: 40, suppressWindowMs: 300_000, suppressSimilarity: 0.8, sentinelCodename },
+    config: {
+      captureLines: 40,
+      suppressWindowMs: 300_000,
+      suppressSimilarity: 0.8,
+      sentinelCodename,
+      fleetStallThresholdSeconds,
+    },
     backend,
     runtimeFor: () => runtime,
     getPane: (session) => {
@@ -36,6 +43,7 @@ function makeRouter(
       operatorMessages.push(text);
     },
     logEvent: () => undefined,
+    initialSessions: ['alpha', 'beta', 'watch'],
   });
 }
 
@@ -180,9 +188,9 @@ describe('isSentinel', () => {
   });
 });
 
-describe('fleet stall watches', () => {
-  it('routes one fleet alert only after every watched session has stalled', async () => {
-    router.armFleetWatch({ name: 'release', sessions: ['alpha', 'beta'], thresholdSeconds: 0 });
+describe('fleet stall watch', () => {
+  it('routes one fleet alert only after every non-sentinel session has stalled', async () => {
+    expect(router.toggleFleetWatch()).toBe(true);
 
     await router.handleStall('alpha', 'idle', {});
     expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
@@ -193,20 +201,18 @@ describe('fleet stall watches', () => {
     expect(fleet).toHaveLength(1);
     expect(fleet[0]).toEqual({
       session: 'watch',
-      text: '[Fleet Stall] watch=release sessions=alpha,beta all-stalled-for=0s Investigate immediately.',
+      text: '[Fleet Stall] sessions=alpha,beta all-stalled-for=0s Investigate immediately.',
     });
-    expect(router.listFleetWatches()[0]?.state).toBe('reported');
   });
 
   it('cancels confirmation when one member recovers, then rearms for a later fleet stall', async () => {
     vi.useFakeTimers();
-    router.armFleetWatch({ name: 'release', sessions: ['alpha', 'beta'], thresholdSeconds: 30 });
+    router = makeRouter('watch', undefined, 30);
+    router.toggleFleetWatch();
     await router.handleStall('alpha', 'idle', {});
     await router.handleStall('beta', 'idle', {});
-    expect(router.listFleetWatches()[0]?.state).toBe('confirming');
 
     router.noteWorking('alpha');
-    expect(router.listFleetWatches()[0]?.state).toBe('watching');
     await vi.advanceTimersByTimeAsync(30_000);
     expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
 
@@ -215,63 +221,68 @@ describe('fleet stall watches', () => {
     expect(delivered.filter((item) => item.text.startsWith('[Fleet Stall]'))).toHaveLength(1);
   });
 
-  it('rejects one-member watches and watches containing the sentinel', () => {
-    expect(() => router.armFleetWatch({ name: 'solo', sessions: ['alpha'], thresholdSeconds: 0 })).toThrow(
-      'at least two',
-    );
-    expect(() => router.armFleetWatch({ name: 'bad', sessions: ['alpha', 'watch'], thresholdSeconds: 0 })).toThrow(
-      'sentinel',
-    );
+  it('toggles one fleet-wide setting and persists only through its callback', () => {
+    const changes: boolean[] = [];
+    router = new StallSentinelRouter({
+      config: {
+        captureLines: 40,
+        suppressWindowMs: 300_000,
+        suppressSimilarity: 0.8,
+        sentinelCodename: 'watch',
+        fleetStallThresholdSeconds: 15,
+      },
+      backend,
+      runtimeFor: () => runtime,
+      getPane: () => undefined,
+      isAuto: () => false,
+      isPaused: () => false,
+      isActive: () => true,
+      deliver: async () => undefined,
+      notifyOperator: async () => undefined,
+      logEvent: () => undefined,
+      initialSessions: ['alpha', 'beta', 'watch'],
+      onFleetWatchChanged: (enabled) => changes.push(enabled),
+    });
+
+    expect(router.isFleetWatchEnabled()).toBe(false);
+    expect(router.toggleFleetWatch()).toBe(true);
+    expect(router.toggleFleetWatch()).toBe(false);
+    expect(changes).toEqual([true, false]);
   });
 
-  it('prevents a watched worker from later becoming the sentinel', () => {
-    router.armFleetWatch({ name: 'release', sessions: ['alpha', 'beta'], thresholdSeconds: 0 });
-    expect(() => router.setSentinel('alpha')).toThrow('armed fleet watch');
-    expect(router.sentinelCodename()).toBe('watch');
-  });
-
-  it('keeps a watch armed over remaining members when one session is removed', async () => {
-    router.armFleetWatch({ name: 'release', sessions: ['alpha', 'beta', 'gamma'], thresholdSeconds: 0 });
+  it('tracks registered membership automatically', async () => {
+    router.setRegisteredSessions(['alpha', 'beta', 'gamma', 'watch']);
+    router.toggleFleetWatch();
     await router.handleStall('alpha', 'idle', {});
     await router.handleStall('beta', 'idle', {});
     expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
 
-    await router.reconcileFleetWatches(new Set(['alpha', 'beta', 'watch']));
+    router.setRegisteredSessions(['alpha', 'beta', 'watch']);
+    await Promise.resolve();
 
-    expect(router.listFleetWatches()[0]).toMatchObject({
-      name: 'release',
-      sessions: ['alpha', 'beta'],
-      state: 'reported',
-    });
-    expect(delivered.some((item) => item.text.startsWith('[Fleet Watch]') && item.text.includes('gamma'))).toBe(true);
     expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(true);
+    expect(router.isFleetWatchEnabled()).toBe(true);
   });
 
-  it('notifies and disarms a watch that falls below two registered members', async () => {
-    router.armFleetWatch({ name: 'release', sessions: ['alpha', 'beta'], thresholdSeconds: 10 });
+  it('stays enabled without alerting when fewer than two sessions are eligible', async () => {
+    router.setRegisteredSessions(['alpha', 'watch']);
+    router.toggleFleetWatch();
+    await router.handleStall('alpha', 'idle', {});
 
-    await router.reconcileFleetWatches(new Set(['alpha', 'watch']));
-
-    expect(router.listFleetWatches()).toEqual([]);
-    expect(delivered).toContainEqual({
-      session: 'watch',
-      text: expect.stringContaining('[Fleet Watch] watch=release invalidated') as string,
-    });
+    expect(router.isFleetWatchEnabled()).toBe(true);
+    expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
   });
 
-  it('notifies the operator when an invalidated watch has no sentinel', async () => {
-    const noSentinel = makeRouter(undefined);
-    noSentinel.armFleetWatch({ name: 'release', sessions: ['alpha', 'beta'], thresholdSeconds: 10 });
+  it('excludes whichever session is currently designated sentinel', async () => {
+    router.toggleFleetWatch();
+    router.setSentinel('alpha');
+    await router.handleStall('beta', 'idle', {});
+    await router.handleStall('watch', 'idle', {});
+    await Promise.resolve();
 
-    await noSentinel.reconcileFleetWatches(new Set(['alpha']));
-
-    expect(operatorMessages).toContainEqual(expect.stringContaining('watch=release invalidated'));
-  });
-
-  it('disarms explicitly', () => {
-    router.armFleetWatch({ name: 'one', sessions: ['alpha', 'beta'], thresholdSeconds: 10 });
-    expect(router.disarmFleetWatch('one')).toBe(true);
-    expect(router.disarmFleetWatch('missing')).toBe(false);
-    expect(router.listFleetWatches()).toEqual([]);
+    const fleet = delivered.filter((item) => item.text.startsWith('[Fleet Stall]'));
+    expect(fleet).toHaveLength(1);
+    expect(fleet[0]?.session).toBe('alpha');
+    expect(fleet[0]?.text).toContain('sessions=beta,watch');
   });
 });

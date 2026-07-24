@@ -21,8 +21,6 @@ compose:
 - **Scheduling:** cron-driven prompts using the same lifecycle and protected delivery mechanisms.
 - **Workspaces:** empty directories, configured Git templates, and linked Git worktrees.
 - **Operator channels:** the local console plus optional Telegram, Slack, or injected adapters.
-- **Federation:** optional messages-only communication between explicitly exposed sessions in
-  separate local Conductor fleets.
 - **PR Shepherd:** a separate opt-in GitHub polling service that can notify a coordinator through
   Conductor.
 - **Status lines:** optional Claude Code and Codex footer configuration for runtime and repository
@@ -30,13 +28,12 @@ compose:
 
 The most important architectural distinctions are:
 
-1. `send_to_session` is a protected, durable local-fleet conversation primitive.
+1. `send_to_session` is a protected, process-local queued conversation primitive.
 2. `type_in_pane` is immediate terminal control and can overwrite pending operator input.
 3. Auto mode routes detected stalls; it does not give Conductor autonomous judgment.
 4. The sentinel is an ordinary agent that supplies that judgment through ordinary tools.
 5. Operator channels transport the canonical command surface; they do not implement separate
    fleet behavior.
-6. Federation transports messages only. It is not cross-fleet lifecycle or terminal control.
 
 Start with `whoami`, `list_sessions`, and `get_session_status` when you need orientation. Use
 `get_conductor_docs` without a topic to discover this handbook's topics and the exact paths for
@@ -50,7 +47,6 @@ Authoritative references shipped with the package:
 - `prompts/conductor-protocol.md`: mandatory managed-session protocol
 - `prompts/sentinel.md`: baseline sentinel role
 - `guides/telegram-adapter.md` and `guides/slack-adapter.md`: external operator channels
-- `guides/local-federation.md`: same-machine fleet federation
 - `docs/pr-shepherd.md`: standalone PR Shepherd
 
 <!-- conductor-topic:fleet-configuration -->
@@ -82,9 +78,7 @@ far from the fleet directory.
 `conductor start` creates missing scaffold files but never overwrites existing configuration or
 secrets. Session YAML files hot-reload. Adding, editing, or removing a file under
 `.conductor/config/sessions/` updates the roster without restarting, subject to last-good handling
-for invalid edits and active removed sessions. Most supervisor settings require a restart;
-federation exposure and public descriptions hot-reload, while federation enablement and name do
-not.
+for invalid edits and active removed sessions. Supervisor settings require a restart.
 
 A session file has this shape:
 
@@ -154,10 +148,11 @@ turn. Do not create timers, sleep loops, schedules, or repeated status checks fo
 conversation. Use `tail_session` only when the user asks for it or direct communication remains
 unanswered and diagnosis is necessary.
 
-Direct-message receipts are durable:
+Direct-message receipts are observable:
 
-- `queued` means Conductor persisted the message and owns delivery.
+- `queued` means the current Conductor process owns delivery while it remains running.
 - `delivered` means protected pane submission completed.
+- A Conductor restart cancels queued local messages rather than replaying stale conversation.
 - `get_message_status` reports `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`, so a
   sender can distinguish a queue that has not run from one waiting on occupied input.
 - `cancel_message` can cancel a pending receipt before its pane write starts.
@@ -316,7 +311,7 @@ restart.
 
 <!-- conductor-topic:supervision -->
 
-## Auto mode, sentinels, fleet watches, and escalation policy
+## Auto mode, sentinels, fleet watch, and escalation policy
 
 Auto is one boolean per session. When off, stalls are operator-driven. When on, mechanical stall
 detection routes events to the designated sentinel. Auto does not authorize arbitrary action and
@@ -347,9 +342,10 @@ Other stall kinds come from mechanical signals:
   Claude Code, so its unusual stuck states rely more heavily on the fallback watchdog and sentinel
   inspection.
 
-`toggle_auto` controls routing, while `set_sentinel`, `arm_fleet_watch`, `disarm_fleet_watch`, and
-`list_fleet_watches` manage the destination and campaign-level escalation. These operations do not
-change the underlying mechanical health classification.
+`toggle_auto` controls per-session routing, while `set_sentinel` selects the destination and
+`toggle_fleet_watch` enables or disables campaign-level escalation. These operations do not change
+the underlying mechanical health classification. The fleet-watch boolean persists across Conductor
+restarts; runtime observations and partially elapsed confirmation timers do not.
 
 A good fleet-specific sentinel prompt adds policy rather than implementation:
 
@@ -377,15 +373,14 @@ Recommended escalation composition:
 routing without changing the configured auto state. Use it for maintenance, intentional waiting,
 or operator review; `resume_session` restores the prior behavior.
 
-Fleet watches detect campaign-level failure. Arm one over at least two workers when individual
-stalls are normal but all workers stalled together requires attention. After every member is
-stalled for the configured confirmation interval, Conductor sends one fleet alert to the sentinel,
-or directly to the operator if no sentinel exists. Watches are process-local and should not be
-treated as durable workflow definitions. When a watched session is deregistered, a watch with at
-least two remaining members continues over that smaller group and resets its confirmation window.
-Conductor sends a `[Fleet Watch]` membership notice to the sentinel, or to the operator when the
-sentinel is absent or down. If fewer than two members remain, the notice explicitly says that the
-watch was invalidated instead of letting the safety gap remain silent.
+Fleet watch detects campaign-level failure when individual stalls are normal but the entire fleet
+being stalled together requires attention. `toggle_fleet_watch` is a single fleet-level boolean.
+When enabled, it watches every registered session except the sentinel and follows roster changes
+automatically. After all eligible sessions remain stalled for `health.fleetStallConfirmMs` (15
+seconds by default), Conductor sends one fleet alert to the sentinel, or directly to the operator
+if no sentinel exists. With fewer than two eligible sessions the setting remains enabled but does
+not alert. Recovery, roster changes, sentinel changes, and process restarts reset the confirmation
+cycle without changing the persisted toggle.
 
 <!-- conductor-topic:scheduling -->
 
@@ -473,6 +468,11 @@ selects the recipient for operator free text, `/respond` answers a selectable ag
 Telegram is a private bot long-polling adapter. It requires one token and authorized chat ID per
 fleet. Follow `guides/telegram-adapter.md`.
 
+Operator channels are failure-isolated from the control plane. Startup and transport failures are
+written to Conductor's logs. `send_to_operator` confirms delivery only when an attached console or at
+least one external channel actually accepts the message; otherwise it returns `NOT delivered`.
+Agent-to-agent messaging remains available when an optional operator provider is down.
+
 Slack is a private App Home Socket Mode adapter. It requires one Slack app per running fleet,
 because sharing an app silently load-balances events between connections. Follow
 `guides/slack-adapter.md`.
@@ -529,43 +529,6 @@ instructions, not hard-coded into Shepherd.
 See `docs/pr-shepherd.md` for the complete schema, delivery contract, event types, automation
 semantics, and operational commands.
 
-<!-- conductor-topic:federation -->
-
-## Local federation and the remote boundary
-
-Local federation connects separate Conductor instances running as the same OS user on one machine.
-It is optional, disabled by default, and messages-only.
-
-Each instance registers an owner-only heartbeat and loopback endpoint under
-`~/.agent-conductor/federation/`. Peers authenticate to one another, fetch current explicitly
-exposed rosters, and address sessions as `<session>@<fleet>`.
-
-Agents use:
-
-- `list_peers` to discover exact replyable addresses;
-- `send_to_peer` for durable cross-fleet messages;
-- `get_peer_message_status` for queued, received, delivered, expired, or failed state.
-
-The receiving agent sees `[Message from session@fleet] ...` and replies by copying that exact
-address into `send_to_peer`. Federation never starts, tails, types into, or controls the peer.
-
-Only exposed sessions are visible and reachable. Published metadata is intentionally limited to
-public descriptions, codename, presence, and capabilities. Paths, tags, branches, models, output,
-and work content remain private.
-
-Local credentials prevent accidental identity confusion but are not a security boundary against
-another process running as the same OS user. The server binds to loopback. Do not expose it to a
-network or use local federation across OS users.
-
-**Remote federation is not implemented in the current release.** There is no supported gateway,
-public remote MCP, network authentication, or cross-machine setup to enable. Do not open the local
-federation port or registry to approximate it. The planned remote architecture is a separate
-authenticated, outbound-connected, durable relay and will require its own threat model and setup
-guide when implemented.
-
-See `guides/local-federation.md` for configuration, exposure, delivery semantics, and the two-fleet
-shakedown.
-
 <!-- conductor-topic:recipes -->
 
 ## Composable fleet recipes
@@ -585,7 +548,7 @@ These are patterns built from primitives, not special workflow features.
 
 1. Configure and start one sentinel with a fleet-specific escalation policy.
 2. Enable auto only for workers whose stalls should be routed.
-3. Arm a fleet watch if “all workers stopped” is materially different from one normal stall.
+3. Enable fleet watch if “all workers stopped” is materially different from one normal stall.
 4. Let the sentinel ask workers directly, then escalate evidence and options to the operator.
 5. Pause sessions during intentional waits or maintenance rather than toggling away their auto
    policy.
@@ -607,14 +570,6 @@ These are patterns built from primitives, not special workflow features.
 5. Tear attached advisors down with `deleteDir: false`; only the original host should perform
    final workspace deletion.
 
-### Cross-fleet specialist
-
-1. Expose only the coordinator and specialist sessions.
-2. Discover with `list_peers`.
-3. Send a self-contained assignment to the exact qualified address.
-4. End the turn and await the federated reply.
-5. Track durable status only when delivery is uncertain.
-
 The product principle behind every recipe is the same: use small mechanical operations for
 identity, persistence, lifecycle, and routing; leave prioritization and judgment to agents and the
 operator.
@@ -628,7 +583,6 @@ Choose the narrowest extension seam:
 - `ChannelAdapter`: an external operator transport.
 - `SessionRuntime`: a new agent CLI.
 - `TerminalBackend`: a new pane/process host.
-- `FederationAdapter`: peer discovery, authentication, and durable message transport.
 - Control-surface adapter: another rendering of canonical `ConductorOperations`.
 
 An adapter translates environment-specific mechanics. It must not fork core policy.
@@ -690,8 +644,7 @@ Use the `fleetDir` returned by `get_conductor_docs`, not the session repository 
 
 Inspect `get_message_status`. Any text in the target composer prevents protected delivery,
 regardless of age or length. Ask the operator to submit or clear it. Do not bypass the queue unless
-raw terminal control is explicitly intended. For federation, use `get_peer_message_status` and
-distinguish peer offline (`queued`) from destination accepted but local pane pending (`received`).
+raw terminal control is explicitly intended.
 
 ### A peer is silent
 
@@ -730,17 +683,8 @@ Check adapter startup, credentials, authorized identity, and the adapter-specifi
 ### Configuration changes fail or disappear
 
 Run `conductor -C <fleetDir> validate`. Unknown keys are rejected. Hot reload retains last-good
-session and federation policy when an edit is invalid. Some supervisor settings require restart;
-do not assume every YAML edit is live.
-
-### Local peers are missing
-
-Both instances must enable local federation, share the registry location, be running, have unique
-fleet names, and explicitly expose sessions. Use exact addresses returned by `list_peers`.
-
-### Remote federation cannot connect
-
-Remote federation is not implemented. Do not expose the local loopback protocol to a network.
+session policy when an edit is invalid. Supervisor settings require restart; do not assume every
+YAML edit is live.
 
 For deeper operator onboarding, read `docs/getting-started.md`. For service-specific problems, use
-the Telegram, Slack, local federation, or PR Shepherd guide.
+the Telegram, Slack, or PR Shepherd guide.

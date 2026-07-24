@@ -98,6 +98,6 @@ export class OperatorRequests {
   }
 
   private notDelivered(): string {
-    return 'NOT delivered: no operator is connected (no console attached, no channel configured). The message was only written to the conductor log — repeat it when an operator connects.';
+    return 'NOT delivered: no operator interface accepted the message (no console attached and every channel was absent or failed). The message was only written to the conductor log — repeat it when an operator connects.';
   }
 }

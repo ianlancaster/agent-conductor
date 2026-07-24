@@ -11,10 +11,7 @@ export class ConfigWatcher {
   private readonly listeners: (() => void)[] = [];
   private timer: NodeJS.Timeout | undefined;
 
-  constructor(
-    private readonly dir: string,
-    private readonly files: readonly string[] = [],
-  ) {
+  constructor(private readonly dir: string) {
     this.snapshot();
   }
 
@@ -70,13 +67,6 @@ export class ConfigWatcher {
         } catch {
           // File deleted between readdir and stat — treated as absent.
         }
-      }
-    }
-    for (const file of this.files) {
-      try {
-        result.set(file, statSync(file).mtimeMs);
-      } catch {
-        // An absent optional watched file is represented by its absence.
       }
     }
     return result;

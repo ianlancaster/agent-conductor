@@ -45,6 +45,16 @@ export function escapeAppleScript(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+/**
+ * Guard an iTerm write with the exact pane snapshot captured immediately
+ * beforehand. AppleScript's default file encoding is not UTF-8; leaving the
+ * type implicit makes every pane containing Unicode compare unequal.
+ */
+export function buildUnchangedContentsGuard(expectedPath: string, changedResult: string): string {
+  return `set expectedContents to read POSIX file "${escapeAppleScript(expectedPath)}" as «class utf8»
+         if ((contents as string) & (ASCII character 10)) is not expectedContents then return "${escapeAppleScript(changedResult)}"`;
+}
+
 /** Quote a string for a POSIX shell (single-quote style), e.g. for `cd <dir>`. */
 export function shellQuote(s: string): string {
   return `'${s.replaceAll("'", `'\\''`)}'`;

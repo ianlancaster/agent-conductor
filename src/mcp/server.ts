@@ -19,6 +19,8 @@ export interface McpServerOptions {
   onEvent(session: string, body: unknown): void;
   /** CLI command line (from the interactive client via POST /cmd). */
   onCommand?(line: string, interactionId: string): Promise<string>;
+  /** Internal SSE heartbeat cadence. Override only for deterministic tests. */
+  feedHeartbeatMs?: number;
 }
 
 interface JsonRpcRequest {
@@ -29,6 +31,7 @@ interface JsonRpcRequest {
 }
 
 const PROTOCOL_VERSION = '2024-11-05';
+const DEFAULT_FEED_HEARTBEAT_MS = 15_000;
 
 /**
  * Plain-HTTP MCP server (streamable-HTTP compatible JSON responses).
@@ -41,6 +44,7 @@ export class ConductorMcpServer {
   private readonly tools = new Map<string, McpToolDefinition>();
   /** Attached operator consoles (SSE streams on GET /feed). */
   private readonly feedClients = new Set<ServerResponse>();
+  private readonly feedHeartbeats = new Map<ServerResponse, NodeJS.Timeout>();
 
   constructor(private readonly opts: McpServerOptions) {
     for (const tool of opts.tools) this.tools.set(tool.name, tool);
@@ -81,7 +85,10 @@ export class ConductorMcpServer {
   }
 
   stop(): Promise<void> {
-    for (const client of this.feedClients) client.end();
+    for (const client of this.feedClients) {
+      this.removeFeedClient(client);
+      client.end();
+    }
     this.feedClients.clear();
     return new Promise((resolve) => {
       this.server.close(() => {
@@ -134,7 +141,19 @@ export class ConductorMcpServer {
       });
       res.write(': connected\n\n');
       this.feedClients.add(res);
-      req.on('close', () => this.feedClients.delete(res));
+      const heartbeat = setInterval(() => {
+        if (res.destroyed || res.writableEnded) {
+          this.removeFeedClient(res);
+          return;
+        }
+        res.write(': heartbeat\n\n');
+      }, this.opts.feedHeartbeatMs ?? DEFAULT_FEED_HEARTBEAT_MS);
+      heartbeat.unref();
+      this.feedHeartbeats.set(res, heartbeat);
+      const cleanup = (): void => this.removeFeedClient(res);
+      req.on('close', cleanup);
+      res.on('close', cleanup);
+      res.on('error', cleanup);
       return;
     }
 
@@ -192,6 +211,13 @@ export class ConductorMcpServer {
     }
 
     this.respondJson(res, 404, { error: 'not found' });
+  }
+
+  private removeFeedClient(client: ServerResponse): void {
+    this.feedClients.delete(client);
+    const heartbeat = this.feedHeartbeats.get(client);
+    if (heartbeat !== undefined) clearInterval(heartbeat);
+    this.feedHeartbeats.delete(client);
   }
 
   private async handleJsonRpc(body: unknown, caller: string, res: ServerResponse): Promise<void> {

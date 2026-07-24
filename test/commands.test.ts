@@ -121,7 +121,14 @@ beforeEach(() => {
   for (const codename of sessions.keys()) states.register(codename, false);
 
   const sentinel = new StallSentinelRouter({
-    config: { captureLines: 40, suppressWindowMs: 300_000, suppressSimilarity: 0.8, sentinelCodename: undefined },
+    config: {
+      captureLines: 40,
+      suppressWindowMs: 300_000,
+      suppressSimilarity: 0.8,
+      sentinelCodename: undefined,
+      fleetStallThresholdSeconds: 15,
+    },
+    initialSessions: sessions.keys(),
     backend,
     runtimeFor: () => runtime,
     getPane: (codename) => lifecycle.getPane(codename),
@@ -150,7 +157,6 @@ beforeEach(() => {
       return `Typed into ${codename}'s pane.`;
     },
     tailLimits: { defaultLines: 30, maxLines: 500 },
-    fleetStallDefaultSeconds: 300,
     retitle: async () => undefined,
     summon: async (codename) => `summoned:${codename}`,
     banish: async (codename) => `banished:${codename}`,
@@ -289,7 +295,7 @@ describe('conversation commands', () => {
     expect(backend.paneFor('beta')?.launched[0]).toContain('[Message from operator] check the build');
   });
 
-  it('returns durable queued receipts and exposes their delivery status', async () => {
+  it('returns queued receipts and exposes their delivery status', async () => {
     await router.route('/start alpha');
     runtime.inputState = 'draft';
 
@@ -404,16 +410,13 @@ describe('mode commands', () => {
     expect(await router.route('/get-tag alpha')).toBe('Unknown command: /get-tag. Try /help.');
   });
 
-  it('arms, lists, and disarms fleet stall watches', async () => {
-    expect(await router.route('/fleet-watch arm release alpha,beta 0')).toContain("'release' armed");
-    expect(await router.route('/fleet-watch list')).toContain('release · watching · sessions alpha,beta');
-    expect(await router.route('/fleet-watch disarm release')).toBe("Fleet watch 'release' disarmed.");
-    expect(await router.route('/fleet-watch list')).toBe('No fleet watches armed.');
+  it('toggles fleet stall detection', async () => {
+    expect(await router.route('/fleet-watch')).toBe('Fleet watch on.');
+    expect(await router.route('/fleet-watch')).toBe('Fleet watch off.');
   });
 
-  it('validates fleet watch members through the canonical operation', async () => {
-    expect(await router.route('/fleet-watch arm bad alpha,ghost')).toContain('Unknown session: ghost');
-    expect(await router.route('/fleet-watch arm solo alpha')).toContain('at least two');
+  it('rejects arguments to the fleet-watch toggle', async () => {
+    expect(await router.route('/fleet-watch list')).toContain('Usage: /fleet-watch');
   });
 });
 
@@ -441,7 +444,7 @@ describe('help', () => {
     expect(help).toContain('    -r/--runtime cc|claude-code|codex');
     expect(help).toContain('-e/--effort <level>');
     expect(help).toContain('-t/--template <name>');
-    expect(help).toContain('/fleet-watch arm <name> <session,session> [confirmation-seconds]');
+    expect(help).toContain('/fleet-watch');
     expect(help).not.toContain('*Sessions*');
     expect(help).not.toContain('`/status');
   });

@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { deriveInstanceDefaults, PORT_RANGE_SIZE, PORT_RANGE_START } from '../src/config/instance.js';
-import { fleetSlug } from '../src/config/instance.js';
 import {
   detectBackend,
   loadSessionConfigs,
@@ -48,7 +47,7 @@ describe('loadSupervisorConfig', () => {
     expect(config.defaults.auto).toBe(false);
     expect(config.defaults.runtime).toBe('claude-code');
     expect(config.defaults.bypassPermissions).toBe(true);
-    expect(config.health.fleetStallConfirmMs).toBe(300_000);
+    expect(config.health.fleetStallConfirmMs).toBe(15_000);
     expect(config.terminal.iterm.badge).toBe(true);
     expect(config.runtimes.claudeCode.binary).toBe('claude');
     expect(config.runtimes.claudeCode.availableModels).toEqual(DEFAULT_CLAUDE_CODE_MODELS);
@@ -63,78 +62,7 @@ describe('loadSupervisorConfig', () => {
     expect(config.spawn.templateCloneTimeoutSeconds).toBe(120);
     expect(config.channels.telegram.enabled).toBe(false);
     expect(config.channels.slack.enabled).toBe(false);
-    expect(config.federation).toMatchObject({
-      name: fleetSlug(baseDir),
-      sessions: { expose: [], descriptions: {} },
-      local: { enabled: false, registryDir: null, heartbeatSeconds: 5, staleAfterSeconds: 20 },
-    });
     expect(config.paths.dataDir).toBe('./data');
-  });
-
-  it('validates local federation names, timing, exposure, and public descriptions', () => {
-    writeSession('alpha', `codename: alpha\nrepo: ${baseDir}\n`);
-    writeFileSync(
-      join(baseDir, 'config', 'supervisor.yaml'),
-      [
-        'federation:',
-        '  name: review-fleet',
-        '  sessions:',
-        '    expose: [alpha]',
-        '    descriptions:',
-        '      alpha: Public reviewer',
-        '  local:',
-        '    enabled: true',
-        '    heartbeatSeconds: 2',
-        '    staleAfterSeconds: 8',
-      ].join('\n'),
-    );
-    expect(validateConfig(baseDir)).toEqual([]);
-    expect(loadSupervisorConfig(baseDir).federation.name).toBe('review-fleet');
-
-    writeFileSync(
-      join(baseDir, 'config', 'supervisor.yaml'),
-      'federation:\n  sessions:\n    expose: [ghost]\n  local:\n    enabled: true\n',
-    );
-    expect(validateConfig(baseDir)).toContain("federation.sessions.expose contains unknown session 'ghost'");
-
-    writeFileSync(
-      join(baseDir, 'config', 'supervisor.yaml'),
-      'federation:\n  sessions:\n    descriptions:\n      alpha: Public reviewer\n  local:\n    enabled: true\n',
-    );
-    expect(validateConfig(baseDir)).toContain(
-      "federation.sessions.descriptions.alpha requires 'alpha' in federation.sessions.expose",
-    );
-
-    writeFileSync(
-      join(baseDir, 'config', 'supervisor.yaml'),
-      'federation:\n  name: Not-A-Slug\n  local:\n    heartbeatSeconds: 5\n    staleAfterSeconds: 5\n',
-    );
-    expect(() => loadSupervisorConfig(baseDir)).toThrow(/lowercase slug.*greater than heartbeatSeconds/);
-
-    writeFileSync(
-      join(baseDir, 'config', 'supervisor.yaml'),
-      'federation:\n  description: "unsafe\\x9bterminal"\n  local:\n    heartbeatSeconds: 0.5\n',
-    );
-    expect(() => loadSupervisorConfig(baseDir)).toThrow(/control characters.*greater than or equal to 1/);
-  });
-
-  it('rejects federation rosters that exceed the bounded local directory contract', () => {
-    for (let index = 0; index < 101; index += 1) {
-      writeSession(`peer-${String(index)}`, `codename: peer-${String(index)}\nrepo: ${baseDir}\n`);
-    }
-    writeFileSync(
-      join(baseDir, 'config', 'supervisor.yaml'),
-      'federation:\n  sessions:\n    expose: ["*"]\n  local:\n    enabled: true\n',
-    );
-    expect(validateConfig(baseDir)).toContain('federation.sessions.expose expands to 101 sessions; the maximum is 100');
-
-    const longCodename = `peer-${'x'.repeat(124)}`;
-    writeSession(longCodename, `codename: ${longCodename}\nrepo: ${baseDir}\n`);
-    writeFileSync(
-      join(baseDir, 'config', 'supervisor.yaml'),
-      `federation:\n  name: fleet\n  sessions:\n    expose: [${longCodename}]\n`,
-    );
-    expect(validateConfig(baseDir)).toContain(`federation address '${longCodename}@fleet' exceeds 128 characters`);
   });
 
   it('accepts a configurable template registry and permits explicitly disabling all templates', () => {
@@ -434,21 +362,5 @@ describe('ConfigWatcher', () => {
     rmSync(join(dir, 'alpha.yaml'));
     expect(watcher.checkNow()).toBe(true);
     expect(watcher.checkNow()).toBe(false);
-  });
-
-  it('detects the explicitly watched supervisor policy file', async () => {
-    const dir = join(baseDir, 'config', 'sessions');
-    const supervisorFile = join(baseDir, 'config', 'supervisor.yaml');
-    const watcher = new ConfigWatcher(dir, [supervisorFile]);
-    let fired = 0;
-    watcher.onChange(() => {
-      fired += 1;
-    });
-
-    expect(watcher.checkNow()).toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    writeFileSync(supervisorFile, 'federation:\n  sessions:\n    expose: [alpha]\n');
-    expect(watcher.checkNow()).toBe(true);
-    expect(fired).toBe(1);
   });
 });

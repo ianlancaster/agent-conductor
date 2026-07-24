@@ -35,7 +35,9 @@ describe('formatSessionLine', () => {
 
   it('shows the Codex runtime, auto setting, and tag', () => {
     const state = sessionState({ auto: true, activity: 'stalled', tag: 'needs review' });
-    expect(formatSessionLine('alpha', 'codex', state, false)).toBe('alpha - codex · 🟠 stalled - auto · needs review');
+    expect(formatSessionLine('alpha', 'codex', state, false)).toBe(
+      'alpha - codex · 🟠 stalled - auto 🔄 · needs review',
+    );
   });
 
   it('shows pause after auto without changing the setting', () => {
@@ -45,7 +47,7 @@ describe('formatSessionLine', () => {
       tag: 'nightly',
     });
     expect(formatSessionLine('alpha', 'claude-code', state, false)).toBe(
-      'alpha - CC · 🟢 working - auto (paused) · nightly',
+      'alpha - CC · 🟢 working - auto 🔄 (paused) · nightly',
     );
   });
 });

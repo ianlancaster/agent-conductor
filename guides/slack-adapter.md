@@ -155,8 +155,8 @@ CONDUCTOR_SLACK_OPERATOR_USER_ID=U012ABCDEF
 ```
 
 Never commit `.conductor/.env`, paste either token into a Slack message, add tokens to YAML, or include them in logs,
-screenshots, issue reports, or test fixtures. Inherited environment variables may be used instead; they
-override fleet `.conductor/.env` values.
+screenshots, issue reports, or test fixtures. Inherited environment variables are fallback values for
+keys omitted from `.conductor/.env`; values present in the fleet file are authoritative after restart.
 
 Use a dedicated secret manager when running Conductor as a shared production service. Slack's [security
 guidance](https://docs.slack.dev/concepts/security/) recommends environment-based development secrets and
@@ -238,6 +238,10 @@ Anyone who obtains either token can use its Slack permissions. Revoke a leaked a
 **Basic Information > App-Level Tokens**, rotate/reinstall the bot token under **OAuth & Permissions**,
 update `.conductor/.env`, and restart Conductor. To shut the integration off immediately, set
 `channels.slack.enabled: false` and restart; uninstall the Slack app if it is no longer needed.
+
+Slack is failure-isolated from the core control plane. Missing credentials, startup/authentication
+failures, and outbound transport failures are written to Conductor's logs while session lifecycle and
+agent-to-agent messaging remain online. Restart after correcting credentials so the adapter can reconnect.
 
 ## Troubleshooting
 

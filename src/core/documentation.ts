@@ -14,7 +14,6 @@ export const CONDUCTOR_DOC_TOPICS = [
   'scheduling',
   'operator-channels',
   'pr-shepherd',
-  'federation',
   'recipes',
   'adapters',
   'troubleshooting',

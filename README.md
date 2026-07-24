@@ -24,8 +24,6 @@ Running one coding agent is simple. Running several introduces a few practical p
   attention without requiring a human to watch every pane.
 - **Operator access:** the same fleet controls work in the local console, Telegram, Slack,
   and injected operator adapters.
-- **Federation:** optional same-machine discovery and durable messaging connects explicitly
-  exposed sessions across otherwise isolated Conductor fleets.
 
 Agent Conductor handles those mechanics and leaves judgment to the agents and operator.
 
@@ -45,7 +43,6 @@ Agent Conductor handles those mechanics and leaves judgment to the agents and op
  Slack ────────────┼─ operator adapter
  Other channels ───┘
 
- Local peers ── federation adapter ── durable message bridge ── protected pane delivery
 ```
 
 The canonical operation registry owns behavior, validation, descriptions, and MCP schemas.
@@ -95,6 +92,9 @@ On first use, `conductor start` creates the complete `.conductor/` scaffold with
 anything already present. It then launches the supervisor and turns the current terminal into an
 operator console. The generated `supervisor.yaml` contains the full effective configuration—including
 fleet-derived values and disabled Telegram and Slack channel blocks—instead of commented examples.
+That console owns the supervisor it launched: `Ctrl+C` or closing the console stops the Conductor.
+If the fleet is already running, `conductor start` exits instead of creating a misleading non-owning
+console; use `conductor console` when an additional attachment is intentional.
 Register and start the first project from the `conductor>` prompt:
 
 ```text
@@ -196,8 +196,6 @@ to consult it without preloading the full handbook into every context.
 - [Complete supervisor example](examples/supervisor.yaml) — every setting and effective default.
 - [Telegram adapter](guides/telegram-adapter.md) and [Slack adapter](guides/slack-adapter.md) —
   least-privilege external operator setup.
-- [Local federation](guides/local-federation.md) — same-machine discovery and durable messaging
-  between isolated fleets.
 - [PR Shepherd V2](docs/pr-shepherd.md) — standalone GitHub polling, policy, and Conductor
   delivery.
 - [Contributor guide](CONTRIBUTING.md) and [architecture guide](CLAUDE.md) — mandatory context
@@ -262,7 +260,7 @@ Common examples:
 /pause <session|all>
 /resume <session|all>
 /sentinel [session]
-/fleet-watch <arm|disarm|list> ...
+/fleet-watch
 /tag <session> [text]
 
 /spawn <name> [--runtime <runtime>] [--path <dir>] [--model <model>] [--template <name>]
@@ -280,25 +278,22 @@ schedules and stall routing without changing that auto setting; `/resume` remove
 `/sentinel watch` changes the stall sentinel immediately and persists the selection.
 Running `/sentinel` with no session clears it.
 
-Fleet watches cover autonomous campaigns where individual stalls are normal but every
-worker being stalled at once is not. Arm a named watch over an explicit subset; do not
-include the sentinel:
+Fleet watch covers campaigns where individual stalls are normal but the entire fleet being
+stalled at once is not. It is one fleet-level toggle:
 
 ```text
-/fleet-watch arm release alpha,beta,gamma
-/fleet-watch list
-/fleet-watch disarm release
+/fleet-watch
 ```
 
+The setting survives Conductor restarts, like auto mode. When enabled, it always watches every
+registered session except the designated sentinel, and membership follows session registration
+automatically. With fewer than two eligible sessions it remains enabled but does not alert.
+
 Each member first passes through ordinary stall detection. Once all members are stalled,
-the watch waits `health.fleetStallConfirmMs` (five minutes by default) and sends one
-`[Fleet Stall]` alert to the sentinel. The optional final argument overrides that interval
-in seconds, including `0` for immediate escalation. A submitted message, restart, or later
-completed turn from any member rearms the watch. If a member is deregistered, the watch remains
-armed over the registered members when at least two remain, resets its confirmation window, and
-notifies the sentinel or operator of the membership change. Falling below two members explicitly
-invalidates the watch and emits the same visible notice. Watches are process-local and otherwise
-disappear only when explicitly disarmed or when the conductor stops.
+the watch waits `health.fleetStallConfirmMs` (15 seconds by default) and sends one `[Fleet Stall]`
+alert to the sentinel, or directly to the operator when no sentinel is configured. A submitted
+message, restart, later completed turn, membership change, or sentinel change starts a fresh
+confirmation cycle.
 
 ## Session-facing MCP tools
 
@@ -309,44 +304,27 @@ authoritative machine-readable reference, including argument schemas.
 
 These operations are available through both MCP and operator adapters:
 
-| MCP operation        | Operator command      | Purpose                                                             |
-| -------------------- | --------------------- | ------------------------------------------------------------------- |
-| `send_to_session`    | `/tell`               | Send a signed message; starts a stopped recipient when needed       |
-| `get_message_status` | `/message-status`     | Inspect receipt state and the latest delivery-loop decision         |
-| `cancel_message`     | `/cancel-message`     | Cancel a pending direct message before its pane write begins        |
-| `broadcast`          | `/broadcast`          | Message every active session except the sender                      |
-| `start_session`      | `/start`              | Start sessions, optionally overriding runtime and effort            |
-| `stop_session`       | `/stop`               | Stop one session or all sessions                                    |
-| `continue_session`   | `/continue`           | Continue sessions, optionally overriding runtime and effort         |
-| `spawn_session`      | `/spawn`              | Create, register, and start an empty, template, or worktree session |
-| `teardown_session`   | `/teardown`           | Stop and deregister a session; optionally remove its directory      |
-| `toggle_auto`        | `/auto`               | Toggle automatic stall routing                                      |
-| `pause_session`      | `/pause`              | Suppress schedules and stall routing temporarily                    |
-| `resume_session`     | `/resume`             | Resume schedules and configured stall routing                       |
-| `set_sentinel`       | `/sentinel`           | Set or clear the fleet sentinel                                     |
-| `arm_fleet_watch`    | `/fleet-watch arm`    | Alert when every watched session remains stalled                    |
-| `disarm_fleet_watch` | `/fleet-watch disarm` | Remove a fleet stall watch                                          |
-| `list_fleet_watches` | `/fleet-watch list`   | Inspect fleet stall watches                                         |
-| `set_tag`            | `/tag`                | Set or clear a status label                                         |
-| `list_sessions`      | `/status`             | Show fleet status                                                   |
-| `get_session_status` | `/status <session>`   | Show detailed status for one session                                |
-| `tail_session`       | `/tail`               | Read trailing pane output                                           |
-| `type_in_pane`       | `/type`               | Type raw text immediately, bypassing envelope and safety queue      |
-
-When local federation is enabled, three additional messages-only primitives appear:
-
-| MCP operation             | Operator command       | Purpose                                                        |
-| ------------------------- | ---------------------- | -------------------------------------------------------------- |
-| `list_peers`              | `/peers`               | List explicitly exposed sessions and exact qualified addresses |
-| `send_to_peer`            | `/tell-peer`           | Durably message an exposed peer without starting it            |
-| `get_peer_message_status` | `/peer-message-status` | Inspect queued, received, delivered, expired, or failed state  |
-
-Federated addresses use `session@fleet`. `send_to_session` remains local and may start its
-target; `send_to_peer` is deliberately separate and never changes peer lifecycle. See the
-[local federation guide](guides/local-federation.md).
-
-Remote gateway federation is not implemented in the current release. Do not expose the local
-loopback protocol or same-UID registry to a network as a substitute.
+| MCP operation        | Operator command    | Purpose                                                             |
+| -------------------- | ------------------- | ------------------------------------------------------------------- |
+| `send_to_session`    | `/tell`             | Send a signed message; starts a stopped recipient when needed       |
+| `get_message_status` | `/message-status`   | Inspect receipt state and the latest delivery-loop decision         |
+| `cancel_message`     | `/cancel-message`   | Cancel a pending direct message before its pane write begins        |
+| `broadcast`          | `/broadcast`        | Message every active session except the sender                      |
+| `start_session`      | `/start`            | Start sessions, optionally overriding runtime and effort            |
+| `stop_session`       | `/stop`             | Stop one session or all sessions                                    |
+| `continue_session`   | `/continue`         | Continue sessions, optionally overriding runtime and effort         |
+| `spawn_session`      | `/spawn`            | Create, register, and start an empty, template, or worktree session |
+| `teardown_session`   | `/teardown`         | Stop and deregister a session; optionally remove its directory      |
+| `toggle_auto`        | `/auto`             | Toggle automatic stall routing                                      |
+| `pause_session`      | `/pause`            | Suppress schedules and stall routing temporarily                    |
+| `resume_session`     | `/resume`           | Resume schedules and configured stall routing                       |
+| `set_sentinel`       | `/sentinel`         | Set or clear the fleet sentinel                                     |
+| `toggle_fleet_watch` | `/fleet-watch`      | Toggle full-fleet stall detection                                   |
+| `set_tag`            | `/tag`              | Set or clear a status label                                         |
+| `list_sessions`      | `/status`           | Show fleet status                                                   |
+| `get_session_status` | `/status <session>` | Show detailed status for one session                                |
+| `tail_session`       | `/tail`             | Read trailing pane output                                           |
+| `type_in_pane`       | `/type`             | Type raw text immediately, bypassing envelope and safety queue      |
 
 ### Session-only tools
 
@@ -365,8 +343,10 @@ action.
 `send_to_session` returns `{ messageId, recipient, status, deduplicated }`. Its optional
 1–128 character `idempotencyKey` is scoped to the mechanically assigned sender; retrying the
 same key returns the original receipt without inserting or delivering another message. A
-`queued` receipt is already persisted and remains pending across agent or conductor restarts.
-It can be inspected with `get_message_status` or `/message-status`; status includes
+`queued` receipt is protected only for the lifetime of the current Conductor process. Restarting
+the Conductor cancels queued local messages instead of replaying stale conversation; restarting
+only the recipient pane within the same run keeps the queue. Receipts can be inspected with
+`get_message_status` or `/message-status`; status includes
 `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`. Before falling back to raw pane
 input, the sender can use `cancel_message` or `/cancel-message` to prevent a later queued
 delivery. Cancellation succeeds only while the receipt is pending and its pane write has not
@@ -469,8 +449,7 @@ configured HTTPS/SSH Git sources and local paths, clones into an empty destinati
 source remote `template` so `origin` remains available for the new project. It does not execute
 scripts or interpret template contents. A configured `ref` is checked out after cloning; omit it
 to use the source's default branch. Template and worktree sources are mutually exclusive.
-Supervisor configuration changes take effect after restart, except local-federation exposure and public
-descriptions, which use last-good hot reload. Because the resulting workspace is a
+Supervisor configuration changes take effect after restart. Because the resulting workspace is a
 Git repository, guarded `/teardown --delete` deregisters it but leaves its directory intact.
 
 Create an isolated worktree session without cloning the repository again:
@@ -525,10 +504,14 @@ CONDUCTOR_TELEGRAM_CHAT_ID=987654321
 ```
 
 You may instead export those variables globally from `.bashrc`, `.zshrc`, CI, or a service
-environment. Inherited variables override fleet `.conductor/.env` values. The conductor does not source
-shell startup files itself; launchd and systemd normally do not source interactive shell files,
-so a fleet `.conductor/.env` is the reliable daemon fallback. Enabling Telegram without both non-blank
-credentials fails clearly before the adapter starts, without printing secret values.
+environment when the fleet file omits them. Values defined in `.conductor/.env` are authoritative,
+so editing that file and restarting cannot be defeated by stale variables in a long-lived parent
+process. The conductor does not source shell startup files itself; launchd and systemd normally do not
+source interactive shell files, so a fleet `.conductor/.env` is the reliable daemon source. Enabling Telegram without both non-blank
+credentials marks that channel unavailable without printing secret values; the Conductor control plane
+continues running so lifecycle and agent messaging remain available.
+The adapter also validates the bot token with Telegram before reporting the channel as connected,
+so stale, revoked, or malformed tokens degrade only Telegram instead of entering a silent retry loop.
 
 Telegram accepts the same operator commands as the local console. Messages sent with
 `send_to_operator`, including sentinel questions and undeliverable-stall warnings, are sent
@@ -536,11 +519,18 @@ to every connected operator adapter. When a session includes `options`, Telegram
 inline buttons and text-only consoles render exact `/respond` commands. The first response
 from any interface wins and returns to the requesting session as an ordinary operator message.
 This records an answer only; it is not an approval or escalation queue.
+Because Telegram requires the operator to initiate a bot conversation, a bare `/start` returns the
+fleet status followed by the command help. `/start <session|all>` retains its normal lifecycle meaning.
 
 Telegram permits only one long-polling process per bot token. Use a separate bot token for
 each concurrently running fleet. The complete BotFather, private-chat authorization, verification,
 security, and troubleshooting walkthrough is in the
 [Telegram adapter guide](guides/telegram-adapter.md).
+
+Its `🔄` marker identifies sessions with auto stall routing enabled and appears in the
+live status header as `ONLINE 🔄 fleet watch on` while fleet watch is enabled.
+An attached `conductor>` console reconnects its operator feed silently. A failed `send_to_operator`
+reports `NOT delivered` unless an attached console or at least one channel actually accepted the message.
 
 ## Slack
 
@@ -671,11 +661,6 @@ Session identity is mechanical within the conductor: the codename comes from the
 wired into that session, not from tool arguments. There is not yet per-session bearer
 authentication, so another trusted local process could call a session endpoint directly.
 Run the conductor only on a trusted machine and do not expose its HTTP port publicly.
-
-Local federation also binds only to loopback. Its owner-only registry credential mechanically maps
-requests to fleets, but any process running as the same OS user can read that credential. It prevents
-accidental cross-wiring; it is not a sandbox boundary. Session exposure is default-deny, and federated
-peers receive messages-only access—never lifecycle or terminal control.
 
 Codex sessions receive isolated `CODEX_HOME` directories so `resume --last` cannot select
 another managed session's history. Before every start or continue, the conductor ensures an

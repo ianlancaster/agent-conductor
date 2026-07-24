@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -132,6 +133,42 @@ describe('conductor start initialization', () => {
         else child.once('exit', () => resolve());
       });
     }
+  });
+
+  it('refuses to create a non-owning console when a conductor is already running', async () => {
+    const healthServer = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' }).end('{"status":"ok"}');
+    });
+    await new Promise<void>((resolve, reject) => {
+      healthServer.once('error', reject);
+      healthServer.listen(0, '127.0.0.1', resolve);
+    });
+    const address = healthServer.address();
+    if (address === null || typeof address === 'string') throw new Error('health server did not bind');
+    ensureFleetScaffold(baseDir);
+    writeFileSync(
+      join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
+      `terminal:\n  backend: tmux\nmcp:\n  host: 127.0.0.1\n  port: ${String(address.port)}\n`,
+    );
+
+    const child = spawn(
+      process.execPath,
+      ['--import', 'tsx', join(process.cwd(), 'src', 'cli', 'index.ts'), '-C', baseDir, 'start'],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    const exitCode = await new Promise<number | null>((resolve) => child.once('exit', resolve));
+    await new Promise<void>((resolve, reject) =>
+      healthServer.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain('`conductor start` only opens a console that owns and stops its conductor');
+    expect(stderr).toContain('Use `conductor console` for a non-owning attachment');
   });
 
   it('does not expose the removed init command', () => {
