@@ -360,7 +360,9 @@ The package also ships the opt-in `pr-shepherd` GitHub polling service with a pu
 strict YAML profiles, SQLite event/outbox persistence, and optional durable delivery to a
 Conductor coordinator session. `conductor start` copy-once scaffolds an inert profile beside the
 supervisor. After a safe shadow run, a root-level `shepherd` block can opt into Conductor-owned
-start/stop; managed operation is headless by default and its health appears in `/status`. See the complete
+start/stop; managed operation is headless by default. While it is healthy, `/status` shows
+`PR Shepherd Status Online` and marks its configured coordinator session with `🐑`. Disabled
+companions are omitted from fleet status. See the complete
 [getting-started and configuration guide](docs/pr-shepherd.md) and
 [generic example profile](examples/pr-shepherd.yaml).
 

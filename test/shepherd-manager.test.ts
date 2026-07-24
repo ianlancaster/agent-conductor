@@ -12,14 +12,18 @@ import {
 } from '../src/core/shepherd-manager.js';
 import { ShepherdRuntimeReporter } from '../src/shepherd/runtime.js';
 
-function profile(dir: string): { configPath: string; databasePath: string } {
+function profile(dir: string, coordinatorSession?: string): { configPath: string; databasePath: string } {
   const configPath = join(dir, 'config', 'pr-shepherd.yaml');
   const databasePath = join(dir, 'data', 'shepherd.db');
   mkdirSync(join(dir, 'config'), { recursive: true });
   mkdirSync(join(dir, 'data'), { recursive: true });
   writeFileSync(
     configPath,
-    `version: 2\nprofile:\n  githubUser: octocat\npolling:\n  intervalSeconds: 10\ndatabasePath: ../data/shepherd.db\n`,
+    `version: 2\nprofile:\n  githubUser: octocat\npolling:\n  intervalSeconds: 10\n${
+      coordinatorSession === undefined
+        ? ''
+        : `delivery:\n  type: conductor\n  endpoint: http://127.0.0.1:3938\n  coordinatorSession: ${coordinatorSession}\n`
+    }databasePath: ../data/shepherd.db\n`,
   );
   return { configPath, databasePath };
 }
@@ -61,7 +65,7 @@ describe('managed PR Shepherd lifecycle', () => {
 
   it('becomes healthy only after a matching heartbeat and stops its child', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'shepherd-manager-'));
-    const paths = profile(dir);
+    const paths = profile(dir, 'coordinator');
     let child: ChildProcess | undefined;
     let token = '';
     const spawner: ShepherdProcessSpawner = {
@@ -78,13 +82,38 @@ describe('managed PR Shepherd lifecycle', () => {
       );
       await manager.start();
       expect(manager.status().state).toBe('starting');
+      expect(manager.recipientSession()).toBe('coordinator');
       const reporter = new ShepherdRuntimeReporter(paths.databasePath, paths.configPath, token, 4242);
       reporter.pollStarted();
       reporter.pollSucceeded();
       expect(manager.status().state).toBe('healthy');
       await manager.stop();
       expect(manager.status().state).toBe('stopped');
+      expect(manager.recipientSession()).toBe('coordinator');
       expect(child?.signalCode).toBe('SIGTERM');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not expose a recipient for stdout delivery or a disabled companion', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-manager-'));
+    const paths = profile(dir);
+    try {
+      const enabled = new ShepherdManager(
+        { enabled: true, presentation: 'headless', configPath: paths.configPath },
+        { spawn: () => fakeChild() },
+      );
+      await enabled.start();
+      expect(enabled.recipientSession()).toBeUndefined();
+      await enabled.stop();
+
+      const disabled = new ShepherdManager({
+        enabled: false,
+        presentation: 'headless',
+        configPath: paths.configPath,
+      });
+      expect(disabled.recipientSession()).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

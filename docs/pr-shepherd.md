@@ -5,8 +5,8 @@ PR Shepherd V2 is an opt-in GitHub polling service shipped with Agent Conductor.
 `conductor start` copy-once scaffolds an inert PR Shepherd profile beside `supervisor.yaml`. It
 never overwrites an existing profile and never polls GitHub until the identity is configured.
 Shepherd may still run standalone, or Conductor can own its lifecycle through an opt-in root
-`shepherd` block. The managed default is headless; companion failure is reported in `/status`
-without taking down Conductor.
+`shepherd` block. The managed default is headless. A healthy managed companion is shown
+concisely in fleet `/status`; companion failure never takes down Conductor.
 
 ## Prerequisites
 
@@ -84,10 +84,12 @@ Conductor starts Shepherd after its own control plane is ready and stops it duri
 `pr-shepherd init -C <fleet>` recreates only a missing profile and never overwrites one. Profile
 and supervisor changes take effect after a deliberate Conductor restart.
 
-Fleet status reports the managed companion as `disabled`, `config-invalid`, `panel-unsupported`,
-`starting`, `healthy`, `stale`, `restarting`, `failed`, or `stopped`, with its resolved profile,
-PID, last successful heartbeat, and bounded diagnostic detail when applicable. `failed` means the
-bounded crash-restart policy gave up; fix the reported cause and restart Conductor.
+While the managed companion has a fresh healthy heartbeat, fleet `/status` adds
+`PR Shepherd Status Online` directly below `Agent Conductor Status` and marks the configured
+coordinator session with `🐑`. If Shepherd is disabled or unhealthy, the concise fleet view omits
+it entirely. Use `pr-shepherd -C <fleet> status` and the Conductor logs for the resolved profile,
+PID, heartbeat, restart state, and bounded diagnostic detail. A `failed` state means the bounded
+crash-restart policy gave up; fix the reported cause and restart Conductor.
 
 ## Configuration reference
 

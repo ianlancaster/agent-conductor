@@ -11,7 +11,11 @@ export function formatTerminalReply(command: string, reply: string, colors: bool
     return reply
       .split('\n')
       .map((line) => {
-        const fleetRow = /^( {2})(.+)( - (?:CC|codex)(?: 🛡)? · .+)$/.exec(line);
+        if (/^(?:Agent Conductor Status(?: 🔄)?|PR Shepherd Status Online)$/.test(line)) {
+          return `${BOLD}${line}${NORMAL_INTENSITY}`;
+        }
+
+        const fleetRow = /^( {2})(.+)( - (?:CC|codex)(?: (?:🛡|🐑))* · .+)$/.exec(line);
         if (fleetRow !== null) {
           return `${fleetRow[1]}${BOLD}${fleetRow[2]}${NORMAL_INTENSITY}${fleetRow[3]}`;
         }
