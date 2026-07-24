@@ -759,9 +759,12 @@ export class Supervisor {
       }
     }
     this.sessions = fresh;
-    for (const watch of this.sentinel.pruneFleetWatches(new Set(fresh.keys()))) {
-      log().warn('supervisor', `Fleet watch '${watch}' disarmed because one of its sessions was deregistered.`);
-    }
+    void this.sentinel.reconcileFleetWatches(new Set(fresh.keys())).catch((error: unknown) => {
+      log().warn(
+        'supervisor',
+        `Fleet-watch membership notification failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
     this.scheduler.rebuild();
   }
 

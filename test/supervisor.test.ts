@@ -250,6 +250,21 @@ describe('Supervisor construction', () => {
     expect(supervisor.statusReport()).toContain('No sessions configured');
   });
 
+  it('retains a fleet watch over remaining members when a session config is removed', async () => {
+    writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43394\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+      beta: `codename: beta\nrepo: ${baseDir}\n`,
+      gamma: `codename: gamma\nrepo: ${baseDir}\n`,
+    });
+    supervisor = new Supervisor(baseDir);
+    expect(await supervisor.command('/fleet-watch arm release alpha,beta,gamma 60')).toContain("'release' armed");
+
+    rmSync(join(baseDir, 'config', 'sessions', 'gamma.yaml'));
+    supervisor.reloadSessionsForTest();
+
+    expect(await supervisor.command('/fleet-watch list')).toContain('sessions alpha,beta');
+  });
+
   it('groups marker-file repos under the Agents header in status', () => {
     const repo = join(baseDir, 'session-repo');
     mkdirSync(repo, { recursive: true });

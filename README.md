@@ -294,8 +294,11 @@ Each member first passes through ordinary stall detection. Once all members are 
 the watch waits `health.fleetStallConfirmMs` (five minutes by default) and sends one
 `[Fleet Stall]` alert to the sentinel. The optional final argument overrides that interval
 in seconds, including `0` for immediate escalation. A submitted message, restart, or later
-completed turn from any member rearms the watch. Watches are process-local and are removed
-when disarmed, when a member is deregistered, or when the conductor stops.
+completed turn from any member rearms the watch. If a member is deregistered, the watch remains
+armed over the registered members when at least two remain, resets its confirmation window, and
+notifies the sentinel or operator of the membership change. Falling below two members explicitly
+invalidates the watch and emits the same visible notice. Watches are process-local and otherwise
+disappear only when explicitly disarmed or when the conductor stops.
 
 ## Session-facing MCP tools
 
