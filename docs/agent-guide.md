@@ -381,7 +381,11 @@ Fleet watches detect campaign-level failure. Arm one over at least two workers w
 stalls are normal but all workers stalled together requires attention. After every member is
 stalled for the configured confirmation interval, Conductor sends one fleet alert to the sentinel,
 or directly to the operator if no sentinel exists. Watches are process-local and should not be
-treated as durable workflow definitions.
+treated as durable workflow definitions. When a watched session is deregistered, a watch with at
+least two remaining members continues over that smaller group and resets its confirmation window.
+Conductor sends a `[Fleet Watch]` membership notice to the sentinel, or to the operator when the
+sentinel is absent or down. If fewer than two members remain, the notice explicitly says that the
+watch was invalidated instead of letting the safety gap remain silent.
 
 <!-- conductor-topic:scheduling -->
 

@@ -37,6 +37,13 @@ export interface FleetWatchStatus extends FleetWatch {
   allStalledForSeconds: number;
 }
 
+export interface FleetWatchMembershipChange {
+  name: string;
+  removedSessions: string[];
+  remainingSessions: string[];
+  action: 'continued' | 'invalidated';
+}
+
 interface FleetWatchState extends FleetWatch {
   allStalledAt: number | undefined;
   notified: boolean;
@@ -130,14 +137,68 @@ export class StallSentinelRouter {
     return [...this.fleetWatches.values()].some((watch) => watch.sessions.includes(session));
   }
 
-  pruneFleetWatches(validSessions: ReadonlySet<string>): string[] {
-    const removed: string[] = [];
-    for (const watch of this.fleetWatches.values()) {
-      if (watch.sessions.every((session) => validSessions.has(session))) continue;
-      this.disarmFleetWatch(watch.name);
-      removed.push(watch.name);
+  /**
+   * Reconcile process-local watches with the durable session registry.
+   *
+   * Losing one ephemeral member must not silently destroy a still-useful
+   * safety watch. Retain valid watches over their remaining members and make
+   * every membership change visible to the sentinel/operator. A watch that
+   * falls below the two-member invariant is explicitly invalidated.
+   */
+  async reconcileFleetWatches(validSessions: ReadonlySet<string>): Promise<FleetWatchMembershipChange[]> {
+    const changes: FleetWatchMembershipChange[] = [];
+    const retained: FleetWatchState[] = [];
+
+    for (const watch of [...this.fleetWatches.values()]) {
+      const removedSessions = watch.sessions.filter((session) => !validSessions.has(session));
+      if (removedSessions.length === 0) continue;
+
+      const remainingSessions = watch.sessions.filter((session) => validSessions.has(session));
+      this.cancelFleetConfirmation(watch);
+      watch.notified = false;
+
+      if (remainingSessions.length >= 2) {
+        watch.sessions = remainingSessions;
+        retained.push(watch);
+        changes.push({
+          name: watch.name,
+          removedSessions,
+          remainingSessions,
+          action: 'continued',
+        });
+      } else {
+        this.disarmFleetWatch(watch.name);
+        changes.push({
+          name: watch.name,
+          removedSessions,
+          remainingSessions,
+          action: 'invalidated',
+        });
+      }
     }
-    return removed;
+
+    for (const session of [...this.stalledSessions]) {
+      if (!validSessions.has(session)) this.stalledSessions.delete(session);
+    }
+
+    for (const watch of retained) {
+      if (this.fleetWatches.get(watch.name) === watch) this.evaluateFleetWatch(watch);
+    }
+    // Membership notifications are important observability, but an adapter
+    // failure must never prevent the retained safety watch from evaluating.
+    const notifications = await Promise.allSettled(
+      changes.map((change) => this.reportFleetWatchMembershipChange(change)),
+    );
+    for (const [index, result] of notifications.entries()) {
+      if (result.status !== 'rejected') continue;
+      log().warn(
+        'sentinel',
+        `Fleet-watch membership notification failed for '${changes[index]?.name ?? 'unknown'}': ${
+          result.reason instanceof Error ? result.reason.message : String(result.reason)
+        }`,
+      );
+    }
+    return changes;
   }
 
   /** Any successfully submitted work clears fleet-stall state and rearms affected watches. */
@@ -269,6 +330,29 @@ export class StallSentinelRouter {
       return;
     }
     await this.deps.deliver(sentinel, fleetStallEnvelope(watch.name, watch.sessions, watch.thresholdSeconds));
+  }
+
+  private async reportFleetWatchMembershipChange(change: FleetWatchMembershipChange): Promise<void> {
+    const removed = change.removedSessions.join(',');
+    const remaining = change.remainingSessions.length > 0 ? change.remainingSessions.join(',') : 'none';
+    const continued = change.action === 'continued';
+    const text = continued
+      ? `[Fleet Watch] watch=${change.name} membership changed: removed=${removed} remaining=${remaining}. Watch continues with the same confirmation threshold.`
+      : `[Fleet Watch] watch=${change.name} invalidated: removed=${removed} remaining=${remaining}. At least two registered sessions are required; re-arm after choosing a valid group.`;
+    const event = continued ? 'fleet_watch_membership_changed' : 'fleet_watch_invalidated';
+    this.deps.logEvent(`fleet:${change.name}`, event, `removed ${removed}; remaining ${remaining}`);
+    log().warn('sentinel', text);
+
+    const sentinel = this.sentinel;
+    if (sentinel === undefined) {
+      await this.deps.notifyOperator(`⚠️ ${text}`);
+      return;
+    }
+    if (!(await this.deps.isActive(sentinel))) {
+      await this.deps.notifyOperator(`⚠️ ${text} Sentinel ${sentinel} is not running.`);
+      return;
+    }
+    await this.deps.deliver(sentinel, text);
   }
 
   private async captureStripped(session: string): Promise<string> {

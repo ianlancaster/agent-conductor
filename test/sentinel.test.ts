@@ -230,12 +230,48 @@ describe('fleet stall watches', () => {
     expect(router.sentinelCodename()).toBe('watch');
   });
 
-  it('disarms explicitly and prunes watches whose sessions are removed', () => {
+  it('keeps a watch armed over remaining members when one session is removed', async () => {
+    router.armFleetWatch({ name: 'release', sessions: ['alpha', 'beta', 'gamma'], thresholdSeconds: 0 });
+    await router.handleStall('alpha', 'idle', {});
+    await router.handleStall('beta', 'idle', {});
+    expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
+
+    await router.reconcileFleetWatches(new Set(['alpha', 'beta', 'watch']));
+
+    expect(router.listFleetWatches()[0]).toMatchObject({
+      name: 'release',
+      sessions: ['alpha', 'beta'],
+      state: 'reported',
+    });
+    expect(delivered.some((item) => item.text.startsWith('[Fleet Watch]') && item.text.includes('gamma'))).toBe(true);
+    expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(true);
+  });
+
+  it('notifies and disarms a watch that falls below two registered members', async () => {
+    router.armFleetWatch({ name: 'release', sessions: ['alpha', 'beta'], thresholdSeconds: 10 });
+
+    await router.reconcileFleetWatches(new Set(['alpha', 'watch']));
+
+    expect(router.listFleetWatches()).toEqual([]);
+    expect(delivered).toContainEqual({
+      session: 'watch',
+      text: expect.stringContaining('[Fleet Watch] watch=release invalidated') as string,
+    });
+  });
+
+  it('notifies the operator when an invalidated watch has no sentinel', async () => {
+    const noSentinel = makeRouter(undefined);
+    noSentinel.armFleetWatch({ name: 'release', sessions: ['alpha', 'beta'], thresholdSeconds: 10 });
+
+    await noSentinel.reconcileFleetWatches(new Set(['alpha']));
+
+    expect(operatorMessages).toContainEqual(expect.stringContaining('watch=release invalidated'));
+  });
+
+  it('disarms explicitly', () => {
     router.armFleetWatch({ name: 'one', sessions: ['alpha', 'beta'], thresholdSeconds: 10 });
-    router.armFleetWatch({ name: 'two', sessions: ['alpha', 'beta'], thresholdSeconds: 10 });
     expect(router.disarmFleetWatch('one')).toBe(true);
     expect(router.disarmFleetWatch('missing')).toBe(false);
-    expect(router.pruneFleetWatches(new Set(['alpha', 'watch']))).toEqual(['two']);
     expect(router.listFleetWatches()).toEqual([]);
   });
 });

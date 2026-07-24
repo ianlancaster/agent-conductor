@@ -92,7 +92,8 @@ conversation.
   clear the designation. The target should already have the sentinel instructions.
 - `arm_fleet_watch`, `disarm_fleet_watch`, `list_fleet_watches` — watch an explicit
   group of sessions and escalate when every member remains stalled together. With no sentinel,
-  the alert goes directly to the operator.
+  the alert goes directly to the operator. Deregistering a member contracts a watch while at least
+  two members remain; otherwise Conductor invalidates it and visibly notifies the sentinel/operator.
 - `set_tag` — set or clear a status label; status results include the current label.
 - `get_message_status` — inspect whether a durable direct-message receipt is pending, delivered,
   or cancelled, including its last flush attempt and skip reason.
