@@ -32,7 +32,7 @@ import { ConductorOperations } from './operations.js';
 import { OperatorRequests } from './operator-requests.js';
 import { StallSentinelRouter } from './sentinel.js';
 import { SessionStateManager } from './state.js';
-import { resolvedSessionEffort, resolvedSessionModel, statusReport } from './status.js';
+import { formatFleetStatusReport, resolvedSessionEffort, resolvedSessionModel, statusReport } from './status.js';
 import { ShepherdManager } from './shepherd-manager.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
@@ -500,20 +500,14 @@ export class Supervisor {
         sentinelCodename: () => this.sentinel.sentinelCodename(),
       },
       codename,
+      { shepherdRecipient: this.shepherd.recipientSession() },
     );
     if (codename !== undefined) return report;
-    const fleetWatchMarker = this.sentinel.isFleetWatchEnabled() ? ' 🔄' : '';
     const shepherd = this.shepherd.status();
-    const shepherdReport = [
-      'PR Shepherd:',
-      `  state: ${shepherd.state}`,
-      `  presentation: ${shepherd.presentation}`,
-      `  config: ${shepherd.configPath}`,
-      ...(shepherd.pid === null ? [] : [`  pid: ${String(shepherd.pid)}`]),
-      ...(shepherd.lastSuccessAt === null ? [] : [`  last success: ${shepherd.lastSuccessAt}`]),
-      ...(shepherd.detail === null ? [] : [`  detail: ${shepherd.detail}`]),
-    ].join('\n');
-    return [`Agent Conductor Status${fleetWatchMarker}`, report, shepherdReport].join('\n\n');
+    return formatFleetStatusReport(report, {
+      fleetWatchActive: this.sentinel.isFleetWatchEnabled(),
+      shepherdOnline: shepherd.state === 'healthy',
+    });
   }
 
   /** Structured companion status for embedding and tests. */

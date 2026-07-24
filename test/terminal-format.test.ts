@@ -36,6 +36,15 @@ describe('formatTerminalReply', () => {
     expect(formatTerminalReply('/status', status, false)).toBe(status);
   });
 
+  it('uses the same bold styling for the Conductor and online Shepherd headings', () => {
+    const status = 'Agent Conductor Status\nPR Shepherd Status Online\n\nSessions:\n  alpha - CC 🐑 · 🟢 working';
+    expect(formatTerminalReply('/status', status, true)).toBe(
+      '\u001b[1mAgent Conductor Status\u001b[22m\n' +
+        '\u001b[1mPR Shepherd Status Online\u001b[22m\n\n' +
+        'Sessions:\n  \u001b[1malpha\u001b[22m - CC 🐑 · 🟢 working',
+    );
+  });
+
   it('bolds the codename value in detailed terminal status', () => {
     const status = '{\n  "codename": "alpha",\n  "path": "~/Projects/alpha"\n}';
     expect(formatTerminalReply('/status alpha', status, true)).toBe(

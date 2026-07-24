@@ -16,6 +16,8 @@ const RUNTIME_LABELS: Record<SessionConfig['runtime'], string> = {
   'codex': 'codex',
 };
 
+export const PR_SHEPHERD_ONLINE_STATUS = 'PR Shepherd Status Online';
+
 export interface StatusDeps {
   sessions(): Map<string, SessionConfig>;
   getState(codename: string): SessionState | undefined;
@@ -66,8 +68,9 @@ export function formatSessionLine(
   runtime: SessionConfig['runtime'],
   state: SessionState | undefined,
   isSentinel: boolean,
+  isShepherdRecipient = false,
 ): string {
-  const name = `${codename} - ${RUNTIME_LABELS[runtime]}${isSentinel ? ' 🛡' : ''}`;
+  const name = `${codename} - ${RUNTIME_LABELS[runtime]}${isSentinel ? ' 🛡' : ''}${isShepherdRecipient ? ' 🐑' : ''}`;
   if (state === undefined) return `${name} · ⚪ unregistered`;
   const tag = state.tag !== undefined ? ` · ${state.tag}` : '';
   const activity = state.running ? state.activity : 'stopped';
@@ -76,7 +79,11 @@ export function formatSessionLine(
   return `${name} · ${ACTIVITY_ICONS[activity]} ${activity}${mode}${paused}${tag}`;
 }
 
-export function statusReport(deps: StatusDeps, codename?: string): string {
+export interface StatusMarkers {
+  shepherdRecipient?: string;
+}
+
+export function statusReport(deps: StatusDeps, codename?: string, markers: StatusMarkers = {}): string {
   const sentinel = deps.sentinelCodename();
 
   if (codename !== undefined) {
@@ -99,6 +106,7 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
         activity: state.activity,
         agentProject: state.isAgentProject,
         isSentinel: codename === sentinel,
+        isShepherdRecipient: codename === markers.shepherdRecipient,
       },
       null,
       2,
@@ -123,7 +131,9 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
     for (const name of group) {
       const runtime = deps.runtimeFor(name);
       if (runtime !== undefined) {
-        lines.push(`  ${formatSessionLine(name, runtime, deps.getState(name), name === sentinel)}`);
+        lines.push(
+          `  ${formatSessionLine(name, runtime, deps.getState(name), name === sentinel, name === markers.shepherdRecipient)}`,
+        );
         const session = deps.sessions().get(name);
         if (session !== undefined) {
           const branch = currentBranch(session.repo);
@@ -133,4 +143,13 @@ export function statusReport(deps: StatusDeps, codename?: string): string {
     }
   }
   return lines.join('\n');
+}
+
+/** Add the canonical fleet heading and optional companion-health summary. */
+export function formatFleetStatusReport(
+  report: string,
+  options: { fleetWatchActive: boolean; shepherdOnline: boolean },
+): string {
+  const heading = `Agent Conductor Status${options.fleetWatchActive ? ' 🔄' : ''}`;
+  return [heading, ...(options.shepherdOnline ? [PR_SHEPHERD_ONLINE_STATUS] : []), '', report].join('\n');
 }

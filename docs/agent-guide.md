@@ -535,9 +535,11 @@ merge-queue mode a merely-behind ready PR is queued without an unnecessary updat
 mergeability waits; `CONFLICTING` emits a conflict fact and requires coordinator/operator
 resolution on each transition into that state. Shepherd never pretends to resolve textual conflicts.
 
-Managed status is one of `disabled`, `config-invalid`, `panel-unsupported`, `starting`, `healthy`,
-`stale`, `restarting`, `failed`, or `stopped`. A failed optional companion never makes the
-Conductor control plane unavailable.
+While the managed companion has a fresh healthy heartbeat, fleet `/status` adds
+`PR Shepherd Status Online` directly below the Conductor heading and marks the configured
+coordinator session with `🐑`. Disabled and unhealthy companions are omitted from the concise
+fleet view. Use `pr-shepherd -C <fleet> status` and the Conductor logs for detailed lifecycle
+diagnostics. A failed optional companion never makes the Conductor control plane unavailable.
 
 PR Shepherd does not decide the depth of a code review. A coordinator can compose that policy from
 PR facts: inexpensive review for ordinary changes, a specialist review for material risk, or

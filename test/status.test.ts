@@ -1,6 +1,12 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { displayPath, formatSessionLine, resolvedSessionEffort, resolvedSessionModel } from '../src/core/status.js';
+import {
+  displayPath,
+  formatFleetStatusReport,
+  formatSessionLine,
+  resolvedSessionEffort,
+  resolvedSessionModel,
+} from '../src/core/status.js';
 import type { SessionState } from '../src/core/types.js';
 
 function sessionState(overrides: Partial<SessionState> = {}): SessionState {
@@ -49,6 +55,31 @@ describe('formatSessionLine', () => {
     expect(formatSessionLine('alpha', 'claude-code', state, false)).toBe(
       'alpha - CC · 🟢 working - auto 🔄 (paused) · nightly',
     );
+  });
+
+  it('marks the PR Shepherd recipient and composes it with the sentinel marker', () => {
+    expect(formatSessionLine('alpha', 'claude-code', sessionState(), false, true)).toBe('alpha - CC 🐑 · 🟢 working');
+    expect(formatSessionLine('alpha', 'codex', sessionState(), true, true)).toBe('alpha - codex 🛡 🐑 · 🟢 working');
+  });
+});
+
+describe('formatFleetStatusReport', () => {
+  it('omits PR Shepherd entirely when it is not online', () => {
+    expect(
+      formatFleetStatusReport('Sessions:\n  alpha - CC · 🟢 working', {
+        fleetWatchActive: false,
+        shepherdOnline: false,
+      }),
+    ).toBe('Agent Conductor Status\n\nSessions:\n  alpha - CC · 🟢 working');
+  });
+
+  it('places the simple online line immediately under the fleet heading', () => {
+    expect(
+      formatFleetStatusReport('Sessions:\n  alpha - CC 🐑 · 🟢 working', {
+        fleetWatchActive: true,
+        shepherdOnline: true,
+      }),
+    ).toBe('Agent Conductor Status 🔄\nPR Shepherd Status Online\n\nSessions:\n  alpha - CC 🐑 · 🟢 working');
   });
 });
 

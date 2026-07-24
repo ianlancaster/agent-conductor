@@ -1,4 +1,5 @@
 import type { ReadStream, WriteStream } from 'node:tty';
+import { PR_SHEPHERD_ONLINE_STATUS } from '../core/status.js';
 import { formatTerminalReply } from './terminal-format.js';
 
 const ALT_SCREEN_ON = '\u001b[?1049h';
@@ -39,14 +40,20 @@ export interface StatusDashboardOptions {
 
 const CANONICAL_STATUS_HEADING = 'Agent Conductor Status';
 
-function statusContent(status: string | undefined): { body: string | undefined; fleetWatchActive: boolean } {
-  if (status === undefined) return { body: undefined, fleetWatchActive: false };
+function statusContent(status: string | undefined): {
+  body: string | undefined;
+  fleetWatchActive: boolean;
+  shepherdOnline: boolean;
+} {
+  if (status === undefined) return { body: undefined, fleetWatchActive: false, shepherdOnline: false };
   const [firstLine, ...remaining] = status.split('\n');
   if (firstLine !== CANONICAL_STATUS_HEADING && firstLine !== `${CANONICAL_STATUS_HEADING} 🔄`) {
-    return { body: status, fleetWatchActive: false };
+    return { body: status, fleetWatchActive: false, shepherdOnline: false };
   }
+  const shepherdOnline = remaining[0] === PR_SHEPHERD_ONLINE_STATUS;
+  if (shepherdOnline) remaining.shift();
   if (remaining[0] === '') remaining.shift();
-  return { body: remaining.join('\n'), fleetWatchActive: firstLine.endsWith(' 🔄') };
+  return { body: remaining.join('\n'), fleetWatchActive: firstLine.endsWith(' 🔄'), shepherdOnline };
 }
 
 /** Parse a dashboard refresh duration such as `2`, `2s`, or `500ms`. */
@@ -85,6 +92,12 @@ export function renderStatusDashboard(
   const canonical = statusContent(state.status);
   const heading = colors ? `${BOLD}${CANONICAL_STATUS_HEADING}${NORMAL_INTENSITY}` : CANONICAL_STATUS_HEADING;
   const fleetWatch = canonical.fleetWatchActive ? ' 🔄 fleet watch on' : '';
+  const shepherd =
+    state.connection === 'online' && canonical.shepherdOnline
+      ? colors
+        ? `${BOLD}${PR_SHEPHERD_ONLINE_STATUS}${NORMAL_INTENSITY}`
+        : PR_SHEPHERD_ONLINE_STATUS
+      : undefined;
   const metadata = colors
     ? `${DIM}${updatedLabel(state)} · fleet: ${options.fleetDir}${NORMAL}`
     : `${updatedLabel(state)} · fleet: ${options.fleetDir}`;
@@ -100,6 +113,7 @@ export function renderStatusDashboard(
 
   return [
     `${heading}  ${connectionLabel(state.connection, colors)}${fleetWatch}`,
+    ...(shepherd === undefined ? [] : [shepherd]),
     metadata,
     ...(retry === undefined ? [] : [retry]),
     '',

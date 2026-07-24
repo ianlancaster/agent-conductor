@@ -71,6 +71,7 @@ export class ShepherdManager {
   private restartTimer: NodeJS.Timeout | undefined;
   private healthTimer: NodeJS.Timeout | undefined;
   private stderrTail = '';
+  private coordinatorSession: string | undefined;
   private statusValue: ManagedShepherdStatus;
 
   constructor(
@@ -93,10 +94,16 @@ export class ShepherdManager {
     return { ...this.statusValue };
   }
 
+  /** Validated Conductor-delivery recipient for status decoration. */
+  recipientSession(): string | undefined {
+    return this.config.enabled ? this.coordinatorSession : undefined;
+  }
+
   async start(): Promise<void> {
     if (!this.config.enabled) return;
     this.stopping = false;
     this.restartCount = 0;
+    this.coordinatorSession = undefined;
     if (this.config.presentation === 'panel') {
       this.setStatus('panel-unsupported', 'Panel presentation is not supported by the current terminal backend.');
       return;
@@ -108,6 +115,7 @@ export class ShepherdManager {
       this.setStatus('config-invalid', this.cleanError(error));
       return;
     }
+    this.coordinatorSession = profile.delivery.type === 'conductor' ? profile.delivery.coordinatorSession : undefined;
     this.databasePath = profile.databasePath;
     this.pollingIntervalMs = profile.polling.intervalSeconds * 1000;
     try {

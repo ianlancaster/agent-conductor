@@ -48,7 +48,7 @@ describe('Supervisor construction', () => {
     expect(status).toContain('alpha');
     expect(status).toContain('watch');
     expect(status).toContain('🛡'); // sentinel marker
-    expect(status).toContain('PR Shepherd:\n  state: disabled\n  presentation: headless');
+    expect(status).not.toContain('PR Shepherd');
     expect(supervisor.shepherdStatus()).toMatchObject({ state: 'disabled', presentation: 'headless' });
   });
 
