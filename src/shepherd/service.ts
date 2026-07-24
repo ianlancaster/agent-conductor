@@ -55,6 +55,9 @@ export class ShepherdService {
     for (const item of batch) {
       try {
         const receipt = await this.sink.send(item);
+        if (receipt?.status === 'queued') {
+          throw new Error('Conductor queued the message for this run; awaiting a delivered receipt.');
+        }
         this.store.completeOutbox(item.id, receipt);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

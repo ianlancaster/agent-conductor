@@ -37,16 +37,22 @@ describe('Shepherd outbox delivery', () => {
       send: (item: OutboxItem) => {
         keys.push(item.idempotencyKey);
         attempts += 1;
-        return attempts === 1
-          ? Promise.reject(new Error('ambiguous timeout'))
-          : Promise.resolve({ messageId: 9, recipient: item.recipient, status: 'queued', deduplicated: true });
+        if (attempts === 1) return Promise.reject(new Error('ambiguous timeout'));
+        return Promise.resolve({
+          messageId: 9,
+          recipient: item.recipient,
+          status: attempts === 2 ? 'queued' : 'delivered',
+          deduplicated: true,
+        });
       },
     };
     const worker = service(store, sink);
     await worker.drainOutbox();
     vi.advanceTimersByTime(1_000);
     await worker.drainOutbox();
-    expect(keys).toEqual([keys[0], keys[0]]);
+    vi.advanceTimersByTime(2_000);
+    await worker.drainOutbox();
+    expect(keys).toEqual([keys[0], keys[0], keys[0]]);
     expect(store.listOutbox()).toEqual([]);
     store.close();
   });

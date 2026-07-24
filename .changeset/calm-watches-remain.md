@@ -2,5 +2,5 @@
 'agent-conductor': patch
 ---
 
-Keep fleet stall watches armed over remaining members after session teardown, and visibly notify
-the sentinel or operator when membership changes or a watch becomes invalid.
+Replace named fleet stall watches with one persisted fleet-wide toggle. Fleet watch now follows
+the registered roster automatically, excludes the sentinel, and uses a 15-second confirmation by default.

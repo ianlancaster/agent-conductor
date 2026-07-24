@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { hasControlCharacters } from '../text.js';
 
 export const DEFAULT_CLAUDE_CODE_MODELS = [
   'claude-fable-5',
@@ -28,16 +27,8 @@ export const DEFAULT_SPAWN_TEMPLATES = {
 } as const;
 
 const stringHints = (defaults: readonly string[]) => z.array(z.string().trim().min(1)).default([...defaults]);
-const publicDescription = z
-  .string()
-  .trim()
-  .min(1)
-  .max(200)
-  .refine((value) => !hasControlCharacters(value), 'description must not contain control characters');
-
 /** Codenames become URL path segments, filenames, and tmux targets — keep them boring. */
 export const CODENAME_PATTERN = /^[a-z0-9][a-z0-9-_]*$/i;
-export const FEDERATION_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 export function isValidCodename(value: string): boolean {
   return CODENAME_PATTERN.test(value);
@@ -123,8 +114,8 @@ export const supervisorConfigSchema = z
         stallBeatsThreshold: z.number().int().positive().default(2),
         /** Quiet period after a runtime `stop` event before it becomes an idle stall. */
         idleConfirmMs: z.number().int().nonnegative().default(15_000),
-        /** Default confirmation period after every session in an armed fleet watch has stalled. */
-        fleetStallConfirmMs: z.number().int().nonnegative().default(300_000),
+        /** Confirmation period after every watched session has stalled. */
+        fleetStallConfirmMs: z.number().int().nonnegative().default(15_000),
         /** Window in which similar stalls are suppressed as duplicates. */
         suppressWindowMs: z.number().int().positive().default(300_000),
         /** Content similarity (0..1) above which a repeat stall is suppressed. */
@@ -220,56 +211,6 @@ export const supervisorConfigSchema = z
       })
       .strict()
       .default({}),
-    federation: z
-      .object({
-        /** Public fleet name. Defaults to the fleet's existing derived slug. */
-        name: z
-          .string()
-          .trim()
-          .min(1)
-          .max(63)
-          .regex(FEDERATION_NAME_PATTERN, 'federation name must be a lowercase slug')
-          .optional(),
-        /** Deliberately public fleet description. Never derived from paths or tags. */
-        description: publicDescription.optional(),
-        sessions: z
-          .object({
-            /** Explicitly exposed session codenames; '*' exposes every registered session. */
-            expose: z
-              .array(
-                z.union([
-                  z.literal('*'),
-                  z.string().regex(CODENAME_PATTERN, 'exposed session must be a valid codename'),
-                ]),
-              )
-              .default([]),
-            /** Deliberately public descriptions for exposed sessions only. */
-            descriptions: z.record(z.string(), publicDescription).default({}),
-          })
-          .strict()
-          .default({}),
-        local: z
-          .object({
-            enabled: z.boolean().default(false),
-            /** Advanced/test override; null uses ~/.agent-conductor/federation. */
-            registryDir: z.string().trim().min(1).nullable().default(null),
-            heartbeatSeconds: z.number().min(1).default(5),
-            staleAfterSeconds: z.number().positive().default(20),
-          })
-          .strict()
-          .superRefine((value, context) => {
-            if (value.staleAfterSeconds <= value.heartbeatSeconds) {
-              context.addIssue({
-                code: 'custom',
-                path: ['staleAfterSeconds'],
-                message: 'staleAfterSeconds must be greater than heartbeatSeconds',
-              });
-            }
-          })
-          .default({}),
-      })
-      .strict()
-      .default({}),
     runtimes: z
       .object({
         claudeCode: z
@@ -354,5 +295,4 @@ export type SupervisorConfig = Omit<SupervisorConfigInput, 'mcp' | 'terminal'> &
     windowName: string;
     tmux: SupervisorConfigInput['terminal']['tmux'] & { sessionName: string };
   };
-  federation: Omit<SupervisorConfigInput['federation'], 'name'> & { name: string };
 };

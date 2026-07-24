@@ -121,6 +121,9 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    On iTerm, session panes open **in this same window**, beside the console. Process
    output lives in `.conductor/data/conductor.out.log` (`conductor start --foreground` runs it
    visibly instead; `conductor console` attaches an extra console from elsewhere).
+   The console opened by `conductor start` owns its Conductor, so `Ctrl+C` or closing that console
+   stops the core. If a core is already running, `conductor start` refuses to attach; use
+   `conductor console` only when a deliberately non-owning additional console is wanted.
 
    `/tell` delivers your message into the session's pane. The session replies **in its own
    pane** unless it uses `send_to_operator`; that tool sends its reply to every connected
@@ -169,8 +172,7 @@ because the sentinel is not running.)
    change it immediately; omit the session to clear it. Tool-set choices persist across
    restarts.
 
-4. Restart the conductor (session files and local-federation exposure/public descriptions hot-reload;
-   other supervisor settings do not):
+4. Restart the conductor (session files hot-reload; supervisor settings do not):
 
    ```
    /start watch            # bring the sentinel up first
@@ -227,12 +229,14 @@ covers token handling, private-chat ID discovery, security, verification, and tr
    export CONDUCTOR_TELEGRAM_CHAT_ID=987654321
    ```
 
-   Inherited variables override `.conductor/.env`. The conductor does not read shell startup files
-   directly; launchd and systemd usually do not source them, so fleet `.conductor/.env` is the reliable
-   fallback for daemons.
+   Values in `.conductor/.env` override inherited variables, so a simple restart reliably picks up
+   fleet credential edits even when the parent process is long-lived. The conductor does not read shell
+   startup files directly; launchd and systemd usually do not source them, so fleet `.conductor/.env` is
+   the reliable source for daemons.
 
-5. Restart `conductor start`. The log shows `telegram channel connected.` Enabling Telegram
-   without both non-blank credentials fails at startup with the missing variable names.
+5. Restart `conductor start`. The log shows `telegram channel connected.` If credentials are missing
+   or rejected, the log names the problem; the core Conductor remains online so lifecycle and agent
+   messaging continue to work.
 
 Now every operator command works from your phone: `/status`, `/tell alpha …`, `/auto`,
 `/pause`, etc. Sessions message you with the `send_to_operator` tool — each message
@@ -304,10 +308,6 @@ primitive, not an approval or execution queue.
   preserved; otherwise the generated file is added to the repo's `.gitignore` automatically.
   Each Codex session gets an isolated `CODEX_HOME` so sessions don't cross, plus a mechanically
   scoped Conductor MCP endpoint and lifecycle notify hook.
-
-To connect explicitly exposed sessions across two Conductor fleets owned by the same OS user,
-follow the [local federation guide](../guides/local-federation.md). Federation is disabled by
-default, uses qualified `session@fleet` addresses, and never starts a peer session.
 
 ---
 

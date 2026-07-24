@@ -71,7 +71,7 @@ export function formatSessionLine(
   if (state === undefined) return `${name} · ⚪ unregistered`;
   const tag = state.tag !== undefined ? ` · ${state.tag}` : '';
   const activity = state.running ? state.activity : 'stopped';
-  const mode = state.auto ? ' - auto' : '';
+  const mode = state.auto ? ' - auto 🔄' : '';
   const paused = state.paused ? ' (paused)' : '';
   return `${name} · ${ACTIVITY_ICONS[activity]} ${activity}${mode}${paused}${tag}`;
 }

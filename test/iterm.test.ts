@@ -8,6 +8,7 @@ import {
   buildCreateTabScript,
   buildCreateWindowScript,
   buildInSessionScript,
+  buildUnchangedContentsGuard,
   buildListSessionIdsScript,
   buildRediscoverScript,
   buildSessionTtyScript,
@@ -98,6 +99,14 @@ describe('bracketedPastePayload', () => {
   it('adds exactly one inert trailing newline inside the paste markers', () => {
     expect(bracketedPastePayload('hello')).toBe(`${ESC}[200~hello\n${ESC}[201~`);
     expect(bracketedPastePayload('hello\n')).toBe(`${ESC}[200~hello\n${ESC}[201~`);
+  });
+});
+
+describe('buildUnchangedContentsGuard', () => {
+  it('reads captured pane snapshots explicitly as UTF-8', () => {
+    const script = buildUnchangedContentsGuard('/tmp/pane snapshot', 'CHANGED');
+    expect(script).toContain('read POSIX file "/tmp/pane snapshot" as «class utf8»');
+    expect(script).toContain('return "CHANGED"');
   });
 });
 

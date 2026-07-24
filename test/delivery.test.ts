@@ -61,7 +61,7 @@ describe('DeliveryQueue', () => {
     expect(await queue.deliverOrQueue('ghost', 'hello')).toBe('no-pane');
   });
 
-  it('keeps a durable no-pane delivery in the periodic queue during a restart', async () => {
+  it('keeps a no-pane delivery cancellable in the current process queue', async () => {
     expect(await queue.deliverOrQueue('ghost', 'survive restart', { deliveryId: 42 })).toBe('queued');
     expect(queue.pendingCount('ghost')).toBe(1);
     expect(queue.cancel('ghost', 42)).toBe('cancelled');
@@ -120,28 +120,6 @@ describe('DeliveryQueue', () => {
     backend.setPaneContent(pane.id, 'output\n❯ ');
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['[Stall] incoming']);
-  });
-
-  it('rechecks a durable cancellation policy before draining a previously safe message', async () => {
-    runtime.inputState = 'draft';
-    let expired = false;
-    let cancellations = 0;
-    expect(
-      await queue.deliverOrQueue('alpha', 'expires while queued', {
-        deliveryId: 42,
-        shouldCancel: () => expired,
-        onCancelled: () => {
-          cancellations += 1;
-        },
-      }),
-    ).toBe('queued');
-
-    expired = true;
-    runtime.inputState = 'clear';
-    await queue.drainNow();
-    expect(backend.panes.get(pane.id)?.received).toEqual([]);
-    expect(queue.pendingCount('alpha')).toBe(0);
-    expect(cancellations).toBe(1);
   });
 
   it('reports why a flush was skipped and clears the reason on delivery', async () => {

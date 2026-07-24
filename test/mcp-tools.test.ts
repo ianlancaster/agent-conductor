@@ -86,7 +86,14 @@ beforeEach(() => {
   });
   const operatorRequests = new OperatorRequests({ store, messaging, channelSend: async () => false });
   sentinel = new StallSentinelRouter({
-    config: { captureLines: 40, suppressWindowMs: 300_000, suppressSimilarity: 0.8, sentinelCodename: 'watch' },
+    config: {
+      captureLines: 40,
+      suppressWindowMs: 300_000,
+      suppressSimilarity: 0.8,
+      sentinelCodename: 'watch',
+      fleetStallThresholdSeconds: 15,
+    },
+    initialSessions: sessions.keys(),
     backend,
     runtimeFor: () => runtime,
     getPane: (a) => lifecycle.getPane(a),
@@ -129,7 +136,6 @@ beforeEach(() => {
       return `Typed into ${codename}'s pane.`;
     },
     tailLimits: { defaultLines: 30, maxLines: 500 },
-    fleetStallDefaultSeconds: 300,
     retitle: async () => undefined,
     summon: async (codename) => `summoned:${codename}`,
     banish: async (codename) => `banished:${codename}`,
@@ -214,10 +220,6 @@ describe('surface contract', () => {
     expect(spawnProperties).toHaveProperty('effort');
   });
 
-  it('defaults every existing core operation to never federated', () => {
-    expect(operations.definitions().every((definition) => definition.federation === 'never')).toBe(true);
-  });
-
   it('validates arguments in the shared layer for every adapter', async () => {
     await expect(tool('start_session').handler({ codename: 'watch', prompt: 'hidden work' }, 'alpha')).rejects.toThrow(
       "Unknown argument 'prompt'",
@@ -297,7 +299,7 @@ describe('surface contract', () => {
       type: 'string',
       minLength: 1,
       maxLength: 128,
-      description: 'Optional sender-scoped key for durable deduplication',
+      description: 'Optional sender-scoped key for receipt deduplication',
     });
     await tool('start_session').handler({ codename: 'beta' }, 'alpha');
     const first = await tool('send_to_session').handler(
@@ -387,21 +389,12 @@ describe('surface contract', () => {
     }
   });
 
-  it('arms and inspects fleet watches through MCP', async () => {
-    expect(
-      await tool('arm_fleet_watch').handler({ name: 'pair', sessions: 'alpha,beta', thresholdSeconds: 0 }, 'unknown'),
-    ).toContain("'pair' armed");
-    expect(await tool('list_fleet_watches').handler({}, 'alpha')).toContain('pair · watching');
-    expect(await tool('disarm_fleet_watch').handler({ name: 'pair' }, 'alpha')).toContain('disarmed');
-  });
-
-  it('warns at arm time that a sentinel-less fleet watch alerts the operator', async () => {
-    sentinel.setSentinel(undefined);
-    const result = await tool('arm_fleet_watch').handler(
-      { name: 'pair', sessions: 'alpha,beta', thresholdSeconds: 0 },
-      'unknown',
-    );
-    expect(result).toContain('No sentinel is designated; alerts will go to the operator.');
+  it('toggles fleet watch through one argument-free MCP primitive', async () => {
+    expect(await tool('toggle_fleet_watch').handler({}, 'unknown')).toBe('Fleet watch on.');
+    expect(await tool('toggle_fleet_watch').handler({}, 'alpha')).toBe('Fleet watch off.');
+    expect(tools.some((item) => item.name === 'arm_fleet_watch')).toBe(false);
+    expect(tools.some((item) => item.name === 'disarm_fleet_watch')).toBe(false);
+    expect(tools.some((item) => item.name === 'list_fleet_watches')).toBe(false);
   });
 
   it('documents every shared operation and every session-facing tool', () => {

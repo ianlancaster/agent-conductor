@@ -37,6 +37,18 @@ export interface StatusDashboardOptions {
   now?: () => Date;
 }
 
+const CANONICAL_STATUS_HEADING = 'Agent Conductor Status';
+
+function statusContent(status: string | undefined): { body: string | undefined; fleetWatchActive: boolean } {
+  if (status === undefined) return { body: undefined, fleetWatchActive: false };
+  const [firstLine, ...remaining] = status.split('\n');
+  if (firstLine !== CANONICAL_STATUS_HEADING && firstLine !== `${CANONICAL_STATUS_HEADING} 🔄`) {
+    return { body: status, fleetWatchActive: false };
+  }
+  if (remaining[0] === '') remaining.shift();
+  return { body: remaining.join('\n'), fleetWatchActive: firstLine.endsWith(' 🔄') };
+}
+
 /** Parse a dashboard refresh duration such as `2`, `2s`, or `500ms`. */
 export function parseStatusInterval(value: string): number {
   const match = /^(\d+(?:\.\d+)?)(ms|s)?$/i.exec(value.trim());
@@ -70,22 +82,24 @@ export function renderStatusDashboard(
   options: Pick<StatusDashboardOptions, 'command' | 'fleetDir' | 'intervalMs'>,
   colors: boolean,
 ): string {
-  const heading = colors ? `${BOLD}Agent Conductor Status${NORMAL_INTENSITY}` : 'Agent Conductor Status';
+  const canonical = statusContent(state.status);
+  const heading = colors ? `${BOLD}${CANONICAL_STATUS_HEADING}${NORMAL_INTENSITY}` : CANONICAL_STATUS_HEADING;
+  const fleetWatch = canonical.fleetWatchActive ? ' 🔄 fleet watch on' : '';
   const metadata = colors
     ? `${DIM}${updatedLabel(state)} · fleet: ${options.fleetDir}${NORMAL}`
     : `${updatedLabel(state)} · fleet: ${options.fleetDir}`;
   const retry = state.connection === 'offline' ? `Retrying every ${String(options.intervalMs / 1000)}s.` : undefined;
   const status =
-    state.status === undefined
+    canonical.body === undefined
       ? state.connection === 'offline'
         ? '(status unavailable)'
         : '(loading status…)'
-      : formatTerminalReply(options.command, state.status, colors);
-  const previous = state.connection === 'offline' && state.status !== undefined ? 'Last known status:' : undefined;
+      : formatTerminalReply(options.command, canonical.body, colors);
+  const previous = state.connection === 'offline' && canonical.body !== undefined ? 'Last known status:' : undefined;
   const footer = colors ? `${DIM}q quit · r refresh${NORMAL}` : 'q quit · r refresh';
 
   return [
-    `${heading}  ${connectionLabel(state.connection, colors)}`,
+    `${heading}  ${connectionLabel(state.connection, colors)}${fleetWatch}`,
     metadata,
     ...(retry === undefined ? [] : [retry]),
     '',

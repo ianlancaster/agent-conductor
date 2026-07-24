@@ -98,7 +98,13 @@ beforeEach(async () => {
   });
   const operatorRequests = new OperatorRequests({ store, messaging, channelSend: async () => false });
   const sentinel = new StallSentinelRouter({
-    config: { captureLines: 40, suppressWindowMs: 300_000, suppressSimilarity: 0.8 },
+    config: {
+      captureLines: 40,
+      suppressWindowMs: 300_000,
+      suppressSimilarity: 0.8,
+      sentinelCodename: undefined,
+      fleetStallThresholdSeconds: 15,
+    },
     backend,
     runtimeFor: () => runtime,
     getPane: (session) => lifecycle.getPane(session),
@@ -122,7 +128,6 @@ beforeEach(async () => {
     tail: async () => '',
     typeInPane: async () => '',
     tailLimits: { defaultLines: 30, maxLines: 500 },
-    fleetStallDefaultSeconds: 300,
     retitle: async () => undefined,
     summon: async () => '',
     banish: async () => '',

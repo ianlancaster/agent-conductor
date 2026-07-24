@@ -71,7 +71,7 @@ export interface LifecycleDeps {
   reloadSessions(): void;
   /** Reset per-run health and stall-routing tracking on lifecycle boundaries. */
   supervisionReset(session: string): void;
-  /** Notify orchestration that a live pane is available (for durable delivery recovery). */
+  /** Notify orchestration that a live pane is available for this run's queued delivery. */
   onRunning?(session: string): void;
 }
 

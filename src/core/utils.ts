@@ -37,8 +37,8 @@ export function stallEnvelope(session: string, kind: string, detail: string): st
   return `[Stall] session=${session} kind=${kind} ${detail}`;
 }
 
-export function fleetStallEnvelope(name: string, sessions: readonly string[], seconds: number): string {
-  return `[Fleet Stall] watch=${name} sessions=${sessions.join(',')} all-stalled-for=${seconds}s Investigate immediately.`;
+export function fleetStallEnvelope(sessions: readonly string[], seconds: number): string {
+  return `[Fleet Stall] sessions=${sessions.join(',')} all-stalled-for=${seconds}s Investigate immediately.`;
 }
 
 export function truncate(text: string, max: number): string {

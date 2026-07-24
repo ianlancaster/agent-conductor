@@ -21,12 +21,6 @@ export interface MessageReceipt {
   deduplicated: boolean;
 }
 
-export interface FederatedInboundReceipt {
-  messageId: string;
-  status: 'received' | 'delivered';
-  deduplicated: boolean;
-}
-
 export function renderMessageReceipt(receipt: MessageReceipt): string {
   const action = receipt.status === 'delivered' ? 'Delivered' : receipt.status === 'cancelled' ? 'Cancelled' : 'Queued';
   const duplicate = receipt.deduplicated ? ' (deduplicated)' : '';
@@ -42,57 +36,15 @@ export class Messaging {
 
   constructor(private readonly deps: MessagingDeps) {}
 
-  /**
-   * Accept an authenticated federation hop without changing lifecycle state.
-   * A stopped target retains the durable local row until an operator starts it.
-   */
-  async acceptInboundFederated(input: {
-    messageId: string;
-    sourceInstanceId: string;
-    sourceAddress: string;
-    recipient: string;
-    message: string;
-    receivedAt: number;
-    expiresAt: number;
-  }): Promise<FederatedInboundReceipt> {
-    if (!this.deps.sessions().has(input.recipient)) {
-      throw new InvalidRequestError(`Unknown session: ${input.recipient}`);
-    }
-    const inserted = this.deps.store.acceptFederatedInbound({
-      messageId: input.messageId,
-      sourceInstanceId: input.sourceInstanceId,
-      sourceAddress: input.sourceAddress,
-      recipientSession: input.recipient,
-      content: input.message,
-      receivedAt: input.receivedAt,
-      expiresAt: input.expiresAt,
-    });
-    if (inserted.localMessage.status === 'delivered') {
-      return { messageId: input.messageId, status: 'delivered', deduplicated: inserted.deduplicated };
-    }
-    if (!inserted.deduplicated && this.deps.states.get(input.recipient)?.running === true) {
-      const result = await this.schedule(
-        inserted.localMessage.id,
-        input.recipient,
-        messageEnvelope(input.sourceAddress, input.message),
-        input.expiresAt,
-      );
-      if (result === 'delivered') {
-        return { messageId: input.messageId, status: 'delivered', deduplicated: false };
-      }
-    }
-    return { messageId: input.messageId, status: 'received', deduplicated: inserted.deduplicated };
-  }
-
   async sendToSession(from: string, target: string, message: string, idempotencyKey?: string): Promise<MessageReceipt> {
-    if (target.includes('@')) {
-      throw new InvalidRequestError(
-        `'${target}' is a federation address. Use send_to_peer; send_to_session is local and may start its target.`,
-      );
-    }
     if (idempotencyKey !== undefined) {
       const existing = this.deps.store.getDirectMessageByIdempotencyKey(from, idempotencyKey);
-      if (existing !== undefined) return this.receipt(existing, true);
+      if (
+        existing !== undefined &&
+        !(existing.status === 'cancelled' && existing.flush_skip_reason === 'conductor-restarted')
+      ) {
+        return this.receipt(existing, true);
+      }
     }
     if (!this.deps.sessions().has(target)) throw new InvalidRequestError(`Unknown session: ${target}`);
     if (target === from) throw new InvalidRequestError('Cannot send a message to yourself.');
@@ -144,21 +96,16 @@ export class Messaging {
   }
 
   /**
-   * Rebuild the in-memory queue from durable pending direct messages. Called
-   * after pane adoption and whenever an agent starts, so a conductor or agent
-   * restart cannot strand a successful-looking `send_to_session` result.
+   * Schedule pending messages created during this conductor run when a target
+   * pane becomes available. Startup cancels local pending rows from earlier
+   * runs before any lifecycle callback can reach this method.
    */
   async recoverPendingMessages(recipient?: string): Promise<void> {
     for (const row of this.deps.store.getPendingMessages(recipient)) {
       if (this.scheduled.has(row.id)) continue;
       if (!this.deps.sessions().has(row.recipient)) continue;
       if (this.deps.states.get(row.recipient)?.running !== true) continue;
-      const inbound = this.deps.store.getFederationInboxByLocalMessage(row.id);
-      if (inbound !== undefined && inbound.expires_at <= Date.now()) {
-        this.deps.store.markMessageCancelled(row.id);
-        continue;
-      }
-      await this.schedule(row.id, row.recipient, messageEnvelope(row.sender, row.content), inbound?.expires_at);
+      await this.schedule(row.id, row.recipient, messageEnvelope(row.sender, row.content));
     }
     await this.deps.delivery.drainNow();
   }
@@ -210,7 +157,7 @@ export class Messaging {
     return `Message #${String(id)} cancelled.`;
   }
 
-  private async schedule(id: number, target: string, envelope: string, expiresAt?: number): Promise<DeliveryResult> {
+  private async schedule(id: number, target: string, envelope: string): Promise<DeliveryResult> {
     this.scheduled.add(id);
     try {
       const result = await this.deps.delivery.deliverOrQueue(target, envelope, {
@@ -222,15 +169,6 @@ export class Messaging {
           this.deps.store.markMessageDelivered(id);
           this.scheduled.delete(id);
         },
-        ...(expiresAt !== undefined
-          ? {
-              shouldCancel: () => Date.now() >= expiresAt,
-              onCancelled: () => {
-                this.deps.store.markMessageCancelled(id);
-                this.scheduled.delete(id);
-              },
-            }
-          : {}),
       });
       if (result === 'no-pane' || result === 'cancelled') this.scheduled.delete(id);
       return result;

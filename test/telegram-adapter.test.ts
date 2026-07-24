@@ -15,6 +15,7 @@ class TelegramFetchMock {
   readonly calls: RecordedCall[] = [];
   private readonly updateBatches: TelegramUpdate[][] = [];
   readonly sendMessageResponses: { ok: boolean; error_code?: number; description?: string }[] = [];
+  readonly getMeResponses: { ok: boolean; error_code?: number; description?: string }[] = [];
   readonly getUpdatesErrors: { error_code: number; description: string }[] = [];
 
   queueUpdates(batch: TelegramUpdate[]): void {
@@ -51,6 +52,11 @@ class TelegramFetchMock {
 
     if (method === 'sendMessage') {
       const scripted = this.sendMessageResponses.shift();
+      return Promise.resolve(json(scripted !== undefined ? { ...scripted, result: {} } : { ok: true, result: {} }));
+    }
+
+    if (method === 'getMe') {
+      const scripted = this.getMeResponses.shift();
       return Promise.resolve(json(scripted !== undefined ? { ...scripted, result: {} } : { ok: true, result: {} }));
     }
 
@@ -113,6 +119,13 @@ afterEach(async () => {
 });
 
 describe('poll loop', () => {
+  it('validates the bot token before starting the long poll', async () => {
+    mock.getMeResponses.push({ ok: false, error_code: 404, description: 'Not Found' });
+
+    await expect(adapter.start(handlers)).rejects.toThrow(/Telegram rejected the configured bot token/);
+    expect(mock.callsFor('getUpdates')).toEqual([]);
+  });
+
   it('does not write configured credential values to logs', async () => {
     const infoSpy = vi.spyOn(log(), 'info').mockImplementation(() => undefined);
     await adapter.start(handlers);
@@ -129,6 +142,27 @@ describe('poll loop', () => {
 
     expect(handled).toEqual([{ kind: 'command', value: 'status alpha' }]);
     expect(mock.callsFor('sendMessage')[0]?.payload.text).toBe('did status');
+  });
+
+  it('renders status and help for Telegram\u2019s bare /start handshake', async () => {
+    mock.queueUpdates([commandUpdate(11, '/start')]);
+    await adapter.start(handlers);
+    await until(() => mock.callsFor('sendMessage').length > 0);
+
+    expect(handled).toEqual([
+      { kind: 'command', value: 'status' },
+      { kind: 'command', value: 'help' },
+    ]);
+    expect(mock.callsFor('sendMessage')[0]?.payload.text).toBe('did status\n\ndid help');
+  });
+
+  it('preserves targeted /start as the canonical lifecycle command', async () => {
+    mock.queueUpdates([commandUpdate(12, '/start alpha')]);
+    await adapter.start(handlers);
+    await until(() => mock.callsFor('sendMessage').length > 0);
+
+    expect(handled).toEqual([{ kind: 'command', value: 'start alpha' }]);
+    expect(mock.callsFor('sendMessage')[0]?.payload.text).toBe('did start');
   });
 
   it('advances the getUpdates offset past processed updates', async () => {

@@ -1,18 +1,12 @@
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ChannelAdapter, ChannelMessage } from '../channels/types.js';
 import { renderChannelMessage } from '../channels/render.js';
 import { buildConfiguredChannels } from '../channels/configured.js';
 import { resolveFleetEnvironment } from '../config/environment.js';
 import { fleetSlug } from '../config/instance.js';
-import {
-  sessionConfigDir,
-  loadSessionConfigs,
-  loadSupervisorConfig,
-  validateFederationExposure,
-} from '../config/loader.js';
+import { sessionConfigDir, loadSessionConfigs, loadSupervisorConfig } from '../config/loader.js';
 import { resolveFleetDataDir, resolveFleetPaths } from '../config/paths.js';
 import type { SessionConfig, SupervisorConfig } from '../config/schema.js';
 import { ConfigWatcher } from '../config/watcher.js';
@@ -23,10 +17,6 @@ import { ClaudeCodeRuntime } from '../runtimes/claude-code/index.js';
 import { CodexRuntime } from '../runtimes/codex/index.js';
 import type { SessionRuntime } from '../runtimes/types.js';
 import { Store } from '../store/index.js';
-import { buildFederationOperatorCommands } from '../federation/commands.js';
-import { LocalFederationAdapter } from '../federation/local.js';
-import { FederationOperations } from '../federation/operations.js';
-import { FederationService, federationInstanceId } from '../federation/service.js';
 import { ITermBackend } from '../terminals/iterm/index.js';
 import { TmuxBackend } from '../terminals/tmux/index.js';
 import type { TerminalBackend } from '../terminals/types.js';
@@ -46,6 +36,8 @@ import { resolvedSessionEffort, resolvedSessionModel, statusReport } from './sta
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 const SENTINEL_WORKSPACE_KEY = 'sentinel.codename';
+const FLEET_WATCH_ENABLED_WORKSPACE_KEY = 'sentinel.fleetWatchEnabled';
+const LEGACY_FLEET_WATCHES_WORKSPACE_KEY = 'sentinel.fleetWatches';
 import { Scheduler } from './scheduler.js';
 
 export interface SupervisorStartOptions {
@@ -57,7 +49,7 @@ export interface SupervisorOptions {
   channels?: ChannelAdapter[];
   /** Disable environment-configured built-in adapters, primarily for embedding and tests. */
   includeConfiguredChannels?: boolean;
-  /** Override the inherited environment before merging the fleet's .conductor/.env. */
+  /** Supply inherited fallback values; the fleet's .conductor/.env remains authoritative. */
   env?: NodeJS.ProcessEnv;
   /** Override Claude's state path when embedding the conductor (primarily for isolated tests). */
   claudeJsonPath?: string;
@@ -80,8 +72,6 @@ export class Supervisor {
   private readonly sentinel: StallSentinelRouter;
   private readonly messaging: Messaging;
   private readonly operations: ConductorOperations;
-  private readonly federationService: FederationService | undefined;
-  private readonly federationOperations: FederationOperations | undefined;
   private readonly operatorRequests: OperatorRequests;
   private readonly commands: CommandRouter;
   private readonly mcpServer: ConductorMcpServer;
@@ -89,6 +79,7 @@ export class Supervisor {
   private readonly watcher: ConfigWatcher;
   private readonly channelCandidates: ChannelAdapter[];
   private readonly channels: ChannelAdapter[] = [];
+  private readonly channelFailures = new Map<string, string>();
   private readonly env: NodeJS.ProcessEnv;
   private readonly lock: FleetLock;
   private heartbeatTimer: NodeJS.Timeout | undefined;
@@ -103,22 +94,34 @@ export class Supervisor {
     const fleetPaths = resolveFleetPaths(baseDir);
     initLogger({ level: this.config.supervisor.logLevel, filePath: join(dataDir, 'conductor.log') });
     this.lock = new FleetLock(join(dataDir, 'conductor.lock'));
-    this.channelCandidates = [
-      ...(options.channels ?? []),
-      ...((options.includeConfiguredChannels ?? true) ? buildConfiguredChannels(this.config, this.env) : []),
-    ];
+    const configuredChannels =
+      (options.includeConfiguredChannels ?? true)
+        ? buildConfiguredChannels(this.config, this.env)
+        : { channels: [], unavailable: [] };
+    this.channelCandidates = [...(options.channels ?? []), ...configuredChannels.channels];
+    for (const unavailable of configuredChannels.unavailable) {
+      this.channelFailures.set(unavailable.name, unavailable.reason);
+    }
 
     this.sessions = loadSessionConfigs(baseDir, {
       tolerant: true,
       defaultRuntime: this.config.defaults.runtime,
     });
-    const federationProblems = validateFederationExposure(this.config, this.sessions);
-    if (federationProblems.length > 0) {
-      throw new Error(`Invalid federation configuration: ${federationProblems.join('; ')}`);
-    }
     this.store = new Store(join(dataDir, 'conductor.db'));
     this.states = new SessionStateManager(this.store, this.config.defaults.auto);
     const storedSentinel = this.store.getWorkspaceValue<string | null>(SENTINEL_WORKSPACE_KEY);
+    const sentinelCodename =
+      storedSentinel === undefined ? this.config.sentinel.codename : (storedSentinel ?? undefined);
+    const storedFleetWatchEnabled = this.store.getWorkspaceValue<unknown>(FLEET_WATCH_ENABLED_WORKSPACE_KEY);
+    const legacyFleetWatches = this.store.getWorkspaceValue<unknown>(LEGACY_FLEET_WATCHES_WORKSPACE_KEY);
+    const fleetWatchEnabled =
+      typeof storedFleetWatchEnabled === 'boolean'
+        ? storedFleetWatchEnabled
+        : Array.isArray(legacyFleetWatches) && legacyFleetWatches.length > 0;
+    if (storedFleetWatchEnabled === undefined && fleetWatchEnabled) {
+      this.store.setWorkspaceValue(FLEET_WATCH_ENABLED_WORKSPACE_KEY, true);
+    }
+    if (legacyFleetWatches !== undefined) this.store.deleteWorkspaceValue(LEGACY_FLEET_WATCHES_WORKSPACE_KEY);
 
     const fleetId = fleetSlug(baseDir);
     this.backend =
@@ -225,53 +228,6 @@ export class Supervisor {
       startSession: (codename, opts) => this.lifecycle.start(codename, opts),
     });
 
-    if (this.config.federation.local.enabled) {
-      const instanceId = federationInstanceId(this.store);
-      const serviceRef: { current?: FederationService } = {};
-      const currentService = (): FederationService => {
-        if (serviceRef.current === undefined) throw new Error('Federation service is not initialized.');
-        return serviceRef.current;
-      };
-      const configuredRegistry = this.config.federation.local.registryDir;
-      const registryDir =
-        configuredRegistry === null
-          ? join(homedir(), '.agent-conductor', 'federation')
-          : isAbsolute(configuredRegistry)
-            ? configuredRegistry
-            : resolve(baseDir, configuredRegistry);
-      const adapter = new LocalFederationAdapter({
-        registryDir,
-        instanceId,
-        fleet: this.config.federation.name,
-        ...(this.config.federation.description !== undefined
-          ? { description: this.config.federation.description }
-          : {}),
-        heartbeatMs: this.config.federation.local.heartbeatSeconds * 1000,
-        staleAfterMs: this.config.federation.local.staleAfterSeconds * 1000,
-        exposedDirectory: () => currentService().exposedDirectory(instanceId),
-        accept: (source, message) => currentService().acceptInbound(source, message),
-        status: (source, sourceSession, messageId) =>
-          Promise.resolve(currentService().inboundStatus(source, sourceSession, messageId)),
-      });
-      const service = new FederationService({
-        store: this.store,
-        messaging: this.messaging,
-        states: this.states,
-        sessions: () => this.sessions,
-        adapter,
-        config: {
-          fleet: this.config.federation.name,
-          ...(this.config.federation.description !== undefined
-            ? { description: this.config.federation.description }
-            : {}),
-          exposedSessions: this.config.federation.sessions.expose,
-          sessionDescriptions: this.config.federation.sessions.descriptions,
-        },
-      });
-      serviceRef.current = service;
-      this.federationService = service;
-      this.federationOperations = new FederationOperations(service);
-    }
     this.operatorRequests = new OperatorRequests({
       store: this.store,
       messaging: this.messaging,
@@ -283,7 +239,8 @@ export class Supervisor {
         captureLines: this.config.health.captureLines,
         suppressWindowMs: this.config.health.suppressWindowMs,
         suppressSimilarity: this.config.health.suppressSimilarity,
-        sentinelCodename: storedSentinel === undefined ? this.config.sentinel.codename : (storedSentinel ?? undefined),
+        sentinelCodename,
+        fleetStallThresholdSeconds: Math.floor(this.config.health.fleetStallConfirmMs / 1000),
       },
       backend: this.backend,
       runtimeFor: (session) => this.runtimeFor(session),
@@ -301,6 +258,11 @@ export class Supervisor {
       notifyOperator: (text) => this.channelSend({ text }),
       logEvent: (session, event, detail) => {
         this.store.logHealthEvent(session, event, detail);
+      },
+      initialFleetWatchEnabled: fleetWatchEnabled,
+      initialSessions: this.sessions.keys(),
+      onFleetWatchChanged: (enabled) => {
+        this.store.setWorkspaceValue(FLEET_WATCH_ENABLED_WORKSPACE_KEY, enabled);
       },
     });
 
@@ -351,7 +313,6 @@ export class Supervisor {
         defaultLines: this.config.messaging.tailDefaultLines,
         maxLines: this.config.messaging.tailMaxLines,
       },
-      fleetStallDefaultSeconds: Math.floor(this.config.health.fleetStallConfirmMs / 1000),
       retitle: (session) => this.retitle(session),
       summon: (session) => this.paneAction(session, 'summon'),
       banish: (session) => this.paneAction(session, 'banish'),
@@ -363,10 +324,7 @@ export class Supervisor {
           fleetPaths,
         }).read(topic),
     });
-    this.commands = new CommandRouter(
-      this.operations,
-      this.federationOperations === undefined ? [] : buildFederationOperatorCommands(this.federationOperations),
-    );
+    this.commands = new CommandRouter(this.operations);
 
     this.scheduler = new Scheduler({
       sessions: () => this.sessions,
@@ -391,14 +349,11 @@ export class Supervisor {
         this.handleRuntimeEvent(session, body);
       },
       onCommand: (line, interactionId) => this.commands.route(line, `cli:${interactionId}`),
-      tools: buildMcpTools(this.operations, this.federationOperations),
+      tools: buildMcpTools(this.operations),
     });
 
-    this.watcher = new ConfigWatcher(sessionConfigDir(baseDir), [resolveFleetPaths(baseDir).supervisorFile]);
-    this.watcher.onChange(() => {
-      this.reloadSessions();
-      this.reloadFederationPolicy();
-    });
+    this.watcher = new ConfigWatcher(sessionConfigDir(baseDir));
+    this.watcher.onChange(() => this.reloadSessions());
 
     for (const [codename, session] of this.sessions) {
       this.states.register(codename, this.lifecycle.isAgentProject(session));
@@ -418,6 +373,13 @@ export class Supervisor {
 
   private async startLocked(opts: SupervisorStartOptions): Promise<void> {
     this.operatorRequests.recoverStaleClaims();
+    const discardedMessages = this.store.cancelPendingLocalMessagesOnRestart();
+    if (discardedMessages > 0) {
+      log().info(
+        'delivery',
+        `Cancelled ${String(discardedMessages)} queued local message(s) from the previous conductor run.`,
+      );
+    }
     log().info('supervisor', `Starting agent-conductor (backend: ${this.backend.name})`);
     await this.backend.init();
 
@@ -448,15 +410,15 @@ export class Supervisor {
       log().warn('supervisor', `Pane rediscovery failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    await this.recoverPendingMessages();
-
-    await this.mcpServer.start();
     try {
-      await this.federationService?.start();
       await this.connectChannels();
+      // /health is the CLI's readiness signal. Expose it only after every
+      // optional channel has either connected or been explicitly marked
+      // unavailable, so `conductor start` cannot observe a transient false-ready
+      // process that is about to roll startup back.
+      await this.mcpServer.start();
     } catch (error) {
       await this.rollbackChannelStartup();
-      await this.federationService?.stop();
       await this.mcpServer.stop();
       throw error;
     }
@@ -495,9 +457,6 @@ export class Supervisor {
     this.scheduler.stop();
     this.health.stop();
     this.sentinel.stop();
-    // Close peer ingress before the final-hop queue. Otherwise a peer request
-    // racing channel shutdown can recreate delivery work against a closing Store.
-    await this.federationService?.stop();
     this.delivery.stop();
     const stoppedChannels = this.channels.splice(0);
     const stopResults = await Promise.allSettled(stoppedChannels.map((channel) => channel.stop()));
@@ -523,7 +482,6 @@ export class Supervisor {
   /** Force a config reload synchronously. Exposed for tests (normally driven by the watcher). */
   reloadSessionsForTest(): void {
     this.reloadSessions();
-    this.reloadFederationPolicy();
   }
 
   statusReport(codename?: string): string {
@@ -538,17 +496,9 @@ export class Supervisor {
       },
       codename,
     );
-    if (codename !== undefined || this.federationService === undefined) return report;
-    const health = this.federationService.health();
-    const contact =
-      health.lastContactAt === null ? 'none' : `${formatDuration(Math.max(0, Date.now() - health.lastContactAt))} ago`;
-    const oldest = health.oldestPendingAgeMs === null ? 'none' : formatDuration(health.oldestPendingAgeMs);
-    return (
-      `${report}\n\nFederation:\n` +
-      `  ${health.adapter} · ${health.running ? 'running' : 'stopped'} · last contact: ${contact}` +
-      ` · queued: ${String(health.queued)} · received: ${String(health.received)}` +
-      ` · oldest pending: ${oldest} · last error: ${health.lastErrorCode ?? 'none'}`
-    );
+    if (codename !== undefined) return report;
+    const fleetWatchMarker = this.sentinel.isFleetWatchEnabled() ? ' 🔄' : '';
+    return [`Agent Conductor Status${fleetWatchMarker}`, report].join('\n\n');
   }
 
   private async tail(codename: string, lines: number): Promise<string> {
@@ -576,7 +526,7 @@ export class Supervisor {
     } catch (err) {
       log().error(
         'delivery',
-        `${codename ?? 'fleet'}: pending-message recovery failed: ${err instanceof Error ? err.message : String(err)}`,
+        `${codename ?? 'fleet'}: current-run queued delivery failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -678,14 +628,34 @@ export class Supervisor {
   }
 
   private async connectChannels(): Promise<void> {
+    for (const [name, reason] of this.channelFailures) {
+      log().error('supervisor', `${name} channel unavailable (${reason}); conductor will continue without it.`);
+    }
     for (const channel of this.channelCandidates) {
-      await channel.start({
-        onCommand: (command, args, context) =>
-          this.commands.route(`/${command} ${args.join(' ')}`.trim(), `${channel.name}:${context.conversationId}`),
-        onFreeText: (text, context) => this.commands.freeText(text, `${channel.name}:${context.conversationId}`),
-      });
-      this.channels.push(channel);
-      log().info('supervisor', `${channel.name} channel connected.`);
+      try {
+        await channel.start({
+          onCommand: (command, args, context) =>
+            this.commands.route(`/${command} ${args.join(' ')}`.trim(), `${channel.name}:${context.conversationId}`),
+          onFreeText: (text, context) => this.commands.freeText(text, `${channel.name}:${context.conversationId}`),
+        });
+        this.channels.push(channel);
+        this.channelFailures.delete(channel.name);
+        log().info('supervisor', `${channel.name} channel connected.`);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        log().error(
+          'supervisor',
+          `${channel.name} channel failed to connect; conductor will continue without it: ${reason}`,
+        );
+        try {
+          await channel.stop();
+        } catch (stopError) {
+          log().warn(
+            'supervisor',
+            `${channel.name} channel cleanup failed after startup error: ${stopError instanceof Error ? stopError.message : String(stopError)}`,
+          );
+        }
+      }
     }
   }
 
@@ -714,16 +684,19 @@ export class Supervisor {
       return true;
     }
     const results = await Promise.allSettled(this.channels.map((channel) => channel.send(message)));
+    let delivered = consoleDelivered;
     for (const [index, result] of results.entries()) {
+      const channel = this.channels[index];
       if (result.status === 'rejected') {
-        const channel = this.channels[index];
         log().warn(
           'supervisor',
           `channel ${channel?.name ?? String(index)} send failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
         );
+      } else {
+        delivered = true;
       }
     }
-    return true;
+    return delivered;
   }
 
   private reloadSessions(): void {
@@ -759,47 +732,8 @@ export class Supervisor {
       }
     }
     this.sessions = fresh;
-    void this.sentinel.reconcileFleetWatches(new Set(fresh.keys())).catch((error: unknown) => {
-      log().warn(
-        'supervisor',
-        `Fleet-watch membership notification failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
+    this.sentinel.setRegisteredSessions(fresh.keys());
     this.scheduler.rebuild();
-  }
-
-  private reloadFederationPolicy(): void {
-    let fresh: SupervisorConfig;
-    try {
-      fresh = loadSupervisorConfig(this.baseDir, this.env);
-    } catch (error) {
-      log().warn(
-        'federation',
-        `Supervisor config failed to parse — keeping last-good federation policy: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return;
-    }
-    const problems = validateFederationExposure(fresh, this.sessions);
-    if (problems.length > 0) {
-      log().warn('federation', `Invalid federation policy — keeping last-good policy: ${problems.join('; ')}`);
-      return;
-    }
-    if (
-      fresh.federation.local.enabled !== this.config.federation.local.enabled ||
-      fresh.federation.name !== this.config.federation.name
-    ) {
-      log().warn('federation', 'Federation enablement and name changes require a Conductor restart.');
-    }
-    if (this.federationService === undefined) return;
-    this.federationService.updatePolicy({
-      ...(fresh.federation.description !== undefined ? { description: fresh.federation.description } : {}),
-      exposedSessions: fresh.federation.sessions.expose,
-      sessionDescriptions: fresh.federation.sessions.descriptions,
-    });
-    this.config.federation.description = fresh.federation.description;
-    this.config.federation.sessions = fresh.federation.sessions;
   }
 
   private resolveProtocolPath(): string | undefined {
@@ -809,11 +743,4 @@ export class Supervisor {
     ];
     return candidates.find((candidate) => existsSync(candidate));
   }
-}
-
-function formatDuration(milliseconds: number): string {
-  if (milliseconds < 1_000) return `${String(Math.round(milliseconds))}ms`;
-  if (milliseconds < 60_000) return `${String(Math.round(milliseconds / 1_000))}s`;
-  if (milliseconds < 3_600_000) return `${String(Math.round(milliseconds / 60_000))}m`;
-  return `${String(Math.round(milliseconds / 3_600_000))}h`;
 }

@@ -6,8 +6,10 @@ import { resolveFleetPaths } from './paths.js';
 
 /**
  * Resolve the environment visible to one fleet without mutating process.env.
- * Values inherited from the parent process deliberately override fleet-local
- * `.conductor/.env` values so shell, CI, and service configuration remains authoritative.
+ * Fleet-local `.conductor/.env` values override inherited values. This makes
+ * editing the fleet file plus restarting deterministic even when a long-lived
+ * shell, agent, CI worker, or service manager still carries stale credentials.
+ * Inherited values remain the fallback for keys omitted from the fleet file.
  */
 export function resolveFleetEnvironment(
   baseDir: string,
@@ -26,5 +28,5 @@ export function resolveFleetEnvironment(
     }
   }
 
-  return { ...fileValues, ...inheritedEnv };
+  return { ...inheritedEnv, ...fileValues };
 }

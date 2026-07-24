@@ -1,6 +1,6 @@
 # PR Shepherd V2
 
-PR Shepherd V2 is an opt-in GitHub polling service shipped with Agent Conductor. It keeps pull-request policy in a pure engine, persists observations and a delivery outbox in its own SQLite database, and can either print fact-only events or send them to a coordinator through Conductor's durable `send_to_session` operation.
+PR Shepherd V2 is an opt-in GitHub polling service shipped with Agent Conductor. It keeps pull-request policy and delivery durability in its own SQLite database, and can either print fact-only events or send them to a coordinator through Conductor's protected `send_to_session` operation.
 
 Installing or starting Agent Conductor does not start, initialize, configure, or poll PR Shepherd. The `pr-shepherd` executable runs only when invoked explicitly, uses a separate configuration file and database, and is stopped independently. Conductor itself remains fully usable without it.
 
@@ -147,7 +147,7 @@ In reviewer-comment `notify` mode, escalation timing starts when the decision is
 
 The initial integration is localhost-only and has no token setting. The sender comes from `/mcp/pr-shepherd`; it is mechanically assigned but not cryptographically authenticated. Do not expose the endpoint beyond localhost, and run only one Shepherd profile per Conductor instance while the sender name remains fixed.
 
-Delivery uses a persisted `shepherd:<event-id>:<recipient>` idempotency key. Either a `queued` or `delivered` Conductor receipt completes the Shepherd outbox because both mean the message is durably stored. Transport and internal errors retry with bounded exponential backoff; permanent recipient validation errors are parked and recorded in health history.
+Delivery uses a persisted `shepherd:<event-id>:<recipient>` idempotency key. Only a `delivered` Conductor receipt completes the Shepherd outbox. A `queued` receipt remains in Shepherd's own durable retry loop because local Conductor queues are process-local and are cancelled on restart. An explicit retry with the same key revives a receipt cancelled by restart. Transport and internal errors retry with bounded exponential backoff; permanent recipient validation errors are parked and recorded in health history.
 
 For rollout, first compare `baseline-only` stdout behavior with the system being replaced. Stop the old system before enabling Conductor delivery, then move each automation policy from `notify` to `execute` independently.
 

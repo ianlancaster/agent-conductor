@@ -22,6 +22,7 @@ import {
   buildSessionTtyScript,
   buildSplitPaneScript,
   buildTitleShellPrefix,
+  buildUnchangedContentsGuard,
   buildWindowExistsScript,
   bracketedPastePayload,
   containsPromptMarker,
@@ -431,11 +432,7 @@ export class ITermBackend implements TerminalBackend {
     const path = await this.writeTempContent(content);
     const expectedPath = expectedContents !== undefined ? await this.writeTempContent(expectedContents) : undefined;
     try {
-      const guard =
-        expectedPath === undefined
-          ? ''
-          : `set expectedContents to read POSIX file "${escapeAppleScript(expectedPath)}"
-         if ((contents as string) & (ASCII character 10)) is not expectedContents then return "${PANE_CHANGED_RESULT}"`;
+      const guard = expectedPath === undefined ? '' : buildUnchangedContentsGuard(expectedPath, PANE_CHANGED_RESULT);
       const result = await this.inSession(
         sessionId,
         `${guard}

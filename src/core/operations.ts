@@ -31,8 +31,6 @@ export interface OperationDefinition {
   inputSchema: OperationInputSchema;
   /** The actor's identity is applied mechanically to messages made by this operation. */
   signedIdentity?: boolean;
-  /** Cross-fleet command exposure is default-deny. Messaging phases expose no core operation. */
-  federation?: 'never' | 'exposable';
   handler(args: Record<string, unknown>, actor: OperationActor): Promise<string | MessageReceipt>;
 }
 
@@ -50,7 +48,6 @@ export interface ConductorOperationDeps {
   /** Deliberately bypass the protected delivery queue for terminal control input. */
   typeInPane(codename: string, text: string): Promise<string>;
   tailLimits: { defaultLines: number; maxLines: number };
-  fleetStallDefaultSeconds: number;
   retitle(codename: string): Promise<void>;
   summon(codename: string): Promise<string>;
   banish(codename: string): Promise<string>;
@@ -119,18 +116,6 @@ function runtimeHintDescription(setting: 'model' | 'effort', hints: Record<Runti
   return `Optional ${setting} override. Availability hints only (not exhaustive or validated): ${runtimeHints}.`;
 }
 
-function fleetSessions(args: Record<string, unknown>): string[] {
-  const raw = requireString(args, 'sessions');
-  return [
-    ...new Set(
-      raw
-        .split(',')
-        .map((session) => session.trim())
-        .filter((session) => session.length > 0),
-    ),
-  ];
-}
-
 /**
  * Canonical conductor control plane. MCP and operator command adapters render
  * the definitions below; all behavior and validation ultimately passes through
@@ -140,10 +125,7 @@ export class ConductorOperations {
   private readonly byName: Map<string, OperationDefinition>;
 
   constructor(private readonly deps: ConductorOperationDeps) {
-    const definitions = this.buildDefinitions().map((definition) => ({
-      ...definition,
-      federation: definition.federation ?? ('never' as const),
-    }));
+    const definitions = this.buildDefinitions();
     this.byName = new Map(definitions.map((definition) => [definition.name, definition]));
   }
 
@@ -188,7 +170,7 @@ export class ConductorOperations {
               type: 'string',
               minLength: 1,
               maxLength: 128,
-              description: 'Optional sender-scoped key for durable deduplication',
+              description: 'Optional sender-scoped key for receipt deduplication',
             },
           },
           ['codename', 'message'],
@@ -447,73 +429,11 @@ export class ConductorOperations {
         },
       },
       {
-        name: 'arm_fleet_watch',
-        description: `Watch a session group and alert the sentinel—or the operator when none is designated—when every member remains stalled (default confirmation: ${String(this.deps.fleetStallDefaultSeconds)}s).`,
-        audiences: BOTH,
-        inputSchema: schema(
-          {
-            name: stringProperty('Short name for this fleet watch'),
-            sessions: stringProperty('Comma-separated session codenames (at least two; do not include the sentinel)'),
-            thresholdSeconds: {
-              type: 'number',
-              minimum: 0,
-              description: `Seconds all members must remain stalled (default: ${String(this.deps.fleetStallDefaultSeconds)})`,
-            },
-          },
-          ['name', 'sessions'],
-        ),
-        handler: (args) => {
-          const name = requireString(args, 'name');
-          const sessions = fleetSessions(args);
-          if (sessions.length < 2) throw new InvalidRequestError('A fleet watch needs at least two distinct sessions.');
-          for (const codename of sessions) {
-            if (!this.deps.sessions().has(codename)) throw new InvalidRequestError(`Unknown session: ${codename}`);
-          }
-          const thresholdSeconds =
-            typeof args.thresholdSeconds === 'number'
-              ? Math.floor(args.thresholdSeconds)
-              : this.deps.fleetStallDefaultSeconds;
-          this.deps.sentinel.armFleetWatch({ name, sessions, thresholdSeconds });
-          const noSentinelNote =
-            this.deps.sentinel.sentinelCodename() === undefined
-              ? ' No sentinel is designated; alerts will go to the operator.'
-              : '';
-          return Promise.resolve(
-            `Fleet watch '${name}' armed for ${sessions.join(', ')} (${String(thresholdSeconds)}s confirmation).${noSentinelNote}`,
-          );
-        },
-      },
-      {
-        name: 'disarm_fleet_watch',
-        description: 'Disarm one fleet stall watch.',
-        audiences: BOTH,
-        inputSchema: schema({ name: stringProperty('Fleet watch name') }, ['name']),
-        handler: (args) => {
-          const name = requireString(args, 'name');
-          return Promise.resolve(
-            this.deps.sentinel.disarmFleetWatch(name)
-              ? `Fleet watch '${name}' disarmed.`
-              : `No fleet watch named '${name}'.`,
-          );
-        },
-      },
-      {
-        name: 'list_fleet_watches',
-        description: 'List armed fleet stall watches and their current state.',
+        name: 'toggle_fleet_watch',
+        description: 'Toggle stall detection for the full registered fleet, excluding the sentinel.',
         audiences: BOTH,
         inputSchema: schema(),
-        handler: () => {
-          const watches = this.deps.sentinel.listFleetWatches();
-          if (watches.length === 0) return Promise.resolve('No fleet watches armed.');
-          return Promise.resolve(
-            watches
-              .map((watch) => {
-                const stalled = watch.stalledSessions.length > 0 ? watch.stalledSessions.join(',') : 'none';
-                return `${watch.name} · ${watch.state} · sessions ${watch.sessions.join(',')} · stalled ${stalled} · ${String(watch.thresholdSeconds)}s`;
-              })
-              .join('\n'),
-          );
-        },
+        handler: () => Promise.resolve(`Fleet watch ${this.deps.sentinel.toggleFleetWatch() ? 'on' : 'off'}.`),
       },
       {
         name: 'set_tag',
@@ -563,7 +483,7 @@ export class ConductorOperations {
       {
         name: 'get_conductor_docs',
         description:
-          'List or lazily read the version-matched Agent Conductor handbook, including fleet recipes, configuration paths, adapters, worktrees, scheduling, supervision, federation, and troubleshooting.',
+          'List or lazily read the version-matched Agent Conductor handbook, including fleet recipes, configuration paths, adapters, worktrees, scheduling, supervision, and troubleshooting.',
         audiences: SESSION_ONLY,
         inputSchema: schema({
           topic: {

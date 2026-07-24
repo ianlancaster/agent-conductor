@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { log } from '../../logger.js';
 import { classifySlashInput, type ClassifiedChannelInput } from '../classify.js';
-import type { ChannelAdapter, ChannelHandlers, ChannelMessage } from '../types.js';
+import type { ChannelAdapter, ChannelContext, ChannelHandlers, ChannelMessage } from '../types.js';
 import { renderChannelMessage } from '../render.js';
 import { splitMessage } from './split.js';
 
@@ -139,6 +139,7 @@ export class TelegramAdapter implements ChannelAdapter {
   private handlers: ChannelHandlers | undefined;
   private abortController: AbortController | undefined;
   private pollPromise: Promise<void> | undefined;
+  private starting = false;
   private polling = false;
   private offset = 0;
 
@@ -151,12 +152,35 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   async start(handlers: ChannelHandlers): Promise<void> {
-    if (this.pollPromise) throw new Error('TelegramAdapter already started');
+    if (this.starting || this.pollPromise) throw new Error('TelegramAdapter already started');
+    this.starting = true;
     this.handlers = handlers;
     this.polling = true;
     this.abortController = new AbortController();
-    this.pollPromise = this.pollLoop();
-    log().info('telegram', 'Long-poll loop started');
+    try {
+      // Validate the credential before the supervisor announces that this
+      // channel is connected. Starting the poll loop directly can otherwise
+      // leave a stale or revoked token retrying forever behind a false-positive
+      // "channel connected" message.
+      await this.api('getMe', {}, this.abortController.signal);
+      if (!this.polling) throw new Error('TelegramAdapter stopped during startup');
+      this.pollPromise = this.pollLoop();
+      log().info('telegram', 'Bot token validated; long-poll loop started');
+    } catch (err) {
+      this.polling = false;
+      this.abortController = undefined;
+      this.handlers = undefined;
+      if (err instanceof TelegramApiError && (err.status === 401 || err.status === 404)) {
+        throw new Error(
+          'Telegram rejected the configured bot token. Generate or copy the current token from BotFather, ' +
+            'update CONDUCTOR_TELEGRAM_TOKEN, and restart the conductor.',
+          { cause: err },
+        );
+      }
+      throw err;
+    } finally {
+      this.starting = false;
+    }
   }
 
   async send(message: ChannelMessage): Promise<void> {
@@ -270,7 +294,13 @@ export class TelegramAdapter implements ChannelAdapter {
     try {
       switch (classified.kind) {
         case 'command': {
-          const reply = await handlers.onCommand(classified.command, classified.args, context);
+          // Telegram requires a user to initiate a bot conversation with
+          // /start. Preserve Conductor's targeted lifecycle command when an
+          // argument is present, but make the bare platform handshake useful.
+          const reply =
+            classified.command === 'start' && classified.args.length === 0
+              ? await this.welcome(handlers, context)
+              : await handlers.onCommand(classified.command, classified.args, context);
           if (reply) {
             log().debug('telegram', `Responding to /${classified.command} (${reply.length} chars)`);
             await this.send({ text: reply });
@@ -286,6 +316,12 @@ export class TelegramAdapter implements ChannelAdapter {
     } catch (err) {
       log().error('telegram', `Update handler threw: ${String(err).slice(0, 200)}`);
     }
+  }
+
+  private async welcome(handlers: ChannelHandlers, context: ChannelContext): Promise<string> {
+    const status = await handlers.onCommand('status', [], context);
+    const help = await handlers.onCommand('help', [], context);
+    return [status, help].filter((section) => section.trim().length > 0).join('\n\n');
   }
 
   private async backoff(): Promise<void> {

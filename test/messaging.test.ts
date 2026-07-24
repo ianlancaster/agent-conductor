@@ -9,7 +9,7 @@ import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 
 const CONFIG = { queueDrainMs: 2_000, queueMaxAgeMs: 60_000 };
 
-describe('Messaging durable delivery recovery', () => {
+describe('Messaging delivery receipts', () => {
   let store: Store;
   let backend: FakeTerminalBackend;
   let states: SessionStateManager;
@@ -34,7 +34,7 @@ describe('Messaging durable delivery recovery', () => {
     store.close();
   });
 
-  it('rebuilds a queued direct message from SQLite after a conductor restart', async () => {
+  it('does not replay a queued local message after a conductor restart', async () => {
     const pane = await backend.createPane('beta', 'pane');
     states.setSession('beta', pane.id);
     states.setReady('beta');
@@ -44,7 +44,7 @@ describe('Messaging durable delivery recovery', () => {
     const firstQueue = makeQueue(blockedRuntime, pane.id);
     const firstMessaging = makeMessaging(firstQueue);
 
-    expect(await firstMessaging.sendToSession('alpha', 'beta', 'durable payload')).toEqual({
+    expect(await firstMessaging.sendToSession('alpha', 'beta', 'old payload', 'stable-key')).toEqual({
       messageId: 1,
       recipient: 'beta',
       status: 'queued',
@@ -53,14 +53,25 @@ describe('Messaging durable delivery recovery', () => {
     expect(store.getMessage(1)?.status).toBe('pending');
     firstQueue.stop();
 
-    const recoveredRuntime = new FakeRuntime();
-    recoveredRuntime.inputState = 'clear';
-    const recoveredQueue = makeQueue(recoveredRuntime, pane.id);
-    const recoveredMessaging = makeMessaging(recoveredQueue);
-    await recoveredMessaging.recoverPendingMessages('beta');
+    expect(store.cancelPendingLocalMessagesOnRestart()).toBe(1);
 
-    expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] durable payload']);
-    expect(store.getMessage(1)?.status).toBe('delivered');
+    const restartedQueue = makeQueue(new FakeRuntime(), pane.id);
+    const restartedMessaging = makeMessaging(restartedQueue);
+    await restartedMessaging.recoverPendingMessages('beta');
+
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    expect(store.getMessage(1)).toMatchObject({
+      status: 'cancelled',
+      flush_skip_reason: 'conductor-restarted',
+    });
+
+    await expect(restartedMessaging.sendToSession('alpha', 'beta', 'explicit retry', 'stable-key')).resolves.toEqual({
+      messageId: 1,
+      recipient: 'beta',
+      status: 'delivered',
+      deduplicated: false,
+    });
+    expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] explicit retry']);
   });
 
   it('deduplicates a sender-scoped key without scheduling a second delivery', async () => {
@@ -124,14 +135,6 @@ describe('Messaging durable delivery recovery', () => {
     expect(store.getMessage(1)?.status).toBe('pending');
   });
 
-  it('directs qualified targets to federation instead of conditionally changing send_to_session semantics', async () => {
-    const queue = makeQueue(new FakeRuntime(), 'missing-pane');
-    const messaging = makeMessaging(queue);
-    await expect(messaging.sendToSession('alpha', 'beta@other-fleet', 'hello')).rejects.toThrow(
-      /Use send_to_peer.*send_to_session is local/,
-    );
-  });
-
   it('returns the original receipt on retry even when the recipient left the roster', async () => {
     const pane = await backend.createPane('beta', 'pane');
     states.setSession('beta', pane.id);
@@ -146,70 +149,6 @@ describe('Messaging durable delivery recovery', () => {
       ...first,
       deduplicated: true,
     });
-  });
-
-  it('accepts a federated final hop without starting a stopped recipient and deduplicates retries', async () => {
-    const queue = makeQueue(new FakeRuntime(), 'missing-pane');
-    let starts = 0;
-    const messaging = new Messaging({
-      store,
-      delivery: queue,
-      states,
-      sessions: () => sessions,
-      startSession: async () => {
-        starts += 1;
-        return 'beta started.';
-      },
-    });
-    const first = await messaging.acceptInboundFederated({
-      messageId: '11111111-1111-4111-8111-111111111111',
-      sourceInstanceId: '22222222-2222-4222-8222-222222222222',
-      sourceAddress: 'alpha@other',
-      recipient: 'beta',
-      message: 'peer hello',
-      receivedAt: 100,
-      expiresAt: Date.now() + 60_000,
-    });
-    const repeated = await messaging.acceptInboundFederated({
-      messageId: '11111111-1111-4111-8111-111111111111',
-      sourceInstanceId: '22222222-2222-4222-8222-222222222222',
-      sourceAddress: 'alpha@other',
-      recipient: 'beta',
-      message: 'changed',
-      receivedAt: 200,
-      expiresAt: Date.now() + 60_000,
-    });
-    expect(first).toEqual({
-      messageId: '11111111-1111-4111-8111-111111111111',
-      status: 'received',
-      deduplicated: false,
-    });
-    expect(repeated).toMatchObject({ status: 'received', deduplicated: true });
-    expect(starts).toBe(0);
-    expect(states.get('beta')?.running).toBe(false);
-    expect(store.getPendingMessages('beta')).toHaveLength(1);
-  });
-
-  it('delivers an accepted federated final hop through the protected queue when the recipient is running', async () => {
-    const pane = await backend.createPane('beta', 'pane');
-    states.setSession('beta', pane.id);
-    states.setReady('beta');
-    const queue = makeQueue(new FakeRuntime(), pane.id);
-    const messaging = makeMessaging(queue);
-
-    await expect(
-      messaging.acceptInboundFederated({
-        messageId: '22222222-2222-4222-8222-222222222222',
-        sourceInstanceId: '33333333-3333-4333-8333-333333333333',
-        sourceAddress: 'alpha@other',
-        recipient: 'beta',
-        message: 'peer hello',
-        receivedAt: Date.now(),
-        expiresAt: Date.now() + 60_000,
-      }),
-    ).resolves.toMatchObject({ status: 'delivered', deduplicated: false });
-    expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha@other] peer hello']);
-    expect(store.getFederationInboxMessage('22222222-2222-4222-8222-222222222222')?.status).toBe('delivered');
   });
 
   function makeQueue(runtime: FakeRuntime, paneId: string): DeliveryQueue {

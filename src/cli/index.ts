@@ -13,10 +13,11 @@ import { resolveFleetDataDir } from '../config/paths.js';
 import { Supervisor } from '../core/supervisor.js';
 import { Store } from '../store/index.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
+import { subscribeFeed } from './feed.js';
 import { ensureFleetScaffold } from './scaffold.js';
 import { DEFAULT_STATUS_INTERVAL, parseStatusInterval, runStatusDashboard } from './live-status.js';
 import { configureStatusLines } from './statusline.js';
-import { formatFeedPayload, formatTerminalReply } from './terminal-format.js';
+import { formatTerminalReply } from './terminal-format.js';
 
 const packageJson = JSON.parse(
   readFileSync(join(fileURLToPath(import.meta.url), '..', '..', '..', 'package.json'), 'utf8'),
@@ -95,46 +96,6 @@ async function sendCommand(line: string, signal?: AbortSignal): Promise<string> 
   }
   const payload = (await response.json()) as { reply?: string };
   return payload.reply ?? '';
-}
-
-/**
- * Subscribe to the conductor's operator feed (SSE on GET /feed) and hand every
- * message to onMessage. Reconnects quietly until the signal aborts, so a
- * conductor restart doesn't detach the console.
- */
-async function subscribeFeed(base: string, onMessage: (text: string) => void, signal: AbortSignal): Promise<void> {
-  while (!signal.aborted) {
-    try {
-      const response = await fetch(`${base}/feed`, { signal });
-      if (!response.ok || response.body === null) throw new Error(`feed unavailable (${String(response.status)})`);
-      const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
-      const decoder = new TextDecoder();
-      let buffer = '';
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let frameEnd = buffer.indexOf('\n\n');
-        while (frameEnd !== -1) {
-          for (const line of buffer.slice(0, frameEnd).split('\n')) {
-            if (!line.startsWith('data: ')) continue;
-            try {
-              const payload = JSON.parse(line.slice('data: '.length)) as unknown;
-              const formatted = formatFeedPayload(payload);
-              if (formatted !== undefined) onMessage(formatted);
-            } catch {
-              // Malformed frame — skip it rather than kill the stream.
-            }
-          }
-          buffer = buffer.slice(frameEnd + 2);
-          frameEnd = buffer.indexOf('\n\n');
-        }
-      }
-    } catch {
-      // Conductor down or restarting — retry below.
-    }
-    if (!signal.aborted) await sleep(2000);
-  }
 }
 
 /** The interactive conductor> REPL. Resolves when the operator exits. */
@@ -244,43 +205,42 @@ program
     const config = loadSupervisorConfig(baseDir());
     const base = `http://${config.mcp.host}:${config.mcp.port}`;
 
-    let childPid: number | undefined;
     if (await conductorUp(base)) {
-      log('Attached to the already-running conductor (it will keep running when this console exits).');
-    } else {
-      // Spawn the supervisor as a hidden, headless child. Its terminal output
-      // goes to a file; the structured log shares the configured data directory.
-      const dataDir = resolveFleetDataDir(baseDir(), config.paths.dataDir);
-      mkdirSync(dataDir, { recursive: true });
-      const outPath = join(dataDir, 'conductor.out.log');
-      const out = openSync(outPath, 'a');
-      const args = ['-C', baseDir(), 'start', '--foreground', ...(opts.startAll === true ? ['--start-all'] : [])];
-      const child = spawn(process.execPath, [process.argv[1] ?? 'conductor', ...args], {
-        detached: true,
-        stdio: ['ignore', out, out],
-        env: {
-          ...process.env,
-          // Panes open in THIS terminal's window: the backend adopts the
-          // window owning this tty instead of the (tty-less) child's.
-          ...(ownTty() !== null ? { CONDUCTOR_CONSOLE_TTY: ownTty() ?? '' } : {}),
-        },
-      });
-      child.unref();
-      childPid = child.pid;
-
-      // Wait for the /health endpoint so the console's first command works.
-      const deadline = Date.now() + 15_000;
-      while (!(await conductorUp(base))) {
-        if (Date.now() > deadline || child.exitCode !== null) {
-          throw new Error(
-            `The conductor process failed to start — see ${outPath} and ${join(dataDir, 'conductor.log')}`,
-          );
-        }
-        await sleep(250);
-      }
-      log(`Conductor running (pid ${String(childPid)}, logs: ${outPath}).`);
-      log('This terminal is the operator console — closing it stops the conductor. Type /help.');
+      throw new Error(
+        'A conductor is already running for this fleet. `conductor start` only opens a console that owns and stops its conductor. Use `conductor console` for a non-owning attachment, or stop the existing conductor before starting again.',
+      );
     }
+
+    // Spawn the supervisor as a hidden, headless child. Its terminal output
+    // goes to a file; the structured log shares the configured data directory.
+    const dataDir = resolveFleetDataDir(baseDir(), config.paths.dataDir);
+    mkdirSync(dataDir, { recursive: true });
+    const outPath = join(dataDir, 'conductor.out.log');
+    const out = openSync(outPath, 'a');
+    const args = ['-C', baseDir(), 'start', '--foreground', ...(opts.startAll === true ? ['--start-all'] : [])];
+    const child = spawn(process.execPath, [process.argv[1] ?? 'conductor', ...args], {
+      detached: true,
+      stdio: ['ignore', out, out],
+      env: {
+        ...process.env,
+        // Panes open in THIS terminal's window: the backend adopts the
+        // window owning this tty instead of the (tty-less) child's.
+        ...(ownTty() !== null ? { CONDUCTOR_CONSOLE_TTY: ownTty() ?? '' } : {}),
+      },
+    });
+    child.unref();
+    const childPid = child.pid;
+
+    // Wait for the /health endpoint so the console's first command works.
+    const deadline = Date.now() + 15_000;
+    while (!(await conductorUp(base))) {
+      if (Date.now() > deadline || child.exitCode !== null) {
+        throw new Error(`The conductor process failed to start — see ${outPath} and ${join(dataDir, 'conductor.log')}`);
+      }
+      await sleep(250);
+    }
+    log(`Conductor running (pid ${String(childPid)}, logs: ${outPath}).`);
+    log('This terminal is the operator console — closing it stops the conductor. Type /help.');
 
     // This console owns the conductor it spawned: when the console dies (exit,
     // Ctrl-C, terminal closed), take the conductor down with it.
