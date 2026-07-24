@@ -110,6 +110,13 @@ channels:
   slack:
     enabled: false # opt in; credentials come from .conductor/.env or the inherited environment
 
+# Optional PR Shepherd companion. conductor start creates its inert profile beside this file.
+# Configure and shadow-test that profile before enabling, then restart Conductor deliberately.
+shepherd:
+  enabled: false
+  configPath: null # null uses config/pr-shepherd.yaml; relative paths resolve beside this file
+  presentation: headless # headless | panel (panel currently reports unsupported)
+
 spawn:
   # Where /spawn and spawn_session create a session's working directory,
   # resolved relative to the fleet dir; {codename} is substituted.

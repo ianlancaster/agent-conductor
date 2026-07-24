@@ -13,12 +13,25 @@ export class ShepherdService {
     private readonly engine: Pick<ShepherdEngine, 'pollOnce'>,
     private readonly store: ShepherdStore,
     private readonly sink: CoordinatorSink,
+    private readonly runtime?: {
+      pollStarted(): void;
+      pollSucceeded(): void;
+      pollFailed(error: unknown): void;
+    },
+    private readonly ownershipGuard?: () => void,
   ) {}
 
   async pollAndDeliver(): Promise<PollSummary> {
+    this.ownershipGuard?.();
     this.recoverInFlightOnce();
+    this.runtime?.pollStarted();
     try {
-      return await this.engine.pollOnce();
+      const summary = await this.engine.pollOnce();
+      this.runtime?.pollSucceeded();
+      return summary;
+    } catch (error) {
+      this.runtime?.pollFailed(error);
+      throw error;
     } finally {
       await this.drainOutbox();
     }

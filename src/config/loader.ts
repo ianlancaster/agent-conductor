@@ -67,6 +67,7 @@ export function loadSupervisorConfig(baseDir: string, env: NodeJS.ProcessEnv = p
   config.terminal.backend ??= detectBackend(env);
   config.terminal.windowName ??= derived.windowName;
   config.terminal.tmux.sessionName ??= derived.tmuxSessionName;
+  config.shepherd.configPath = resolve(paths.configDir, config.shepherd.configPath ?? paths.shepherdConfigFile);
   return config as SupervisorConfig;
 }
 

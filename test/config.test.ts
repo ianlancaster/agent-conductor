@@ -62,7 +62,26 @@ describe('loadSupervisorConfig', () => {
     expect(config.spawn.templateCloneTimeoutSeconds).toBe(120);
     expect(config.channels.telegram.enabled).toBe(false);
     expect(config.channels.slack.enabled).toBe(false);
+    expect(config.shepherd).toEqual({
+      enabled: false,
+      presentation: 'headless',
+      configPath: join(baseDir, 'config', 'pr-shepherd.yaml'),
+    });
     expect(config.paths.dataDir).toBe('./data');
+  });
+
+  it('resolves a strict root-level Shepherd config beside supervisor.yaml', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'shepherd:\n  enabled: true\n  configPath: ./profiles/shepherd.yaml\n  presentation: panel\n',
+    );
+    expect(loadSupervisorConfig(baseDir).shepherd).toEqual({
+      enabled: true,
+      presentation: 'panel',
+      configPath: join(baseDir, 'config', 'profiles', 'shepherd.yaml'),
+    });
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'shepherd:\n  surprise: true\n');
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/shepherd: Unrecognized key.*surprise/);
   });
 
   it('accepts a configurable template registry and permits explicitly disabling all templates', () => {

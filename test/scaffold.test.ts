@@ -22,8 +22,12 @@ describe('ensureFleetScaffold', () => {
   it('creates a complete, immediately valid hidden fleet scaffold', () => {
     const created = ensureFleetScaffold(baseDir);
 
-    expect(created).toHaveLength(5);
+    expect(created).toHaveLength(6);
     expect(existsSync(join(baseDir, '.conductor', 'config', 'supervisor.yaml'))).toBe(true);
+    const shepherd = readFileSync(join(baseDir, '.conductor', 'config', 'pr-shepherd.yaml'), 'utf8');
+    expect(shepherd).toContain('agent-conductor-pr-shepherd-scaffold: identity-required');
+    expect(shepherd).toContain('bootstrap: baseline-only');
+    expect(shepherd).not.toMatch(/:\s*execute\b/);
     expect(existsSync(join(baseDir, '.conductor', 'config', 'sessions'))).toBe(true);
     expect(existsSync(join(baseDir, '.conductor', 'env.template'))).toBe(true);
     expect(existsSync(join(baseDir, '.conductor', '.env'))).toBe(true);
@@ -32,6 +36,11 @@ describe('ensureFleetScaffold', () => {
     expect(existsSync(join(baseDir, 'data'))).toBe(false);
     expect(validateConfig(baseDir)).toEqual([]);
     expect(loadSupervisorConfig(baseDir).paths.dataDir).toBe('./.conductor/data');
+    expect(loadSupervisorConfig(baseDir).shepherd).toMatchObject({
+      enabled: false,
+      presentation: 'headless',
+      configPath: join(baseDir, '.conductor', 'config', 'pr-shepherd.yaml'),
+    });
   });
 
   it('writes the complete effective defaults instead of a commented override stub', () => {
@@ -100,6 +109,7 @@ describe('ensureFleetScaffold', () => {
     const created = ensureFleetScaffold(baseDir);
 
     expect(created).toContain(join(baseDir, 'config', 'sessions'));
+    expect(created).toContain(join(baseDir, 'config', 'pr-shepherd.yaml'));
     expect(created).toContain(join(baseDir, 'env.template'));
     expect(created).toContain(join(baseDir, '.env'));
     expect(existsSync(join(baseDir, '.conductor'))).toBe(false);

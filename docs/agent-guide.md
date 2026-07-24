@@ -47,7 +47,7 @@ Authoritative references shipped with the package:
 - `prompts/conductor-protocol.md`: mandatory managed-session protocol
 - `prompts/sentinel.md`: baseline sentinel role
 - `guides/telegram-adapter.md` and `guides/slack-adapter.md`: external operator channels
-- `docs/pr-shepherd.md`: standalone PR Shepherd
+- `docs/pr-shepherd.md`: optional standalone or Conductor-managed PR Shepherd
 
 <!-- conductor-topic:fleet-configuration -->
 
@@ -497,9 +497,10 @@ use `send_to_operator`; terminal output is not automatically forwarded.
 
 ## PR Shepherd and coordinator patterns
 
-PR Shepherd V2 is a separate, optional executable shipped in the same package. Starting Conductor
-does not start or configure it. It has its own YAML profile, SQLite database, process lifecycle,
-poll interval, GitHub authentication, and automation policy.
+PR Shepherd V2 is an optional companion shipped in the same package. `conductor start` creates a
+copy-once, inert profile at the authoritative `shepherdConfig` path returned by
+`get_conductor_docs`. It does not poll GitHub until the operator replaces the identity placeholder
+and explicitly enables the root-level `shepherd` block in `supervisor.yaml`.
 
 Its useful composition with Conductor is:
 
@@ -511,15 +512,32 @@ The coordinator receives factual PR events and uses ordinary Conductor primitive
 spawn reviewers, request operator decisions, or coordinate fixes. Organization-specific guidance
 belongs in the Shepherd profile's per-event `guidance` map, not in the reusable engine.
 
-Safe adoption:
+When asked to configure Shepherd, first call `get_conductor_docs` without a topic and use its exact
+`shepherdConfig` and `supervisorConfig` paths. Elicit, rather than guess:
 
-1. Authenticate and validate `gh`.
-2. Copy `examples/pr-shepherd.yaml` outside the repository.
-3. Start with `bootstrap: baseline-only`.
-4. Keep delivery at `stdout` and automation at `notify` or `off`.
-5. Run one explicit poll and inspect events, status, and inbox.
-6. Enable Conductor delivery only after the shadow output is correct.
-7. Move automation policies to `execute` independently.
+1. the authenticated `gh` account and intended owner/repository scope;
+2. direct merge versus GitHub merge queue;
+3. required checks, approval count, ignored actors, and the current exact bot comment signals;
+4. stdout versus Conductor delivery and the coordinator session;
+5. which automation policies remain `off`/`notify` during shadowing and which may later execute;
+6. headless operation (default) versus panel presentation (currently reported unsupported).
+
+Then inspect the generated profile, preserve unrelated comments, run `gh auth status`,
+`pr-shepherd -C <fleet> validate`, and one `poll --once` with baseline-only/stdout behavior. Only
+after the observed decisions are correct should you configure Conductor delivery and set
+`shepherd.enabled: true`. Supervisor/profile changes require a deliberate Conductor restart.
+Never put credentials in YAML. Organization-specific MGT bot patterns, ignored checks, endpoints,
+and profiles are deployment policy and must not enter the reusable product.
+
+In direct mode, a mergeable PR behind its base is updated before prior checks or approvals count as
+merge-ready. With branch updates off, Shepherd emits `branch-behind` and withholds readiness. In
+merge-queue mode a merely-behind ready PR is queued without an unnecessary update. `UNKNOWN`
+mergeability waits; `CONFLICTING` emits a conflict fact and requires coordinator/operator
+resolution on each transition into that state. Shepherd never pretends to resolve textual conflicts.
+
+Managed status is one of `disabled`, `config-invalid`, `panel-unsupported`, `starting`, `healthy`,
+`stale`, `restarting`, `failed`, or `stopped`. A failed optional companion never makes the
+Conductor control plane unavailable.
 
 PR Shepherd does not decide the depth of a code review. A coordinator can compose that policy from
 PR facts: inexpensive review for ordinary changes, a specialist review for material risk, or

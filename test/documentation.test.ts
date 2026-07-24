@@ -20,6 +20,7 @@ function documentation(): ConductorDocumentation {
       configDir: '/fleets/example/.conductor/config',
       sessionsDir: '/fleets/example/.conductor/config/sessions',
       supervisorFile: '/fleets/example/.conductor/config/supervisor.yaml',
+      shepherdConfigFile: '/fleets/example/.conductor/config/pr-shepherd.yaml',
       dataDirDefault: './.conductor/data',
       environmentFile: '/fleets/example/.conductor/.env',
       environmentTemplate: '/fleets/example/.conductor/env.template',
@@ -47,6 +48,7 @@ describe('agent documentation', () => {
     expect(result.fleet).toMatchObject({
       fleetDir: '/fleets/example',
       supervisorConfig: '/fleets/example/.conductor/config/supervisor.yaml',
+      shepherdConfig: '/fleets/example/.conductor/config/pr-shepherd.yaml',
       sessionsDir: '/fleets/example/.conductor/config/sessions',
       environmentFile: '/fleets/example/.conductor/.env',
       referencePath,

@@ -46,8 +46,11 @@ interface NudgeState {
 }
 
 interface ActionState {
-  status: 'pending' | 'completed' | 'cancelled';
+  status: 'pending' | 'completed' | 'cancelled' | 'failed';
   mutation: GitHubMutation;
+  expectedHeadSha?: string;
+  attempts?: number;
+  nextAttemptAt?: string;
   relatedNudgeKey?: string;
   relatedNudgeHeadSha?: string;
   completedAt?: string;
@@ -104,8 +107,18 @@ export class ShepherdEngine {
     let completed = 0;
     for (const entity of this.store.listEntities<ActionState>('action')) {
       if (entity.value.status !== 'pending') continue;
+      if (
+        entity.value.nextAttemptAt !== undefined &&
+        new Date(entity.value.nextAttemptAt).getTime() > this.clock().getTime()
+      ) {
+        continue;
+      }
       if (!repositoryInScope(entity.value.mutation.pr.repo, this.config.github)) {
         this.cancelAction(entity.key, entity.value, 'repository is outside configured scope');
+        continue;
+      }
+      if (!this.actionStillApplicable(entity.value)) {
+        this.cancelAction(entity.key, entity.value, 'pull request state no longer satisfies the action preconditions');
         continue;
       }
       if (entity.value.relatedNudgeKey !== undefined && entity.value.relatedNudgeHeadSha !== undefined) {
@@ -138,10 +151,46 @@ export class ShepherdEngine {
         this.store.commit(updates, []);
         completed += 1;
       } catch (error) {
-        this.store.logHealth(
-          'github-mutation-failed',
-          `${entity.key}: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        const attempts = (entity.value.attempts ?? 0) + 1;
+        const message = error instanceof Error ? error.message : String(error);
+        this.store.logHealth('github-mutation-failed', `${entity.key}: ${message.slice(0, 500)}`);
+        if (entity.value.mutation.type === 'update-branch' && attempts >= 5) {
+          const event = buildEvent(
+            this.config,
+            'branch-update-failed',
+            entity.value.mutation.pr,
+            { action: entity.key },
+            { attempts, error: message.slice(0, 300) },
+            this.clock().toISOString(),
+          );
+          this.store.commit(
+            [
+              {
+                key: entity.key,
+                kind: 'action',
+                value: { ...entity.value, status: 'failed', attempts, completedAt: this.clock().toISOString() },
+              },
+            ],
+            [event],
+            this.recipient(),
+          );
+        } else {
+          const delayMs = Math.min(300_000, 1_000 * 2 ** Math.min(attempts - 1, 8));
+          this.store.commit(
+            [
+              {
+                key: entity.key,
+                kind: 'action',
+                value: {
+                  ...entity.value,
+                  attempts,
+                  nextAttemptAt: new Date(this.clock().getTime() + delayMs).toISOString(),
+                },
+              },
+            ],
+            [],
+          );
+        }
       }
     }
     return completed;
@@ -159,6 +208,33 @@ export class ShepherdEngine {
       [],
     );
     this.store.logHealth('github-mutation-cancelled', `${key}: ${reason}`);
+  }
+
+  private actionStillApplicable(action: ActionState): boolean {
+    if (action.mutation.type === 'post-reviewer-comment') return true;
+    const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+    if (authored?.details.state !== 'OPEN') return false;
+    const details = authored.details;
+    if (action.expectedHeadSha !== undefined && details.headSha !== action.expectedHeadSha) return false;
+    if (action.mutation.type === 'update-branch') {
+      return (
+        this.config.github.mode === 'direct' &&
+        details.mergeStateStatus === 'BEHIND' &&
+        details.mergeable === 'MERGEABLE'
+      );
+    }
+    const reviews = latestReviews(details.reviews);
+    const approvals = reviews.filter((review) => review.state === 'APPROVED');
+    const changesRequested = reviews.some((review) => review.state === 'CHANGES_REQUESTED');
+    const directBehind = this.config.github.mode === 'direct' && details.mergeStateStatus === 'BEHIND';
+    return (
+      details.autoMergeRequest === null &&
+      details.mergeable === 'MERGEABLE' &&
+      !directBehind &&
+      this.checksReady(details) &&
+      !changesRequested &&
+      approvals.length >= this.config.reviews.requiredApprovals
+    );
   }
 
   private async poll(): Promise<PollSummary> {
@@ -339,7 +415,13 @@ export class ShepherdEngine {
       const oldApprovals = oldReviews.filter((review) => review.state === 'APPROVED');
       const checksReady = this.checksReady(details);
       const previousChecksReady = previousDetails !== undefined && this.checksReady(previousDetails);
+      const directBehind =
+        this.config.github.mode === 'direct' &&
+        details.mergeStateStatus === 'BEHIND' &&
+        details.mergeable === 'MERGEABLE';
+      const mergeReady = details.mergeable === 'MERGEABLE' && !directBehind;
       if (
+        mergeReady &&
         checksReady &&
         changesRequested.length === 0 &&
         approvals.length >= this.config.reviews.requiredApprovals &&
@@ -353,6 +435,7 @@ export class ShepherdEngine {
               .sort()
               .join(',') ||
           !previousChecksReady ||
+          previousDetails?.mergeable !== 'MERGEABLE' ||
           previousDetails?.headSha !== details.headSha)
       ) {
         events.push(
@@ -405,24 +488,34 @@ export class ShepherdEngine {
       }
 
       if (
-        this.config.github.mode === 'direct' &&
-        details.autoMergeRequest !== null &&
-        details.mergeStateStatus === 'BEHIND' &&
-        details.mergeable === 'MERGEABLE' &&
+        directBehind &&
         (previousDetails?.headSha !== details.headSha ||
           previousDetails.mergeStateStatus !== 'BEHIND' ||
-          previousDetails.autoMergeRequest === null)
+          previousDetails.mergeable !== 'MERGEABLE')
       ) {
-        this.addDecision(
-          'branch-update-decision',
-          this.config.automation.branchUpdate,
-          pr,
-          { headSha: details.headSha, mergeStateStatus: details.mergeStateStatus },
-          { headSha: details.headSha, title: details.title, url: details.url },
-          { type: 'update-branch', pr },
-          events,
-          actions,
-        );
+        if (this.config.automation.branchUpdate === 'off') {
+          events.push(
+            buildEvent(
+              this.config,
+              'branch-behind',
+              pr,
+              { headSha: details.headSha },
+              { reason: 'readiness withheld; branchUpdate is off', title: details.title, url: details.url },
+              now.toISOString(),
+            ),
+          );
+        } else {
+          this.addDecision(
+            'branch-update-decision',
+            this.config.automation.branchUpdate,
+            pr,
+            { headSha: details.headSha, mergeStateStatus: details.mergeStateStatus },
+            { headSha: details.headSha, title: details.title, url: details.url },
+            { type: 'update-branch', pr },
+            events,
+            actions,
+          );
+        }
       }
 
       this.addCommentEvents(details, previousDetails, botAttempts, events);
@@ -550,10 +643,11 @@ export class ShepherdEngine {
     const event = buildEvent(this.config, type, pr, identity, { mode, ...facts }, this.clock().toISOString());
     events.push(event);
     if (mode === 'execute') {
+      const expectedHeadSha = typeof identity.headSha === 'string' ? identity.headSha : undefined;
       actions.push({
         key: `action:${event.id}`,
         kind: 'action',
-        value: { status: 'pending', mutation } satisfies ActionState,
+        value: { status: 'pending', mutation, expectedHeadSha } satisfies ActionState,
       });
     }
   }

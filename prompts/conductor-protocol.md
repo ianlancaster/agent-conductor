@@ -47,6 +47,8 @@ conversation.
   is relevant. Use it when the task would benefit from recipes, configuration,
   worktrees, supervision, schedules, operator channels, PR Shepherd,
   adapter guidance, or troubleshooting; do not preload every topic.
+  For PR Shepherd setup, load its topic and use the returned `shepherdConfig` path; elicit the
+  operator's GitHub scope, merge mode, check/review policy, delivery, and rollout choices.
 - `send_to_session` — message a specific session (starts it if needed). Its optional
   `idempotencyKey` is sender-scoped and returns the original structured receipt on retry.
   `delivered` means pane submission completed. `queued` is protected only for the current

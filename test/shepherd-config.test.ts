@@ -1,9 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 import { describe, expect, it } from 'vitest';
-import { loadShepherdConfig, parseShepherdConfig } from '../src/shepherd/config.js';
+import { assertShepherdProfileReady, loadShepherdConfig, parseShepherdConfig } from '../src/shepherd/config.js';
 import { repositoryInScope } from '../src/shepherd/scope.js';
 
 describe('PR Shepherd V2 configuration', () => {
@@ -101,6 +101,37 @@ describe('PR Shepherd V2 configuration', () => {
         },
       );
       expect(config.delivery).toEqual({ type: 'stdout' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves databasePath relative to the profile for modern and legacy fleet layouts', () => {
+    for (const configDir of ['.conductor/config', 'config']) {
+      const dir = mkdtempSync(join(tmpdir(), 'shepherd-profile-'));
+      const actual = join(dir, configDir, 'pr-shepherd.yaml');
+      mkdirSync(join(dir, configDir), { recursive: true });
+      writeFileSync(actual, 'version: 2\nprofile:\n  githubUser: octocat\ndatabasePath: ../data/pr-shepherd-v2.db\n');
+      try {
+        expect(loadShepherdConfig(actual).databasePath).toBe(join(dir, configDir, '..', 'data', 'pr-shepherd-v2.db'));
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('validates the generated placeholder structurally but refuses to use it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-profile-'));
+    const path = join(dir, 'profile.yaml');
+    writeFileSync(
+      path,
+      '# agent-conductor-pr-shepherd-scaffold: identity-required\nversion: 2\nprofile:\n  githubUser: CHANGE_ME\n',
+    );
+    try {
+      expect(loadShepherdConfig(path).profile.githubUser).toBe('CHANGE_ME');
+      expect(() => assertShepherdProfileReady(path)).toThrow('Set profile.githubUser');
+      writeFileSync(path, 'version: 2\nprofile:\n  githubUser: CHANGE_ME\n');
+      expect(() => assertShepherdProfileReady(path)).toThrow('Set profile.githubUser');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

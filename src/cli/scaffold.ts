@@ -21,13 +21,27 @@ function createFile(file: string, contents: string, mode?: number): boolean {
   }
 }
 
+export function ensureShepherdScaffold(baseDir: string): string | undefined {
+  const paths = resolveFleetPaths(baseDir);
+  const template = readFileSync(join(PACKAGE_ROOT, 'examples', 'pr-shepherd.scaffold.yaml'), 'utf8');
+  return createFile(paths.shepherdConfigFile, template) ? paths.shepherdConfigFile : undefined;
+}
+
 /** Render every effective default, including values derived for this fleet. */
 export function renderSupervisorConfig(baseDir: string, env: NodeJS.ProcessEnv = process.env): string {
   const config = loadSupervisorConfig(baseDir, env);
+  const paths = resolveFleetPaths(baseDir);
+  const rendered = {
+    ...config,
+    shepherd: {
+      ...config.shepherd,
+      configPath: config.shepherd.configPath === paths.shepherdConfigFile ? null : config.shepherd.configPath,
+    },
+  };
   return (
     '# agent-conductor supervisor config. This is a complete, working configuration.\n' +
     '# Edit values here; examples/supervisor.yaml documents every setting.\n\n' +
-    yaml.dump(config, { noRefs: true, lineWidth: 120, sortKeys: false })
+    yaml.dump(rendered, { noRefs: true, lineWidth: 120, sortKeys: false })
   );
 }
 
@@ -47,6 +61,8 @@ export function ensureFleetScaffold(baseDir: string): string[] {
   }
 
   if (createFile(paths.supervisorFile, renderSupervisorConfig(baseDir))) created.push(paths.supervisorFile);
+  const shepherd = ensureShepherdScaffold(baseDir);
+  if (shepherd !== undefined) created.push(shepherd);
 
   const environmentTemplate = readFileSync(join(PACKAGE_ROOT, 'env.template'), 'utf8');
   if (createFile(paths.environmentTemplate, environmentTemplate)) created.push(paths.environmentTemplate);

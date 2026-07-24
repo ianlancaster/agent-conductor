@@ -48,6 +48,8 @@ describe('Supervisor construction', () => {
     expect(status).toContain('alpha');
     expect(status).toContain('watch');
     expect(status).toContain('🛡'); // sentinel marker
+    expect(status).toContain('PR Shepherd:\n  state: disabled\n  presentation: headless');
+    expect(supervisor.shepherdStatus()).toMatchObject({ state: 'disabled', presentation: 'headless' });
   });
 
   it('assembles with the iTerm backend and never nags about a missing sentinel', () => {
@@ -78,6 +80,17 @@ describe('Supervisor construction', () => {
     supervisor = new Supervisor(baseDir, { env: {} });
     await supervisor.start();
     await expect(fetch(`http://127.0.0.1:${String(port)}/health`)).resolves.toMatchObject({ ok: true });
+  });
+
+  it('keeps the core available and reports remediation when the optional Shepherd profile is missing', async () => {
+    const port = await freePort();
+    writeConfig(`terminal:\n  backend: tmux\nmcp:\n  port: ${String(port)}\nshepherd:\n  enabled: true\n`, {});
+    supervisor = new Supervisor(baseDir, { env: {} });
+    await supervisor.start();
+    await expect(fetch(`http://127.0.0.1:${String(port)}/health`)).resolves.toMatchObject({ ok: true });
+    const shepherd = supervisor.shepherdStatus();
+    expect(shepherd.state).toBe('config-invalid');
+    expect(shepherd.detail).toContain('pr-shepherd init -C <fleetDir> or conductor start');
   });
 
   it('isolates a channel startup failure and exposes health only after it settles', async () => {
