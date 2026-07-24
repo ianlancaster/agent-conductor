@@ -107,7 +107,7 @@ commands and messages from the messages tab** even though this app registers no 
 
 1. In the app settings, open **Basic Information**.
 2. Under **App-Level Tokens**, choose **Generate Token and Scopes**.
-3. Name it for the fleet, such as `midgard-conductor`.
+3. Name it for the fleet, such as `acme-conductor`.
 4. Add only the `connections:write` scope.
 5. Generate and copy the token beginning with `xapp-`.
 

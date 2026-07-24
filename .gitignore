@@ -1,13 +1,9 @@
 node_modules/
 dist/
 coverage/
-data/
 *.log
 .env
 .DS_Store
 /plans
 /reviews
-/config
-/agent-conductor
-/.conductor/
 AGENTS.override.md
