@@ -521,8 +521,8 @@ closes.
 | Trunk                          | Status                | Plan        | Changeset                 | Commit    | Verification                                               |
 | ------------------------------ | --------------------- | ----------- | ------------------------- | --------- | ---------------------------------------------------------- |
 | 1. Codex instruction transport | Certification pending | Implemented | `calm-codex-homes`        | `a9694dc` | Automated gate green; disposable live-Codex matrix pending |
-| 2. Consumer extension contract | Certification pending | Implemented | `open-runtime-seams`      | `5a44acb` | Automated contract green; packed consumer pending          |
+| 2. Consumer extension contract | Complete              | Implemented | `open-runtime-seams`      | `5a44acb` | Packed TypeScript/import consumer green                    |
 | 3. Mandatory protocol boundary | Complete              | Implemented | `lean-conductor-protocol` | `f70985b` | 3.2 KB; invariant, schema, and full-gate tests green       |
-| 4. Onboarding and diagnostics  | Implemented           | Implemented | `bright-onboarding-path`  | —         | Doctor blocker matrix and copy-once onboarding tests green |
-| 5. Package and GitHub release  | Planned               | —           | —                         | —         | —                                                          |
+| 4. Onboarding and diagnostics  | Complete              | Implemented | `bright-onboarding-path`  | `40575cd` | Doctor blocker matrix and copy-once onboarding tests green |
+| 5. Package and GitHub release  | Implemented           | Implemented | `clean-github-beta`       | —         | npm/pnpm/Yarn packed installs and consumer smoke green     |
 | 6. Cohort certification        | Planned               | —           | —                         | —         | —                                                          |

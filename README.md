@@ -8,7 +8,7 @@ It is deliberately small. The conductor provides lifecycle, messaging, observabi
 and stall-routing primitives; the agents decide how to use them. There is no workflow
 engine, dashboard, task graph, or LLM hidden inside the supervisor.
 
-> **Project status:** Agent Conductor is under active development and has not yet been
+> **Project status:** Agent Conductor is in an internal GitHub-distributed beta and is not yet
 > published to npm. Interfaces may change before the first stable release.
 
 ## Why Agent Conductor?
@@ -57,7 +57,6 @@ tools: message the session, ask the operator, or do nothing.
 ## Requirements
 
 - Node.js 22.13 or newer (the non-LTS Node 23 line requires 23.4 or newer)
-- pnpm
 - Claude Code (`claude`) and/or OpenAI Codex (`codex`)
 - iTerm2 on macOS, or tmux on macOS/Linux
 - `curl` for runtime lifecycle hooks
@@ -65,18 +64,34 @@ tools: message the session, ask the operator, or do nothing.
 
 Telegram and Slack are optional.
 
-## Install from source
+## Install the GitHub beta
+
+The beta is one ordinary npm-compatible tarball attached to the GitHub prerelease. npm and pnpm can
+install that exact URL globally without publishing it to a registry:
 
 ```bash
-git clone https://github.com/ianlancaster/agent-conductor.git
-cd agent-conductor
-pnpm install
-pnpm build
-pnpm link --global
+RELEASE=https://github.com/ianlancaster/agent-conductor/releases/download/v0.2.0-beta.0/agent-conductor-0.2.0-beta.0.tgz
+npm install --global "$RELEASE"
+# or: pnpm add --global "$RELEASE"
 ```
 
-This installs the `conductor` and standalone `pr-shepherd` commands globally. Until the npm package is published, you can
-also run the CLI from the repository with `pnpm cli <arguments>`.
+Yarn Classic 1.x also supports `yarn global add "$RELEASE"`. Yarn Modern removed global installs;
+use npm or pnpm for a durable CLI installation instead of `yarn dlx`. These forms follow the package
+managers' documented [npm tarball URL](https://docs.npmjs.com/cli/v11/commands/npm-install/),
+[pnpm remote tarball](https://pnpm.io/package-sources#remote-tarball), and
+[Yarn Classic global](https://classic.yarnpkg.com/lang/en/docs/cli/global/) behavior.
+
+The install provides both `conductor` and `pr-shepherd`. Verify the downloaded release checksum
+before installation when your environment requires it; the matching `.sha256` file is attached to
+the release.
+
+To upgrade within the beta, repeat the install command with the new release asset URL. To uninstall:
+
+```bash
+npm uninstall --global agent-conductor
+# or: pnpm remove --global agent-conductor
+# Yarn Classic: yarn global remove agent-conductor
+```
 
 ## Quick start
 
@@ -209,6 +224,8 @@ flow.
   channels, terminal backends, and experimental session runtimes.
 - [PR Shepherd V2](docs/pr-shepherd.md) — standalone or Conductor-managed GitHub polling,
   policy, and Conductor delivery.
+- [GitHub beta release runbook](docs/beta-release-runbook.md) — protected prerelease workflow,
+  packed-artifact certification, checksums, and cohort policy.
 - [Contributor guide](CONTRIBUTING.md) and [architecture guide](CLAUDE.md) — mandatory context
   for extending the product.
 
@@ -712,7 +729,7 @@ pulling or changing code, refresh it before black-box CLI testing:
 
 ```bash
 pnpm build
-pnpm link --global
+pnpm add --global .
 conductor --help
 ```
 

@@ -697,7 +697,7 @@ architecture and product contract for all contributors, regardless of agent runt
 
 ```bash
 pnpm build
-pnpm link --global
+pnpm add --global .
 ```
 
 A running process still holds its old code until deliberately restarted.

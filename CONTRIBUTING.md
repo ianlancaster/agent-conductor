@@ -82,7 +82,7 @@ before testing the global command:
 
 ```bash
 pnpm build
-pnpm link --global
+pnpm add --global .
 conductor --help
 ```
 

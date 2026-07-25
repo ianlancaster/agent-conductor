@@ -338,8 +338,8 @@ primitive, not an approval or execution queue.
   runs the supervisor in the terminal and starts every configured session immediately.
 - **As a service**: `conductor daemon install` writes a launchd (macOS) or systemd-user
   (Linux) unit that keeps the conductor running across logins. `conductor daemon
-uninstall` removes it. (Requires `pnpm build` + `pnpm link --global` first, so the
-  service runs the compiled binary.)
+uninstall` removes it. Install the GitHub release tarball globally first so the service has a
+  stable executable path; source-checkout and temporary package-runner paths are rejected.
 - **Multiple fleets**: just use separate fleet directories — ports, tmux session names,
   and daemon service names are derived per fleet dir, so nothing collides. Telegram
   needs a distinct bot token per fleet (Telegram allows one poller per token). Slack needs
@@ -361,7 +361,7 @@ snapshot. Piped or redirected status output is automatically one-shot.
 
 | Symptom                                                 | Likely cause                                                                           |
 | ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `command not found: conductor`                          | `pnpm link --global` not run, or use `-C`/`npx tsx` (README Install)                   |
+| `command not found: conductor`                          | Install the GitHub release tarball globally; then confirm its bin directory is on PATH |
 | `conductor validate` says OK but nothing is configured  | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                       |
 | Pane never launches / hangs on start                    | `claude`/`codex` not on PATH, or bad `repo:` path                                      |
 | macOS dialog on first start                             | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)     |

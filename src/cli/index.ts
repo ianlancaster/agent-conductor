@@ -2,16 +2,16 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, openSync, readFileSync } from 'node:fs';
+import { mkdirSync, openSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { validateConfig, loadSupervisorConfig } from '../config/loader.js';
 import { resolveFleetDataDir } from '../config/paths.js';
 import { Supervisor } from '../core/supervisor.js';
 import { Store } from '../store/index.js';
+import { PACKAGE_VERSION } from '../version.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
 import { formatPreflight, preflightFailures, runPreflight } from './doctor.js';
 import { subscribeFeed } from './feed.js';
@@ -20,16 +20,12 @@ import { DEFAULT_STATUS_INTERVAL, parseStatusInterval, runStatusDashboard } from
 import { configureStatusLines } from './statusline.js';
 import { formatTerminalReply } from './terminal-format.js';
 
-const packageJson = JSON.parse(
-  readFileSync(join(fileURLToPath(import.meta.url), '..', '..', '..', 'package.json'), 'utf8'),
-) as { version: string };
-
 const program = new Command();
 const interactionId = randomUUID();
 program
   .name('conductor')
   .description('Lightweight supervisor for terminal coding agents')
-  .version(packageJson.version)
+  .version(PACKAGE_VERSION)
   .option('-C, --dir <path>', 'Fleet directory containing .conductor/ (default: current directory)')
   .addHelpText(
     'after',

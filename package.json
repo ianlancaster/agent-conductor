@@ -31,6 +31,7 @@
     "guides",
     "examples",
     "prompts",
+    "scripts/prepare.mjs",
     "env.template",
     "README.md",
     "CONTRIBUTING.md",
@@ -54,7 +55,8 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepare": "husky"
+    "verify:package": "node scripts/verify-package.mjs",
+    "prepare": "node scripts/prepare.mjs"
   },
   "dependencies": {
     "commander": "^14.0.3",
