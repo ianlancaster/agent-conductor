@@ -135,6 +135,19 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       expect(capture).not.toContain('command not found');
     });
 
+    it('submits a delivery only while the pane still matches its capture token', async () => {
+      const pane = await backend.createPane('protected-delivery', 'pane', workDir);
+      await until(async () => hasShellPrompt(await backend.capture(pane, 20)));
+
+      const stale = await backend.captureForDelivery(pane, 20);
+      execFileSync('tmux', ['send-keys', '-t', pane.id, '-l', '--', 'operator draft']);
+      expect(await backend.submitIfUnchanged(pane, 'must wait', stale.token)).toBe(false);
+
+      const current = await backend.captureForDelivery(pane, 20);
+      expect(await backend.submitIfUnchanged(pane, ' delivered safely', current.token)).toBe(true);
+      await until(async () => (await backend.capture(pane, 20)).includes('operator draft delivered safely'));
+    });
+
     it('rediscovers panes from a fresh backend instance via pane options', async () => {
       const pane = await backend.createPane('gamma', 'tab', workDir);
       const fresh = new TmuxBackend({

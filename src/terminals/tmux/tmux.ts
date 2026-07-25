@@ -72,6 +72,23 @@ export function parsePaneIds(output: string): string[] {
 }
 
 /**
+ * Parse writable tmux clients attached to one session. Delivery briefly makes
+ * these clients read-only while it verifies and submits an empty composer, so
+ * physical keyboard input cannot land between the two operations. Clients
+ * that were already read-only are deliberately omitted and never modified.
+ */
+export function parseWritableClients(output: string, sessionId: string): string[] {
+  const clients = new Set<string>();
+  for (const line of output.split('\n')) {
+    const [name, clientSessionId, rawFlags = ''] = line.split('\t');
+    if (name === undefined || name.length === 0 || clientSessionId !== sessionId) continue;
+    const flags = new Set(rawFlags.split(',').map((flag) => flag.trim()));
+    if (!flags.has('read-only')) clients.add(name);
+  }
+  return [...clients];
+}
+
+/**
  * Parse `list-panes -a -F '#{pane_id} #{@conductor_session}'` output into a
  * codename -> pane id map for THIS fleet only. Panes without a marker, or
  * marked by another fleet, are skipped. If two panes carry the same codename,

@@ -1,7 +1,13 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import type { PaneRef, Placement } from '../../core/types.js';
-import type { CreatePaneOptions, TerminalBackend, TerminalCapabilities } from '../types.js';
+import type {
+  CreatePaneOptions,
+  DeliveryCapture,
+  DeliveryCaptureOptions,
+  TerminalBackend,
+  TerminalCapabilities,
+} from '../types.js';
 import type { Store } from '../../store/index.js';
 import { log } from '../../logger.js';
 import { shellHasForegroundJob } from '../process.js';
@@ -15,6 +21,7 @@ import {
   hasShellPrompt,
   parseSessionPanes,
   parsePaneIds,
+  parseWritableClients,
   tmux,
   tmuxSucceeds,
   trimToTrailingLines,
@@ -80,6 +87,7 @@ export class TmuxBackend implements TerminalBackend {
   private readonly launchTimeoutMs: number;
   private readonly launchPollMs: number;
   private readonly launchRecoveryTimeoutMs: number;
+  private readonly deliveryLocks = new Map<string, Promise<void>>();
 
   constructor(opts: TmuxBackendOptions) {
     this.store = opts.store;
@@ -319,11 +327,88 @@ export class TmuxBackend implements TerminalBackend {
     return trimToTrailingLines(output, lines);
   }
 
+  async captureForDelivery(pane: PaneRef, lines: number, options?: DeliveryCaptureOptions): Promise<DeliveryCapture> {
+    const styled = options?.styled === true;
+    const content = styled ? await this.captureStyled(pane, lines) : await this.capture(pane, lines);
+    return { content, token: JSON.stringify({ version: 1, lines, styled, content }) };
+  }
+
+  /**
+   * Protect the observation/write boundary from physical tmux-client input.
+   * Writable clients attached to the target session are read-only only for
+   * the recapture + send-keys window, then restored in a finally block.
+   */
+  async submitIfUnchanged(pane: PaneRef, text: string, token: string): Promise<boolean> {
+    this.assertRef(pane);
+    return this.withDeliveryLock(pane.id, async () => {
+      let observation: { version: number; lines: number; styled: boolean; content: string };
+      try {
+        observation = JSON.parse(token) as typeof observation;
+      } catch {
+        return false;
+      }
+      if (
+        observation.version !== 1 ||
+        !Number.isSafeInteger(observation.lines) ||
+        observation.lines <= 0 ||
+        typeof observation.styled !== 'boolean' ||
+        typeof observation.content !== 'string'
+      ) {
+        return false;
+      }
+
+      const sessionId = (await tmux(['display-message', '-p', '-t', pane.id, '#{session_id}'])).trim();
+      const clientRows = await tmux(['list-clients', '-F', '#{client_name}\t#{session_id}\t#{client_flags}']);
+      const clients = parseWritableClients(clientRows, sessionId);
+      const locked: string[] = [];
+      try {
+        for (const client of clients) {
+          await tmux(['refresh-client', '-t', client, '-f', 'read-only']);
+          locked.push(client);
+        }
+        const current = observation.styled
+          ? await this.captureStyled(pane, observation.lines)
+          : await this.capture(pane, observation.lines);
+        if (current !== observation.content) return false;
+        await this.run(pane, text);
+        return true;
+      } finally {
+        const restored = await Promise.allSettled(
+          locked.map((client) => tmux(['refresh-client', '-t', client, '-f', '!read-only'])),
+        );
+        restored.forEach((result, index) => {
+          if (result.status === 'rejected') {
+            log().warn(
+              'tmux',
+              `could not restore writable client ${locked[index] ?? '(unknown)'}: ${String(result.reason)}`,
+            );
+          }
+        });
+      }
+    });
+  }
+
   /** capture() with ANSI styling retained (`-e`) — see TerminalBackend.captureStyled. */
   async captureStyled(pane: PaneRef, lines: number): Promise<string> {
     this.assertRef(pane);
     const output = await tmux(['capture-pane', '-p', '-e', '-t', pane.id, '-S', `-${lines}`]);
     return trimToTrailingLines(output, lines);
+  }
+
+  private async withDeliveryLock<T>(paneId: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.deliveryLocks.get(paneId) ?? Promise.resolve();
+    let release = (): void => undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.deliveryLocks.set(paneId, current);
+    await previous;
+    try {
+      return await action();
+    } finally {
+      release();
+      if (this.deliveryLocks.get(paneId) === current) this.deliveryLocks.delete(paneId);
+    }
   }
 
   async isAlive(pane: PaneRef): Promise<boolean> {

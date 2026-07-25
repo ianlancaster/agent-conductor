@@ -7,6 +7,7 @@ import {
   hasShellPrompt,
   parseSessionPanes,
   parsePaneIds,
+  parseWritableClients,
   pasteBufferName,
   trimToTrailingLines,
 } from '../src/terminals/tmux/tmux.js';
@@ -22,6 +23,23 @@ describe('parsePaneIds', () => {
 
   it('returns empty for empty output', () => {
     expect(parsePaneIds('')).toEqual([]);
+  });
+});
+
+describe('parseWritableClients', () => {
+  it('returns only writable clients attached to the target session', () => {
+    const output = [
+      '/dev/ttys001\t$1\tactive-pane',
+      '/dev/ttys002\t$1\tread-only,ignore-size',
+      '/dev/ttys003\t$2\t',
+      '',
+    ].join('\n');
+    expect(parseWritableClients(output, '$1')).toEqual(['/dev/ttys001']);
+  });
+
+  it('deduplicates client rows and ignores malformed rows', () => {
+    const output = '/dev/ttys001\t$1\t\n/dev/ttys001\t$1\t\nmalformed';
+    expect(parseWritableClients(output, '$1')).toEqual(['/dev/ttys001']);
   });
 });
 

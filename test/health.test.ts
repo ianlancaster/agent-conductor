@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HealthMonitor } from '../src/core/health.js';
 import type { StallKind } from '../src/core/types.js';
+import { CodexRuntime } from '../src/runtimes/codex/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 
@@ -125,6 +126,22 @@ describe('fallback pane-diff watchdog', () => {
     // No repeat notification while content stays frozen.
     await monitor.heartbeat();
     expect(stalls.length).toBe(1);
+  });
+
+  it('ignores changing runtime chrome when deciding whether a pane is frozen', async () => {
+    runtime.capabilities.lifecycleEvents = false;
+    const codex = new CodexRuntime({ config: { binary: 'codex', toolTimeoutSec: 600 }, baseDir: '/tmp' });
+    runtime.stripChrome = (capture) => codex.stripChrome(capture);
+
+    backend.setPaneContent(paneId, 'Waiting for background terminal\n• Working (1m 00s • esc to interrupt)');
+    await monitor.heartbeat(); // normalized snapshot
+    backend.setPaneContent(paneId, 'Waiting for background terminal\n• Working (1m 30s • esc to interrupt)');
+    await monitor.heartbeat(); // beat 1: only chrome changed
+    backend.setPaneContent(paneId, 'Waiting for background terminal\n• Working (2m 00s • esc to interrupt)');
+    await monitor.heartbeat(); // beat 2: only chrome changed -> threshold
+
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'silent', reason: undefined }]);
+    expect(working).toEqual([]);
   });
 
   it('resets the counter when pane content changes', async () => {

@@ -269,12 +269,14 @@ export class DeliveryQueue {
     try {
       let capture: string;
       let token: string | undefined;
-      if (runtime.capabilities.styledCapture && this.deps.backend.captureStyled !== undefined) {
-        capture = await this.deps.backend.captureStyled(pane, 10);
-      } else if (this.deps.backend.captureForDelivery !== undefined) {
-        const observation = await this.deps.backend.captureForDelivery(pane, 10);
+      if (this.deps.backend.captureForDelivery !== undefined) {
+        const observation = await this.deps.backend.captureForDelivery(pane, 10, {
+          styled: runtime.capabilities.styledCapture,
+        });
         capture = observation.content;
         token = observation.token;
+      } else if (runtime.capabilities.styledCapture && this.deps.backend.captureStyled !== undefined) {
+        capture = await this.deps.backend.captureStyled(pane, 10);
       } else {
         capture = await this.deps.backend.capture(pane, 10);
       }
