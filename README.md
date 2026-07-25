@@ -196,6 +196,8 @@ to consult it without preloading the full handbook into every context.
 - [Complete supervisor example](examples/supervisor.yaml) — every setting and effective default.
 - [Telegram adapter](guides/telegram-adapter.md) and [Slack adapter](guides/slack-adapter.md) —
   least-privilege external operator setup.
+- [External adapters and embedding](guides/external-adapters.md) — public contracts for operator
+  channels, terminal backends, and experimental session runtimes.
 - [PR Shepherd V2](docs/pr-shepherd.md) — standalone or Conductor-managed GitHub polling,
   policy, and Conductor delivery.
 - [Contributor guide](CONTRIBUTING.md) and [architecture guide](CLAUDE.md) — mandatory context
@@ -243,8 +245,8 @@ Common examples:
 
 ```text
 /status [session]
-/start <session|all> [-r|--runtime cc|claude-code|codex] [placement]
-/continue <session|all> [-r|--runtime cc|claude-code|codex] [placement]
+/start <session|all> [-r|--runtime <registered-name>] [placement]
+/continue <session|all> [-r|--runtime <registered-name>] [placement]
 /stop <session|all>
 
 /tell <session> <message>
@@ -590,6 +592,18 @@ const supervisor = new Supervisor('/path/to/fleet', {
 await supervisor.start();
 ```
 
+External session runtimes use the same injection boundary:
+
+```ts
+const supervisor = new Supervisor('/path/to/fleet', {
+  runtimes: [myRuntime],
+});
+```
+
+The final built-in plus injected registry drives configuration validation, spawn/start/continue
+schemas, MCP validation, and operator help. An injected runtime may replace a built-in by name;
+duplicate injected names are rejected, and `cc` remains reserved as the `claude-code` UI alias.
+
 Each incoming command includes a conversation ID, so stateful operator conveniences such as
 `/talk` remain isolated between adapters and users. The operation registry is audience-aware,
 leaving a clean path for future agent-facing adapters without duplicating command handlers.
@@ -611,6 +625,8 @@ Bundled channels are opt-in integrations whose configuration and credential disc
 with the package. Injected channels are constructed by the embedding application and may use
 its own configuration and secret provider. See [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [developer guide](CLAUDE.md#extension-taxonomy) for the adapter checklist and test layers.
+The complete public contract and runnable host are in the
+[external adapter guide](guides/external-adapters.md).
 
 ## Running headless
 

@@ -626,6 +626,17 @@ Bundled adapters may add strict, disabled-by-default configuration and environme
 External adapters should use their host application's secret/config mechanism and do not need to
 be added to Conductor core.
 
+External runtimes are registered with `new Supervisor(baseDir, { runtimes: [...] })`. The final
+registry controls fleet/session validation and the spawn, start, continue, MCP, and help surfaces.
+An injected runtime may deliberately replace a built-in by name; duplicate injected names fail
+construction, and `cc` remains reserved as the `claude-code` command alias. Runtime harness types
+are experimental during beta. See `guides/external-adapters.md` and
+`examples/embedding-host.mjs` for the complete contracts and a runnable package-root-only host.
+
+An injected `TerminalBackend` is supported through `SupervisorOptions.terminalBackend`. The
+built-in backend classes are not public yet because their constructors still require private
+Conductor persistence; do not deep-import them from `dist/`.
+
 For a new control primitive, add one canonical `ConductorOperations` definition and then audit
 every applicable surface: MCP, operator commands and help, adapters, schema, examples, prompts,
 exports, persistence, tests, and docs. An intentional audience difference is valid; accidental

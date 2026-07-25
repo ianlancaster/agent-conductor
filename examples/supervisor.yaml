@@ -41,7 +41,7 @@ terminal:
 
 defaults:
   auto: false
-  runtime: claude-code # claude-code | codex; session files can override this
+  runtime: claude-code # built-ins: claude-code | codex; embedding hosts may register more
   # Bypass runtime approval prompts and sandbox restrictions. Session files can override.
   bypassPermissions: true
   placement: pane # pane | tab | window

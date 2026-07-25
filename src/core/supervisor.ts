@@ -56,6 +56,11 @@ export interface SupervisorOptions {
   claudeJsonPath?: string;
   /** Inject a terminal adapter when embedding or testing. */
   terminalBackend?: TerminalBackend;
+  /**
+   * Inject session runtimes. An injected runtime may decorate or replace a
+   * built-in by name; duplicate names within this array are rejected.
+   */
+  runtimes?: SessionRuntime[];
 }
 
 /** Thin orchestrator: constructs the modules, wires the seams, owns the loops. */
@@ -110,6 +115,36 @@ export class Supervisor {
       tolerant: true,
       defaultRuntime: this.config.defaults.runtime,
     });
+    const protocolPath = this.resolveProtocolPath();
+    this.runtimes.set(
+      'claude-code',
+      new ClaudeCodeRuntime({
+        config: this.config.runtimes.claudeCode,
+        protocolPath,
+        claudeJsonPath: options.claudeJsonPath,
+      }),
+    );
+    this.runtimes.set(
+      'codex',
+      new CodexRuntime({
+        config: this.config.runtimes.codex,
+        baseDir,
+        protocolPath,
+        sessionDataDir: join(dataDir, 'sessions'),
+      }),
+    );
+    const injectedRuntimeNames = new Set<string>();
+    for (const runtime of options.runtimes ?? []) {
+      const name = runtime.name.trim();
+      if (name.length === 0 || name !== runtime.name) {
+        throw new Error('Injected runtime names must be non-empty and must not have surrounding whitespace.');
+      }
+      if (name === 'cc') throw new Error("Injected runtime name 'cc' is reserved as the claude-code command alias.");
+      if (injectedRuntimeNames.has(name)) throw new Error(`Duplicate injected runtime name '${name}'.`);
+      injectedRuntimeNames.add(name);
+      this.runtimes.set(name, runtime);
+    }
+    this.validateRuntimeReferences();
     this.store = new Store(join(dataDir, 'conductor.db'));
     this.states = new SessionStateManager(this.store, this.config.defaults.auto);
     const storedSentinel = this.store.getWorkspaceValue<string | null>(SENTINEL_WORKSPACE_KEY);
@@ -151,25 +186,6 @@ export class Supervisor {
             config: { ...this.config.terminal.iterm, windowName: this.config.terminal.windowName, fleetId },
             env: this.env,
           }));
-
-    const protocolPath = this.resolveProtocolPath();
-    this.runtimes.set(
-      'claude-code',
-      new ClaudeCodeRuntime({
-        config: this.config.runtimes.claudeCode,
-        protocolPath,
-        claudeJsonPath: options.claudeJsonPath,
-      }),
-    );
-    this.runtimes.set(
-      'codex',
-      new CodexRuntime({
-        config: this.config.runtimes.codex,
-        baseDir,
-        protocolPath,
-        sessionDataDir: join(dataDir, 'sessions'),
-      }),
-    );
 
     this.delivery = new DeliveryQueue({
       backend: this.backend,
@@ -304,11 +320,14 @@ export class Supervisor {
       modelHints: {
         'claude-code': this.config.runtimes.claudeCode.availableModels,
         'codex': this.config.runtimes.codex.availableModels,
+        ...Object.fromEntries([...injectedRuntimeNames].map((name) => [name, [] as string[]])),
       },
       effortHints: {
         'claude-code': this.config.runtimes.claudeCode.availableEfforts,
         'codex': this.config.runtimes.codex.availableEfforts,
+        ...Object.fromEntries([...injectedRuntimeNames].map((name) => [name, [] as string[]])),
       },
+      runtimeNames: [...this.runtimes.keys()].sort(),
       statusReport: (codename) => this.statusReport(codename),
       tail: (codename, lines) => this.tail(codename, lines),
       typeInPane: (codename, text) => this.typeInPane(codename, text),
@@ -360,6 +379,23 @@ export class Supervisor {
 
     for (const [codename, session] of this.sessions) {
       this.states.register(codename, this.lifecycle.isAgentProject(session));
+    }
+  }
+
+  private validateRuntimeReferences(): void {
+    const available = [...this.runtimes.keys()].sort();
+    const availableText = available.join(', ');
+    if (!this.runtimes.has(this.config.defaults.runtime)) {
+      throw new Error(
+        `Fleet default selects unknown runtime '${this.config.defaults.runtime}'. Registered runtimes: ${availableText}.`,
+      );
+    }
+    for (const session of this.sessions.values()) {
+      if (!this.runtimes.has(session.runtime)) {
+        throw new Error(
+          `Session '${session.codename}' selects unknown runtime '${session.runtime}'. Registered runtimes: ${availableText}.`,
+        );
+      }
     }
   }
 
@@ -718,6 +754,16 @@ export class Supervisor {
       tolerant: true,
       defaultRuntime: this.config.defaults.runtime,
     });
+    for (const [codename, session] of fresh) {
+      if (this.runtimes.has(session.runtime)) continue;
+      const previous = this.sessions.get(codename);
+      log().error(
+        'supervisor',
+        `Session '${codename}' selects unknown runtime '${session.runtime}' — available: ${[...this.runtimes.keys()].sort().join(', ')}.`,
+      );
+      if (previous === undefined) fresh.delete(codename);
+      else fresh.set(codename, previous);
+    }
     for (const [codename, session] of fresh) {
       if (!this.sessions.has(codename)) {
         log().info('supervisor', `Session registered: ${codename}`);

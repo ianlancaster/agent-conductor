@@ -46,8 +46,6 @@ export interface SpawnOptions {
   headless?: boolean;
 }
 
-const SPAWNABLE_RUNTIMES = ['claude-code', 'codex'];
-
 export interface LifecycleDeps {
   store: Store;
   backend: TerminalBackend;
@@ -58,7 +56,7 @@ export interface LifecycleDeps {
   config: {
     defaultPlacement: Placement;
     defaultRuntime: SessionConfig['runtime'];
-    defaultEfforts: Record<SessionConfig['runtime'], string | undefined>;
+    defaultEfforts: Record<string, string | undefined>;
     defaultBypassPermissions: boolean;
     markerFile: string;
     spawnDirPattern: string;
@@ -309,8 +307,8 @@ export class Lifecycle {
       return `Invalid codename '${codename}': must be alphanumeric with dashes/underscores.`;
     }
     if (this.deps.sessions().has(codename)) return `Session '${codename}' already exists.`;
-    if (opts.runtime !== undefined && !SPAWNABLE_RUNTIMES.includes(opts.runtime)) {
-      return `Unknown runtime '${opts.runtime}'. Available: ${SPAWNABLE_RUNTIMES.join(', ')}.`;
+    if (opts.runtime !== undefined && !this.deps.runtimes.has(opts.runtime)) {
+      return `Unknown runtime '${opts.runtime}'. Available: ${[...this.deps.runtimes.keys()].sort().join(', ')}.`;
     }
     if (opts.template !== undefined && opts.worktreeRepo !== undefined) {
       return 'Template and worktree sources are mutually exclusive.';

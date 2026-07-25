@@ -1,4 +1,4 @@
-import type { RuntimeName, SessionConfig } from '../config/schema.js';
+import type { SessionConfig } from '../config/schema.js';
 import { CONDUCTOR_DOC_TOPICS } from './documentation.js';
 import type { Lifecycle } from './lifecycle.js';
 import type { Messaging } from './messaging.js';
@@ -41,8 +41,9 @@ export interface ConductorOperationDeps {
   sentinel: StallSentinelRouter;
   states: SessionStateManager;
   sessions(): Map<string, SessionConfig>;
-  modelHints: Record<RuntimeName, readonly string[]>;
-  effortHints: Record<RuntimeName, readonly string[]>;
+  modelHints: Record<string, readonly string[]>;
+  effortHints: Record<string, readonly string[]>;
+  runtimeNames?: readonly string[];
   statusReport(codename?: string): string;
   tail(codename: string, lines: number): Promise<string>;
   /** Deliberately bypass the protected delivery queue for terminal control input. */
@@ -83,11 +84,14 @@ const bypassPermissionsProperty: JsonPropertySchema = {
   description: 'Override the fleet approval/sandbox bypass default for the new session',
 };
 
-const runtimeProperty: JsonPropertySchema = {
-  type: 'string',
-  enum: ['claude-code', 'cc', 'codex'],
-  description: "Runtime for this run; cc aliases claude-code (default: the session's configured runtime)",
-};
+function runtimeProperty(runtimeNames: readonly string[]): JsonPropertySchema {
+  const choices = runtimeNames.flatMap((name) => (name === 'claude-code' ? [name, 'cc'] : [name]));
+  return {
+    type: 'string',
+    enum: choices,
+    description: "Runtime for this run; cc aliases claude-code (default: the session's configured runtime)",
+  };
+}
 
 function optionalStringArray(args: Record<string, unknown>, name: string): string[] | undefined {
   const value = args[name];
@@ -97,7 +101,7 @@ function optionalStringArray(args: Record<string, unknown>, name: string): strin
 function runtime(args: Record<string, unknown>): SessionConfig['runtime'] | undefined {
   const value = optionalString(args, 'runtime');
   if (value === undefined) return undefined;
-  return value === 'cc' ? 'claude-code' : (value as SessionConfig['runtime']);
+  return value === 'cc' ? 'claude-code' : value;
 }
 
 function placement(args: Record<string, unknown>): Placement | undefined {
@@ -109,9 +113,10 @@ function actorName(actor: OperationActor): string {
   return actor.audience === 'operator' ? 'operator' : actor.codename;
 }
 
-function runtimeHintDescription(setting: 'model' | 'effort', hints: Record<RuntimeName, readonly string[]>): string {
-  const runtimeHints = (['claude-code', 'codex'] as const)
-    .map((runtime) => `${runtime}: ${hints[runtime].join(', ') || 'none configured'}`)
+function runtimeHintDescription(setting: 'model' | 'effort', hints: Record<string, readonly string[]>): string {
+  const runtimeHints = Object.entries(hints)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([runtime, values]) => `${runtime}: ${values.join(', ') || 'none configured'}`)
     .join('; ');
   return `Optional ${setting} override. Availability hints only (not exhaustive or validated): ${runtimeHints}.`;
 }
@@ -140,6 +145,10 @@ export class ConductorOperations {
     return this.byName.get(name);
   }
 
+  runtimeChoices(): readonly string[] {
+    return runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex']).enum ?? [];
+  }
+
   hasSession(codename: string): boolean {
     return this.deps.sessions().has(codename);
   }
@@ -156,6 +165,7 @@ export class ConductorOperations {
 
   private buildDefinitions(): OperationDefinition[] {
     const templateNames = this.deps.lifecycle.templateNames();
+    const runRuntimeProperty = runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex']);
     return [
       {
         name: 'send_to_session',
@@ -225,7 +235,7 @@ export class ConductorOperations {
         inputSchema: schema(
           {
             codename: stringProperty("Session codename or 'all'"),
-            runtime: runtimeProperty,
+            runtime: runRuntimeProperty,
             effort: stringProperty(runtimeHintDescription('effort', this.deps.effortHints)),
             placement: placementProperty,
             headless: headlessProperty,
@@ -258,7 +268,7 @@ export class ConductorOperations {
         inputSchema: schema(
           {
             codename: stringProperty("Session codename or 'all'"),
-            runtime: runtimeProperty,
+            runtime: runRuntimeProperty,
             effort: stringProperty(runtimeHintDescription('effort', this.deps.effortHints)),
             placement: placementProperty,
             headless: headlessProperty,
@@ -287,7 +297,7 @@ export class ConductorOperations {
               'Destination working directory (default: spawn.dirPattern with {codename} substituted)',
             ),
             runtime: {
-              ...runtimeProperty,
+              ...runRuntimeProperty,
               description: 'Agent runtime (default: supervisor defaults.runtime)',
             },
             bypassPermissions: bypassPermissionsProperty,

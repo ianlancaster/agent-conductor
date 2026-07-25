@@ -12,7 +12,6 @@ const EVENT_TYPES = new Set(['turn-start', 'stop', 'notification', 'compaction',
 
 /** In-memory SessionRuntime for tests. Events are accepted as plain JSON `{type, reason?, transcriptPath?}`. */
 export class FakeRuntime implements SessionRuntime {
-  readonly name = 'fake';
   readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: false, styledCapture: false };
 
   readonly prepared: { session: SessionConfig; identity: IdentityEndpoints }[] = [];
@@ -20,6 +19,8 @@ export class FakeRuntime implements SessionRuntime {
   /** Controls parseInputState; set to 'draft' to simulate occupied input. */
   inputState: InputState = 'clear';
   readonly transcripts = new Map<string, string>();
+
+  constructor(readonly name = 'fake') {}
 
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
     this.prepared.push({ session, identity });

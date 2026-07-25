@@ -518,11 +518,11 @@ This ledger is intentionally empty at roadmap creation. Each trunk should add it
 plan, changeset, commit, pushed ref, local-link verification, and certification evidence when it
 closes.
 
-| Trunk                          | Status                | Plan        | Changeset          | Commit | Verification                                               |
-| ------------------------------ | --------------------- | ----------- | ------------------ | ------ | ---------------------------------------------------------- |
-| 1. Codex instruction transport | Certification pending | Implemented | `calm-codex-homes` | —      | Automated gate green; disposable live-Codex matrix pending |
-| 2. Consumer extension contract | Planned               | —           | —                  | —      | —                                                          |
-| 3. Mandatory protocol boundary | Planned               | —           | —                  | —      | —                                                          |
-| 4. Onboarding and diagnostics  | Planned               | —           | —                  | —      | —                                                          |
-| 5. Package and GitHub release  | Planned               | —           | —                  | —      | —                                                          |
-| 6. Cohort certification        | Planned               | —           | —                  | —      | —                                                          |
+| Trunk                          | Status                | Plan        | Changeset            | Commit | Verification                                               |
+| ------------------------------ | --------------------- | ----------- | -------------------- | ------ | ---------------------------------------------------------- |
+| 1. Codex instruction transport | Certification pending | Implemented | `calm-codex-homes`   | —      | Automated gate green; disposable live-Codex matrix pending |
+| 2. Consumer extension contract | Certification pending | Implemented | `open-runtime-seams` | —      | Automated contract green; packed consumer pending          |
+| 3. Mandatory protocol boundary | Planned               | —           | —                    | —      | —                                                          |
+| 4. Onboarding and diagnostics  | Planned               | —           | —                    | —      | —                                                          |
+| 5. Package and GitHub release  | Planned               | —           | —                    | —      | —                                                          |
+| 6. Cohort certification        | Planned               | —           | —                    | —      | —                                                          |

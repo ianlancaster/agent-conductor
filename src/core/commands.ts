@@ -95,6 +95,11 @@ function operationDescription(operations: ConductorOperations, name: string): st
  * and each entry invokes a named canonical operation rather than core modules.
  */
 export function buildOperatorCommands(operations: ConductorOperations): OperatorCommandDefinition[] {
+  const operationRuntimeChoices = operations.runtimeChoices();
+  const runtimeChoices = [
+    ...(operationRuntimeChoices.includes('cc') ? ['cc'] : []),
+    ...operationRuntimeChoices.filter((choice) => choice !== 'cc'),
+  ].join('|');
   const invoke = (name: string, args: Record<string, unknown>, actor: OperationActor): Promise<string> =>
     operations
       .invoke(name, args, actor)
@@ -132,7 +137,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       command: 'start',
       operations: ['start_session'],
       group: 'Sessions',
-      usage: '/start <session|all> [-r|--runtime cc|claude-code|codex] [-e|--effort level] [placement]',
+      usage: `/start <session|all> [-r|--runtime ${runtimeChoices}] [-e|--effort level] [placement]`,
       description: operationDescription(operations, 'start_session'),
       invoke: (args, actor) => invoke('start_session', parseSessionLaunch(args, 'start'), actor),
     },
@@ -140,7 +145,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       command: 'continue',
       operations: ['continue_session'],
       group: 'Sessions',
-      usage: '/continue <session|all> [-r|--runtime cc|claude-code|codex] [-e|--effort level] [placement]',
+      usage: `/continue <session|all> [-r|--runtime ${runtimeChoices}] [-e|--effort level] [placement]`,
       description: operationDescription(operations, 'continue_session'),
       invoke: (args, actor) => invoke('continue_session', parseSessionLaunch(args, 'continue'), actor),
     },
@@ -319,7 +324,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       usage: '/spawn <name> [flags] [placement]',
       description: operationDescription(operations, 'spawn_session'),
       details: [
-        '    -r/--runtime cc|claude-code|codex · -m/--model <model> · -e/--effort <level>',
+        `    -r/--runtime ${runtimeChoices} · -m/--model <model> · -e/--effort <level>`,
         '    -d/--path <dir> · -t/--template <name> · -w/--worktree <repo> · -b/--branch <name>',
         '    --bypass-permissions · --require-permissions',
       ],

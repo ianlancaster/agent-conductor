@@ -70,12 +70,12 @@ conversation.
   rules above. Do not use it as a conversational shortcut or routine progress monitor.
 - `start_session`, `stop_session`, `continue_session` — lifecycle of existing sessions
   (`codename` may be a session or `all`; for an agent caller, `all` means every other session).
-  Optional `runtime`: cc | claude-code | codex overrides the session default for that run
-  (`cc` means `claude-code`); optional `effort` overrides reasoning effort for that process;
+  Optional `runtime` selects a registered runtime for that run (`cc` aliases `claude-code`);
+  optional `effort` overrides reasoning effort for that process;
   `placement`: pane | tab | window; `headless: true` puts the pane in the detached fleet session,
   out of the operator's view — tmux backend only.
 - `spawn_session` — create + start a brand-new session. Args: `codename` (required),
-  `runtime` (cc | claude-code | codex, default from supervisor config), `model`, `effort`, `path`,
+  registered `runtime` (default from supervisor config), `model`, `effort`, `path`,
   `placement`, `headless`, and optional `bypassPermissions`. Set `template` to clone a registered
   Git template, or `worktreeRepo` to create a linked worktree (`branch` defaults to the codename);
   template and worktree sources are mutually exclusive. The destination is `path` or

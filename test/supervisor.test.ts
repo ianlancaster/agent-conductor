@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Supervisor } from '../src/core/supervisor.js';
 import type { ChannelAdapter, ChannelHandlers, ChannelMessage } from '../src/channels/types.js';
 import { Store } from '../src/store/index.js';
+import { FakeRuntime } from './fakes/fake-runtime.js';
+import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 
 let baseDir: string;
 let supervisor: Supervisor | undefined;
@@ -35,6 +37,41 @@ afterEach(async () => {
  * of at runtime. No terminal/network side effects before start().
  */
 describe('Supervisor construction', () => {
+  it('selects an injected runtime from fleet config and exposes it through lifecycle commands', async () => {
+    writeConfig('defaults:\n  runtime: external\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const runtime = new FakeRuntime('external');
+    const terminal = new FakeTerminalBackend();
+    supervisor = new Supervisor(baseDir, { runtimes: [runtime], terminalBackend: terminal });
+
+    expect(await supervisor.command('/start alpha')).toBe('alpha started.');
+    expect(runtime.prepared).toHaveLength(1);
+    expect(runtime.launches[0]?.session.runtime).toBe('external');
+    expect(await supervisor.command('/help')).toContain('cc|claude-code|codex|external');
+  });
+
+  it('lets one injected runtime deliberately replace a built-in by name', async () => {
+    writeConfig('defaults:\n  runtime: codex\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const replacement = new FakeRuntime('codex');
+    supervisor = new Supervisor(baseDir, { runtimes: [replacement], terminalBackend: new FakeTerminalBackend() });
+
+    expect(await supervisor.command('/start alpha')).toBe('alpha started.');
+    expect(replacement.launches).toHaveLength(1);
+  });
+
+  it('rejects duplicate injected names and unknown configured runtimes with actionable errors', () => {
+    writeConfig('defaults:\n  runtime: missing\n', {});
+    expect(() => new Supervisor(baseDir, { runtimes: [new FakeRuntime('one'), new FakeRuntime('one')] })).toThrow(
+      "Duplicate injected runtime name 'one'",
+    );
+    expect(() => new Supervisor(baseDir, { runtimes: [new FakeRuntime('one')] })).toThrow(
+      "Fleet default selects unknown runtime 'missing'. Registered runtimes: claude-code, codex, one.",
+    );
+  });
+
   it('assembles the full graph from a tmux config and reports status', async () => {
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43391\nsentinel:\n  codename: watch\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
