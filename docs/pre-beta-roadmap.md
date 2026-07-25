@@ -518,11 +518,11 @@ This ledger is intentionally empty at roadmap creation. Each trunk should add it
 plan, changeset, commit, pushed ref, local-link verification, and certification evidence when it
 closes.
 
-| Trunk                          | Status                | Plan        | Changeset                 | Commit    | Verification                                               |
-| ------------------------------ | --------------------- | ----------- | ------------------------- | --------- | ---------------------------------------------------------- |
-| 1. Codex instruction transport | Certification pending | Implemented | `calm-codex-homes`        | `a9694dc` | Automated gate green; disposable live-Codex matrix pending |
-| 2. Consumer extension contract | Complete              | Implemented | `open-runtime-seams`      | `5a44acb` | Packed TypeScript/import consumer green                    |
-| 3. Mandatory protocol boundary | Complete              | Implemented | `lean-conductor-protocol` | `f70985b` | 3.2 KB; invariant, schema, and full-gate tests green       |
-| 4. Onboarding and diagnostics  | Complete              | Implemented | `bright-onboarding-path`  | `40575cd` | Doctor blocker matrix and copy-once onboarding tests green |
-| 5. Package and GitHub release  | Implemented           | Implemented | `clean-github-beta`       | —         | npm/pnpm/Yarn packed installs and consumer smoke green     |
-| 6. Cohort certification        | Planned               | —           | —                         | —         | —                                                          |
+| Trunk                          | Status                | Plan        | Changeset                 | Commit    | Verification                                                |
+| ------------------------------ | --------------------- | ----------- | ------------------------- | --------- | ----------------------------------------------------------- |
+| 1. Codex instruction transport | Certification pending | Implemented | `calm-codex-homes`        | `a9694dc` | Automated gate green; disposable live-Codex matrix pending  |
+| 2. Consumer extension contract | Complete              | Implemented | `open-runtime-seams`      | `5a44acb` | Packed TypeScript/import consumer green                     |
+| 3. Mandatory protocol boundary | Complete              | Implemented | `lean-conductor-protocol` | `f70985b` | 3.2 KB; invariant, schema, and full-gate tests green        |
+| 4. Onboarding and diagnostics  | Complete              | Implemented | `bright-onboarding-path`  | `40575cd` | Doctor blocker matrix and copy-once onboarding tests green  |
+| 5. Package and GitHub release  | Complete              | Implemented | `clean-github-beta`       | `4b33212` | npm/pnpm/Yarn packed installs and consumer smoke green      |
+| 6. Cohort certification        | Operator test ready   | Implemented | —                         | —         | Automated rows green; disposable runtime/iTerm lanes remain |
