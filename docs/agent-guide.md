@@ -289,9 +289,9 @@ Worktree practices:
 - Gitignored files do not make Git report the worktree dirty. They are deleted when the worktree
   is successfully removed; archive anything durable first.
 - A successful worktree teardown removes the worktree but keeps its Git branch.
-- Starting Codex may add `AGENTS.override.md` to the repository's tracked `.gitignore`. Until that
-  generated exclusion moves to a non-dirtying Git mechanism, inspect and restore or deliberately
-  commit that line before expecting an otherwise untouched worktree to tear down cleanly.
+- Current Codex sessions keep their generated override inside the isolated session home and do not
+  dirty the worktree. Fleets upgraded from an earlier release may retain an obsolete
+  `AGENTS.override.md` entry in `.gitignore`; remove that ignore line manually when convenient.
 
 A useful full-fleet pattern is:
 
@@ -676,8 +676,9 @@ communication. Do not install a polling timer.
 
 Check `git status`. Conductor refuses dirty worktrees. Commit, stash, or deliberately remove user
 changes, then retry teardown. Remember that ignored files are not reported as dirty and will be
-deleted with a successful worktree removal. A Codex-prepared worktree may contain a generated
-`.gitignore` edit for `AGENTS.override.md`; restore or deliberately commit it before teardown.
+deleted with a successful worktree removal. Current Codex preparation does not write into the
+worktree. An obsolete `.gitignore` entry for `AGENTS.override.md` may remain after upgrading from
+an earlier release and can be removed manually.
 
 If a session was attached by `path` to another session's worktree, do not use `deleteDir` on the
 attached session. Deregister it without deletion and let the original host session own cleanup;

@@ -1,6 +1,6 @@
 # An OpenAI Codex CLI session — same config shape, different runtime.
-# The conductor injects its protocol via AGENTS.override.md in the repo
-# (add AGENTS.override.md to that repo's .gitignore).
+# The conductor injects its protocol through this session's isolated CODEX_HOME;
+# it does not create instruction files in the repository.
 codename: codex-1
 repo: ../my-other-project
 runtime: codex

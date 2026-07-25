@@ -1,9 +1,13 @@
 # Agent Conductor Pre-Beta Roadmap
 
-**Date:** 2026-07-24  
-**Status:** Proposed execution roadmap  
-**Release target:** First public beta, provisionally `0.2.0-beta.0` under the `beta`
-dist-tag  
+**Date:** 2026-07-24
+
+**Status:** Active execution roadmap
+
+**Immediate release target:** Internal-cohort GitHub prerelease, provisionally `0.2.0-beta.0`
+
+**Public release target:** npm beta after one to two weeks of cohort feedback
+
 **Inputs:** The certified architecture, publishing, and extensibility recommendation; the
 completed Codex instruction-transport spike; and the shipped PR Shepherd V2 integration
 
@@ -20,11 +24,12 @@ system into a clean public product:
 1. Remove integration behavior that is surprising or invasive in a consumer repository.
 2. Make the adapter seams genuinely usable by consumers rather than merely present internally.
 3. Give a newly spawned agent enough version-matched guidance to onboard its operator.
-4. Make installation, diagnosis, and first use predictable from a published package.
-5. Freeze the public beta surface, install the packed artifact as a consumer would, and publish
-   only after every feature trunk is complete.
+4. Make installation, diagnosis, and first use predictable from a packed artifact hosted on a
+   GitHub prerelease.
+5. Freeze the cohort release surface, install the packed artifact as a consumer would, and share
+   it only after every feature trunk is complete.
 
-The roadmap deliberately front-loads feature and architecture work. Packaging and publication are
+The roadmap deliberately front-loads feature and architecture work. Packaging and release are
 the final trunk, not the forcing function for unfinished product decisions.
 
 ```text
@@ -64,7 +69,7 @@ Each trunk is an independently reviewable feature increment. A trunk is complete
 6. The change is self-reviewed, committed, pushed, rebuilt, and linked locally before the next
    trunk begins.
 
-No beta is published while a feature trunk remains incomplete.
+No cohort prerelease is created while a feature trunk remains incomplete.
 
 ## Trunk 1 — Move Codex protocol injection out of consumer repositories
 
@@ -282,7 +287,7 @@ conduct a safe, informed onboarding interview using the version-matched Conducto
 - Add a `conductor doctor` command backed by reusable preflight checks.
 - Run blocking preflight checks automatically from `conductor start`.
 - Print a copyable first-agent onboarding prompt after initial scaffolding.
-- Rewrite the README and getting-started path around the published-package experience.
+- Rewrite the README and getting-started path around the packed-package experience.
 - Integrate PR Shepherd setup into the onboarding flow.
 - Document the existing Claude Code auto-memory override alongside other runtime preferences.
 
@@ -355,57 +360,48 @@ reject a valid fleet merely because an unused optional adapter is unavailable.
 - PR Shepherd remains disabled until its identity marker is resolved and the operator explicitly
   enables it.
 
-## Trunk 5 — Harden the npm package and release machinery
+## Trunk 5 — Harden the package and GitHub prerelease machinery
 
 ### Outcome
 
-The repository produces a scoped, provenance-bearing beta package whose documented commands work
-from the packed artifact, not only from a source checkout.
+The repository produces an installable beta tarball whose documented commands work from the packed
+artifact, not only from a source checkout. The exact tarball is attached to a GitHub prerelease for
+the internal cohort and remains suitable for later npm publication without rebuilding it through a
+second packaging path.
 
-### Product identity
+### Internal-cohort installation
 
-Reserve the npm scope before changing consumer documentation. The preferred package identity is:
-
-```text
-@agent-conductor/conductor
-```
-
-This supports the one-command trial:
+Keep the existing `agent-conductor` package identity during the internal cohort. Install the exact
+GitHub release asset with npm:
 
 ```bash
-npx --yes @agent-conductor/conductor@beta start
+npm install --global https://github.com/ianlancaster/agent-conductor/releases/download/v0.2.0-beta.0/agent-conductor-0.2.0-beta.0.tgz
 ```
 
-The durable installation path is:
+This is a durable installation, exercises npm's real package installer, and requires no registry
+publication. Release notes must show the matching uninstall and upgrade commands. Source checkout
+remains a contributor workflow rather than the cohort onboarding path.
 
-```bash
-npm install --global @agent-conductor/conductor@beta
-conductor start
-```
-
-The README must clearly distinguish the zero-install trial from a durable installation required by
-daemon use. It must also identify the exact scoped package because the unscoped name is owned by an
-unrelated package.
+The GitHub prerelease is an externally visible action and remains separately authorized even after
+the workflow and artifact are ready.
 
 ### Deliverables
 
-- Rename the package after the scope is reserved.
 - Preserve the `conductor` and `pr-shepherd` binaries.
-- Ensure npm can infer the `conductor` binary for the scoped package's npx command.
-- Replace source-checkout installation as the primary README path; retain it under contributing.
+- Replace source-checkout installation as the cohort README path; retain it under contributing.
 - Align `conductor --version`, `pr-shepherd --version`, and MCP server metadata with the package
   version.
 - Add and validate the package `exports` map from Trunk 2.
-- Guard the Husky `prepare` path so consumer or Git-dependency installs do not fail outside a
-  contributor checkout.
+- Guard the Husky `prepare` path so consumer installs do not fail outside a contributor checkout.
 - Reconcile `.nvmrc` with the supported engine policy. Prefer exercising the minimum supported
   Node version in the default contributor path, while retaining a current-Node CI lane.
 - Add packed-artifact installation and executable smoke tests.
-- Add a prerelease runbook and a trusted-publishing GitHub workflow.
+- Add a prerelease runbook and manually dispatched GitHub Release workflow.
+- Generate and publish a SHA-256 checksum beside the tarball.
 
 ### Release workflow
 
-The beta workflow should:
+The internal prerelease workflow should:
 
 1. Run only from the protected release environment and an approved mainline commit.
 2. Enter or verify Changesets prerelease mode for `beta`.
@@ -421,11 +417,12 @@ The beta workflow should:
    - `pr-shepherd --version`
    - `pr-shepherd init`
 8. Compile and run the external-adapter consumer fixture against the tarball.
-9. Publish with npm trusted publishing, provenance, public access, and the `beta` dist-tag.
-10. Verify registry metadata, provenance, README rendering, executable selection, and the
-    zero-install npx path.
+9. Calculate the tarball checksum and attach both files to a GitHub prerelease for the exact tag and
+   commit.
+10. Install from the final GitHub asset URL and repeat the executable smoke test.
 
-Publication remains a separately authorized external action even after the workflow is ready.
+Creating or changing the GitHub prerelease remains a separately authorized external action even
+after the workflow is ready.
 
 ### Acceptance gate
 
@@ -435,23 +432,24 @@ Publication remains a separately authorized external action even after the workf
   for consumers, and source-only development artifacts.
 - Both binaries report the same package version.
 - A clean temporary machine/prefix can install and run the package without pnpm.
-- The npx trial reaches scaffolding and diagnostics.
+- The GitHub asset URL installs the same bytes that passed the packed-artifact tests.
 - Daemon documentation uses the durable global installation path.
-- Trusted publishing succeeds in dry-run or registry staging and requires no long-lived npm token.
-- Release notes describe the beta stability policy and experimental runtime-adapter surface.
+- The release contains a matching SHA-256 checksum and names the source commit.
+- Release notes describe the cohort feedback window, beta stability policy, and experimental
+  runtime-adapter surface.
 
-## Trunk 6 — Beta certification and feature freeze
+## Trunk 6 — Cohort certification and feature freeze
 
 ### Outcome
 
-The exact commit intended for publication is exercised as a consumer-visible release candidate,
-with no remaining feature work hidden behind release tasks.
+The exact commit intended for the internal cohort is exercised as a consumer-visible release
+candidate, with no remaining feature work hidden behind release tasks.
 
 ### Certification matrix
 
 | Surface       | Required evidence                                                                       |
 | ------------- | --------------------------------------------------------------------------------------- |
-| Fresh install | Scoped tarball install, binary resolution, scaffold, doctor, first-agent prompt         |
+| Fresh install | GitHub tarball install, binary resolution, scaffold, doctor, first-agent prompt         |
 | Claude Code   | Fresh start, continue, protocol, optional session prompt, env overrides, status         |
 | Codex         | Fresh start, home override, interactive resume refresh, compaction, legacy cleanup      |
 | Terminal      | Linux/tmux CI plus macOS/iTerm manual shakedown                                         |
@@ -460,7 +458,7 @@ with no remaining feature work hidden behind release tasks.
 | Onboarding    | Claude and Codex walkthroughs against disposable fleets                                 |
 | PR Shepherd   | Managed start/stop, health, singleton behavior, direct flow, queue flow, shadow profile |
 | Daemon        | Stable installed executable, restart, status, and clean uninstall                       |
-| Package       | Allowlist, provenance, versions, README, changesets, license, no secrets                |
+| Package       | Allowlist, checksum, versions, README, changesets, license, no secrets                  |
 
 ### Freeze rules
 
@@ -469,22 +467,35 @@ with no remaining feature work hidden behind release tasks.
   automation changes.
 - Any fix that changes user-visible behavior receives a changeset and reruns the affected
   certification rows plus the full gate.
-- The final published artifact must be built from the exact reviewed and pushed commit.
+- The final released artifact must be built from the exact reviewed and pushed commit.
 - The locally linked Conductor is rebuilt from that same commit before the maintainer's final
   shakedown.
 
 ### Exit criteria
 
-The beta is ready to publish when:
+The internal GitHub beta is ready to share when:
 
 - Trunks 1–5 are complete and pushed.
 - The full certification matrix has evidence.
 - No required check is skipped without a documented platform-specific manual result.
-- The scoped npm identity and trusted publisher are verified.
 - Installation and onboarding work from the packed artifact.
 - The public adapter example works outside the repository.
 - The beta limitations and experimental surfaces are explicit.
-- The operator authorizes publication.
+- The operator authorizes creation of the GitHub prerelease.
+
+## Deferred public npm release
+
+After one to two weeks of internal-cohort use, incorporate reliability and onboarding feedback,
+rerun the affected certification rows, and then complete the npm-only release work:
+
+- Reserve and adopt the intended npm scope.
+- Configure trusted publishing, provenance, public access, and the `beta` dist-tag.
+- Add and verify the public `npx` trial path.
+- Verify registry metadata, README rendering, executable selection, and provenance.
+- Publish only the exact certified tarball bytes from an operator-authorized commit.
+
+The cohort phase must not introduce a GitHub-specific package format or installer that will be
+discarded for npm; GitHub hosts the ordinary `npm pack` artifact.
 
 ## Recommended execution order
 
@@ -496,10 +507,10 @@ The beta is ready to publish when:
    descriptions.
 4. **Onboarding and doctor.** They are written against the final configuration and extension
    surfaces.
-5. **Package and release hardening.** Naming, exports, install docs, packed tests, and trusted
-   publishing become the last implementation trunk.
-6. **Certification and beta publication.** Feature freeze first; publish only the exact certified
-   artifact.
+5. **Package and GitHub release hardening.** Exports, install docs, packed tests, checksums, and the
+   prerelease workflow become the last implementation trunk.
+6. **Certification and internal-cohort release.** Feature freeze first; share only the exact
+   certified artifact.
 
 ## Trunk-level completion ledger
 
@@ -507,11 +518,11 @@ This ledger is intentionally empty at roadmap creation. Each trunk should add it
 plan, changeset, commit, pushed ref, local-link verification, and certification evidence when it
 closes.
 
-| Trunk                            | Status  | Plan | Changeset | Commit | Verification |
-| -------------------------------- | ------- | ---- | --------- | ------ | ------------ |
-| 1. Codex instruction transport   | Planned | —    | —         | —      | —            |
-| 2. Consumer extension contract   | Planned | —    | —         | —      | —            |
-| 3. Mandatory protocol boundary   | Planned | —    | —         | —      | —            |
-| 4. Onboarding and diagnostics    | Planned | —    | —         | —      | —            |
-| 5. Package and release machinery | Planned | —    | —         | —      | —            |
-| 6. Beta certification            | Planned | —    | —         | —      | —            |
+| Trunk                          | Status                | Plan        | Changeset          | Commit | Verification                                               |
+| ------------------------------ | --------------------- | ----------- | ------------------ | ------ | ---------------------------------------------------------- |
+| 1. Codex instruction transport | Certification pending | Implemented | `calm-codex-homes` | —      | Automated gate green; disposable live-Codex matrix pending |
+| 2. Consumer extension contract | Planned               | —           | —                  | —      | —                                                          |
+| 3. Mandatory protocol boundary | Planned               | —           | —                  | —      | —                                                          |
+| 4. Onboarding and diagnostics  | Planned               | —           | —                  | —      | —                                                          |
+| 5. Package and GitHub release  | Planned               | —           | —                  | —      | —                                                          |
+| 6. Cohort certification        | Planned               | —           | —                  | —      | —                                                          |

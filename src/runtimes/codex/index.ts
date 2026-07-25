@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { appendFile, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -9,9 +9,14 @@ import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, Runt
 import { log } from '../../logger.js';
 import {
   GENERATED_MARKER,
-  appendConductorInstructions,
+  PROJECT_DOC_HEADROOM_BYTES,
+  REPOSITORY_DOC_BUDGET_BYTES,
   buildConfigOverrides,
-  renderAgentsOverride,
+  ensureProjectDocMaxBytes,
+  isGeneratedAgentsOverride,
+  readProjectDocMaxBytes,
+  removeConductorInstructions,
+  renderHomeAgentsOverride,
   renderNotifyScript,
   shellQuote,
   tomlString,
@@ -24,7 +29,7 @@ export interface CodexRuntimeOptions {
   config: CodexRuntimeSettings;
   /** Directory relative session paths (repo, additionalDirs) resolve against. */
   baseDir: string;
-  /** Path to the conductor protocol prompt inlined into AGENTS.override.md. */
+  /** Path to the conductor protocol prompt inlined into the session's home instructions. */
   protocolPath?: string;
   /** Fleet data/sessions directory, used to inspect this runtime's isolated rollout. */
   sessionDataDir?: string;
@@ -35,7 +40,7 @@ const PROTOCOL_PLACEHOLDER =
 
 const NOTIFY_SCRIPT_NAME = 'notify.sh';
 const AGENTS_OVERRIDE_NAME = 'AGENTS.override.md';
-const GITIGNORE_ENTRY = AGENTS_OVERRIDE_NAME;
+const AGENTS_NAME = 'AGENTS.md';
 const GIT_TIMEOUT_MS = 5_000;
 const execFileAsync = promisify(execFile);
 
@@ -276,13 +281,10 @@ function visibleInputBlock(capture: string): string | null {
 /**
  * OpenAI Codex CLI runtime.
  *
- * Identity and hooks ride entirely on `-c` CLI overrides (per-session MCP URL,
- * notify hook, approvals bypass), so the operator's `~/.codex` auth and config
- * are never touched. Protocol instructions are injected by writing
- * `<repo>/AGENTS.override.md`, which Codex loads with absolute precedence over
- * `AGENTS.md` at the repo root. Existing tracked overrides are preserved and
- * receive a refreshable conductor section; newly generated overrides re-embed
- * AGENTS.md so no guidance is lost and are added to the repo's .gitignore.
+ * Identity, hooks, and instructions live in an isolated per-session CODEX_HOME.
+ * The operator's shared auth/config and the consumer repository are never
+ * mutated. The generated home override inherits the operator's active global
+ * guidance, then appends the mandatory protocol and session instructions.
  */
 export class CodexRuntime implements SessionRuntime {
   readonly name = 'codex';
@@ -305,25 +307,26 @@ export class CodexRuntime implements SessionRuntime {
     const repo = this.resolvePath(session.repo);
     await mkdir(identity.configDir, { recursive: true });
     await writeFile(this.notifyScriptPath(identity), renderNotifyScript(identity.eventsUrl), { mode: 0o755 });
-    await this.prepareCodexHome(identity, repo);
-
     const protocolText = await this.readProtocolText();
-    const overridePath = path.join(repo, AGENTS_OVERRIDE_NAME);
-    const existingOverride = await this.readIfExists(overridePath);
-    const trackedOverride = await this.isTracked(repo, AGENTS_OVERRIDE_NAME);
-    const existingAgentsMd = await this.readIfExists(path.join(repo, 'AGENTS.md'));
     const sessionPromptText =
       session.systemPromptFile !== undefined
         ? await this.readIfExists(this.resolvePath(session.systemPromptFile))
         : null;
-
-    if (!trackedOverride) await this.ensureGitignoreEntry(repo);
-
-    const override =
-      existingOverride !== null && (trackedOverride || !existingOverride.includes(GENERATED_MARKER))
-        ? appendConductorInstructions(existingOverride, protocolText, sessionPromptText)
-        : renderAgentsOverride(protocolText, existingAgentsMd, sessionPromptText);
-    await writeFile(overridePath, override);
+    const sharedHome = this.sharedCodexHome();
+    const inheritedGuidance = await this.readActiveGlobalGuidance(sharedHome);
+    const rendered = renderHomeAgentsOverride(inheritedGuidance, protocolText, sessionPromptText);
+    if (rendered.inheritedGuidanceTruncated) {
+      log().warn(
+        'codex',
+        `global Codex guidance was too large for ${session.codename}; the per-session copy was shortened while mandatory instructions were preserved`,
+      );
+    }
+    const minimumDocBytes =
+      Buffer.byteLength(rendered.content, 'utf8') + REPOSITORY_DOC_BUDGET_BYTES + PROJECT_DOC_HEADROOM_BYTES;
+    await this.prepareCodexHome(identity, repo, sharedHome, minimumDocBytes);
+    await writeFile(path.join(this.codexHomePath(identity), AGENTS_OVERRIDE_NAME), rendered.content);
+    await this.warnForProjectDocLimit(repo, minimumDocBytes);
+    await this.cleanupLegacyRepoOverride(repo);
   }
 
   buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, opts: LaunchOptions): string {
@@ -563,10 +566,18 @@ export class CodexRuntime implements SessionRuntime {
    * keeping its own isolated `sessions/`. Symlink failures are non-fatal: a
    * missing shared auth.json just means the session relies on env-var auth.
    */
-  private async prepareCodexHome(identity: IdentityEndpoints, repo: string): Promise<void> {
+  private sharedCodexHome(): string {
+    return process.env.CODEX_HOME ?? path.join(homedir(), '.codex');
+  }
+
+  private async prepareCodexHome(
+    identity: IdentityEndpoints,
+    repo: string,
+    sharedHome: string,
+    minimumDocBytes: number,
+  ): Promise<void> {
     const home = this.codexHomePath(identity);
     await mkdir(home, { recursive: true });
-    const sharedHome = process.env.CODEX_HOME ?? path.join(homedir(), '.codex');
 
     // auth.json stays a SYMLINK so token refreshes keep hitting the shared home.
     try {
@@ -585,14 +596,50 @@ export class CodexRuntime implements SessionRuntime {
     // symlink would mutate the operator's real config. Regenerated on every
     // launch, so shared-config edits are picked up on the next (re)start.
     const sharedConfig = (await this.readIfExists(path.join(sharedHome, 'config.toml'))) ?? '';
+    const protectedConfig = ensureProjectDocMaxBytes(sharedConfig, minimumDocBytes);
     const trustHeader = `[projects.${tomlString(repo)}]`;
-    const trustEntry = sharedConfig.includes(trustHeader)
+    const trustEntry = protectedConfig.includes(trustHeader)
       ? ''
       : `\n# ${GENERATED_MARKER}: pre-trust the session working directory\n${trustHeader}\ntrust_level = "trusted"\n`;
     const configDest = path.join(home, 'config.toml');
     // May be a symlink from an earlier conductor version — remove, never write through it.
     await rm(configDest, { force: true });
-    await writeFile(configDest, `${sharedConfig}${trustEntry}`);
+    await writeFile(configDest, `${protectedConfig}${trustEntry}`);
+  }
+
+  private async readActiveGlobalGuidance(sharedHome: string): Promise<string | null> {
+    for (const filename of [AGENTS_OVERRIDE_NAME, AGENTS_NAME]) {
+      const content = await this.readIfExists(path.join(sharedHome, filename));
+      if (content !== null && content.trim().length > 0) return content;
+    }
+    return null;
+  }
+
+  private async warnForProjectDocLimit(repo: string, required: number): Promise<void> {
+    const localConfigPath = path.join(repo, '.codex', 'config.toml');
+    const localConfig = await this.readIfExists(localConfigPath);
+    if (localConfig === null) return;
+    const localLimit = readProjectDocMaxBytes(localConfig);
+    if (localLimit !== null && localLimit < required) {
+      log().warn(
+        'codex',
+        `${localConfigPath} sets project_doc_max_bytes=${localLimit}, below the ${required} bytes required to preserve managed instructions and repository guidance`,
+      );
+    }
+  }
+
+  /** One-release migration from the former repository-root injection model. */
+  private async cleanupLegacyRepoOverride(repo: string): Promise<void> {
+    const overridePath = path.join(repo, AGENTS_OVERRIDE_NAME);
+    const existing = await this.readIfExists(overridePath);
+    if (existing?.includes(GENERATED_MARKER) !== true) return;
+    const tracked = await this.isTracked(repo, AGENTS_OVERRIDE_NAME);
+    if (!tracked && isGeneratedAgentsOverride(existing)) {
+      await rm(overridePath, { force: true });
+      return;
+    }
+    const cleaned = removeConductorInstructions(existing);
+    if (cleaned !== existing) await writeFile(overridePath, cleaned);
   }
 
   private async readProtocolText(): Promise<string> {
@@ -613,23 +660,10 @@ export class CodexRuntime implements SessionRuntime {
       });
       return true;
     } catch {
-      // A non-repository, missing git binary, and an untracked path all mean
-      // the generated file needs an ignore entry.
+      // A non-repository, missing git binary, and an untracked path are all
+      // safely treated as untracked for the legacy cleanup decision.
       return false;
     }
-  }
-
-  private async ensureGitignoreEntry(repo: string): Promise<void> {
-    const gitignorePath = path.join(repo, '.gitignore');
-    const existing = (await this.readIfExists(gitignorePath)) ?? '';
-    const alreadyListed = existing.split(/\r?\n/u).some((line) => {
-      const entry = line.trim();
-      return entry === GITIGNORE_ENTRY || entry === `/${GITIGNORE_ENTRY}`;
-    });
-    if (alreadyListed) return;
-
-    const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
-    await appendFile(gitignorePath, `${separator}${GITIGNORE_ENTRY}\n`);
   }
 
   private async readIfExists(filePath: string): Promise<string | null> {

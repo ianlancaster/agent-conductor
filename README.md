@@ -665,12 +665,12 @@ authentication, so another trusted local process could call a session endpoint d
 Run the conductor only on a trusted machine and do not expose its HTTP port publicly.
 
 Codex sessions receive isolated `CODEX_HOME` directories so `resume --last` cannot select
-another managed session's history. Before every start or continue, the conductor ensures an
-`AGENTS.override.md` injects its protocol. If the file is tracked, its existing instructions are
-preserved and the conductor section is appended; otherwise the file is created and added to the
-working directory's `.gitignore` automatically. The launch also receives a mechanically scoped
-Conductor MCP URL and lifecycle notify hook, so Codex has the same fleet tools as Claude Code
-without trusting caller-supplied identity.
+another managed session's history. Before every start or continue, the conductor generates
+`$CODEX_HOME/AGENTS.override.md` for that session. It inherits the operator's active global Codex
+instructions, then appends the mandatory Conductor protocol and any session-specific prompt.
+Consumer repositories and their `.gitignore` files are not modified. The launch also receives a
+mechanically scoped Conductor MCP URL and lifecycle notify hook, so Codex has the same fleet tools
+as Claude Code without trusting caller-supplied identity.
 
 ## Development
 
