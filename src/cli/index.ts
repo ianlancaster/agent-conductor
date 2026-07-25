@@ -195,6 +195,19 @@ program
       log(renderOnboardingCommands(baseDir()));
     }
 
+    // Ownership takes precedence over host prerequisites. `start` must never
+    // look like a valid way to attach to an existing conductor merely because
+    // this shell is missing one of the configured runtime binaries.
+    if (opts.foreground !== true) {
+      const config = loadSupervisorConfig(baseDir());
+      const base = `http://${config.mcp.host}:${config.mcp.port}`;
+      if (await conductorUp(base)) {
+        throw new Error(
+          'A conductor is already running for this fleet. `conductor start` only opens a console that owns and stops its conductor. Use `conductor console` for a non-owning attachment, or stop the existing conductor before starting again.',
+        );
+      }
+    }
+
     const checks = await runPreflight(baseDir());
     const failures = preflightFailures(checks);
     for (const check of checks.filter((item) => item.level === 'warn')) log(`! ${check.label}: ${check.detail}`);
@@ -212,12 +225,6 @@ program
     setTerminalTitle(`conductor — ${basename(baseDir())}`);
     const config = loadSupervisorConfig(baseDir());
     const base = `http://${config.mcp.host}:${config.mcp.port}`;
-
-    if (await conductorUp(base)) {
-      throw new Error(
-        'A conductor is already running for this fleet. `conductor start` only opens a console that owns and stops its conductor. Use `conductor console` for a non-owning attachment, or stop the existing conductor before starting again.',
-      );
-    }
 
     // Spawn the supervisor as a hidden, headless child. Its terminal output
     // goes to a file; the structured log shares the configured data directory.
