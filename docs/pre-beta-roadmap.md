@@ -518,11 +518,11 @@ This ledger is intentionally empty at roadmap creation. Each trunk should add it
 plan, changeset, commit, pushed ref, local-link verification, and certification evidence when it
 closes.
 
-| Trunk                          | Status                | Plan        | Changeset                 | Commit | Verification                                               |
-| ------------------------------ | --------------------- | ----------- | ------------------------- | ------ | ---------------------------------------------------------- |
-| 1. Codex instruction transport | Certification pending | Implemented | `calm-codex-homes`        | —      | Automated gate green; disposable live-Codex matrix pending |
-| 2. Consumer extension contract | Certification pending | Implemented | `open-runtime-seams`      | —      | Automated contract green; packed consumer pending          |
-| 3. Mandatory protocol boundary | Implemented           | Implemented | `lean-conductor-protocol` | —      | 3.2 KB; invariant and schema-description tests green       |
-| 4. Onboarding and diagnostics  | Planned               | —           | —                         | —      | —                                                          |
-| 5. Package and GitHub release  | Planned               | —           | —                         | —      | —                                                          |
-| 6. Cohort certification        | Planned               | —           | —                         | —      | —                                                          |
+| Trunk                          | Status                | Plan        | Changeset                 | Commit    | Verification                                               |
+| ------------------------------ | --------------------- | ----------- | ------------------------- | --------- | ---------------------------------------------------------- |
+| 1. Codex instruction transport | Certification pending | Implemented | `calm-codex-homes`        | `a9694dc` | Automated gate green; disposable live-Codex matrix pending |
+| 2. Consumer extension contract | Certification pending | Implemented | `open-runtime-seams`      | `5a44acb` | Automated contract green; packed consumer pending          |
+| 3. Mandatory protocol boundary | Complete              | Implemented | `lean-conductor-protocol` | `f70985b` | 3.2 KB; invariant, schema, and full-gate tests green       |
+| 4. Onboarding and diagnostics  | Implemented           | Implemented | `bright-onboarding-path`  | —         | Doctor blocker matrix and copy-once onboarding tests green |
+| 5. Package and GitHub release  | Planned               | —           | —                         | —         | —                                                          |
+| 6. Cohort certification        | Planned               | —           | —                         | —         | —                                                          |

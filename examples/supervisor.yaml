@@ -86,7 +86,8 @@ runtimes:
     autocompactPct: 70
     disableNonessentialTraffic: true # exports CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; disable if it breaks tools you rely on
     bareUi: true # bare-bones panes: no spinner tips, prompt suggestions, or onboarding/startup hints. Set false for the full Claude Code UI.
-    env: {} # extra environment variables; values here override built-in conductor defaults
+    # Native auto-memory is disabled by default. Set this override to "0" to re-enable it.
+    env: {} # e.g. { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0" }; values override built-in conductor defaults
   codex:
     binary: codex
     # defaultModel: gpt-5.6

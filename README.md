@@ -190,6 +190,11 @@ The mandatory protocol contains only turn-zero identity, envelope, communication
 rules. MCP tool descriptions are canonical for operation arguments and return mechanics; task
 recipes and configuration walkthroughs live in the lazy handbook.
 
+`conductor doctor` checks the selected runtime, terminal backend, fleet paths, port, and enabled
+optional services with actionable pass/warn/fail output. `conductor start` runs its blocking checks
+before launching and, on the first scaffold only, prints a copyable two-command agent-led onboarding
+flow.
+
 ## Documentation
 
 - [Getting Started](docs/getting-started.md) — build a first fleet, sentinel, remote channel,

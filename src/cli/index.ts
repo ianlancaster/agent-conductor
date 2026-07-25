@@ -13,8 +13,9 @@ import { resolveFleetDataDir } from '../config/paths.js';
 import { Supervisor } from '../core/supervisor.js';
 import { Store } from '../store/index.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
+import { formatPreflight, preflightFailures, runPreflight } from './doctor.js';
 import { subscribeFeed } from './feed.js';
-import { ensureFleetScaffold } from './scaffold.js';
+import { ensureFleetScaffold, renderOnboardingCommands } from './scaffold.js';
 import { DEFAULT_STATUS_INTERVAL, parseStatusInterval, runStatusDashboard } from './live-status.js';
 import { configureStatusLines } from './statusline.js';
 import { formatTerminalReply } from './terminal-format.js';
@@ -194,6 +195,17 @@ program
     if (created.length > 0) {
       log('Initialized missing fleet files:');
       for (const file of created) log(`  ${file}`);
+      log('\nFirst-session onboarding (paste these at the conductor> prompt):');
+      log(renderOnboardingCommands(baseDir()));
+    }
+
+    const checks = await runPreflight(baseDir());
+    const failures = preflightFailures(checks);
+    for (const check of checks.filter((item) => item.level === 'warn')) log(`! ${check.label}: ${check.detail}`);
+    if (failures.length > 0) {
+      throw new Error(
+        `Startup preflight failed:\n${formatPreflight(failures)}\nRun conductor doctor for the full report.`,
+      );
     }
 
     if (opts.foreground === true) {
@@ -261,6 +273,15 @@ program
 
     await runConsole();
     process.exit(0);
+  });
+
+program
+  .command('doctor')
+  .description('Check fleet configuration and local prerequisites')
+  .action(async () => {
+    const results = await runPreflight(baseDir());
+    process.stdout.write(`${formatPreflight(results)}\n`);
+    if (preflightFailures(results).length > 0) process.exitCode = 1;
   });
 
 program

@@ -4,7 +4,12 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ensureFleetScaffold, renderSupervisorConfig } from '../src/cli/scaffold.js';
+import {
+  ensureFleetScaffold,
+  ONBOARDING_PROMPT,
+  renderOnboardingCommands,
+  renderSupervisorConfig,
+} from '../src/cli/scaffold.js';
 import { deriveInstanceDefaults } from '../src/config/instance.js';
 import { loadSupervisorConfig, validateConfig } from '../src/config/loader.js';
 
@@ -101,6 +106,13 @@ describe('ensureFleetScaffold', () => {
     expect(ensureFleetScaffold(baseDir)).toEqual([]);
   });
 
+  it('renders a working first-session command and version-matched onboarding brief', () => {
+    const commands = renderOnboardingCommands(baseDir);
+    expect(commands).toContain(`/spawn onboarding --path "${baseDir}"`);
+    expect(commands).toContain(`/tell onboarding ${ONBOARDING_PROMPT}`);
+    expect(commands).toContain('get_conductor_docs');
+  });
+
   it('fills missing files in a legacy root-level fleet without migrating it implicitly', () => {
     const supervisorFile = join(baseDir, 'config', 'supervisor.yaml');
     mkdirSync(join(baseDir, 'config'), { recursive: true });
@@ -191,5 +203,24 @@ describe('conductor start initialization', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).not.toMatch(/^\s+init(?:\s|$)/m);
     expect(result.stdout).toContain('Initialize missing fleet files');
+  });
+
+  it('fails startup preflight before creating a hidden conductor child', () => {
+    ensureFleetScaffold(baseDir);
+    writeFileSync(
+      join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
+      'terminal:\n  backend: tmux\nruntimes:\n  claudeCode:\n    binary: conductor-test-missing-runtime\n',
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', join(process.cwd(), 'src', 'cli', 'index.ts'), '-C', baseDir, 'start'],
+      { encoding: 'utf8' },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Startup preflight failed');
+    expect(result.stderr).toContain('conductor-test-missing-runtime is not on PATH');
+    expect(existsSync(join(baseDir, '.conductor', 'data', 'conductor.out.log'))).toBe(false);
   });
 });

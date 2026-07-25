@@ -17,6 +17,22 @@ mkdir ~/fleet && cd ~/fleet
 conductor start
 ```
 
+Before launch, `conductor start` runs the same blocking checks as `conductor doctor`. The first start
+also prints two copyable commands: one spawns an `onboarding` session in the fleet directory and the
+other gives it the version-matched onboarding brief. Paste those commands at the new `conductor>`
+prompt. The agent will interview you one decision at a time and will keep optional automation off
+until one hand-driven session works.
+
+Run the diagnostic report directly at any time:
+
+```bash
+conductor doctor
+```
+
+Failures block startup and include remediation. Warnings identify optional or first-use concerns,
+such as an unselected runtime, iTerm automation permission, or daemon installation from a source
+checkout.
+
 The first start creates every missing fleet scaffold file automatically, then opens the operator console.
 Existing configuration and secrets are never overwritten. A new `supervisor.yaml` records the complete
 effective defaults, including the values derived for this fleet and disabled Telegram and Slack blocks.

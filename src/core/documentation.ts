@@ -6,6 +6,7 @@ const TOPIC_MARKER = /^<!-- conductor-topic:([a-z0-9-]+) -->$/gmu;
 
 export const CONDUCTOR_DOC_TOPICS = [
   'overview',
+  'onboarding',
   'fleet-configuration',
   'communication',
   'lifecycle',

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fleetSlug } from '../config/instance.js';
 import { loadSupervisorConfig } from '../config/loader.js';
 import { resolveFleetDataDir } from '../config/paths.js';
+import { stableConductorExecutable } from './doctor.js';
 
 // Service names embed the fleet slug so each fleet directory can run its own
 // daemon — a fixed label would make the second `daemon install` silently
@@ -30,6 +31,11 @@ function conductorBin(): string {
 }
 
 export function installDaemon(baseDir: string): string {
+  if (!stableConductorExecutable(conductorBin())) {
+    throw new Error(
+      'Daemon installation requires a stable global Conductor executable. Install the packaged release globally, then rerun `conductor daemon install`.',
+    );
+  }
   const config = loadSupervisorConfig(baseDir);
   const dataDir = resolveFleetDataDir(baseDir, config.paths.dataDir);
   mkdirSync(dataDir, { recursive: true });
