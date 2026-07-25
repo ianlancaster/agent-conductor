@@ -2,6 +2,8 @@
 
 This is the version-matched, extended operating reference for agents running under Agent
 Conductor. The injected protocol remains the authority for identity, communication, and safety.
+It intentionally does not duplicate the MCP tool catalog: tool schemas own local operation
+mechanics, while this handbook owns recipes, configuration, and troubleshooting.
 Use the session-only `get_conductor_docs` tool to load this guide one topic at a time. Calling it
 without a topic also returns the current fleet's authoritative configuration paths.
 

@@ -8,7 +8,9 @@ const IDENTITY_NOTE =
 export function buildMcpTools(operations: ConductorOperations): McpToolDefinition[] {
   return operations.definitions('session').map((operation) => ({
     name: operation.name,
-    description: operation.signedIdentity ? `${operation.description} ${IDENTITY_NOTE}` : operation.description,
+    description: `${operation.description} Returns: ${operation.resultDescription}${
+      operation.signedIdentity ? ` ${IDENTITY_NOTE}` : ''
+    }`,
     inputSchema: operation.inputSchema as unknown as Record<string, unknown>,
     handler: (args, caller) => operations.invoke(operation.name, args, { audience: 'session', codename: caller }),
   }));

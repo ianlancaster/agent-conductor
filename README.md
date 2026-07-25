@@ -186,6 +186,10 @@ version-matched [extended agent handbook](docs/agent-guide.md) as lazy topics an
 active fleet's authoritative configuration paths. The small injected protocol tells agents when
 to consult it without preloading the full handbook into every context.
 
+The mandatory protocol contains only turn-zero identity, envelope, communication, and safety
+rules. MCP tool descriptions are canonical for operation arguments and return mechanics; task
+recipes and configuration walkthroughs live in the lazy handbook.
+
 ## Documentation
 
 - [Getting Started](docs/getting-started.md) — build a first fleet, sentinel, remote channel,

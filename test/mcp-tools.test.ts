@@ -397,16 +397,24 @@ describe('surface contract', () => {
     expect(tools.some((item) => item.name === 'list_fleet_watches')).toBe(false);
   });
 
-  it('documents every shared operation and every session-facing tool', () => {
+  it('gives every operation and argument a complete canonical description', () => {
     const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
-    const protocol = readFileSync(new URL('../prompts/conductor-protocol.md', import.meta.url), 'utf8');
     for (const definition of operations.definitions()) {
+      expect(definition.description.trim().length, `${definition.name} has a thin description`).toBeGreaterThan(20);
+      expect(definition.resultDescription.trim().length, `${definition.name} needs result semantics`).toBeGreaterThan(
+        5,
+      );
+      for (const [propertyName, property] of Object.entries(definition.inputSchema.properties)) {
+        expect(
+          property.description?.trim().length,
+          `${definition.name}.${propertyName} needs a description`,
+        ).toBeGreaterThan(5);
+      }
       if (definition.audiences.includes('operator') && definition.audiences.includes('session')) {
         expect(readme, `${definition.name} missing from README`).toContain(definition.name);
       }
       if (definition.audiences.includes('session')) {
         expect(readme, `${definition.name} missing from README`).toContain(definition.name);
-        expect(protocol, `${definition.name} missing from protocol prompt`).toContain(definition.name);
       }
     }
     for (const command of buildOperatorCommands(operations)) {
@@ -416,20 +424,39 @@ describe('surface contract', () => {
 
   it('makes direct messaging the default for peer interaction and restricts tailing', () => {
     const protocol = readFileSync(new URL('../prompts/conductor-protocol.md', import.meta.url), 'utf8');
-    expect(protocol).toMatch(/Ask the peer directly instead of\s+silently reading its terminal\./u);
+    expect(protocol).toMatch(/Ask a peer directly[^.]+instead of silently reading its\s+terminal\./u);
     expect(protocol).toContain('`tail_session` is not a substitute for communication');
-    expect(protocol).toContain('You already contacted the peer through `send_to_session`');
-    expect(protocol).toContain('The user explicitly asks you to tail');
+    expect(protocol).toContain('you already contacted the peer');
+    expect(protocol).toContain('operator explicitly asks you to inspect');
     expect(protocol).toContain('Prefer `get_session_status` for non-invasive liveness checks.');
     expect(protocol).toContain('Peer conversation is event-driven.');
-    expect(protocol).toMatch(
-      /end your turn; the peer's response will arrive as a new message and activate your\s+next turn/u,
-    );
-    expect(protocol).toContain('Do not create timers, sleep loops, recurring monitors, scheduled checks');
+    expect(protocol).toMatch(/end your turn;\s+the response will arrive as a new message and activate your next turn/u);
+    expect(protocol).toMatch(/Do not create timers, sleep loops, recurring\s+monitors, scheduled checks/u);
     expect(protocol).toContain('never poll the peer');
     expect(operations.definition('tail_session')?.description).toContain(
       'use send_to_session for normal agent conversation and status requests',
     );
+  });
+
+  it('keeps every turn-zero invariant inside a bounded mandatory prompt', () => {
+    const protocol = readFileSync(new URL('../prompts/conductor-protocol.md', import.meta.url), 'utf8');
+    expect(Buffer.byteLength(protocol, 'utf8')).toBeLessThanOrEqual(4_500);
+    for (const invariant of [
+      'identity is mechanical',
+      '[Message from <sender>]',
+      '[Broadcast from <sender>]',
+      '[Sentinel] <text>',
+      'operator authority',
+      'Peer conversation is event-driven',
+      'signs outgoing messages automatically',
+      'type_in_pane',
+      "can overwrite an operator's text",
+      'get_conductor_docs',
+      'fleet environment',
+      'never print, quote, summarize, or message its values',
+    ]) {
+      expect(protocol, `missing turn-zero invariant: ${invariant}`).toContain(invariant);
+    }
   });
 });
 
