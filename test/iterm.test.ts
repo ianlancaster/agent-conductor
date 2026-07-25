@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
   SESSION_USER_VAR,
@@ -187,18 +188,24 @@ describe('session user-variable encoding', () => {
 describe('buildTitleShellPrefix', () => {
   it('emits an OSC 0 title printf (badge off)', () => {
     const prefix = buildTitleShellPrefix('tester', false);
-    expect(prefix).toBe(`printf '\\033]0;tester\\a'`);
+    expect(prefix).toBe(`printf '\\033]0;%s\\a' 'tester'`);
   });
 
   it('adds the base64 badge printf when the badge is enabled', () => {
     const prefix = buildTitleShellPrefix('tester — self-test', true, 'tester');
-    expect(prefix).toContain(`printf '\\033]0;tester — self-test\\a'`);
-    expect(prefix).toContain(`printf '\\033]1337;SetBadgeFormat=${Buffer.from('tester').toString('base64')}\\a'`);
+    expect(prefix).toContain(`printf '\\033]0;%s\\a' 'tester — self-test'`);
+    expect(prefix).toContain(`printf '\\033]1337;SetBadgeFormat=%s\\a' '${Buffer.from('tester').toString('base64')}'`);
     expect(prefix).not.toContain(Buffer.from('tester — self-test').toString('base64'));
   });
 
   it('escapes single quotes in the display name', () => {
-    expect(buildTitleShellPrefix("it's", false)).toBe(`printf '\\033]0;it'\\''s\\a'`);
+    expect(buildTitleShellPrefix("it's", false)).toBe(`printf '\\033]0;%s\\a' 'it'\\''s'`);
+  });
+
+  it('treats percentages in the display name as literal data', () => {
+    const prefix = buildTitleShellPrefix('reviewing (61%, clean boundary)', false);
+    expect(prefix).toBe(`printf '\\033]0;%s\\a' 'reviewing (61%, clean boundary)'`);
+    expect(() => execFileSync('/bin/sh', ['-c', prefix], { stdio: 'pipe' })).not.toThrow();
   });
 });
 

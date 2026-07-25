@@ -68,11 +68,13 @@ export function shellQuote(s: string): string {
  * the last writer is us, by construction. No AppleScript, no timing.
  */
 export function buildTitleShellPrefix(displayName: string, badge: boolean, badgeName = displayName): string {
-  const title = displayName.replaceAll("'", `'\\''`);
-  const parts = [`printf '\\033]0;${title}\\a'`];
+  // The title is data, never the printf format string. Tags commonly contain
+  // percentages (for example context readings); interpolating one into the
+  // format makes zsh parse it as a directive and abort the runtime launch.
+  const parts = [`printf '\\033]0;%s\\a' ${shellQuote(displayName)}`];
   if (badge) {
     const badgeB64 = Buffer.from(badgeName, 'utf-8').toString('base64');
-    parts.push(`printf '\\033]1337;SetBadgeFormat=${badgeB64}\\a'`);
+    parts.push(`printf '\\033]1337;SetBadgeFormat=%s\\a' ${shellQuote(badgeB64)}`);
   }
   return parts.join(' && ');
 }
