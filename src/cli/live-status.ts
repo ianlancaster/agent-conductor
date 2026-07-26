@@ -39,6 +39,7 @@ export interface StatusDashboardOptions {
 }
 
 const CANONICAL_STATUS_HEADING = 'Agent Conductor Status';
+const PR_SHEPHERD_STATUS_HEADING = 'PR Shepherd Status';
 
 function statusContent(status: string | undefined): {
   body: string | undefined;
@@ -95,8 +96,8 @@ export function renderStatusDashboard(
   const shepherd =
     state.connection === 'online' && canonical.shepherdOnline
       ? colors
-        ? `${BOLD}${PR_SHEPHERD_ONLINE_STATUS}${NORMAL_INTENSITY}`
-        : PR_SHEPHERD_ONLINE_STATUS
+        ? `${BOLD}${PR_SHEPHERD_STATUS_HEADING}${NORMAL_INTENSITY}  ${connectionLabel('online', true)}`
+        : `${PR_SHEPHERD_STATUS_HEADING}  ${connectionLabel('online', false)}`
       : undefined;
   const metadata = colors
     ? `${DIM}${updatedLabel(state)} · fleet: ${options.fleetDir}${NORMAL}`

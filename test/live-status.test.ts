@@ -71,18 +71,20 @@ describe('renderStatusDashboard', () => {
     expect(view).toContain('alpha - CC · 🟡 idle - auto 🔄');
   });
 
-  it('shows an online Shepherd directly below the styled Conductor heading', () => {
+  it('shows the Shepherd between the Conductor heading and metadata with matching online styling', () => {
     const view = renderStatusDashboard(
       {
         connection: 'online',
         status: 'Agent Conductor Status\nPR Shepherd Status Online\n\nSessions:\n  coordinator - CC 🐑 · 🟢 working',
+        updatedAt: new Date('2026-07-23T12:00:00Z'),
       },
       options,
       true,
     );
     expect(view).toContain(
       '\u001b[1mAgent Conductor Status\u001b[22m  \u001b[32m● ONLINE\u001b[39m\n' +
-        '\u001b[1mPR Shepherd Status Online\u001b[22m',
+        '\u001b[1mPR Shepherd Status\u001b[22m  \u001b[32m● ONLINE\u001b[39m\n' +
+        '\u001b[2mUpdated: ',
     );
     expect(view).toContain('\u001b[1mcoordinator\u001b[22m - CC 🐑 · 🟢 working');
   });
