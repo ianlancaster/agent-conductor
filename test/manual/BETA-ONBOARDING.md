@@ -30,7 +30,8 @@ tarball. Both binary versions must equal the asset version.
    first use.
 3. Run `conductor start`. Require the copy-once scaffold list, exactly one first-session onboarding
    block, and the `conductor>` prompt in the same terminal. Do not use another fleet.
-4. Paste the two printed `/spawn onboarding ...` and `/tell onboarding ...` commands.
+4. Run the printed `/spawn onboarding-helper` command, move to the agent pane Conductor opens, and
+   paste the printed onboarding brief directly into the assistant.
 5. Require the Claude Code session to call `get_conductor_docs`, read `onboarding` and
    `fleet-configuration`, identify the authoritative disposable paths, and ask one decision at a
    time. Confirm it does not expose `.env` values or enable optional automation without approval.
@@ -43,13 +44,13 @@ tarball. Both binary versions must equal the asset version.
 ## Lane B — Codex onboarding
 
 1. Create a second disposable fleet and run `conductor start`.
-2. Use the printed commands but add the runtime override to the spawn command:
-   `/spawn onboarding --runtime codex --path "<the-disposable-fleet-path>"`.
-3. Send the printed onboarding prompt with `/tell onboarding ...`.
+2. Run the printed Codex variant: `/spawn onboarding-helper -r codex`.
+3. Move to the agent pane Conductor opens and paste the printed onboarding brief directly into the
+   assistant.
 4. Require the same handbook discovery, one-decision interview, secret handling, manual-session
    shakedown, validation, doctor, status, stop, and continue evidence as Lane A.
 5. Inspect only the disposable fleet. Require a per-session
-   `.conductor/data/sessions/onboarding/codex-home/AGENTS.override.md`, no generated
+   `.conductor/data/sessions/onboarding-helper/codex-home/AGENTS.override.md`, no generated
    repository-root `AGENTS.override.md`, and no Conductor-added repository `.gitignore` entry.
 6. Continue the session and require the managed home override to still contain inherited operator
    guidance first, followed by the current Conductor protocol and any approved session prompt.

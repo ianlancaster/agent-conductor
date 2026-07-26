@@ -400,6 +400,7 @@ describe('surface contract', () => {
 
   it('gives every operation and argument a complete canonical description', () => {
     const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+    const agentGuide = readFileSync(new URL('../docs/agent-guide.md', import.meta.url), 'utf8');
     for (const definition of operations.definitions()) {
       expect(definition.description.trim().length, `${definition.name} has a thin description`).toBeGreaterThan(20);
       expect(definition.resultDescription.trim().length, `${definition.name} needs result semantics`).toBeGreaterThan(
@@ -411,16 +412,16 @@ describe('surface contract', () => {
           `${definition.name}.${propertyName} needs a description`,
         ).toBeGreaterThan(5);
       }
-      if (definition.audiences.includes('operator') && definition.audiences.includes('session')) {
-        expect(readme, `${definition.name} missing from README`).toContain(definition.name);
-      }
       if (definition.audiences.includes('session')) {
-        expect(readme, `${definition.name} missing from README`).toContain(definition.name);
+        expect(agentGuide, `${definition.name} missing from the managed-agent handbook`).toContain(definition.name);
       }
     }
     for (const command of buildOperatorCommands(operations)) {
-      expect(readme, `/${command.command} missing from README`).toContain(`/${command.command}`);
+      expect(command.usage, `/${command.command} needs canonical usage`).toMatch(new RegExp(`^/${command.command}`));
+      expect(command.description.trim().length, `/${command.command} has a thin description`).toBeGreaterThan(20);
     }
+    expect(readme).toContain('[Managed-agent handbook](docs/agent-guide.md)');
+    expect(readme).toContain('Run `/help` in the operator console for the');
   });
 
   it('makes direct messaging the default for peer interaction and restricts tailing', () => {

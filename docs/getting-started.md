@@ -18,10 +18,11 @@ conductor start
 ```
 
 Before launch, `conductor start` runs the same blocking checks as `conductor doctor`. The first start
-also prints two copyable commands: one spawns an `onboarding` session in the fleet directory and the
-other gives it the version-matched onboarding brief. Paste those commands at the new `conductor>`
-prompt. The agent will interview you one decision at a time and will keep optional automation off
-until one hand-driven session works.
+also prints a pane-driven onboarding flow. At the new `conductor>` prompt, run
+`/spawn onboarding-helper` for Claude Code or `/spawn onboarding-helper -r codex` for Codex. Move to
+the agent pane Conductor opens and paste the printed onboarding brief directly into the assistant.
+The agent will interview you one decision at a time and will keep optional automation off until one
+hand-driven session works.
 
 Run the diagnostic report directly at any time:
 
@@ -99,8 +100,10 @@ conductor statusline
 ```
 
 It preserves unrelated runtime settings. New sessions use the configured lines immediately;
-restart an already-running session to pick them up. See the README for the fields each runtime
-can display.
+restart an already-running session to pick them up. Claude Code's line shows model, context used,
+cost, project, worktree, Git branch, and staged/modified counts. Codex uses its native status line
+for model and reasoning, context used, tokens used, project, and Git branch; Codex does not expose
+dollar cost, worktree name, or working-tree change counts as native status-line items.
 
 ---
 
@@ -347,7 +350,7 @@ uninstall` removes it. Install the GitHub release tarball globally first so the 
 
 ## Command reference
 
-`/help` lists everything in the console. Full reference is in the [README](../README.md).
+`/help` is the authoritative operator-command reference.
 Every fleet command works identically in the console, via `conductor cmd '<command>'`, and
 over Telegram. Slack exposes the same commands with an `!` prefix inside its private App Home
 conversation. `/clear` is local to the interactive console.

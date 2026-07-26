@@ -1,5 +1,5 @@
 import { constants, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { loadSupervisorConfig } from '../config/loader.js';
@@ -13,15 +13,15 @@ data/
 export const ONBOARDING_PROMPT =
   'Help me onboard this Conductor fleet. First call get_conductor_docs without a topic, then read onboarding and fleet-configuration. Interview me one decision at a time, explain the safe defaults and tradeoffs, and make only changes I approve. Finish by validating the configuration and helping me run one hand-driven test session.';
 
-function quoteCommandArg(value: string): string {
-  return `"${value.replaceAll('"', '\\"')}"`;
-}
-
-/** Copyable operator commands shown only after the initial scaffold is created. */
-export function renderOnboardingCommands(baseDir: string): string {
+/** Pane-driven onboarding instructions shown only after the initial scaffold is created. */
+export function renderOnboardingCommands(): string {
   return [
-    '/spawn onboarding --path ' + quoteCommandArg(resolve(baseDir)),
-    '/tell onboarding ' + ONBOARDING_PROMPT,
+    'At the conductor> prompt, run one of:',
+    '  /spawn onboarding-helper',
+    '  /spawn onboarding-helper -r codex',
+    '',
+    'Then move to the onboarding-helper agent pane and paste this prompt directly:',
+    ONBOARDING_PROMPT,
   ].join('\n');
 }
 

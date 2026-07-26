@@ -191,8 +191,8 @@ program
     if (created.length > 0) {
       log('Initialized missing fleet files:');
       for (const file of created) log(`  ${file}`);
-      log('\nFirst-session onboarding (paste these at the conductor> prompt):');
-      log(renderOnboardingCommands(baseDir()));
+      log('\nFirst-session onboarding:');
+      log(renderOnboardingCommands());
     }
 
     // Ownership takes precedence over host prerequisites. `start` must never

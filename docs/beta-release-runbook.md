@@ -34,10 +34,9 @@ prerelease at the source commit, and repeats installation from the final asset U
 ## Cohort installation
 
 ```bash
-RELEASE=https://github.com/ianlancaster/agent-conductor/releases/download/v0.2.0-beta.0/agent-conductor-0.2.0-beta.0.tgz
-npm install --global "$RELEASE"
-# or: pnpm add --global "$RELEASE"
-# Yarn Classic 1.x only: yarn global add "$RELEASE"
+npm install --global https://github.com/ianlancaster/agent-conductor/releases/download/v0.2.0-beta.0/agent-conductor-0.2.0-beta.0.tgz
+# or: pnpm add --global https://github.com/ianlancaster/agent-conductor/releases/download/v0.2.0-beta.0/agent-conductor-0.2.0-beta.0.tgz
+# Yarn Classic 1.x only: yarn global add https://github.com/ianlancaster/agent-conductor/releases/download/v0.2.0-beta.0/agent-conductor-0.2.0-beta.0.tgz
 conductor --version
 conductor --help
 ```

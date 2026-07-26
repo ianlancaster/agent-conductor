@@ -107,9 +107,12 @@ describe('ensureFleetScaffold', () => {
   });
 
   it('renders a working first-session command and version-matched onboarding brief', () => {
-    const commands = renderOnboardingCommands(baseDir);
-    expect(commands).toContain(`/spawn onboarding --path "${baseDir}"`);
-    expect(commands).toContain(`/tell onboarding ${ONBOARDING_PROMPT}`);
+    const commands = renderOnboardingCommands();
+    expect(commands).toContain('/spawn onboarding-helper');
+    expect(commands).toContain('/spawn onboarding-helper -r codex');
+    expect(commands).toContain('paste this prompt directly');
+    expect(commands).toContain(ONBOARDING_PROMPT);
+    expect(commands).not.toContain('/tell');
     expect(commands).toContain('get_conductor_docs');
   });
 
