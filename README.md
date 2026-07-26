@@ -64,7 +64,7 @@ Conductor opens the assistant in a new pane. Move to that pane and paste this pr
 directly into the assistant:
 
 ```text
-Help me onboard this Conductor fleet. First call get_conductor_docs without a topic, then read onboarding and fleet-configuration. Interview me one decision at a time, explain the safe defaults and tradeoffs, and make only changes I approve. Finish by validating the configuration and helping me run one hand-driven test session.
+Help me onboard this Conductor fleet. First call get_conductor_docs without a topic, then read onboarding and fleet-configuration. Interview me one decision at a time, explain the safe defaults and tradeoffs, and make only changes I approve. Finish by validating the configuration and helping me run one hand-driven test session. After that succeeds, offer the runbook catalog without configuring a runbook unless I choose one.
 ```
 
 The assistant can discover the version-matched handbook and the active fleet's real
@@ -161,8 +161,8 @@ Autonomy is composed from three small controls:
    [sentinel instructions](prompts/sentinel.md).
 2. `/auto <session>` toggles stall routing for one worker. Auto off is the normal
    hand-driven state; auto on routes that worker's stalls to the sentinel.
-3. `/fleet-watch` toggles fleet-wide darkness detection. It watches every registered
-   session except the sentinel and follows roster changes automatically.
+3. `/fleet-watch` toggles fleet-wide darkness detection. It watches every active registered
+   session except the sentinel and follows roster and process changes automatically.
 
 The guided onboarding assistant can configure the sentinel safely. The underlying session
 configuration is intentionally ordinary:
@@ -241,6 +241,7 @@ workflow tradeoffs, and source links.
 | Claude Code + Codex | Runtime overrides, model and effort selection, isolated runtime configuration            | [Getting Started](docs/getting-started.md#step-1--one-hand-driven-session-the-shakedown)             |
 | Agent messaging     | Direct messages, broadcasts, operator messages, delivery receipts, and cancellation      | [Communication and receipts](docs/agent-guide.md#communication-receipts-and-operator-escalation)     |
 | Parallel workspaces | Empty sessions, registered Git templates, and linked Git worktrees                       | [Worktrees and templates](docs/agent-guide.md#worktrees-templates-and-full-fleet-workspace-patterns) |
+| Example runbooks    | Opinionated end-to-end fleet arrangements built from ordinary primitives                 | [Engineering management](docs/runbooks/engineering-management.md)                                    |
 | Stall supervision   | Per-session auto mode, a normal agent acting as sentinel, and fleet-wide stall detection | [Supervision](docs/agent-guide.md#auto-mode-sentinels-fleet-watch-and-escalation-policy)             |
 | Recurring work      | Cron schedules that prompt managed sessions using normal lifecycle behavior              | [Scheduling](docs/agent-guide.md#cron-schedules-and-recurring-agent-work)                            |
 | Operator access     | Local console, one-shot commands, live status, Telegram, Slack, and adapter APIs         | [Operator channels](docs/agent-guide.md#operator-console-telegram-slack-and-injected-channels)       |
@@ -256,7 +257,9 @@ schemas directly.
 ### Worktrees, templates, schedules, and headless sessions
 
 `/spawn` can create an empty workspace, clone a registered Git template with `--template`,
-or create a linked Git worktree with `--worktree` and `--branch`. `/teardown --delete`
+or create a linked Git worktree with `--worktree` and `--branch`. Repeatable `--add-dir`
+flags expose shared records outside the workspace, and `--system-prompt` attaches a role
+script without writing generated instructions into the worktree. `/teardown --delete`
 removes only safe, Conductor-owned directories and refuses dirty worktrees. Session YAML
 can also define Croner-compatible `schedules`; an inactive session starts with the prompt,
 while an active session receives it through the normal protected delivery path.
@@ -337,6 +340,8 @@ Start here:
   can also read it lazily through `get_conductor_docs`.
 - [Complete supervisor example](examples/supervisor.yaml) — every setting and effective
   default.
+- [Engineering management runbook](docs/runbooks/engineering-management.md) — a tiered,
+  end-to-end EM, worker, review, Sentinel, and PR Shepherd fleet pattern.
 
 Optional integrations:
 

@@ -326,6 +326,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       details: [
         `    -r/--runtime ${runtimeChoices} · -m/--model <model> · -e/--effort <level>`,
         '    -d/--path <dir> · -t/--template <name> · -w/--worktree <repo> · -b/--branch <name>',
+        '    -a/--add-dir <dir> (repeatable) · --system-prompt <file>',
         '    --bypass-permissions · --require-permissions',
       ],
       invoke: (args, actor) => invoke('spawn_session', parseSpawn(args), actor),
@@ -371,6 +372,7 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     '-t': 'template',
     '--branch': 'branch',
     '-b': 'branch',
+    '--system-prompt': 'systemPromptFile',
   };
   for (let index = 1; index < parsed.rest.length;) {
     const flag = parsed.rest[index];
@@ -382,10 +384,19 @@ function parseSpawn(args: string[]): Record<string, unknown> {
       index += 1;
       continue;
     }
+    if (flag === '--add-dir' || flag === '-a') {
+      const value = parsed.rest[index + 1];
+      if (value === undefined) usage('/spawn <name> [--add-dir <dir>] [flags] [placement]');
+      const additionalDirs = (output.additionalDirs as string[] | undefined) ?? [];
+      additionalDirs.push(value);
+      output.additionalDirs = additionalDirs;
+      index += 2;
+      continue;
+    }
     const value = parsed.rest[index + 1];
     if (flag === undefined || value === undefined || flags[flag] === undefined) {
       usage(
-        '/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-t template] [-w repo] [-b branch] [placement]',
+        '/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-t template] [-w repo] [-b branch] [-a dir] [--system-prompt file] [placement]',
       );
     }
     output[flags[flag]] = value;

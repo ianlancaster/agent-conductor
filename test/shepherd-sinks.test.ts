@@ -110,6 +110,7 @@ beforeEach(async () => {
     getPane: (session) => lifecycle.getPane(session),
     isAuto: (session) => states.isAuto(session),
     isPaused: (session) => states.isPaused(session),
+    isRunning: (session) => states.get(session)?.running === true,
     isActive: (session) => states.get(session)?.running === true,
     deliver: async () => 'delivered',
     notifyOperator: async () => undefined,

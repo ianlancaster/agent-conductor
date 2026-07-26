@@ -99,6 +99,7 @@ beforeEach(() => {
     getPane: (a) => lifecycle.getPane(a),
     isAuto: (a) => states.isAuto(a),
     isPaused: (a) => states.isPaused(a),
+    isRunning: (a) => states.get(a)?.running === true,
     isActive: (a) => states.get(a)?.running === true,
     deliver: async () => 'delivered',
     notifyOperator: async () => undefined,
@@ -218,6 +219,8 @@ describe('surface contract', () => {
     expect(spawnProperties).toHaveProperty('branch');
     expect(spawnProperties).toHaveProperty('bypassPermissions');
     expect(spawnProperties).toHaveProperty('effort');
+    expect(spawnProperties).toHaveProperty('additionalDirs');
+    expect(spawnProperties).toHaveProperty('systemPromptFile');
   });
 
   it('validates arguments in the shared layer for every adapter', async () => {

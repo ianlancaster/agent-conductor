@@ -22,7 +22,8 @@ also prints a pane-driven onboarding flow. At the new `conductor>` prompt, run
 `/spawn onboarding-helper` for Claude Code or `/spawn onboarding-helper -r codex` for Codex. Move to
 the agent pane Conductor opens and paste the printed onboarding brief directly into the assistant.
 The agent will interview you one decision at a time and will keep optional automation off until one
-hand-driven session works.
+hand-driven session works. It can then offer the shipped runbook catalog; choose a workflow and tier
+before allowing it to configure an opinionated fleet arrangement.
 
 Run the diagnostic report directly at any time:
 
@@ -156,6 +157,12 @@ doesn't exist, or iTerm2 automation permission (macOS will prompt the first time
 `osascript` drives iTerm2 — approve it). Check `conductor logs` and
 `.conductor/data/conductor.log`.
 
+Once the shakedown works, you can stay hand-driven or adopt an example workflow. The
+[engineering management runbook](runbooks/engineering-management.md) starts with one persistent EM
+and disposable worker tabs, then adds plans, independent review, PR Shepherd, and bounded autonomy
+one tier at a time. Its recommended main window keeps the EM on the right and stacks persistent
+status, the Conductor console, and the Stall Sentinel on the left.
+
 ---
 
 ## Step 2 — Auto stall handling with a sentinel
@@ -286,8 +293,9 @@ primitive, not an approval or execution queue.
   runtime is restarted automatically; `/pause` suppresses its schedules until `/resume`.
 - **Spawn a throwaway session**: `/spawn scratch` makes a directory, registers a config,
   and starts it; then `/tell scratch investigate X` gives it work. `/teardown scratch
---delete` reverses it. Every flag has a short alias (`-r` runtime, `-m` model, `-e` effort, `-d` path,
-  `-t` template, `-w` worktree, `-b` branch, `-D` delete; placement `-P`/`-T`/`-W`) — `/help` lists them.
+--delete` reverses it. Every common flag has a short alias (`-r` runtime, `-m` model, `-e` effort,
+  `-d` path, `-t` template, `-w` worktree, `-b` branch, `-a` additional directory, `-D` delete;
+  placement `-P`/`-T`/`-W`) — `/help` lists them. `--system-prompt` attaches a role prompt.
   `--runtime codex` spawns a Codex session instead of Claude Code; `--runtime cc` is shorthand
   for `--runtime claude-code` on spawn, start, and continue commands.
 - **Template sessions**: `/spawn researcher --template agent` clones a registered Git source,

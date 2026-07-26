@@ -24,6 +24,8 @@ export interface SentinelDeps {
   getPane(session: string): PaneRef | undefined;
   isAuto(session: string): boolean;
   isPaused(session: string): boolean;
+  /** Synchronous process state used to keep intentionally stopped registrations out of fleet watch. */
+  isRunning(session: string): boolean;
   isActive(session: string): boolean | Promise<boolean>;
   deliver(session: string, text: string): Promise<unknown>;
   notifyOperator(text: string): Promise<unknown>;
@@ -77,6 +79,8 @@ export class StallSentinelRouter {
     this.lastRouted.delete(session);
     this.noteWorking(session);
     if (this.isSentinel(session)) this.lastSentinelDownWarnAt = 0;
+    this.resetFleetConfirmation();
+    this.evaluateFleetWatch();
   }
 
   isSentinel(caller: string): boolean {
@@ -188,7 +192,7 @@ export class StallSentinelRouter {
   }
 
   private fleetMembers(): string[] {
-    return [...this.registeredSessions].filter((session) => !this.isSentinel(session));
+    return [...this.registeredSessions].filter((session) => !this.isSentinel(session) && this.deps.isRunning(session));
   }
 
   private evaluateFleetWatch(): void {

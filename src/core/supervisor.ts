@@ -266,6 +266,7 @@ export class Supervisor {
       getPane: (session) => this.lifecycle.getPane(session),
       isAuto: (session) => this.states.isAuto(session),
       isPaused: (session) => this.states.isPaused(session),
+      isRunning: (session) => this.states.get(session)?.running === true,
       isActive: async (session) => {
         // State can lag behind reality after a runtime conversation boundary
         // (notably Claude /clear). Route against authoritative terminal-process
@@ -342,6 +343,15 @@ export class Supervisor {
       getDocumentation: (topic) =>
         new ConductorDocumentation({
           referencePath: join(PACKAGE_ROOT, 'docs', 'agent-guide.md'),
+          supplementalReferencePaths: [
+            join(PACKAGE_ROOT, 'docs', 'runbooks', 'engineering-management.md'),
+            join(PACKAGE_ROOT, 'docs', 'runbooks', 'engineering-management-tier-1.md'),
+            join(PACKAGE_ROOT, 'docs', 'runbooks', 'engineering-management-tier-2.md'),
+            join(PACKAGE_ROOT, 'docs', 'runbooks', 'engineering-management-tier-3.md'),
+            join(PACKAGE_ROOT, 'docs', 'runbooks', 'engineering-management-tier-4.md'),
+            join(PACKAGE_ROOT, 'docs', 'runbooks', 'engineering-management-practices.md'),
+            join(PACKAGE_ROOT, 'docs', 'runbooks', 'engineering-management-templates.md'),
+          ],
           fleetDir: baseDir,
           fleetPaths,
         }).read(topic),

@@ -313,6 +313,14 @@ export class ConductorOperations {
             bypassPermissions: bypassPermissionsProperty,
             model: stringProperty(runtimeHintDescription('model', this.deps.modelHints)),
             effort: stringProperty(runtimeHintDescription('effort', this.deps.effortHints)),
+            additionalDirs: {
+              type: 'array',
+              description: 'Directories outside the workspace that the runtime may access',
+              items: { type: 'string', minLength: 1 },
+            },
+            systemPromptFile: stringProperty(
+              'Role or policy instructions appended after the mandatory Conductor protocol',
+            ),
             template: {
               ...stringProperty(
                 `Registered Git template${templateNames.length > 0 ? ` (${templateNames.join(', ')})` : ' (none configured)'}`,
@@ -335,6 +343,8 @@ export class ConductorOperations {
             bypassPermissions: typeof args.bypassPermissions === 'boolean' ? args.bypassPermissions : undefined,
             model: optionalString(args, 'model'),
             effort: optionalString(args, 'effort'),
+            additionalDirs: optionalStringArray(args, 'additionalDirs'),
+            systemPromptFile: optionalString(args, 'systemPromptFile'),
             template: optionalString(args, 'template'),
             worktreeRepo: optionalString(args, 'worktreeRepo'),
             branch: optionalString(args, 'branch'),
@@ -459,7 +469,7 @@ export class ConductorOperations {
       },
       {
         name: 'toggle_fleet_watch',
-        description: 'Toggle stall detection for the full registered fleet, excluding the sentinel.',
+        description: 'Toggle stall detection for all active registered sessions, excluding the sentinel.',
         resultDescription: 'Returns whether fleet watch is now on or off.',
         audiences: BOTH,
         inputSchema: schema(),
@@ -515,7 +525,7 @@ export class ConductorOperations {
       {
         name: 'get_conductor_docs',
         description:
-          'List or lazily read the version-matched Agent Conductor handbook, including fleet recipes, configuration paths, adapters, worktrees, scheduling, supervision, and troubleshooting.',
+          'List or lazily read the version-matched Agent Conductor handbook, including runbooks, fleet recipes, configuration paths, adapters, worktrees, scheduling, supervision, and troubleshooting.',
         resultDescription: 'Returns a JSON topic index or the requested handbook topic with authoritative fleet paths.',
         audiences: SESSION_ONLY,
         inputSchema: schema({

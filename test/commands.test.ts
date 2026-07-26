@@ -134,6 +134,7 @@ beforeEach(() => {
     getPane: (codename) => lifecycle.getPane(codename),
     isAuto: (codename) => states.isAuto(codename),
     isPaused: (codename) => states.isPaused(codename),
+    isRunning: (codename) => states.get(codename)?.running === true,
     isActive: (codename) => states.get(codename)?.running === true,
     deliver: (codename, text) => delivery.deliverOrQueue(codename, text),
     notifyOperator: async () => undefined,
@@ -444,6 +445,8 @@ describe('help', () => {
     expect(help).toContain('    -r/--runtime cc|claude-code|codex');
     expect(help).toContain('-e/--effort <level>');
     expect(help).toContain('-t/--template <name>');
+    expect(help).toContain('-a/--add-dir <dir> (repeatable)');
+    expect(help).toContain('--system-prompt <file>');
     expect(help).toContain('/fleet-watch');
     expect(help).not.toContain('*Sessions*');
     expect(help).not.toContain('`/status');
@@ -514,6 +517,29 @@ describe('spawn and teardown', () => {
       'effort: future-provider-level',
     );
     await router.route('/teardown thinker --delete');
+  });
+
+  it('spawns with repeatable external directories and a role prompt', async () => {
+    const prompt = join(baseDir, 'roles', 'worker.md');
+    mkdirSync(join(baseDir, 'roles'), { recursive: true });
+    writeFileSync(prompt, '# Worker role\n');
+
+    const reply = await router.route(
+      `/spawn scoped -a ${join(baseDir, 'records')} --add-dir ${join(baseDir, 'shared')} --system-prompt ${prompt}`,
+    );
+
+    expect(reply).toContain('Spawned scoped');
+    expect(sessions.get('scoped')?.additionalDirs).toEqual([join(baseDir, 'records'), join(baseDir, 'shared')]);
+    expect(sessions.get('scoped')?.systemPromptFile).toBe(prompt);
+    expect(runtime.launches.at(-1)?.session.additionalDirs).toEqual([
+      join(baseDir, 'records'),
+      join(baseDir, 'shared'),
+    ]);
+    expect(runtime.launches.at(-1)?.session.systemPromptFile).toBe(prompt);
+    const config = readFileSync(join(baseDir, 'config', 'sessions', 'scoped.yaml'), 'utf8');
+    expect(config).toContain('additionalDirs:');
+    expect(config).toContain('systemPromptFile:');
+    await router.route('/teardown scoped --delete');
   });
 
   it('normalizes cc to claude-code in spawned session configuration', async () => {
