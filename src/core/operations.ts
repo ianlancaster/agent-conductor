@@ -366,8 +366,10 @@ export class ConductorOperations {
       },
       {
         name: 'get_message_status',
-        description: 'Inspect a direct-message receipt, including delivery time and the latest flush decision.',
-        resultDescription: 'Returns the receipt as formatted JSON.',
+        description:
+          'Inspect a direct-message receipt that you sent or received, including delivery time and the latest flush decision. Receipt ids are fleet-wide, so an unrelated id is intentionally not visible.',
+        resultDescription:
+          'Returns the visible receipt as formatted JSON, or an ambiguity-preserving not-found/not-visible response.',
         audiences: BOTH,
         inputSchema: schema({ messageId: { type: 'number', minimum: 1, description: 'Message receipt id' } }, [
           'messageId',

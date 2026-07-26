@@ -378,7 +378,10 @@ only the recipient pane within the same run keeps the queue. Receipts can be ins
 `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`. Before falling back to raw pane
 input, the sender can use `cancel_message` or `/cancel-message` to prevent a later queued
 delivery. Cancellation succeeds only while the receipt is pending and its pane write has not
-begun. `type_in_pane` is intentionally different: it writes immediately for
+begun. Receipt IDs are fleet-wide rather than per session. Session callers can inspect only
+receipts they sent or received, so a not-found/not-visible response for a guessed ID is not
+evidence of a ledger gap; operator commands retain fleet-wide visibility. `type_in_pane` is
+intentionally different: it writes immediately for
 interactive prompts and slash commands, so callers must avoid using it while the operator is
 composing in that pane.
 

@@ -209,7 +209,7 @@ describe('conductor start initialization', () => {
     ensureFleetScaffold(baseDir);
     writeFileSync(
       join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
-      'terminal:\n  backend: tmux\nruntimes:\n  claudeCode:\n    binary: conductor-test-missing-runtime\n',
+      'terminal:\n  backend: tmux\nmcp:\n  host: 127.0.0.1\n  port: 1\nruntimes:\n  claudeCode:\n    binary: conductor-test-missing-runtime\n',
     );
 
     const result = spawnSync(

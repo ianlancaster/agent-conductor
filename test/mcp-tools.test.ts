@@ -274,8 +274,9 @@ describe('surface contract', () => {
     });
     expect(status.deliveredAt).toBeTypeOf('string');
     expect(status.lastFlushAttempt).toBeTypeOf('string');
+    await expect(tool('get_message_status').handler({ messageId: 1 }, 'beta')).resolves.toContain('"recipient":"beta"');
     await expect(tool('get_message_status').handler({ messageId: 1 }, 'watch')).resolves.toBe(
-      'Message #1 was not found.',
+      'Message #1 was not found or is not part of your conversation. Receipt ids are fleet-wide; this response does not indicate a ledger gap.',
     );
     await expect(tool('get_message_status').handler({ messageId: 1.5 }, 'alpha')).rejects.toThrow(/positive integer/);
   });

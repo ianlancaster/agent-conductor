@@ -197,6 +197,9 @@ Direct-message receipts are observable:
 - A Conductor restart cancels queued local messages rather than replaying stale conversation.
 - `get_message_status` reports `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`, so a
   sender can distinguish a queue that has not run from one waiting on occupied input.
+- Receipt IDs are fleet-wide. A session can inspect only receipts it sent or received, so a
+  not-found/not-visible response for a guessed ID cannot be used as a fleet ledger-gap check.
+  The operator command can inspect any receipt.
 - `cancel_message` can cancel a pending receipt before its pane write starts.
 - Reusing a sender-scoped `idempotencyKey` returns the original receipt.
 
@@ -718,6 +721,11 @@ Use the `fleetDir` returned by `get_conductor_docs`, not the session repository 
 Inspect `get_message_status`. Any text in the target composer prevents protected delivery,
 regardless of age or length. Ask the operator to submit or clear it. Do not bypass the queue unless
 raw terminal control is explicitly intended.
+
+Receipt IDs share one fleet-wide sequence. A managed session sees only receipts it sent or
+received; unrelated IDs return the same not-found/not-visible result as absent IDs. Do not infer
+ledger gaps by probing neighboring IDs. Use the receipt returned by `send_to_session`, or ask the
+operator to inspect a known receipt through `/message-status`.
 
 ### A peer is silent
 
