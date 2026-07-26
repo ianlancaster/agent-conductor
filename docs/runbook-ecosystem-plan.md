@@ -21,9 +21,13 @@ The recommended first release contains:
 1. a strict `runbook.yaml` bundle format;
 2. built-in, fleet-local, and explicitly configured local-path discovery;
 3. dynamic runbook resources through `get_conductor_docs`;
-4. small `list`, `init`, and `validate` authoring commands;
-5. the existing Engineering Management material converted into the reference bundle; and
-6. documentation and contribution requirements for sharing runbooks through Git.
+4. mechanically authenticated, append-only runbook-adoption provenance;
+5. a durable, content-free journal of the existing typed Conductor event vocabulary;
+6. small `list`, `init`, and `validate` authoring commands plus stable event export;
+7. the existing Engineering Management material converted into the lean-first reference bundle;
+   and
+8. documentation and contribution requirements for sharing runbooks and evaluation tooling
+   through Git.
 
 It deliberately does not introduce a workflow engine, executable hooks, a hosted marketplace,
 dependency resolution, or automatic remote updates.
@@ -45,7 +49,8 @@ Runbooks clear the contributor feature bar when implemented as a knowledge and d
 
 The implementation must preserve the distinction between a primitive and a workflow. Installing a
 runbook makes knowledge available. It does not activate sessions, change configuration, execute
-commands, or grant authority.
+commands, or grant authority. An operator-authorized adoption record may label which runbook was
+used for a period of work, but the record does not apply or enforce the runbook.
 
 ## Terminology
 
@@ -96,6 +101,13 @@ summary: Coordinate implementation and independent security review.
 license: MIT
 repository: https://github.com/example/conductor-security-runbook
 
+variantOf:
+  id: agent-conductor/engineering-management
+  version: 1.2.0
+delta: >-
+  Review rounds are capped at one fresh review plus one gate. Mutation-on-diff
+  and claims verification replace later mechanical review rounds.
+
 requires:
   conductor: '>=0.1.0'
 
@@ -132,6 +144,12 @@ Initial schema rules:
 - Topic files are Markdown. Resources may initially be Markdown, YAML, JSON, or plain text.
 - Unknown manifest fields fail validation so misspelled policy is never silently ignored.
 - A bundle may describe optional stages or tiers as topics; stages are not a core execution concept.
+- `variantOf`, when present, contains a well-formed runbook ID and an exact semantic version. It is
+  documentation-only: Conductor never fetches, resolves, validates the presence of, or merges the
+  named parent.
+- `delta` is required when `variantOf` is present, must be nonempty, and has a conservative length
+  cap. It declares the author's intended difference but does not prove that only one experimental
+  factor changed.
 - The manifest cannot declare executable hooks, install scripts, secrets, environment interpolation,
   or dependencies on other runbooks.
 
@@ -231,6 +249,126 @@ content. It should not inject the entire manifest or other topics into context.
 No new MCP tool is needed. The existing lazy documentation primitive already has the right
 audience and context behavior.
 
+## Adoption provenance
+
+Discovery says which runbooks are available. Adoption provenance records which runbook an operator
+approved for a specific period and scope of work. It makes the runbook ID, version, and selected
+topic usable as an experimental condition without turning the runbook into executable policy.
+
+Adoption records are append-only domain events:
+
+- `runbook.adopted` begins an adoption;
+- `runbook.superseded` links an active adoption to its replacement; and
+- `runbook.adoption.ended` closes an adoption without a replacement.
+
+Every adoption receives a stable `adoptionId`. Records contain only mechanical metadata:
+
+```json
+{
+  "type": "runbook.adopted",
+  "adoptionId": "b1c88d64-9e3f-4c60-9db5-3de7d28487a0",
+  "runbookId": "agent-conductor/engineering-management",
+  "version": "1.2.0",
+  "source": "built-in",
+  "topic": "tier-2",
+  "approvedBy": "operator",
+  "sessions": [
+    { "codename": "implementation-lane", "role": "implementer" },
+    { "codename": "review-lane", "role": "reviewer" }
+  ]
+}
+```
+
+The normal Conductor event envelope supplies timestamp, fleet ID, process instance ID, event ID,
+and sequence. Session roles are labels scoped to this adoption, not a new lifecycle policy or a
+claim that Conductor can infer an agent's behavior.
+
+`approvedBy: operator` must be mechanically truthful. A session cannot write an operator-approved
+adoption record or pass an `approvedBy` field. Adoption is recorded through one canonical
+operator-only operation exposed consistently as an operator command, including through authenticated
+Slack and Telegram command routing. The onboarding agent prepares the exact command after the
+operator approves the proposed scope; the operator executes it. A future general approval primitive
+may streamline this, but runbook adoption must not invent a private authorization path.
+
+The minimal command shape is:
+
+```text
+/runbook adopt <id> --version <version> --topic <topic> [session-role assignments]
+/runbook supersede <adoption-id> --with <id> --version <version> --topic <topic>
+/runbook end <adoption-id>
+```
+
+Exact argument syntax should be settled with the canonical operation design. The important
+contract is one implementation of authorization, validation, persistence, and event emission
+shared by every operator transport.
+
+## Durable event journal and telemetry boundary
+
+The exported `ConductorEventSubscriber` seam is live, ordered, metadata-only, best-effort, and at
+most once. That remains the correct contract for plugins. It is not sufficient as an experimental
+ledger because slow subscribers can overflow, shutdown does not flush their queues, and process
+restarts begin a new sequence domain.
+
+Add a first-party durable journal for the same canonical `ConductorEvent` union:
+
+```text
+owning core module
+        │
+        ▼
+typed ConductorEvent
+        │
+        ├── durable local event journal
+        └── live best-effort subscribers
+```
+
+The journal must not introduce a second event vocabulary. It should persist the fully enveloped
+event synchronously to an append-only SQLite table before scheduling live subscriber delivery. The
+table is internal storage; a stable JSONL export is the public analysis contract. Journal failures
+must never be silent: record a degraded telemetry status in memory, emit a prominent diagnostic,
+and make status and doctor report that experimental integrity is compromised. A telemetry write
+failure must not take lifecycle or messaging offline.
+
+Because the journal is local, content-free, and low volume, it should be enabled by default with an
+explicit fleet opt-out. This prevents measurement from depending on someone remembering to enable
+it after work begins. The data remains under the fleet's ignored data directory and is never sent
+off-machine by Conductor.
+
+The first durable vocabulary should extend the events already emitted by core choke points rather
+than renaming them:
+
+- existing session registration, start, readiness, stop, and activity transitions;
+- existing stall, fleet-stall, schedule, and operator-request outcomes;
+- `runbook.adopted`, `runbook.superseded`, and `runbook.adoption.ended`;
+- `message.created`, `message.delivered`, and `message.cancelled`, containing sender, recipient,
+  receipt ID, UTF-8 byte count, timestamps, and mechanically derived delivery latency, never message
+  content;
+- workspace provisioning and teardown facts for Conductor-created empty directories, Git templates,
+  and worktrees, using neutral workspace terminology rather than assuming every session is a lane;
+  and
+- turn-completion metrics only when supplied authoritatively by the runtime adapter.
+
+Lifecycle events may add the configured model and effort used for the launch. Field names must make
+clear that these are Conductor launch settings, not proof that a user did not switch models inside
+the runtime afterward.
+
+Turn metrics require capability-aware optional fields. Claude Code and Codex expose different data,
+and the contract must never synthesize parity by scraping unstable terminal text. Token input/output,
+cache counts, runtime-reported duration, and context utilization may be recorded when a supported
+adapter supplies them with a declared source. Conductor should not calculate dollar cost; an
+evaluator applies a versioned price table to tokens and runtime/model metadata.
+
+Conductor must not claim facts it cannot mechanically observe:
+
+- `lane.dispatched`, `lane.ready`, review rounds, review findings, escapes, defects, and rework are
+  workflow or evaluation semantics;
+- local or remote merges may happen outside Conductor; Git history and PR Shepherd are the
+  appropriate sources; and
+- message text and pane captures must not be classified to infer experiment outcomes.
+
+Evaluators join durable adoption intervals and session-role assignments to event timestamps. The
+stable `adoptionId` removes ambiguity when a fleet runs multiple arms or adopts the same bundle more
+than once.
+
 ## Onboarding behavior
 
 The first-session prompt should remain stable and generic. It should direct the onboarding agent to
@@ -243,8 +381,12 @@ should require the agent to:
 4. load only the selected overview and necessary resources;
 5. interview for runbook-specific decisions rather than inventing identity or policy;
 6. obtain approval before changing fleet files or creating sessions;
-7. validate and exercise the arrangement manually; and
-8. report what remains optional or disabled.
+7. validate and exercise the arrangement manually;
+8. prepare the operator-only adoption command with the exact runbook version, topic, and
+   session-role assignments;
+9. confirm that the operator-created adoption record exists before calling the work a measured
+   runbook adoption; and
+10. report what remains optional or disabled.
 
 The user-facing request is conversational:
 
@@ -252,7 +394,8 @@ The user-facing request is conversational:
 > required decisions and make only the changes I approve.
 
 There should be no `/apply-runbook` command. Applying a runbook is agent work performed through the
-canonical operations and ordinary file edits.
+canonical operations and ordinary file edits. The operator-only adoption command records
+provenance; it does not apply the runbook or authorize later actions described by it.
 
 ## Cognitive-agent awakening
 
@@ -304,6 +447,38 @@ bundle repository through an ordinary Git clone, submodule, subtree, or copied d
 place it under `.conductor/runbooks/` or register its checkout in `runbooks.paths`. This makes
 source and version control explicit and avoids prematurely building a package manager.
 
+## Evaluation tooling
+
+Evaluation remains external to Conductor. A tool such as `conductor-eval` can combine:
+
+1. the stable content-free event export;
+2. runbook adoption intervals and role assignments;
+3. Git history and diff statistics;
+4. CI, mutation-test, property-test, and claims-verifier results; and
+5. defect or escape labels from the operator's chosen tracking system.
+
+Conductor should provide a read-only export command backed by the durable journal:
+
+```bash
+conductor events export --format jsonl
+conductor events export --format jsonl --since 2026-07-26T00:00:00Z
+```
+
+The JSONL schema is versioned independently from internal SQLite migrations. Export order is stable,
+every row retains its event envelope, and malformed or unknown future event types must remain
+round-trippable. The command should support writing to stdout so evaluators do not need direct
+access to Conductor's private database schema.
+
+Runbooks may include inert topics describing preregistered metrics, required instrumentation,
+analysis commands, interpretation, and missing-data rules. Executable evaluators distribute through
+ordinary Git or package channels and never run merely because a runbook mentions them.
+
+Collection alone does not solve the motivating failure mode. Experimental runbooks should say how
+report generation is triggered automatically—such as CI, an external plugin, or a deliberately
+configured schedule—so computing results does not remain a person's later task. Conductor records
+mechanical facts; the evaluator owns metric definitions, price tables, joins to external systems,
+and generated reports.
+
 ## Distribution and community contribution
 
 ### External sharing
@@ -347,6 +522,7 @@ Runbooks are untrusted instructions. Conductor must enforce these boundaries:
 - Never interpolate environment variables or credentials into runbook content.
 - Never automatically mutate supervisor or session configuration.
 - Never automatically start, stop, spawn, or tear down a session because a bundle was discovered.
+- Never allow a session caller to manufacture an operator-approved adoption record.
 - Reject absolute resource paths, `..` traversal, symlink escape, duplicate IDs, unsupported media
   types, and files outside configured size/count limits.
 - Report source and version so an operator can assess provenance.
@@ -354,6 +530,10 @@ Runbooks are untrusted instructions. Conductor must enforce these boundaries:
   credentialed, or externally visible steps described by a runbook.
 - Treat Markdown instructions from a third-party bundle as untrusted prompt content subordinate to
   the injected Conductor protocol and repository instructions.
+- Keep the durable event journal content-free: no prompts, message bodies, pane captures,
+  transcripts, credentials, local paths, arbitrary runtime reason text, or source code.
+- Store telemetry locally by default and never transmit it without a separately installed and
+  configured adapter or evaluator.
 
 If remote installation is added later, it must clone without running repository scripts or
 submodules, support immutable commit pinning, record the resolved revision, and define safe update
@@ -389,6 +569,22 @@ the canonical namespaced keys.
 This migrated bundle becomes the golden fixture for authoring, validation, lazy loading, package
 verification, and onboarding tests.
 
+The reference doctrine must be lean-first:
+
+- Tier 1 is the default baseline and the first recommended adoption.
+- Higher tiers are optional controls with explicit additional round-trips, coordination costs, and
+  conditions that justify them; they are not presented as maturity levels every fleet should reach.
+- Tier 4 should be described as the most elaborate included pattern, not the “full” or ideal system.
+- Every added review stage should define an expected signal, an exit criterion, and an automation
+  alternative where one exists.
+- Evidence topics may publish measured costs and finding yields only with a linked dataset,
+  methodology, denominators, and clear authoring-fleet provenance.
+- Fleet-specific results remain external variant evidence until they are reproducible enough to
+  support a built-in claim.
+
+The reference bundle should demonstrate `variantOf` with a fixture variant, but it must not elevate
+one fleet's uncited measurements into universal product guidance.
+
 ## Implementation sequence
 
 ### Phase 1: format and registry
@@ -407,21 +603,37 @@ verification, and onboarding tests.
 4. Preserve existing Engineering Management topic aliases.
 5. Update `get_conductor_docs` schema and error messages for dynamic keys.
 
-### Phase 3: reference migration and onboarding
+### Phase 3: adoption provenance and durable events
+
+1. Extend the canonical event union with runbook-adoption, content-free message lifecycle, and
+   mechanically known workspace events.
+2. Add an append-only SQLite event journal before live subscriber fanout.
+3. Surface journal degradation through logs, status, and doctor without taking the control plane
+   offline.
+4. Add the operator-only adoption, supersede, and end operation plus consistent command routing.
+5. Join stable adoption IDs to session-role assignments without creating a runtime role policy.
+6. Add capability-aware optional turn metrics where runtime evidence is authoritative.
+7. Add a stable JSONL event export that hides the private database schema.
+
+### Phase 4: reference migration and onboarding
 
 1. Convert Engineering Management into the reference bundle.
-2. Add the cognitive-agent awakening recipe.
-3. Update the onboarding topic to present the live catalog and adoption choices.
-4. Update README and getting-started examples with user-facing request language.
-5. Keep the initial hand-driven shakedown mandatory before optional runbook adoption.
+2. Make Tier 1 the lean baseline and document the incremental cost and evidence standard for every
+   higher tier.
+3. Add the cognitive-agent awakening recipe.
+4. Update the onboarding topic to present the live catalog, adoption choices, and exact
+   operator-only provenance command.
+5. Update README and getting-started examples with user-facing request language.
+6. Keep the initial hand-driven shakedown mandatory before optional runbook adoption.
 
-### Phase 4: author experience
+### Phase 5: author and evaluator experience
 
 1. Add `conductor runbook list`.
 2. Add non-overwriting `conductor runbook init`.
 3. Add `conductor runbook validate` using production validation code.
-4. Publish an authoring guide and contribution checklist.
-5. Include a minimal standalone example bundle in package verification.
+4. Add `conductor events export --format jsonl` against the durable journal.
+5. Publish authoring, experiment-instrumentation, and contribution guidance.
+6. Include a minimal standalone bundle and external evaluator fixture in package verification.
 
 ### Deferred phases
 
@@ -443,6 +655,8 @@ Each deferred feature must independently clear the contributor feature bar.
 - Accept a minimal valid manifest and the reference bundle.
 - Reject unknown fields, duplicate IDs, invalid versions, missing resources, traversal, symlink
   escape, unsupported media types, excessive resource size/count, and incompatible versions.
+- Accept a valid structured `variantOf` plus bounded `delta`; reject ranges, malformed IDs, missing
+  deltas, and oversized deltas without resolving the parent.
 - Confirm no bundle scripts or package lifecycle hooks execute during discovery or validation.
 
 ### Registry
@@ -467,13 +681,35 @@ Each deferred feature must independently clear the contributor feature bar.
 - Confirm a fresh onboarding agent discovers installed runbooks only after calling the catalog.
 - Confirm it offers exact names and adoption topics after the manual shakedown.
 - Exercise one approval-controlled reference-runbook setup with both Claude Code and Codex.
+- Confirm a session cannot write `approvedBy: operator` and every operator transport reaches the
+  same adoption operation.
+- Confirm adopted, superseded, and ended records preserve stable IDs, version, provenance, topic,
+  and session-role assignments.
 - Manually test delegated cognitive-agent awakening without operator-draft clobbering.
+
+### Durable events and evaluation
+
+- Persist every canonical event before scheduling live subscriber delivery while retaining
+  subscriber ordering, overflow, and failure isolation.
+- Verify restart boundaries, event sequence continuity within an instance, and append-only adoption
+  history across instances.
+- Prove message events contain byte counts, receipt IDs, and latency but no message content.
+- Prove journal payloads exclude prompts, pane captures, transcripts, paths, credentials, runtime
+  reason text, and source code.
+- Exercise journal write failure: lifecycle and messaging remain online while status and doctor
+  report degraded telemetry integrity.
+- Verify optional runtime metrics are omitted rather than guessed when a runtime lacks evidence.
+- Export stable JSONL in deterministic order and consume it from an external evaluator fixture
+  without importing private store types or reading SQLite directly.
+- Verify an evaluator can join two simultaneous adoption scopes by `adoptionId` and session-role
+  assignment.
 
 ### Package and contribution
 
 - Ensure built-in manifests and resources are included in the packed artifact.
 - Compile and run the validator from a packed GitHub-installed package.
 - Run link, terminology, privacy, and stale-operation-name checks across built-in bundles.
+- Compile and run the event exporter and evaluator fixture from the packed artifact.
 - Add the runbook surface to beta onboarding certification.
 
 The normal lint, typecheck, formatting, full test, terminal E2E, build, and package verification
@@ -488,14 +724,21 @@ The first release is complete when:
 3. `get_conductor_docs` lists and lazily loads its declared resources;
 4. the onboarding agent presents it by name and can adopt it through existing operations with
    operator approval;
-5. the Engineering Management runbook ships in the new format with compatibility aliases;
-6. the cognitive-agent bootstrap recipe covers creation, delegated awakening, verification, and
-   safe activation of EM and Sentinel roles;
-7. malformed or malicious bundle paths cannot escape the bundle or take down the core control
-   plane;
-8. package verification proves built-in and external author workflows from the packed artifact;
-   and
-9. no new workflow execution engine, hidden policy, or parallel control surface has been created.
+5. the operator can write append-only adopted, superseded, and ended provenance without allowing a
+   session to impersonate operator approval;
+6. the durable journal records the canonical content-free event stream by default and exposes
+   failures rather than silently corrupting an experiment;
+7. an external evaluator can consume stable JSONL without reading the private SQLite schema;
+8. unsupported workflow facts and unavailable runtime metrics are omitted rather than inferred;
+9. the Engineering Management runbook ships in the new format with compatibility aliases and Tier
+   1 as its lean baseline;
+10. the cognitive-agent bootstrap recipe covers creation, delegated awakening, verification, and
+    safe activation of EM and Sentinel roles;
+11. malformed or malicious bundle paths cannot escape the bundle or take down the core control
+    plane;
+12. package verification proves built-in author, external author, and evaluator workflows from the
+    packed artifact; and
+13. no new workflow execution engine, hidden policy, or parallel control surface has been created.
 
 ## Decision record
 
@@ -508,10 +751,21 @@ The recommended initial decisions are:
 - **One knowledge API.** Extend `get_conductor_docs`; do not add a runbook-specific MCP tool.
 - **Dynamic catalog.** Core topics stay static; runbook resources are discovered at runtime.
 - **Namespaced identity.** Duplicate IDs fail rather than shadowing.
-- **Agent-mediated adoption.** No `apply` command and no automatic configuration changes.
+- **Documented variants.** `variantOf` and `delta` declare ancestry without resolution or
+  inheritance.
+- **Agent-mediated, operator-recorded adoption.** No `apply` command and no automatic configuration
+  changes; only an operator audience can create an operator-approved provenance record.
+- **One event vocabulary.** The durable journal and live subscribers consume the same typed domain
+  events rather than drifting into separate schemas.
+- **Local durable telemetry by default.** Content-free events are journaled locally with an explicit
+  opt-out and a stable JSONL export; Conductor never uploads them.
+- **Mechanical facts only.** Conductor does not infer lane readiness, review findings, defects,
+  merges, or cost from text and terminal output.
 - **Optional failure isolation.** Broken runbook content does not take messaging or lifecycle
-  offline, while validation still fails clearly.
-- **Reference migration.** Engineering Management proves the format and retains beta aliases.
+  offline, while validation still fails clearly; degraded telemetry is prominent but does not take
+  the control plane down.
+- **Lean reference migration.** Engineering Management proves the format, retains beta aliases,
+  starts at Tier 1, and labels heavier tiers with costs and evidence requirements.
 
 These decisions provide a useful ecosystem seam now while leaving installation convenience,
 marketplace discovery, and stronger publisher trust to evidence-driven later work.
