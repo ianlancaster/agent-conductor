@@ -57,6 +57,60 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['the stalled envelope']);
   });
 
+  it('self-heals stale runtime metadata before draining a protected message', async () => {
+    const recordedClaude = new FakeRuntime('claude-code');
+    recordedClaude.inputState = null;
+    const liveCodex = new CodexRuntime({
+      config: { binary: 'codex', toolTimeoutSec: 600 },
+      baseDir: '/tmp',
+    });
+    const detected: string[] = [];
+    queue.stop();
+    queue = new DeliveryQueue({
+      backend,
+      runtimeFor: () => recordedClaude,
+      runtimeCandidates: () => [recordedClaude, liveCodex],
+      getPane: () => pane,
+      onRuntimeDetected: (session, runtimeName) => detected.push(`${session}:${runtimeName}`),
+      config: CONFIG,
+    });
+    backend.setPaneContent(
+      pane.id,
+      [
+        'finished previous turn',
+        '',
+        '› Find and fix a bug in @filename',
+        '',
+        'gpt-5.6-sol high · Context 41% used · 251K used · ians-cc-assistant · main',
+      ].join('\n'),
+    );
+
+    await expect(queue.deliverOrQueue('alpha', 'the protected Shepherd envelope')).resolves.toBe('delivered');
+    expect(detected).toEqual(['alpha:codex']);
+    expect(backend.panes.get(pane.id)?.received).toEqual(['the protected Shepherd envelope']);
+  });
+
+  it('fails closed when more than one alternate runtime recognizes the composer', async () => {
+    const recorded = new FakeRuntime('recorded');
+    recorded.inputState = null;
+    const alternateA = new FakeRuntime('alternate-a');
+    const alternateB = new FakeRuntime('alternate-b');
+    const detected: string[] = [];
+    queue.stop();
+    queue = new DeliveryQueue({
+      backend,
+      runtimeFor: () => recorded,
+      runtimeCandidates: () => [recorded, alternateA, alternateB],
+      getPane: () => pane,
+      onRuntimeDetected: (_session, runtimeName) => detected.push(runtimeName),
+      config: CONFIG,
+    });
+
+    await expect(queue.deliverOrQueue('alpha', 'must remain queued')).resolves.toBe('queued');
+    expect(detected).toEqual([]);
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+  });
+
   it('returns no-pane for sessions without a pane', async () => {
     expect(await queue.deliverOrQueue('ghost', 'hello')).toBe('no-pane');
   });

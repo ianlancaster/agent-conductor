@@ -190,9 +190,13 @@ export class Supervisor {
     this.delivery = new DeliveryQueue({
       backend: this.backend,
       runtimeFor: (session) => this.runtimeFor(session),
+      runtimeCandidates: (session) => this.runtimeCandidates(session),
       getPane: (session) => this.lifecycle.getPane(session),
       onRuntimeObserved: (session) => {
         this.markRuntimeObserved(session);
+      },
+      onRuntimeDetected: (session, runtimeName) => {
+        this.correctActiveRuntime(session, runtimeName);
       },
       onDelivered: (session) => {
         if (this.states.get(session)?.running === true) this.states.setActivity(session, 'working');
@@ -594,6 +598,26 @@ export class Supervisor {
   private runtimeFor(session: string): SessionRuntime | undefined {
     const runtime = this.lifecycle.runtimeNameFor(session);
     return runtime !== undefined ? this.runtimes.get(runtime) : undefined;
+  }
+
+  private runtimeCandidates(session: string): SessionRuntime[] {
+    const primary = this.runtimeFor(session);
+    return [
+      ...(primary === undefined ? [] : [primary]),
+      ...[...this.runtimes.values()].filter((runtime) => runtime.name !== primary?.name),
+    ];
+  }
+
+  private correctActiveRuntime(session: string, runtimeName: string): void {
+    const state = this.states.get(session);
+    if (state?.running !== true || state.runtime === runtimeName || !this.runtimes.has(runtimeName)) return;
+    log().warn(
+      'delivery',
+      `${session}: visible composer identifies ${runtimeName}; correcting stale active runtime ${state.runtime ?? '(unknown)'}`,
+    );
+    // The old runtime's effort cannot be assumed portable to the process we
+    // just identified. Runtime defaults remain available to status rendering.
+    this.states.setRunSettings(session, runtimeName, undefined);
   }
 
   private displayRuntimeFor(session: string): SessionConfig['runtime'] | undefined {

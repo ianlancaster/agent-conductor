@@ -51,9 +51,17 @@ export interface DeliveryOptions {
 export interface DeliveryDeps {
   backend: TerminalBackend;
   runtimeFor(session: string): SessionRuntime | undefined;
+  /**
+   * Runtime parsers to try when the recorded active runtime cannot recognize
+   * the visible composer. Surviving panes can outlive the metadata that named
+   * the per-run runtime override.
+   */
+  runtimeCandidates?(session: string): readonly SessionRuntime[];
   getPane(session: string): PaneRef | undefined;
   /** Visible runtime input chrome is an independent readiness proof. */
   onRuntimeObserved?(session: string): void;
+  /** A non-primary parser uniquely recognized the live runtime's composer. */
+  onRuntimeDetected?(session: string, runtimeName: string): void;
   /** Called only after text has actually been submitted to a live runtime pane. */
   onDelivered?(session: string): void;
   config: {
@@ -280,9 +288,26 @@ export class DeliveryQueue {
       } else {
         capture = await this.deps.backend.capture(pane, 10);
       }
+      let selectedRuntime = runtime;
       let state = runtime.parseInputState(capture, session);
-      if (state !== 'clear' && runtime.resolveInputState !== undefined) {
-        state = await runtime.resolveInputState(capture, session, state);
+      if (state === null) {
+        const alternatives = (this.deps.runtimeCandidates?.(session) ?? [])
+          .filter((candidate) => candidate.name !== runtime.name)
+          .map((candidate) => ({ candidate, state: candidate.parseInputState(capture, session) }))
+          .filter((result) => result.state !== null);
+        // One distinctive alternate composer is enough to repair stale
+        // active-runtime metadata. Ambiguous recognition remains blocked.
+        if (alternatives.length === 1) {
+          const recognized = alternatives[0];
+          if (recognized !== undefined) {
+            selectedRuntime = recognized.candidate;
+            state = recognized.state;
+            this.deps.onRuntimeDetected?.(session, selectedRuntime.name);
+          }
+        }
+      }
+      if (state !== 'clear' && selectedRuntime.resolveInputState !== undefined) {
+        state = await selectedRuntime.resolveInputState(capture, session, state);
       }
       if (state === null) return { state: 'blocked', skipReason: 'composer-not-visible' };
       this.deps.onRuntimeObserved?.(session);
