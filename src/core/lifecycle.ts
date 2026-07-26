@@ -12,6 +12,7 @@ import { truncate } from './utils.js';
 import type { PaneRef, Placement } from './types.js';
 import { materializeWorkspace, type WorkspaceSource } from './workspace.js';
 import { isWorktree, removeWorktree } from './worktree.js';
+import type { ConductorEventPublisher } from '../events/types.js';
 
 export interface StartOptions {
   prompt?: string;
@@ -70,11 +71,12 @@ export interface LifecycleDeps {
   baseDir: string;
   sessionConfigDir: string;
   /** Re-read session configs immediately (after spawn/teardown writes). */
-  reloadSessions(): void;
+  reloadSessions(teardownSession?: string): void;
   /** Reset per-run health and stall-routing tracking on lifecycle boundaries. */
   supervisionReset(session: string): void;
   /** Notify orchestration that a live pane is available for this run's queued delivery. */
   onRunning?(session: string): void;
+  events?: ConductorEventPublisher;
 }
 
 /** Session lifecycle: start / continue / stop / restart / spawn / teardown. */
@@ -108,6 +110,7 @@ export class Lifecycle {
         this.deps.states.setRuntime(codename, configuredRuntime);
       }
       this.deps.states.setSession(codename, pane.id);
+      this.emitStarted(codename, 'adopt');
       // A surviving pane's runtime was already up before we restarted.
       this.deps.states.setReady(codename);
       this.deps.states.setActivity(codename, 'working');
@@ -132,7 +135,7 @@ export class Lifecycle {
         if (this.deps.states.get(target)?.running === true) {
           log().info('lifecycle', `${target}: pane ${pane.id} ended — marking stopped`);
         }
-        this.clearSession(target);
+        this.clearSession(target, 'pane-missing');
         continue;
       }
       if (paneAlive === undefined) continue;
@@ -141,7 +144,7 @@ export class Lifecycle {
       if (sessionActive === false) {
         if (this.deps.states.get(target)?.running === true) {
           log().info('lifecycle', `${target}: runtime exited in pane ${pane.id} — keeping pane for restart`);
-          this.clearSession(target, true);
+          this.clearSession(target, 'runtime-exit', true);
         }
       } else if (sessionActive === true && this.deps.states.get(target)?.running !== true) {
         this.markRunning(target, pane);
@@ -172,7 +175,7 @@ export class Lifecycle {
       const paneAlive = await this.safePaneAlive(existingPane);
       if (paneAlive === false) {
         log().warn('lifecycle', `${codename}: remembered pane is dead — creating a replacement`);
-        this.clearSession(codename);
+        this.clearSession(codename, 'pane-missing');
         existingPane = undefined;
       } else if (paneAlive === true) {
         const sessionActive = await this.safeSessionActive(existingPane);
@@ -187,7 +190,7 @@ export class Lifecycle {
         }
         // Ctrl-C ended the runtime, not the pane. Close out the old run but
         // retain the pane mapping and launch the replacement into that shell.
-        this.clearSession(codename, true);
+        this.clearSession(codename, 'runtime-exit', true);
       } else {
         return `${codename} has a pane, but its liveness could not be determined.`;
       }
@@ -250,9 +253,10 @@ export class Lifecycle {
         } catch {
           // Best effort — the pane may already be gone.
         }
+        this.deps.events?.emit({ type: 'session.stopped', session: codename, cause: 'launch-failed' });
       } else {
         // A pre-existing shell is still useful even if this launch failed.
-        this.clearSession(codename, true);
+        this.clearSession(codename, 'launch-failed', true);
       }
       if (this.deps.states.has(codename)) this.deps.states.setRunSettings(codename, undefined, undefined);
       throw err;
@@ -263,6 +267,7 @@ export class Lifecycle {
     this.deps.store.insertRun(sessionId, codename, opts.prompt !== undefined ? truncate(opts.prompt, 200) : undefined);
 
     this.deps.states.setSession(codename, pane.id);
+    this.emitStarted(codename, opts.continueSession === true ? 'continue' : 'start');
     this.deps.states.setActivity(codename, 'working');
     this.deps.supervisionReset(codename);
     this.deps.onRunning?.(codename);
@@ -284,7 +289,7 @@ export class Lifecycle {
         log().warn('lifecycle', `${codename}: pane kill failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    this.clearSession(codename);
+    this.clearSession(codename, 'requested');
     log().info('lifecycle', `${codename}: stopped`);
     return `${codename} stopped.`;
   }
@@ -299,7 +304,7 @@ export class Lifecycle {
     if (this.deps.states.get(codename)?.running !== true) return;
     // Runtime SessionEnd/Ctrl-C normally leaves the terminal pane at a shell
     // prompt. Keep it discoverable so start/continue reuse the same pane.
-    this.clearSession(codename, true);
+    this.clearSession(codename, 'runtime-exit', true);
     log().info('lifecycle', `${codename}: session ended`);
   }
 
@@ -413,8 +418,7 @@ export class Lifecycle {
       if (existsSync(configFile)) unlinkSync(configFile);
     }
 
-    this.deps.states.deregister(codename);
-    this.deps.reloadSessions();
+    this.deps.reloadSessions(codename);
     log().info('lifecycle', `${codename}: torn down`);
     return `${codename} deregistered.${dirNote}`;
   }
@@ -423,7 +427,12 @@ export class Lifecycle {
     return existsSync(join(session.repo, this.deps.config.markerFile));
   }
 
-  private clearSession(codename: string, keepPane = false): void {
+  private clearSession(
+    codename: string,
+    cause: 'requested' | 'runtime-exit' | 'pane-missing' | 'launch-failed',
+    keepPane = false,
+  ): void {
+    const wasRunning = this.deps.states.get(codename)?.running === true;
     const sessionId = this.sessions.get(codename);
     if (sessionId !== undefined) {
       this.deps.store.completeRun(sessionId);
@@ -434,6 +443,9 @@ export class Lifecycle {
       this.deps.states.setSession(codename, undefined);
       this.deps.states.setRunSettings(codename, undefined, undefined);
       this.deps.states.setActivity(codename, 'stopped');
+    }
+    if (wasRunning || cause === 'launch-failed') {
+      this.deps.events?.emit({ type: 'session.stopped', session: codename, cause });
     }
     // Publish stopped state before reevaluating supervision so fleet watch
     // cannot retain this registration as an active member. Reset also cancels
@@ -447,9 +459,19 @@ export class Lifecycle {
       this.deps.states.setRuntime(codename, configuredRuntime);
     }
     this.deps.states.setSession(codename, pane.id);
+    this.emitStarted(codename, 'discovered');
     this.deps.states.setReady(codename);
     this.deps.states.setActivity(codename, 'working');
     this.deps.onRunning?.(codename);
+  }
+
+  private emitStarted(codename: string, cause: 'start' | 'continue' | 'adopt' | 'discovered'): void {
+    const runtime = this.runtimeNameFor(codename);
+    // Every caller has either persisted the selected run settings or backfilled
+    // the configured runtime before reaching this choke point.
+    if (runtime !== undefined) {
+      this.deps.events?.emit({ type: 'session.started', session: codename, cause, runtime });
+    }
   }
 
   /** Rediscover a marked pane if this lifecycle instance has not seen it yet. */

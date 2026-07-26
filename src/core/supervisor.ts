@@ -20,6 +20,8 @@ import { Store } from '../store/index.js';
 import { ITermBackend } from '../terminals/iterm/index.js';
 import { TmuxBackend } from '../terminals/tmux/index.js';
 import type { TerminalBackend } from '../terminals/types.js';
+import { ConductorEventBus } from '../events/bus.js';
+import type { ConductorEventSubscriber } from '../events/types.js';
 import { CommandRouter } from './commands.js';
 import { DeliveryQueue } from './delivery.js';
 import { ConductorDocumentation } from './documentation.js';
@@ -61,6 +63,8 @@ export interface SupervisorOptions {
    * built-in by name; duplicate names within this array are rejected.
    */
   runtimes?: SessionRuntime[];
+  /** Live, observation-only event consumers for embedding hosts and plugins. */
+  eventSubscribers?: ConductorEventSubscriber[];
 }
 
 /** Thin orchestrator: constructs the modules, wires the seams, owns the loops. */
@@ -69,6 +73,7 @@ export class Supervisor {
   private sessions: Map<string, SessionConfig>;
 
   private readonly store: Store;
+  private readonly eventBus: ConductorEventBus;
   private readonly states: SessionStateManager;
   private readonly backend: TerminalBackend;
   private readonly runtimes = new Map<string, SessionRuntime>();
@@ -145,8 +150,10 @@ export class Supervisor {
       this.runtimes.set(name, runtime);
     }
     this.validateRuntimeReferences();
+    const fleetId = fleetSlug(baseDir);
+    this.eventBus = new ConductorEventBus(fleetId, options.eventSubscribers);
     this.store = new Store(join(dataDir, 'conductor.db'));
-    this.states = new SessionStateManager(this.store, this.config.defaults.auto);
+    this.states = new SessionStateManager(this.store, this.config.defaults.auto, this.eventBus);
     const storedSentinel = this.store.getWorkspaceValue<string | null>(SENTINEL_WORKSPACE_KEY);
     const sentinelCodename =
       storedSentinel === undefined ? this.config.sentinel.codename : (storedSentinel ?? undefined);
@@ -161,7 +168,6 @@ export class Supervisor {
     }
     if (legacyFleetWatches !== undefined) this.store.deleteWorkspaceValue(LEGACY_FLEET_WATCHES_WORKSPACE_KEY);
 
-    const fleetId = fleetSlug(baseDir);
     this.backend =
       options.terminalBackend ??
       (this.config.terminal.backend === 'tmux'
@@ -231,8 +237,8 @@ export class Supervisor {
       },
       baseDir,
       sessionConfigDir: sessionConfigDir(baseDir),
-      reloadSessions: () => {
-        this.reloadSessions();
+      reloadSessions: (teardownSession) => {
+        this.reloadSessions(teardownSession);
       },
       supervisionReset: (session) => {
         this.health.reset(session);
@@ -241,6 +247,7 @@ export class Supervisor {
       onRunning: (session) => {
         void this.recoverPendingMessages(session);
       },
+      events: this.eventBus,
     });
 
     this.messaging = new Messaging({
@@ -255,6 +262,7 @@ export class Supervisor {
       store: this.store,
       messaging: this.messaging,
       channelSend: (message) => this.channelSend(message),
+      events: this.eventBus,
     });
 
     this.sentinel = new StallSentinelRouter({
@@ -288,6 +296,7 @@ export class Supervisor {
       onFleetWatchChanged: (enabled) => {
         this.store.setWorkspaceValue(FLEET_WATCH_ENABLED_WORKSPACE_KEY, enabled);
       },
+      events: this.eventBus,
     });
 
     this.health = new HealthMonitor({
@@ -375,6 +384,7 @@ export class Supervisor {
       startSession: (session, opts) => this.lifecycle.start(session, opts),
       stopSession: (session) => this.lifecycle.stop(session),
       deliver: (session, text) => this.delivery.deliverOrQueue(session, text),
+      events: this.eventBus,
     });
 
     this.mcpServer = new ConductorMcpServer({
@@ -425,6 +435,11 @@ export class Supervisor {
   }
 
   private async startLocked(opts: SupervisorStartOptions): Promise<void> {
+    // A subscriber attached from boot receives the complete roster before any
+    // surviving panes can produce started/ready/activity events.
+    for (const codename of this.sessions.keys()) {
+      this.eventBus.emit({ type: 'session.registered', session: codename, cause: 'startup' });
+    }
     this.operatorRequests.recoverStaleClaims();
     const discardedMessages = this.store.cancelPendingLocalMessagesOnRestart();
     if (discardedMessages > 0) {
@@ -783,7 +798,7 @@ export class Supervisor {
     return delivered;
   }
 
-  private reloadSessions(): void {
+  private reloadSessions(teardownSession?: string): void {
     const fresh = loadSessionConfigs(this.baseDir, {
       tolerant: true,
       defaultRuntime: this.config.defaults.runtime,
@@ -799,10 +814,14 @@ export class Supervisor {
       else fresh.set(codename, previous);
     }
     for (const [codename, session] of fresh) {
-      if (!this.sessions.has(codename)) {
+      const isNew = !this.sessions.has(codename);
+      if (isNew) {
         log().info('supervisor', `Session registered: ${codename}`);
       }
       this.states.register(codename, this.lifecycle.isAgentProject(session));
+      if (isNew) {
+        this.eventBus.emit({ type: 'session.registered', session: codename, cause: 'config-added' });
+      }
     }
     const configDir = sessionConfigDir(this.baseDir);
     for (const codename of this.sessions.keys()) {
@@ -817,12 +836,17 @@ export class Supervisor {
       if (fileStillPresent) {
         log().warn('supervisor', `Config for ${codename} failed to parse — keeping last-good registration.`);
         if (kept !== undefined) fresh.set(codename, kept);
-      } else if (this.states.get(codename)?.running === true) {
+      } else if (this.states.get(codename)?.running === true && codename !== teardownSession) {
         log().warn('supervisor', `Config for ${codename} removed but session is active — keeping registered.`);
         if (kept !== undefined) fresh.set(codename, kept);
       } else {
         log().info('supervisor', `Session deregistered: ${codename}`);
         this.states.deregister(codename);
+        this.eventBus.emit({
+          type: 'session.deregistered',
+          session: codename,
+          cause: codename === teardownSession ? 'teardown' : 'config-removed',
+        });
       }
     }
     this.sessions = fresh;

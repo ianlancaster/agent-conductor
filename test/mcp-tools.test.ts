@@ -183,6 +183,7 @@ describe('surface contract', () => {
     const docs = tool('get_conductor_docs');
     const properties = docs.inputSchema.properties as Record<string, { enum?: string[] }>;
     expect(properties.topic?.enum).toContain('worktrees');
+    expect(properties.topic?.enum).toContain('event-subscribers');
     expect(properties.topic?.enum).toContain('troubleshooting');
     expect(await docs.handler({}, 'alpha')).toBe('docs:index');
     expect(await docs.handler({ topic: 'supervision' }, 'alpha')).toBe('docs:supervision');

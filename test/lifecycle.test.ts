@@ -9,6 +9,7 @@ import { SessionStateManager } from '../src/core/state.js';
 import { Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
+import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
 
 let baseDir: string;
 let store: Store;
@@ -22,6 +23,7 @@ let supervisionResets: string[];
 let supervisionRunningStates: boolean[];
 let defaultBypassPermissions: boolean;
 let defaultEfforts: { 'claude-code': string | undefined; 'codex': string | undefined };
+let lifecycleEvents: FakeEventPublisher;
 
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-lc-'));
@@ -40,6 +42,7 @@ beforeEach(() => {
   supervisionRunningStates = [];
   defaultBypassPermissions = true;
   defaultEfforts = { 'claude-code': undefined, 'codex': undefined };
+  lifecycleEvents = new FakeEventPublisher();
 
   lifecycle = new Lifecycle({
     store,
@@ -77,6 +80,7 @@ beforeEach(() => {
       supervisionResets.push(session);
       supervisionRunningStates.push(states.get(session)?.running === true);
     },
+    events: lifecycleEvents,
   });
   states.register('alpha', false);
 });
@@ -95,6 +99,12 @@ describe('lifecycle edges', () => {
     const session = store.getActiveRuns()[0];
     expect(session?.session).toBe('alpha');
     expect(session?.prompt_summary).toBe('begin');
+    expect(lifecycleEvents.events).toContainEqual({
+      type: 'session.started',
+      session: 'alpha',
+      cause: 'start',
+      runtime: 'claude-code',
+    });
   });
 
   it('publishes stopped state before supervision reevaluates fleet membership', async () => {
@@ -102,6 +112,11 @@ describe('lifecycle edges', () => {
     await lifecycle.stop('alpha');
 
     expect(supervisionRunningStates).toEqual([true, false]);
+    expect(lifecycleEvents.events).toContainEqual({
+      type: 'session.stopped',
+      session: 'alpha',
+      cause: 'requested',
+    });
   });
 
   it('resolves permission bypass from the fleet default and per-session override', async () => {
@@ -184,6 +199,11 @@ describe('lifecycle edges', () => {
     expect(await backend.isAlive(secondPane ?? { backend: 'fake', id: '' })).toBe(true);
     // The interrupted session was closed out in the store.
     expect(store.getActiveRuns().length).toBe(1);
+    expect(lifecycleEvents.events).toContainEqual({
+      type: 'session.stopped',
+      session: 'alpha',
+      cause: 'pane-missing',
+    });
   });
 
   it('adopts a surviving pane after a conductor restart', async () => {
@@ -218,6 +238,11 @@ describe('lifecycle edges', () => {
     expect(states.get('alpha')?.activity).toBe('stopped');
     expect(lifecycle.getPane('alpha')).toEqual(pane);
     expect(store.getActiveRuns()).toEqual([]);
+    expect(lifecycleEvents.events).toContainEqual({
+      type: 'session.stopped',
+      session: 'alpha',
+      cause: 'runtime-exit',
+    });
 
     expect(await lifecycle.start('alpha')).toBe('alpha started.');
     expect(lifecycle.getPane('alpha')).toEqual(pane);
@@ -235,6 +260,12 @@ describe('lifecycle edges', () => {
     expect(lifecycle.getPane('alpha')).toEqual(pane);
     expect(backend.panes.get(pane.id)?.launched.at(-1)).toContain('--continue');
     expect(runtime.prepared).toHaveLength(2);
+    expect(lifecycleEvents.events).toContainEqual({
+      type: 'session.started',
+      session: 'alpha',
+      cause: 'continue',
+      runtime: 'claude-code',
+    });
   });
 
   it('continues with a per-run runtime override in the existing pane', async () => {
@@ -255,6 +286,20 @@ describe('lifecycle edges', () => {
     expect(await lifecycle.start('alpha')).toBe('alpha started.');
     expect(lifecycle.getPane('alpha')).toEqual(pane);
     expect(backend.panes.size).toBe(1);
+  });
+
+  it('reports a running runtime discovered outside lifecycle control', async () => {
+    const pane = await backend.createPane('alpha', 'pane');
+    backend.panes.get(pane.id)!.sessionActive = true;
+    backend.survivors.set('alpha', pane);
+
+    expect(await lifecycle.start('alpha')).toBe('alpha is already running.');
+    expect(lifecycleEvents.events).toContainEqual({
+      type: 'session.started',
+      session: 'alpha',
+      cause: 'discovered',
+      runtime: 'claude-code',
+    });
   });
 
   it('teardown closes an idle pane left by an ended runtime', async () => {
@@ -307,5 +352,10 @@ describe('lifecycle edges', () => {
     await expect(lifecycle.start('alpha')).rejects.toThrow('shell init failed');
     expect(lifecycle.getPane('alpha')).toBeUndefined();
     expect([...backend.panes.values()].every((p) => !p.alive)).toBe(true);
+    expect(lifecycleEvents.events).toContainEqual({
+      type: 'session.stopped',
+      session: 'alpha',
+      cause: 'launch-failed',
+    });
   });
 });

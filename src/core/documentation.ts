@@ -18,6 +18,7 @@ export const CONDUCTOR_DOC_TOPICS = [
   'recipes',
   'runbooks',
   'adapters',
+  'event-subscribers',
   'troubleshooting',
   'runbook-engineering-management',
   'runbook-engineering-management-tier-1',

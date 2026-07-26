@@ -2,6 +2,13 @@ export { Supervisor } from './core/supervisor.js';
 export type { SupervisorOptions } from './core/supervisor.js';
 export type { RuntimeName, SessionConfig, SpawnTemplate, SupervisorConfig } from './config/schema.js';
 export type { PaneRef, Placement } from './core/types.js';
+export { CONDUCTOR_EVENT_TYPES } from './events/types.js';
+export type {
+  ConductorEvent,
+  ConductorEventEnvelope,
+  ConductorEventSubscriber,
+  ConductorEventType,
+} from './events/types.js';
 export type {
   CreatePaneOptions,
   DeliveryCapture,

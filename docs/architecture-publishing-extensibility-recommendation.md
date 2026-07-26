@@ -308,6 +308,8 @@ The extension architecture is partially open:
 - A consumer can implement `ChannelAdapter` and inject it through
   `SupervisorOptions.channels`.
 - A consumer can inject a `TerminalBackend`.
+- A consumer can inject observation-only `ConductorEventSubscriber` instances for typed fleet
+  facts without polling or terminal tailing.
 - The public entry point exports the channel contracts and built-in Slack and Telegram adapters.
 - External adapters require the consumer to construct `Supervisor` in a small embedding host.
 
@@ -344,6 +346,7 @@ The beta should explicitly support:
 - `SupervisorOptions`.
 - `ChannelAdapter` and its related channel types.
 - `TerminalBackend` where embedding requires it.
+- `ConductorEvent`, `ConductorEventSubscriber`, and the event vocabulary constant.
 - Canonical rendering helpers intentionally exported from the package root.
 
 Add a package `exports` map and document which exports are stable during the beta.

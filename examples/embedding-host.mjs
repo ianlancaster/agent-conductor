@@ -24,8 +24,15 @@ class ExampleChannel {
 
 const fleetDir = process.argv[2] ?? process.cwd();
 const channel = new ExampleChannel();
+const eventLog = {
+  name: 'example-event-log',
+  onEvent(event) {
+    process.stdout.write(`[event ${event.id}] ${event.type}\n`);
+  },
+};
 const supervisor = new Supervisor(fleetDir, {
   channels: [channel],
+  eventSubscribers: [eventLog],
   includeConfiguredChannels: false,
 });
 

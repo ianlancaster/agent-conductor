@@ -23,6 +23,7 @@ compose:
 - **Scheduling:** cron-driven prompts using the same lifecycle and protected delivery mechanisms.
 - **Workspaces:** empty directories, configured Git templates, and linked Git worktrees.
 - **Operator channels:** the local console plus optional Telegram, Slack, or injected adapters.
+- **Plugin events:** typed, metadata-only observations for injected integration subscribers.
 - **PR Shepherd:** a separate opt-in GitHub polling service that can notify a coordinator through
   Conductor.
 - **Status lines:** optional Claude Code and Codex footer configuration for runtime and repository
@@ -49,6 +50,7 @@ Authoritative references shipped with the package:
 - `prompts/conductor-protocol.md`: mandatory managed-session protocol
 - `prompts/sentinel.md`: baseline sentinel role
 - `guides/telegram-adapter.md` and `guides/slack-adapter.md`: external operator channels
+- `guides/event-subscribers.md`: typed plugin-event contract and consumer guidance
 - `docs/pr-shepherd.md`: optional standalone or Conductor-managed PR Shepherd
 
 <!-- conductor-topic:onboarding -->
@@ -728,6 +730,59 @@ surface drift is not.
 
 Before changing the repository, read `CLAUDE.md` and `CONTRIBUTING.md`. They are the mandatory
 architecture and product contract for all contributors, regardless of agent runtime.
+
+<!-- conductor-topic:event-subscribers -->
+
+## Observing Conductor events from plugins
+
+Use the exported `ConductorEventSubscriber` seam when an embedding plugin or integration needs to
+react to fleet facts without polling status or tailing panes. This is an observation primitive,
+not another control plane: the host constructs subscribers and injects them through
+`new Supervisor(baseDir, { eventSubscribers: [...] })`; actions still use canonical Conductor
+operations.
+
+Every `ConductorEvent` has `schemaVersion`, `id`, `seq`, `occurredAt`,
+`conductorInstanceId`, `fleetId`, and a discriminating `type`. The supported vocabulary covers:
+
+- session registration, deregistration, start, readiness, stop, and activity transitions;
+- individual stall and fleet-stall dispositions;
+- schedule outcomes; and
+- selectable operator-request creation and resolution.
+
+Payloads are metadata-only: codenames, runtime names, mechanical causes/dispositions, request
+IDs, option counts/indexes, and schedule labels. They do not carry pane captures, transcripts,
+prompts, message bodies, credentials, paths, or arbitrary runtime reason text.
+
+The delivery contract is live, best-effort, and at most once:
+
+1. `seq` is globally monotonic inside one Supervisor process. Each subscriber receives its own
+   serial FIFO over that shared sequence.
+2. `conductorInstanceId` changes with each Supervisor construction. Track it with `seq` and
+   reconcile current truth after a restart or sequence gap.
+3. Emission never waits for a subscriber. A throwing, rejecting, or slow consumer cannot block
+   Conductor or another subscriber.
+4. Each subscriber has a queue of 1,000 waiting events. Overflow drops the oldest waiting event
+   and logs a rate-limited warning; the sequence gap exposes the loss.
+5. Queued or in-flight subscriber work is not flushed during Supervisor shutdown and can be lost
+   if the host exits.
+6. Subscribers are one-way. They cannot inject events, change core control flow, or return a
+   decision to Conductor.
+
+Startup registration events precede adoption events for surviving panes. Activity changes and
+readiness are transition-only. `session.stopped(cause=launch-failed)` reports a failed start
+attempt and may arrive without a preceding `session.started`; treat every stopped event as
+idempotent. Lifecycle causes describe the mechanical detection path, so equivalent external
+failures found by different health or lifecycle checks can have different causes.
+
+Compatible releases can add optional fields or new event types under `schemaVersion: 1`.
+Consumers must ignore unknown fields and safely ignore unknown types. A breaking envelope or
+field-semantics change requires a new schema version.
+
+Import `ConductorEvent`, `ConductorEventSubscriber`, `ConductorEventType`, and
+`CONDUCTOR_EVENT_TYPES` from the package root. Give every subscriber a unique non-blank name,
+keep handlers quick, make consumer-side persistence idempotent, and test thrown handlers,
+overflow gaps, shutdown, and restart reconciliation. The complete event-by-event payload table
+and a copyable host example live in `guides/event-subscribers.md`.
 
 <!-- conductor-topic:troubleshooting -->
 

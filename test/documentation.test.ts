@@ -114,5 +114,11 @@ describe('agent documentation', () => {
     expect(supervision.content).toContain('`blocked` immediately');
     expect(supervision.content).toContain('`silent`');
     expect(supervision.content).toContain('Codex currently reports completed turns');
+
+    const events = JSON.parse(await documentation().read('event-subscribers')) as { content: string };
+    expect(events.content).toContain('`ConductorEventSubscriber`');
+    expect(events.content).toContain('live, best-effort, and at most once');
+    expect(events.content).toContain('without a preceding `session.started`');
+    expect(events.content).toContain('do not carry pane captures');
   });
 });

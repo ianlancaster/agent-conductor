@@ -245,6 +245,7 @@ workflow tradeoffs, and source links.
 | Stall supervision   | Per-session auto mode, a normal agent acting as sentinel, and fleet-wide stall detection | [Supervision](docs/agent-guide.md#auto-mode-sentinels-fleet-watch-and-escalation-policy)             |
 | Recurring work      | Cron schedules that prompt managed sessions using normal lifecycle behavior              | [Scheduling](docs/agent-guide.md#cron-schedules-and-recurring-agent-work)                            |
 | Operator access     | Local console, one-shot commands, live status, Telegram, Slack, and adapter APIs         | [Operator channels](docs/agent-guide.md#operator-console-telegram-slack-and-injected-channels)       |
+| Plugin events       | Typed lifecycle, activity, stall, schedule, and operator-request observations            | [Event subscribers](guides/event-subscribers.md)                                                     |
 | PR Shepherd         | Optional GitHub PR polling and policy-driven coordination                                | [PR Shepherd V2](docs/pr-shepherd.md)                                                                |
 
 All operator interfaces use the same command language, and all managed agents receive
@@ -283,6 +284,16 @@ concerns—authentication, parsing, formatting, service limits, retries, and shu
 commands and policy remain in `ConductorOperations`, so a new channel does not need to
 reimplement fleet behavior. See the [Telegram guide](guides/telegram-adapter.md),
 [Slack guide](guides/slack-adapter.md), and [external adapter contract](guides/external-adapters.md).
+
+### Plugin and integration events
+
+Embedding hosts can inject typed `ConductorEventSubscriber` implementations to react to
+lifecycle, activity, stall, fleet-stall, schedule, and operator-request outcomes without polling
+status or tailing panes. Subscribers observe metadata-only facts and never enter Conductor's
+control path. Delivery is live, ordered, best-effort, and failure-isolated; sequence numbers make
+restarts and dropped events detectable so consumers can reconcile through existing pull surfaces.
+See the [event subscriber contract](guides/event-subscribers.md) for the exported TypeScript API,
+event catalog, privacy boundary, and delivery semantics.
 
 ### PR Shepherd
 
@@ -352,7 +363,9 @@ Optional integrations:
 Extending or contributing:
 
 - [External adapters and embedding](guides/external-adapters.md) — operator channels,
-  terminal backends, and experimental runtime adapters.
+  event subscribers, terminal backends, and experimental runtime adapters.
+- [Event subscribers](guides/event-subscribers.md) — typed plugin events, ordering, failure
+  isolation, compatibility, and privacy guarantees.
 - [Contributing](CONTRIBUTING.md) — product bar, tests, documentation, and completion
   contract.
 - [Architecture and agent guide](CLAUDE.md) — core boundaries and repository invariants.

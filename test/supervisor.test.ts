@@ -9,6 +9,7 @@ import type { ChannelAdapter, ChannelHandlers, ChannelMessage } from '../src/cha
 import { Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
+import { FakeEventSubscriber } from './fakes/fake-subscriber.js';
 
 let baseDir: string;
 let supervisor: Supervisor | undefined;
@@ -37,6 +38,51 @@ afterEach(async () => {
  * of at runtime. No terminal/network side effects before start().
  */
 describe('Supervisor construction', () => {
+  it('feeds a boot-complete ordered event stream to an injected subscriber without blocking control flow', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const terminal = new FakeTerminalBackend();
+    const survivingPane = await terminal.createPane('alpha', 'pane', baseDir);
+    terminal.panes.get(survivingPane.id)!.sessionActive = true;
+    terminal.survivors.set('alpha', survivingPane);
+    const subscriber = new FakeEventSubscriber();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      eventSubscribers: [subscriber],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start();
+    await until(() => subscriber.events.some((event) => event.type === 'session.started'));
+    const registeredAt = subscriber.events.findIndex((event) => event.type === 'session.registered');
+    const startedAt = subscriber.events.findIndex((event) => event.type === 'session.started');
+    expect(registeredAt).toBe(0);
+    expect(startedAt).toBeGreaterThan(registeredAt);
+    expect(subscriber.events[startedAt]).toMatchObject({
+      type: 'session.started',
+      session: 'alpha',
+      cause: 'adopt',
+    });
+
+    // Repeated runtime working signals are a storm-prone path. The state choke
+    // point emits only the initial stopped -> working transition.
+    await fetch(`http://127.0.0.1:${String(port)}/events/alpha`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }),
+    });
+    await fetch(`http://127.0.0.1:${String(port)}/events/alpha`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }),
+    });
+    await until(() => subscriber.events.some((event) => event.type === 'session.ready'));
+    expect(subscriber.events.filter((event) => event.type === 'session.activity.changed')).toHaveLength(1);
+  });
+
   it('selects an injected runtime from fleet config and exposes it through lifecycle commands', async () => {
     writeConfig('defaults:\n  runtime: external\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
@@ -376,11 +422,38 @@ describe('Supervisor construction', () => {
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43397\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
     });
-    supervisor = new Supervisor(baseDir);
+    const subscriber = new FakeEventSubscriber();
+    supervisor = new Supervisor(baseDir, { eventSubscribers: [subscriber] });
     await supervisor.command('/auto alpha');
     rmSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'));
     supervisor.reloadSessionsForTest();
     expect(supervisor.statusReport()).toContain('No sessions configured');
+    await until(() => subscriber.events.length > 0);
+    expect(subscriber.events).toContainEqual(
+      expect.objectContaining({
+        type: 'session.deregistered',
+        session: 'alpha',
+        cause: 'config-removed',
+      }),
+    );
+  });
+
+  it('distinguishes explicit teardown from a hand-removed config', async () => {
+    writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43397\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const subscriber = new FakeEventSubscriber();
+    supervisor = new Supervisor(baseDir, { eventSubscribers: [subscriber] });
+
+    expect(await supervisor.command('/teardown alpha')).toContain('alpha deregistered.');
+    await until(() => subscriber.events.length > 0);
+    expect(subscriber.events).toContainEqual(
+      expect.objectContaining({
+        type: 'session.deregistered',
+        session: 'alpha',
+        cause: 'teardown',
+      }),
+    );
   });
 
   it('keeps fleet watch enabled as registered membership changes', async () => {

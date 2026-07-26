@@ -50,6 +50,7 @@ try {
     'package/docs/runbooks/engineering-management-practices.md',
     'package/docs/runbooks/engineering-management-templates.md',
     'package/guides/external-adapters.md',
+    'package/guides/event-subscribers.md',
     'package/prompts/conductor-protocol.md',
     'package/prompts/sentinel.md',
     'package/examples/supervisor.yaml',
@@ -135,9 +136,9 @@ try {
   run('npm', ['install', '--prefix', consumer, tarball]);
   writeFileSync(
     join(consumer, 'index.ts'),
-    `import { Supervisor, type ChannelAdapter, type SessionRuntime, type TerminalBackend } from 'agent-conductor';\n` +
-      `declare const channel: ChannelAdapter; declare const runtime: SessionRuntime; declare const terminal: TerminalBackend;\n` +
-      `new Supervisor('.', { channels: [channel], runtimes: [runtime], terminalBackend: terminal });\n`,
+    `import { Supervisor, type ChannelAdapter, type ConductorEventSubscriber, type SessionRuntime, type TerminalBackend } from 'agent-conductor';\n` +
+      `declare const channel: ChannelAdapter; declare const subscriber: ConductorEventSubscriber; declare const runtime: SessionRuntime; declare const terminal: TerminalBackend;\n` +
+      `new Supervisor('.', { channels: [channel], eventSubscribers: [subscriber], runtimes: [runtime], terminalBackend: terminal });\n`,
   );
   run(process.execPath, [
     resolve('node_modules/typescript/bin/tsc'),

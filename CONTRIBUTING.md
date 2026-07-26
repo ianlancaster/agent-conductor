@@ -103,6 +103,8 @@ fleets out of the repository unless they are intentionally generic and committed
 - Implement `ChannelAdapter` for an external operator transport such as Telegram or Slack.
 - Implement `SessionRuntime` for an agent CLI.
 - Implement `TerminalBackend` for a terminal emulator or multiplexer.
+- Implement `ConductorEventSubscriber` when an embedding plugin needs to observe typed fleet facts
+  without polling. It is not a control surface; actions still use canonical operations.
 
 The local console is a native `/cmd` and `/feed` client, not a `ChannelAdapter`. See the
 extension taxonomy in [CLAUDE.md](CLAUDE.md#extension-taxonomy) before introducing a new
@@ -148,6 +150,7 @@ understand, and recover it agrees. Review each of these explicitly:
 | Session tools                 | Do MCP schemas, descriptions, typed errors, and `prompts/conductor-protocol.md` reflect the behavior?                                          |
 | Operator controls             | Do `buildOperatorCommands`, aliases, validation, `/help`, the local console, and one-shot commands agree?                                      |
 | Adapters                      | Do all bundled channels and the injected `ChannelAdapter` contract carry the same semantics where applicable? Are provider limits kept local?  |
+| Event subscribers             | Are events emitted at owning core choke points, metadata-only, transition-based where needed, ordered, non-blocking, and failure-isolated?     |
 | Runtime and terminal adapters | Does runtime/backend-specific detection or launch behavior live behind the correct interface, with capability differences explicit?            |
 | Configuration                 | Are Zod schemas strict, defaults safe, scaffolded YAML complete, examples current, and secrets kept in environment mechanisms?                 |
 | Persistence and lifecycle     | Is a migration append-only? Are restart, retry, deduplication, shutdown, and partial-failure behavior defined?                                 |
@@ -171,6 +174,8 @@ Use the narrowest test that proves the behavior, then add an integration test at
 - Core orchestration: real core modules with the fakes in `test/fakes/`.
 - Operator channels: pure parser/formatter tests, a scripted API double, and a
   `FakeChannel` supervisor pipeline test.
+- Event subscribers: bus ordering/overflow/error-isolation tests plus a `FakeEventSubscriber`
+  through a real `Supervisor` start/stop cycle.
 - Session MCP: operation surface-contract tests plus real HTTP tests where transport behavior
   matters.
 - Runtimes and terminals: interface-level tests; keep AppleScript and command construction

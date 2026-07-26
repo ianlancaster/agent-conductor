@@ -525,7 +525,7 @@ export class ConductorOperations {
       {
         name: 'get_conductor_docs',
         description:
-          'List or lazily read the version-matched Agent Conductor handbook, including runbooks, fleet recipes, configuration paths, adapters, worktrees, scheduling, supervision, and troubleshooting.',
+          'List or lazily read the version-matched Agent Conductor handbook, including runbooks, fleet recipes, configuration paths, adapters, event subscribers, worktrees, scheduling, supervision, and troubleshooting.',
         resultDescription: 'Returns a JSON topic index or the requested handbook topic with authoritative fleet paths.',
         audiences: SESSION_ONLY,
         inputSchema: schema({
