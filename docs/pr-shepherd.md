@@ -146,6 +146,11 @@ Coordinator and endpoint overrides apply only when YAML already declares `delive
 
 The engine emits generic facts for CI failures, review feedback, bot findings, human comments, approvals, conflicts, merges, staleness, review dispatch/completion, scoped re-review, reviewer escalation, automation decisions, `branch-behind`, and `branch-update-failed`. Production messages contain no hard-coded organization, repository, bot, CI-command, or worker-routing policy.
 
+Review-inbox completion facts include an outcome: `bot-auto-approved`, `already-reviewed`, or
+`assignment-ended`. Once an assignment reaches either of the first two terminal dispositions,
+its later disappearance from GitHub's review-requested search only clears tracking state; it
+does not emit a second generic completion.
+
 Put private workflow instructions in `guidance`, for example:
 
 ```yaml

@@ -28,6 +28,8 @@ interface InboxState {
   disposition: 'waiting' | 'dispatched' | 'auto-approved' | 'already-reviewed';
 }
 
+type InboxCompletionOutcome = 'bot-auto-approved' | 'already-reviewed';
+
 interface FollowUpState {
   reviewId: string;
   reviewedHeadSha: string;
@@ -83,6 +85,12 @@ function sortedComments(comments: Comment[]): Comment[] {
       ? left.id.localeCompare(right.id)
       : left.createdAt.localeCompare(right.createdAt),
   );
+}
+
+function inboxCompletionOutcome(disposition: InboxState['disposition']): InboxCompletionOutcome | undefined {
+  if (disposition === 'auto-approved') return 'bot-auto-approved';
+  if (disposition === 'already-reviewed') return 'already-reviewed';
+  return undefined;
 }
 
 export class ShepherdEngine {
@@ -783,18 +791,20 @@ export class ShepherdEngine {
                   this.clock().toISOString(),
                 ),
               );
-            } else if (disposition === 'auto-approved' || disposition === 'already-reviewed') {
-              const outcome = disposition === 'auto-approved' ? 'bot-auto-approved' : 'already-reviewed';
-              events.push(
-                buildEvent(
-                  this.config,
-                  'review-completed',
-                  details,
-                  { headSha: details.headSha, requestUpdatedAt: details.updatedAt, outcome },
-                  { outcome, title: details.title, url: details.url },
-                  this.clock().toISOString(),
-                ),
-              );
+            } else {
+              const outcome = inboxCompletionOutcome(disposition);
+              if (outcome !== undefined) {
+                events.push(
+                  buildEvent(
+                    this.config,
+                    'review-completed',
+                    details,
+                    { headSha: details.headSha, requestUpdatedAt: details.updatedAt, outcome },
+                    { outcome, title: details.title, url: details.url },
+                    this.clock().toISOString(),
+                  ),
+                );
+              }
             }
           }
           summary.emitted += this.store.commit(
@@ -813,18 +823,26 @@ export class ShepherdEngine {
           this.store.commit([], [], undefined, [entity.key]);
           continue;
         }
-        const event = buildEvent(
-          this.config,
-          'review-completed',
-          entity.value.details,
-          {
-            assignmentHeadSha: entity.value.details.headSha,
-            requestUpdatedAt: entity.value.details.updatedAt,
-          },
-          { title: entity.value.details.title, url: entity.value.details.url },
-          this.clock().toISOString(),
-        );
-        summary.emitted += this.store.commit([], baseline ? [] : [event], this.recipient(), [entity.key]).length;
+        const alreadyCompleted = inboxCompletionOutcome(entity.value.disposition) !== undefined;
+        const outcome = 'assignment-ended';
+        const events =
+          baseline || alreadyCompleted
+            ? []
+            : [
+                buildEvent(
+                  this.config,
+                  'review-completed',
+                  entity.value.details,
+                  {
+                    headSha: entity.value.details.headSha,
+                    requestUpdatedAt: entity.value.details.updatedAt,
+                    outcome,
+                  },
+                  { outcome, title: entity.value.details.title, url: entity.value.details.url },
+                  this.clock().toISOString(),
+                ),
+              ];
+        summary.emitted += this.store.commit([], events, this.recipient(), [entity.key]).length;
       }
     }
     if (!this.store.hasCompletedBootstrap('review-inbox')) this.store.markBootstrapComplete('review-inbox');

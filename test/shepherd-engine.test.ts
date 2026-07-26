@@ -356,6 +356,42 @@ describe('Shepherd engine', () => {
     );
     await engine.pollOnce();
     expect(store.listEvents().map((event) => event.type)).toEqual(['review-completed']);
+
+    github.discoveries.set('review-inbox', { items: [], exhaustive: true });
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    const completed = store.listEvents().filter((event) => event.type === 'review-completed');
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.source.outcome).toBe('bot-auto-approved');
+    expect(store.listOutbox()).toHaveLength(1);
+    expect(store.listEntities('review-inbox')).toEqual([]);
+    store.close();
+  });
+
+  it('labels a genuinely ended review assignment without duplicating a prior completion', async () => {
+    const github = new FakeGitHub();
+    const details = pr();
+    setDiscovery(github, 'review-inbox', details);
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({
+        features: { authoredPRs: { enabled: false }, reviewInbox: { enabled: true }, staleThresholdHours: 24 },
+      }),
+      github,
+      store,
+      () => new Date('2026-07-20T10:00:00Z'),
+    );
+
+    await engine.pollOnce();
+    github.discoveries.set('review-inbox', { items: [], exhaustive: true });
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+
+    const completion = store.listEvents().find((event) => event.type === 'review-completed');
+    expect(completion?.source).toMatchObject({
+      headSha: details.headSha,
+      requestUpdatedAt: details.updatedAt,
+      outcome: 'assignment-ended',
+    });
+    expect(completion?.message).toContain('outcome: assignment-ended');
     store.close();
   });
 
