@@ -34,6 +34,7 @@ function makeRouter(
     },
     isAuto: (session) => autoSessions.has(session),
     isPaused: (session) => pausedSessions.has(session),
+    isRunning: (session) => activeSessions.has(session),
     isActive,
     deliver: async (session, text) => {
       delivered.push({ session, text });
@@ -236,6 +237,7 @@ describe('fleet stall watch', () => {
       getPane: () => undefined,
       isAuto: () => false,
       isPaused: () => false,
+      isRunning: (session) => activeSessions.has(session),
       isActive: () => true,
       deliver: async () => undefined,
       notifyOperator: async () => undefined,
@@ -251,6 +253,7 @@ describe('fleet stall watch', () => {
   });
 
   it('tracks registered membership automatically', async () => {
+    activeSessions.add('gamma');
     router.setRegisteredSessions(['alpha', 'beta', 'gamma', 'watch']);
     router.toggleFleetWatch();
     await router.handleStall('alpha', 'idle', {});
@@ -262,6 +265,24 @@ describe('fleet stall watch', () => {
 
     expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(true);
     expect(router.isFleetWatchEnabled()).toBe(true);
+  });
+
+  it('ignores stopped registrations and keeps watching the active fleet', async () => {
+    activeSessions.delete('beta');
+    activeSessions.add('gamma');
+    router.setRegisteredSessions(['alpha', 'beta', 'gamma', 'watch']);
+    router.toggleFleetWatch();
+
+    await router.handleStall('alpha', 'idle', {});
+    expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
+
+    await router.handleStall('gamma', 'idle', {});
+    await Promise.resolve();
+
+    const fleet = delivered.filter((item) => item.text.startsWith('[Fleet Stall]'));
+    expect(fleet).toHaveLength(1);
+    expect(fleet[0]?.text).toContain('sessions=alpha,gamma');
+    expect(fleet[0]?.text).not.toContain('beta');
   });
 
   it('stays enabled without alerting when fewer than two sessions are eligible', async () => {

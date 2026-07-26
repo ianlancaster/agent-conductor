@@ -30,6 +30,10 @@ export interface SpawnOptions {
   model?: string;
   /** Persisted per-session effort default for the new session. */
   effort?: string;
+  /** Persisted runtime access grants for paths outside the new workspace. */
+  additionalDirs?: string[];
+  /** Persisted role/policy instructions appended after the Conductor protocol. */
+  systemPromptFile?: string;
   prompt?: string;
   placement?: Placement;
   /** Runtime for the new session (default: the supervisor's configured runtime). */
@@ -345,13 +349,15 @@ export class Lifecycle {
 
     // Serialize with js-yaml, never string interpolation: a model/effort value
     // containing a newline would otherwise inject arbitrary YAML keys.
-    const config: Record<string, string | boolean> = {
+    const config: Record<string, string | boolean | string[]> = {
       codename,
       repo: dir,
       runtime: opts.runtime ?? this.deps.config.defaultRuntime,
     };
     if (opts.model !== undefined) config.model = opts.model;
     if (opts.effort !== undefined) config.effort = opts.effort;
+    if (opts.additionalDirs !== undefined) config.additionalDirs = opts.additionalDirs;
+    if (opts.systemPromptFile !== undefined) config.systemPromptFile = opts.systemPromptFile;
     if (opts.bypassPermissions !== undefined) config.bypassPermissions = opts.bypassPermissions;
     mkdirSync(this.deps.sessionConfigDir, { recursive: true });
     writeFileSync(join(this.deps.sessionConfigDir, `${codename}.yaml`), yaml.dump(config));
@@ -424,14 +430,15 @@ export class Lifecycle {
       this.sessions.delete(codename);
     }
     if (!keepPane) this.panes.delete(codename);
-    // Cancel any armed idle/stall timers so they can't fire into a stopped or
-    // (after teardown) deregistered session — that would throw inside setTimeout.
-    this.deps.supervisionReset(codename);
     if (this.deps.states.has(codename)) {
       this.deps.states.setSession(codename, undefined);
       this.deps.states.setRunSettings(codename, undefined, undefined);
       this.deps.states.setActivity(codename, 'stopped');
     }
+    // Publish stopped state before reevaluating supervision so fleet watch
+    // cannot retain this registration as an active member. Reset also cancels
+    // armed idle/stall timers that could otherwise fire after teardown.
+    this.deps.supervisionReset(codename);
   }
 
   private markRunning(codename: string, pane: PaneRef): void {

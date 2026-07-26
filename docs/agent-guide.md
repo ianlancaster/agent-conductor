@@ -16,8 +16,8 @@ an LLM or decide how work should be done. It supplies small primitives that agen
 compose:
 
 - **Lifecycle:** register, start, stop, continue, spawn, and safely tear down sessions.
-- **Communication:** durable signed messages between sessions and selectable requests to the
-  operator.
+- **Communication:** signed messages with persisted receipts, protected process-local queuing, and
+  selectable requests to the operator.
 - **Observability:** structured session status, runtime events, tags, and diagnostic pane tails.
 - **Supervision:** optional auto stall routing to a normal agent designated as the sentinel.
 - **Scheduling:** cron-driven prompts using the same lifecycle and protected delivery mechanisms.
@@ -77,15 +77,17 @@ files they approve, and validate each layer before adding the next:
 5. Configure one manual session with auto off. Run `conductor validate` and `conductor doctor`, start
    it, exchange a message, inspect status, and stop/continue it once. Do not enable schedules or
    unattended behavior before this shakedown passes.
-6. Offer a sentinel and fleet watch. Explain that the sentinel is an ordinary session receiving
+6. Offer the runbook catalog. Load only the workflow and tier the operator chooses; do not configure
+   an opinionated fleet layout without approval.
+7. Offer a sentinel and fleet watch. Explain that the sentinel is an ordinary session receiving
    authority-marked stalls, while fleet watch detects fleet-wide darkness. Both are optional.
-7. Offer Telegram and Slack separately. Keep credentials only in the authoritative environment file,
+8. Offer Telegram and Slack separately. Keep credentials only in the authoritative environment file,
    never print their values, and enable a channel only after its required credentials exist.
-8. Offer schedules only for a session already exercised manually. Start with a harmless prompt and
+9. Offer schedules only for a session already exercised manually. Start with a harmless prompt and
    explain pause/resume and `freshContext`.
-9. Offer PR Shepherd last. Elicit GitHub identity, repository scope, checks/review policy, direct
-   versus merge-queue flow, delivery target, and rollout preferences. Keep `shepherd.enabled: false`
-   and all execution behavior out of `execute` while validating the profile in shadow/notify mode.
+10. Offer PR Shepherd last. Elicit GitHub identity, repository scope, checks/review policy, direct
+    versus merge-queue flow, delivery target, and rollout preferences. Keep `shepherd.enabled: false`
+    and all execution behavior out of `execute` while validating the profile in shadow/notify mode.
 
 Finish with evidence: the exact files changed, clean validation and doctor output, the first
 session's runtime/status, the message round trip performed, and a short list of optional features
@@ -118,9 +120,12 @@ guess a fleet path from the session working directory: a session may run in a pr
 far from the fleet directory.
 
 `conductor start` creates missing scaffold files but never overwrites existing configuration or
-secrets. Session YAML files hot-reload. Adding, editing, or removing a file under
+secrets. Session YAML files hot-reload into the roster and schedule policy. Adding, editing, or
+removing a file under
 `.conductor/config/sessions/` updates the roster without restarting, subject to last-good handling
-for invalid edits and active removed sessions. Supervisor settings require a restart.
+for invalid edits and active removed sessions. Launch-setting changes such as runtime, model,
+environment, external directories, and system prompts apply on the next start or continuation;
+they do not rewrite an already-running CLI. Supervisor settings require a restart.
 
 A session file has this shape:
 
@@ -260,6 +265,11 @@ Placement is `pane`, `tab`, or `window`. With the tmux backend, `headless: true`
 the detached fleet session. Operator-only `/summon` and `/banish` move supported panes into or out
 of view without stopping them.
 
+Spawn can also set repeatable `additionalDirs` for runtime access outside the workspace and a
+`systemPromptFile` for role instructions appended after the mandatory protocol. The operator
+command equivalents are `--add-dir`/`-a` and `--system-prompt`. These primitives support shared
+records and role policy without writing generated instructions into disposable worktrees.
+
 Use:
 
 - `list_sessions` for a fleet overview.
@@ -377,6 +387,9 @@ captures the last assistant message, and—when auto is enabled—routes that ev
 The sentinel then decides whether completed work needs no action, an unfinished plan needs a precise
 nudge, or an ambiguous state needs inspection or operator judgment.
 
+Auto should mean “this session's stall deserves Sentinel assessment,” not “idle is always a defect.”
+A worker waiting at an explicit review or approval gate may correctly remain idle.
+
 Other stall kinds come from mechanical signals:
 
 - Claude Code `Notification` hooks become `blocked` immediately.
@@ -414,14 +427,20 @@ Recommended escalation composition:
    concise summary and mutually exclusive choices.
 6. It records a useful tag or messages the worker with the decision.
 
+A protected message cannot answer every runtime-level menu because the normal composer may be
+unavailable. If fleet policy explicitly authorizes one safe response and pane inspection confirms
+the prompt, the Sentinel may use `type_in_pane`; otherwise it escalates to the operator. Raw input
+can overwrite an operator draft and must never be used as a routine nudge.
+
 `pause_session` is separate from auto. Pause temporarily suppresses both schedules and stall
 routing without changing the configured auto state. Use it for maintenance, intentional waiting,
 or operator review; `resume_session` restores the prior behavior.
 
-Fleet watch detects campaign-level failure when individual stalls are normal but the entire fleet
-being stalled together requires attention. `toggle_fleet_watch` is a single fleet-level boolean.
-When enabled, it watches every registered session except the sentinel and follows roster changes
-automatically. After all eligible sessions remain stalled for `health.fleetStallConfirmMs` (15
+Fleet watch detects campaign-level failure when individual stalls are normal but the entire active
+fleet being stalled together requires attention. `toggle_fleet_watch` is a single fleet-level boolean.
+When enabled, it watches every active registered session except the sentinel and follows roster and
+process changes automatically. Stopped registrations are not eligible. After all eligible sessions
+remain stalled for `health.fleetStallConfirmMs` (15
 seconds by default), Conductor sends one fleet alert to the sentinel, or directly to the operator
 if no sentinel exists. With fewer than two eligible sessions the setting remains enabled but does
 not alert. Recovery, roster changes, sentinel changes, and process restarts reset the confirmation
@@ -638,6 +657,26 @@ These are patterns built from primitives, not special workflow features.
 The product principle behind every recipe is the same: use small mechanical operations for
 identity, persistence, lifecycle, and routing; leave prioritization and judgment to agents and the
 operator.
+
+<!-- conductor-topic:runbooks -->
+
+## Example runbooks
+
+Runbooks are opinionated, end-to-end compositions of the public primitives. They are examples, not
+product modes, and should be adapted to the operator's process.
+
+- `runbook-engineering-management` introduces a persistent Engineering Manager, a Stall Sentinel,
+  a stateless canonical repository, and the recommended operator layout.
+- `runbook-engineering-management-tier-1` covers basic worktree dispatch and reporting.
+- `runbook-engineering-management-tier-2` adds plans, delivery artifacts, and fresh review.
+- `runbook-engineering-management-tier-3` composes PR Shepherd with immutable review lanes.
+- `runbook-engineering-management-tier-4` covers dual-model review and bounded autonomous work.
+- `runbook-engineering-management-practices` covers custom role scripts and failure boundaries.
+- `runbook-engineering-management-templates` provides copyable session, dispatch, plan, delivery,
+  and review templates.
+
+Load only the overview and tier needed for the current setup. Guided onboarding should offer this
+catalog only after a hand-driven session succeeds and obtain approval before changing fleet files.
 
 <!-- conductor-topic:adapters -->
 

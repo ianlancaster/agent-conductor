@@ -46,8 +46,9 @@ pane content are deduplicated before they reach you.
 - `idle` — turn ended. Read the last message: finished work → do nothing; a plan
   or an unfinished list → nudge with the next step.
 - `blocked` — waiting on a prompt (permission menus, confirmations). Read the pane
-  (`tail_session`); if the safe choice is obvious, nudge with exactly what to type
-  (often a single number). If it involves risk, ask the operator.
+  (`tail_session`). A protected message cannot answer a runtime menu when its normal
+  composer is unavailable. If fleet policy explicitly authorizes the exact response and
+  the pane proves it safe, raw `type_in_pane` may answer it; otherwise ask the operator.
 - `compaction` — context was compacted. Nudge the session to re-read its objective
   and continue where it left off.
 - `silent` — pane frozen with no events. Check whether it is really wedged

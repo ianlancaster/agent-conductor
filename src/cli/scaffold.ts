@@ -11,7 +11,7 @@ data/
 `;
 
 export const ONBOARDING_PROMPT =
-  'Help me onboard this Conductor fleet. First call get_conductor_docs without a topic, then read onboarding and fleet-configuration. Interview me one decision at a time, explain the safe defaults and tradeoffs, and make only changes I approve. Finish by validating the configuration and helping me run one hand-driven test session.';
+  'Help me onboard this Conductor fleet. First call get_conductor_docs without a topic, then read onboarding and fleet-configuration. Interview me one decision at a time, explain the safe defaults and tradeoffs, and make only changes I approve. Finish by validating the configuration and helping me run one hand-driven test session. After that succeeds, offer the runbook catalog without configuring a runbook unless I choose one.';
 
 /** Pane-driven onboarding instructions shown only after the initial scaffold is created. */
 export function renderOnboardingCommands(): string {

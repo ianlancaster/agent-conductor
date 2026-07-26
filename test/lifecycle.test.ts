@@ -19,6 +19,7 @@ let states: SessionStateManager;
 let lifecycle: Lifecycle;
 let sessions: Map<string, SessionConfig>;
 let supervisionResets: string[];
+let supervisionRunningStates: boolean[];
 let defaultBypassPermissions: boolean;
 let defaultEfforts: { 'claude-code': string | undefined; 'codex': string | undefined };
 
@@ -36,6 +37,7 @@ beforeEach(() => {
   states = new SessionStateManager(store, false);
   sessions = loadSessionConfigs(baseDir);
   supervisionResets = [];
+  supervisionRunningStates = [];
   defaultBypassPermissions = true;
   defaultEfforts = { 'claude-code': undefined, 'codex': undefined };
 
@@ -71,7 +73,10 @@ beforeEach(() => {
       sessions = loadSessionConfigs(baseDir, { tolerant: true });
       for (const codename of sessions.keys()) states.register(codename, false);
     },
-    supervisionReset: (session) => supervisionResets.push(session),
+    supervisionReset: (session) => {
+      supervisionResets.push(session);
+      supervisionRunningStates.push(states.get(session)?.running === true);
+    },
   });
   states.register('alpha', false);
 });
@@ -86,9 +91,17 @@ describe('lifecycle edges', () => {
     await lifecycle.start('alpha', { prompt: 'begin' });
     expect(runtime.prepared[0]?.session.codename).toBe('alpha');
     expect(supervisionResets).toEqual(['alpha']);
+    expect(supervisionRunningStates).toEqual([true]);
     const session = store.getActiveRuns()[0];
     expect(session?.session).toBe('alpha');
     expect(session?.prompt_summary).toBe('begin');
+  });
+
+  it('publishes stopped state before supervision reevaluates fleet membership', async () => {
+    await lifecycle.start('alpha');
+    await lifecycle.stop('alpha');
+
+    expect(supervisionRunningStates).toEqual([true, false]);
   });
 
   it('resolves permission bypass from the fleet default and per-session override', async () => {

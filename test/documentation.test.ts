@@ -9,10 +9,20 @@ import {
 import { InvalidRequestError } from '../src/core/errors.js';
 
 const referencePath = fileURLToPath(new URL('../docs/agent-guide.md', import.meta.url));
+const supplementalReferencePaths = [
+  'engineering-management.md',
+  'engineering-management-tier-1.md',
+  'engineering-management-tier-2.md',
+  'engineering-management-tier-3.md',
+  'engineering-management-tier-4.md',
+  'engineering-management-practices.md',
+  'engineering-management-templates.md',
+].map((name) => fileURLToPath(new URL(`../docs/runbooks/${name}`, import.meta.url)));
 
 function documentation(): ConductorDocumentation {
   return new ConductorDocumentation({
     referencePath,
+    supplementalReferencePaths,
     fleetDir: '/fleets/example',
     fleetPaths: {
       layout: 'conductor-directory',
@@ -30,7 +40,11 @@ function documentation(): ConductorDocumentation {
 
 describe('agent documentation', () => {
   it('parses every declared lazy topic exactly once with a visible heading', () => {
-    const parsed = parseConductorDocumentation(readFileSync(referencePath, 'utf8'));
+    const parsed = new Map(
+      [referencePath, ...supplementalReferencePaths].flatMap((path) => [
+        ...parseConductorDocumentation(readFileSync(path, 'utf8')),
+      ]),
+    );
     expect([...parsed.keys()]).toEqual(CONDUCTOR_DOC_TOPICS);
     for (const topic of parsed.values()) {
       expect(topic.title.length).toBeGreaterThan(0);
@@ -54,6 +68,17 @@ describe('agent documentation', () => {
       referencePath,
     });
     expect(result.safety).toContain('Never print');
+  });
+
+  it('offers the runbook as a catalog plus independently loadable tiers', async () => {
+    const catalog = JSON.parse(await documentation().read('runbooks')) as { content: string };
+    expect(catalog.content).toContain('engineering-management');
+
+    const tier = JSON.parse(await documentation().read('runbook-engineering-management-tier-1')) as {
+      content: string;
+    };
+    expect(tier.content).toContain('Tier 1');
+    expect(tier.content).not.toContain('Tier 4');
   });
 
   it('loads only the requested topic and rejects unknown topics with the available list', async () => {

@@ -16,8 +16,16 @@ export const CONDUCTOR_DOC_TOPICS = [
   'operator-channels',
   'pr-shepherd',
   'recipes',
+  'runbooks',
   'adapters',
   'troubleshooting',
+  'runbook-engineering-management',
+  'runbook-engineering-management-tier-1',
+  'runbook-engineering-management-tier-2',
+  'runbook-engineering-management-tier-3',
+  'runbook-engineering-management-tier-4',
+  'runbook-engineering-management-practices',
+  'runbook-engineering-management-templates',
 ] as const;
 
 export type ConductorDocTopic = (typeof CONDUCTOR_DOC_TOPICS)[number];
@@ -30,6 +38,7 @@ interface ParsedTopic {
 
 export interface ConductorDocumentationOptions {
   referencePath: string;
+  supplementalReferencePaths?: readonly string[];
   fleetDir: string;
   fleetPaths: FleetPaths;
 }
@@ -63,8 +72,15 @@ export class ConductorDocumentation {
   constructor(private readonly options: ConductorDocumentationOptions) {}
 
   async read(topic?: string): Promise<string> {
-    const markdown = await readFile(this.options.referencePath, 'utf8');
-    const parsed = parseConductorDocumentation(markdown);
+    const referencePaths = [this.options.referencePath, ...(this.options.supplementalReferencePaths ?? [])];
+    const parsed = new Map<string, ParsedTopic>();
+    for (const referencePath of referencePaths) {
+      const source = parseConductorDocumentation(await readFile(referencePath, 'utf8'));
+      for (const [name, entry] of source) {
+        if (parsed.has(name)) throw new Error(`Duplicate Conductor documentation topic '${name}'.`);
+        parsed.set(name, entry);
+      }
+    }
     this.assertComplete(parsed);
     const context = {
       fleetDir: this.options.fleetDir,
@@ -73,6 +89,7 @@ export class ConductorDocumentation {
       sessionsDir: this.options.fleetPaths.sessionsDir,
       environmentFile: this.options.fleetPaths.environmentFile,
       referencePath: this.options.referencePath,
+      referencePaths,
     };
 
     if (topic === undefined) {

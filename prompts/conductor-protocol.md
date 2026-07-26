@@ -52,7 +52,7 @@ return to direct messages.
 ## Version-matched documentation
 
 Use `get_conductor_docs` for configuration, onboarding, worktrees, supervision, schedules,
-operator channels, adapters, PR Shepherd, and troubleshooting. Call it without a topic first to
+operator channels, adapters, runbooks, PR Shepherd, and troubleshooting. Call it without a topic first to
 discover available topics and the active fleet's authoritative paths, then load only what the task
 needs.
 
