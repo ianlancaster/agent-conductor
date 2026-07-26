@@ -23,8 +23,9 @@ linked project documentation before making a long-term choice.
 
 ## Where Agent Conductor fits
 
-Agent Conductor is designed for a fleet of separate, visible terminal agents. Its distinguishing
-boundary is the shared control plane:
+Agent Conductor is a terminal-based tool for highly productive and autonomous fleet coding
+sessions. It is designed for a fleet of separate, visible terminal agents, with a shared control
+plane that lets the fleet coordinate without hiding the underlying agent processes:
 
 - each session has a mechanically assigned identity;
 - Claude Code and Codex use the same lifecycle and communication primitives;
@@ -36,6 +37,30 @@ That makes Conductor a good fit when agents must coordinate over time without re
 operator to relay every message. It is a weaker fit when all work can stay inside one native agent
 team, when the main requirement is remote terminal persistence, or when a strongly prescribed task
 and merge workflow is desirable.
+
+## Feature comparison
+
+This matrix compares each product's primary shipped model rather than every behavior that could be
+added through scripts or plugins.
+
+| Tool                                                                                     | Terminal fleet                                      | Claude + Codex                  | Peer coordination                                               | Stall handling                                                                 | Remote operator                                   | Workflow posture                                                       |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------- | ------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------- | ---------------------------------------------------------------------- |
+| **Agent Conductor**                                                                      | iTerm2 or tmux panes                                | Yes                             | Identified MCP messages, broadcasts, receipts, and cancellation | Mechanical detection plus an agent sentinel that judges and escalates          | Local console, Telegram, Slack, injected adapters | Composable primitives; fleet policy stays in agent/config instructions |
+| [Herdr](https://herdr.dev/)                                                              | Persistent native multiplexer with local/SSH attach | Yes, plus other terminal agents | Pane/socket API can read, send, split, and wait                 | Semantic blocked/working/done/idle state; no equivalent sentinel control plane | SSH/direct attach and plugin ecosystem            | Terminal-runtime and multiplexer centered                              |
+| [Gas Town](https://github.com/steveyegge/gastown)                                        | tmux-backed roles and workers                       | Yes, plus other runtimes        | Role mailboxes and durable task state                           | Mechanical health roles and escalation                                         | No bundled chat operator channel                  | Strongly opinionated roles, task ledger, and merge flow                |
+| [amux](https://github.com/mixpeek/amux)                                                  | tmux control plane                                  | Yes                             | REST channels, mentions, and task claiming                      | Mechanical watchdog and recovery                                               | Web dashboard and iOS client                      | Lightweight pane orchestration with built-in coordination              |
+| Native Claude Code/Codex features                                                        | Vendor-owned processes or panes                     | No cross-vendor fleet           | Parent-routed delegation; Claude teams add same-runtime peers   | No cross-process fleet sentinel                                                | Vendor-specific and generally session-scoped      | Native, low-setup delegation inside one runtime                        |
+| [claude-squad](https://github.com/smtg-ai/claude-squad)                                  | tmux sessions and Git worktrees                     | Yes, plus other CLIs            | No peer messaging layer                                         | No fleet stall response                                                        | Local TUI                                         | Parallel session/worktree management                                   |
+| [Conductor](https://www.conductor.build/)                                                | Desktop-managed worktree sessions                   | Yes, plus Cursor                | No peer messaging layer                                         | No fleet stall response                                                        | macOS desktop app                                 | Human-centered worktree and diff review                                |
+| [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail)                    | Does not manage terminals                           | Runtime-neutral MCP             | Searchable mailboxes, threads, and file leases                  | No session supervision                                                         | No operator channel                               | Narrow coordination layer for externally managed agents                |
+| [Agent-MCP](https://github.com/rinadelph/Agent-MCP)                                      | Does not manage terminals                           | Runtime-neutral MCP             | Admin/worker communication, task assignment, and shared RAG     | No session supervision                                                         | Dashboard                                         | Task and knowledge coordination for externally managed agents          |
+| [Happy](https://github.com/slopus/happy) / [Omnara](https://github.com/omnara-ai/omnara) | Remote clients rather than fleet supervisors        | Claude Code and Codex           | Human-to-agent control, not a peer fleet bus                    | No fleet sentinel                                                              | Mobile/web is the product center                  | Remote access to agents managed through their client model             |
+
+The practical distinction is that Agent Conductor combines terminal session management with a
+conversation and supervision plane. Herdr goes deeper on the persistent terminal multiplexer;
+Gas Town goes deeper on prescribed organization and task flow; native subagents go smaller and
+stay inside one runtime; the coordination-only and remote-client products deliberately own less of
+the fleet lifecycle.
 
 ## Herdr and Agent Conductor
 

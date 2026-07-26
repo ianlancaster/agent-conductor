@@ -1,10 +1,10 @@
 # Agent Conductor
 
-Agent Conductor is a local control plane for running several Claude Code and OpenAI
-Codex agents as a coordinated fleet. It can spawn agents into real terminal panes,
-start and stop persistent sessions, create isolated worktree or template sessions,
-and give every agent a consistent way to communicate with its peers and the human
-operator.
+Agent Conductor is a terminal-based control plane for highly productive, autonomous
+fleet-based coding sessions. It runs several Claude Code and OpenAI Codex agents as a
+coordinated fleet: spawning them into real terminal panes, managing persistent sessions,
+creating isolated worktree or template workers, and giving every agent a consistent way
+to communicate with its peers and the human operator.
 
 The practical benefit is simple: you can delegate parallel work without becoming the
 message bus, terminal babysitter, and process manager yourself. Agents keep their own
@@ -93,6 +93,123 @@ For the full walkthrough, including what the generated files mean, continue with
   watch, schedules, and remote operator channels are optional layers over the same core
   primitives.
 
+## Work with the fleet
+
+The operator console uses a small command language. Run `/help` for the complete,
+version-matched reference; these are the commands used most often:
+
+| Task                                      | Command                                                        |
+| ----------------------------------------- | -------------------------------------------------------------- |
+| Inspect the fleet or one session          | `/status` · `/status <session>`                                |
+| Create a session                          | `/spawn <name> [-r claude-code\|codex] [--path <dir>]`         |
+| Start, resume, or stop it                 | `/start <session>` · `/continue <session>` · `/stop <session>` |
+| Send a message                            | `/tell <session> <message>` · `/broadcast <message>`           |
+| Make free text target one session         | `/talk <session>`                                              |
+| Inspect recent terminal output            | `/tail <session> [lines]`                                      |
+| Temporarily suspend or restore automation | `/pause <session>` · `/resume <session>`                       |
+| Remove a spawned session                  | `/teardown <session> [--delete]`                               |
+
+A typical hand-driven session looks like this:
+
+```text
+/spawn api-helper -r codex --path /absolute/path/to/project
+/tell api-helper inspect the API layer and propose the smallest safe refactor
+/status api-helper
+/tail api-helper 40
+/stop api-helper
+/continue api-helper
+```
+
+`/spawn` registers and starts the session. `-r` selects a runtime for the session; if
+omitted, the fleet default is used. Claude Code and Codex retain separate native
+conversation histories, so `continue` resumes the history belonging to the selected
+runtime.
+
+Messages sent with `/tell` or the agent-facing `send_to_session` operation are signed with
+mechanical sender identity and return observable delivery receipts. `/type` is intentionally
+different: it writes raw terminal input for prompts and slash commands, bypasses the
+protected delivery queue, and can overwrite operator typing. Use it only for deliberate
+terminal control.
+
+## Status and observability
+
+There are three complementary status surfaces:
+
+- `/status` is the canonical fleet snapshot inside any operator interface.
+- `conductor status [session]` is a persistent, read-only terminal panel. It redraws one
+  canonical status frame every 15 seconds, reports whether Conductor is online, and
+  reconnects across restarts. Press `q` to leave it; use `--once` for one snapshot or
+  `--interval <duration>` to change the refresh cadence.
+- `conductor statusline` is a one-time, optional setup command for richer footers inside
+  Claude Code and Codex panes. It does not display fleet status.
+
+The Claude Code status line shows model, context used, cost, project, worktree, Git branch,
+and staged/modified counts. Codex uses its native status-line fields for model and reasoning,
+context used, tokens used, project, and Git branch. Restart an existing agent process after
+running `conductor statusline` so it receives the new runtime settings.
+
+For diagnosis, `conductor logs [session]` reads recent persisted health events,
+`conductor validate` checks strict fleet configuration, and `/tail` reads pane output.
+Managed agents can use `list_sessions` and `get_session_status` for structured,
+non-invasive status without scraping peers' terminals.
+
+## Run autonomous sessions
+
+Autonomy is composed from three small controls:
+
+1. A **sentinel** is a normal Claude Code or Codex session configured with the shipped
+   [sentinel instructions](prompts/sentinel.md).
+2. `/auto <session>` toggles stall routing for one worker. Auto off is the normal
+   hand-driven state; auto on routes that worker's stalls to the sentinel.
+3. `/fleet-watch` toggles fleet-wide darkness detection. It watches every registered
+   session except the sentinel and follows roster changes automatically.
+
+The guided onboarding assistant can configure the sentinel safely. The underlying session
+configuration is intentionally ordinary:
+
+```yaml
+# .conductor/config/sessions/watch.yaml
+codename: watch
+repo: /absolute/path/to/a/sentinel-workspace
+runtime: claude-code
+systemPromptFile: ./.conductor/prompts/sentinel.md
+```
+
+Copy [prompts/sentinel.md](prompts/sentinel.md) into `.conductor/prompts/sentinel.md`, or
+have the onboarding assistant do it using the authoritative fleet paths. Session files
+hot-reload. Then start and designate the sentinel before enabling autonomous workers:
+
+```text
+/start watch
+/sentinel watch
+/spawn implementer --path /absolute/path/to/implementation-workspace
+/spawn reviewer -r codex --path /absolute/path/to/review-workspace
+/auto implementer
+/auto reviewer
+/fleet-watch
+/tell implementer implement the agreed change and coordinate review when ready
+/tell reviewer review the implementation when the implementer contacts you
+```
+
+Auto and fleet watch are independent. Auto routes an individual session's stalls. Fleet
+watch alerts only when every eligible fleet member remains stalled for the configured
+confirmation interval—15 seconds by default—and requires at least two eligible sessions.
+Both settings survive Conductor restarts. `/pause` suppresses schedules and stall routing
+temporarily without changing a session's saved auto setting; `/resume` restores them.
+
+### What the stall sentinel does
+
+Conductor mechanically identifies evidence such as an ended turn that stayed quiet, a
+permission/input block, context compaction, or a silent unchanged pane. It does not decide
+whether that state is actually a problem and it never calls an LLM itself.
+
+The sentinel receives a self-contained `[Stall]` or `[Fleet Stall]` message and decides what
+to do. It can inspect structured status or recent pane output, send one precise nudge, ask
+the operator through `send_to_operator`, or deliberately do nothing when the agent really
+finished. Fleet-specific rules—what is safe to retry, what requires approval, and when to
+escalate—belong in the sentinel's instructions rather than in Conductor core. If no sentinel
+is configured, Conductor sends stall alerts directly to the operator.
+
 ## Is Agent Conductor the right tool?
 
 Several good tools cover adjacent parts of multi-agent development. Choose based on the
@@ -109,7 +226,7 @@ problem you most need to solve:
 | [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail)                                | Agent mailboxes and coordination without adopting a terminal/session supervisor                                                                                    |
 
 These categories overlap, and some tools can be composed. See [Choosing an agent fleet
-tool](docs/alternatives.md) for the fuller comparison and tradeoffs.
+tool](docs/alternatives.md) for the maintained feature matrix and fuller tradeoffs.
 
 ## Feature map
 
@@ -128,6 +245,52 @@ All operator interfaces use the same command language, and all managed agents re
 the same runtime-neutral MCP operations. Run `/help` in the operator console for the
 authoritative command reference; managed agents can inspect their authoritative tool
 schemas directly.
+
+## Advanced features
+
+### Worktrees, templates, schedules, and headless sessions
+
+`/spawn` can create an empty workspace, clone a registered Git template with `--template`,
+or create a linked Git worktree with `--worktree` and `--branch`. `/teardown --delete`
+removes only safe, Conductor-owned directories and refuses dirty worktrees. Session YAML
+can also define Croner-compatible `schedules`; an inactive session starts with the prompt,
+while an active session receives it through the normal protected delivery path.
+
+The tmux backend supports `--headless` sessions and unattended operation over SSH.
+`conductor daemon install` creates a user-level launchd or systemd service for a globally
+installed release. These features use the same lifecycle and messaging primitives as
+visible panes rather than introducing a separate worker model.
+
+### Operator adapters
+
+The local console, Telegram, Slack, and injected operator channels all adapt the same
+canonical command router. Telegram uses a private bot and authorized chat ID; Slack uses a
+private App Home conversation over outbound Socket Mode. Both can run together, render
+selectable `send_to_operator` choices, and keep credentials in the fleet's owner-only,
+gitignored `.conductor/.env`.
+
+An optional channel failing to start does not take down agent lifecycle or peer messaging.
+External integrations implement the small `ChannelAdapter` contract and own only transport
+concerns—authentication, parsing, formatting, service limits, retries, and shutdown. Core
+commands and policy remain in `ConductorOperations`, so a new channel does not need to
+reimplement fleet behavior. See the [Telegram guide](guides/telegram-adapter.md),
+[Slack guide](guides/slack-adapter.md), and [external adapter contract](guides/external-adapters.md).
+
+### PR Shepherd
+
+PR Shepherd V2 is an opt-in GitHub polling companion shipped in the same package. It watches
+configured pull requests, evaluates checks/reviews/merge readiness, stores its own durable
+state, and can either print factual events or deliver them through Conductor to a coordinator
+agent. The coordinator then uses ordinary fleet primitives to dispatch review, coordinate a
+fix, or ask the operator.
+
+The first `conductor start` creates an inert Shepherd profile; it does not poll until a
+GitHub identity is configured and Shepherd is explicitly enabled. The recommended rollout is
+observation first: authenticate `gh`, validate the profile, run one baseline-only
+`poll --once` with stdout delivery, and move automation policies from `off` or `notify` to
+`execute` only after the observed decisions are correct. A managed Shepherd runs headless by
+default, appears in fleet status while healthy, and cannot take down Conductor if it fails.
+See [PR Shepherd V2](docs/pr-shepherd.md) for its policy and delivery model.
 
 ## How it works
 
