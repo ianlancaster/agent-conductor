@@ -61,6 +61,7 @@ export interface LifecycleDeps {
   config: {
     defaultPlacement: Placement;
     defaultRuntime: SessionConfig['runtime'];
+    defaultModels?: Record<string, string | undefined>;
     defaultEfforts: Record<string, string | undefined>;
     defaultBypassPermissions: boolean;
     markerFile: string;
@@ -351,6 +352,7 @@ export class Lifecycle {
       workspaceSource = { kind: 'empty' };
     }
     await materializeWorkspace(dir, workspaceSource);
+    this.deps.events?.emit({ type: 'workspace.provisioned', session: codename, kind: workspaceSource.kind });
 
     // Serialize with js-yaml, never string interpolation: a model/effort value
     // containing a newline would otherwise inject arbitrary YAML keys.
@@ -391,6 +393,7 @@ export class Lifecycle {
       if (isWorktree(session.repo)) {
         try {
           const branch = await removeWorktree(session.repo);
+          this.deps.events?.emit({ type: 'workspace.removed', session: codename, kind: 'worktree' });
           dirNote =
             branch !== null
               ? ` Worktree removed. Its branch '${branch}' was kept in the main repo — delete it with: git branch -d ${branch}`
@@ -407,6 +410,7 @@ export class Lifecycle {
         dirNote = ` Directory kept: ${session.repo} is marked as an agent project.`;
       } else {
         rmSync(session.repo, { recursive: true, force: true });
+        this.deps.events?.emit({ type: 'workspace.removed', session: codename, kind: 'directory' });
         dirNote = ` Directory deleted.`;
       }
     }
@@ -470,7 +474,22 @@ export class Lifecycle {
     // Every caller has either persisted the selected run settings or backfilled
     // the configured runtime before reaching this choke point.
     if (runtime !== undefined) {
-      this.deps.events?.emit({ type: 'session.started', session: codename, cause, runtime });
+      const configured = this.deps.sessions().get(codename);
+      const launchModel =
+        configured === undefined
+          ? undefined
+          : runtime === configured.runtime
+            ? (configured.model ?? this.deps.config.defaultModels?.[runtime])
+            : this.deps.config.defaultModels?.[runtime];
+      const launchEffort = this.deps.states.get(codename)?.effort;
+      this.deps.events?.emit({
+        type: 'session.started',
+        session: codename,
+        cause,
+        runtime,
+        ...(launchModel === undefined ? {} : { launchModel }),
+        ...(launchEffort === undefined ? {} : { launchEffort }),
+      });
     }
   }
 

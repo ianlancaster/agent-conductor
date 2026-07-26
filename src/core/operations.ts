@@ -1,5 +1,4 @@
 import type { SessionConfig } from '../config/schema.js';
-import { CONDUCTOR_DOC_TOPICS } from './documentation.js';
 import type { Lifecycle } from './lifecycle.js';
 import type { Messaging } from './messaging.js';
 import type { MessageReceipt } from './messaging.js';
@@ -8,6 +7,7 @@ import type { StallSentinelRouter } from './sentinel.js';
 import type { SessionStateManager } from './state.js';
 import { InvalidRequestError } from './errors.js';
 import type { Placement } from './types.js';
+import type { RunbookAdoptionActions } from './runbook-adoptions.js';
 import {
   operationSchema as schema,
   optionalString,
@@ -56,6 +56,7 @@ export interface ConductorOperationDeps {
   banish(codename: string): Promise<string>;
   setSentinel(codename: string | undefined): void;
   getDocumentation(topic?: string): Promise<string>;
+  runbookAdoptions: RunbookAdoptionActions;
 }
 
 const BOTH = ['operator', 'session'] as const;
@@ -531,11 +532,74 @@ export class ConductorOperations {
         inputSchema: schema({
           topic: {
             type: 'string',
-            enum: CONDUCTOR_DOC_TOPICS,
-            description: 'Optional handbook topic; omit to list topics and authoritative fleet paths',
+            description:
+              'Optional core topic or live runbook resource key; omit to list the current catalog and authoritative fleet paths',
           },
         }),
         handler: (args) => this.deps.getDocumentation(optionalString(args, 'topic')),
+      },
+      {
+        name: 'adopt_runbook',
+        description:
+          'Record explicit operator approval to use one installed runbook version and topic, optionally assigning registered sessions to roles.',
+        resultDescription: 'Returns the stable adoption id for the appended provenance record.',
+        audiences: OPERATOR_ONLY,
+        inputSchema: schema(
+          {
+            runbookId: stringProperty('Installed namespaced runbook id'),
+            version: stringProperty('Exact installed runbook version'),
+            topic: stringProperty('Declared runbook topic id being adopted'),
+            sessions: {
+              type: 'array',
+              description: "Optional session role assignments in 'codename=role' form",
+              maxItems: 200,
+              items: { type: 'string', minLength: 3, maxLength: 160 },
+            },
+          },
+          ['runbookId', 'version', 'topic'],
+        ),
+        handler: (args) =>
+          Promise.resolve(
+            this.deps.runbookAdoptions.adopt({
+              runbookId: requireString(args, 'runbookId'),
+              version: requireString(args, 'version'),
+              topic: requireString(args, 'topic'),
+              sessions: optionalStringArray(args, 'sessions'),
+            }),
+          ),
+      },
+      {
+        name: 'supersede_runbook_adoption',
+        description:
+          'Close one active runbook adoption and record its operator-approved replacement while preserving the prior session-role assignments.',
+        resultDescription: 'Returns both the superseded and replacement stable adoption ids.',
+        audiences: OPERATOR_ONLY,
+        inputSchema: schema(
+          {
+            adoptionId: stringProperty('Stable id of the active adoption to supersede'),
+            runbookId: stringProperty('Installed namespaced replacement runbook id'),
+            version: stringProperty('Exact installed replacement runbook version'),
+            topic: stringProperty('Declared replacement runbook topic id'),
+          },
+          ['adoptionId', 'runbookId', 'version', 'topic'],
+        ),
+        handler: (args) =>
+          Promise.resolve(
+            this.deps.runbookAdoptions.supersede({
+              adoptionId: requireString(args, 'adoptionId'),
+              runbookId: requireString(args, 'runbookId'),
+              version: requireString(args, 'version'),
+              topic: requireString(args, 'topic'),
+            }),
+          ),
+      },
+      {
+        name: 'end_runbook_adoption',
+        description: 'End one active runbook adoption by stable id under explicit operator authority.',
+        resultDescription: 'Returns confirmation that the adoption was ended.',
+        audiences: OPERATOR_ONLY,
+        inputSchema: schema({ adoptionId: stringProperty('Stable id of the active adoption to end') }, ['adoptionId']),
+        handler: (args) => Promise.resolve(this.deps.runbookAdoptions.end(requireString(args, 'adoptionId'))),
       },
       {
         name: 'list_sessions',

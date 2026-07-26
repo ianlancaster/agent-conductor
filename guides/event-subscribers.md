@@ -40,9 +40,9 @@ The stream is deliberately live and best-effort:
 - `conductorInstanceId` is a fresh UUID for each Supervisor construction. The pair
   `(conductorInstanceId, seq)` defines the ordering domain, and `id` is their joined correlation
   value. A changed instance ID means the Conductor restarted.
-- Delivery is at most once. There is no journal, replay, cursor, retry, or receipt. A consumer that
-  needs current truth after a restart or sequence gap should reconcile through existing status
-  and operation surfaces.
+- Live callback delivery is at most once. There is no subscriber replay, cursor, retry, or
+  receipt API. A consumer that needs current truth after a restart or sequence gap should
+  reconcile through existing status and operation surfaces.
 - Each subscriber has an independent bounded queue of 1,000 waiting events. On overflow,
   Conductor drops the oldest waiting event, logs a rate-limited warning, and continues. The next
   observed `seq` exposes the gap.
@@ -57,9 +57,28 @@ The stream is deliberately live and best-effort:
 - The relationship is one-way: subscribers observe facts. Conductor never reads a result from a
   subscriber, and subscribers cannot inject events or alter the control path through this API.
 
-If a consumer requires durable, at-least-once delivery across processes, it owns that boundary:
-persist events inside `onEvent`, detect sequence gaps, and reconcile. Conductor does not pretend a
-live callback is an outbox.
+The first-party local journal is deliberately separate from subscriber delivery. When
+`events.journal.enabled` is true (the default), Conductor synchronously stores each envelope before
+live fanout. Export the stored envelopes in insertion order without stopping the fleet:
+
+```bash
+conductor events export --format jsonl
+conductor events export --format jsonl --since 2026-07-26T00:00:00Z
+```
+
+The journal is an append-only local record, not an outbox: it has no subscriber cursor, delivery
+claim, retry, or acknowledgement API. An integration that needs durable delivery to another
+process owns that transport boundary and can consume JSONL exports or persist live callbacks
+idempotently. The journal grows without automatic retention in v1; operators should export,
+archive, or rotate the fleet database according to their own evidence policy.
+
+If a journal write fails, Conductor keeps lifecycle and messaging online, continues attempting
+later writes, logs a rate-limited error, and records sticky degradation in fleet status and
+`conductor doctor`. The marker survives restart because the historical gap still exists. An export
+from a degraded journal is incomplete; sequence gaps identify failed writes within an instance.
+After exporting the available rows and recording the affected instance and gap, delete
+`<dataDir>/event-journal.degraded` to acknowledge the incident and re-arm detection for future
+write failures. `conductor doctor` prints the exact marker path for the active fleet.
 
 ## Envelope and compatibility
 
@@ -86,19 +105,27 @@ paths, or arbitrary runtime reason strings.
 
 ## Event catalog
 
-| Event                       | Payload beyond the envelope                                                      |
-| --------------------------- | -------------------------------------------------------------------------------- |
-| `session.registered`        | `session`; `cause: startup \| config-added`                                      |
-| `session.deregistered`      | `session`; `cause: config-removed \| teardown`                                   |
-| `session.started`           | `session`; `runtime`; `cause: start \| continue \| adopt \| discovered`          |
-| `session.ready`             | `session`; emitted once when a run is first proven ready                         |
-| `session.stopped`           | `session`; `cause: requested \| runtime-exit \| pane-missing \| launch-failed`   |
-| `session.activity.changed`  | `session`; `previous`; `activity`; transition-only                               |
-| `stall`                     | `session`; `kind`; mechanical `disposition`                                      |
-| `fleet.stalled`             | `sessions`; `disposition: routed \| reported-to-operator \| sentinel-down`       |
-| `schedule`                  | `session`; `label`; `outcome: fired \| fired-fresh \| deferred-paused \| failed` |
-| `operator.request.created`  | `session`; `requestId`; `optionCount`                                            |
-| `operator.request.resolved` | `session`; `requestId`; one-based `selectedOption`                               |
+| Event                       | Payload beyond the envelope                                                       |
+| --------------------------- | --------------------------------------------------------------------------------- |
+| `session.registered`        | `session`; `cause: startup \| config-added`                                       |
+| `session.deregistered`      | `session`; `cause: config-removed \| teardown`                                    |
+| `session.started`           | `session`; `runtime`; cause; optional configured `launchModel` and `launchEffort` |
+| `session.ready`             | `session`; emitted once when a run is first proven ready                          |
+| `session.stopped`           | `session`; `cause: requested \| runtime-exit \| pane-missing \| launch-failed`    |
+| `session.activity.changed`  | `session`; `previous`; `activity`; transition-only                                |
+| `stall`                     | `session`; `kind`; mechanical `disposition`                                       |
+| `fleet.stalled`             | `sessions`; `disposition: routed \| reported-to-operator \| sentinel-down`        |
+| `schedule`                  | `session`; `label`; `outcome: fired \| fired-fresh \| deferred-paused \| failed`  |
+| `operator.request.created`  | `session`; `requestId`; `optionCount`                                             |
+| `operator.request.resolved` | `session`; `requestId`; one-based `selectedOption`                                |
+| `runbook.adopted`           | adoption/runbook IDs, version, source, topic, operator approval, session roles    |
+| `runbook.superseded`        | prior/replacement adoption IDs and replacement runbook metadata                   |
+| `runbook.adoption.ended`    | `adoptionId`; `approvedBy: operator`                                              |
+| `message.created`           | direct receipt ID, sender, recipient, UTF-8 `byteCount`                           |
+| `message.delivered`         | direct receipt ID, sender, recipient                                              |
+| `message.cancelled`         | direct receipt metadata; `reason: requested \| conductor-restarted`               |
+| `workspace.provisioned`     | `session`; `kind: empty \| template \| worktree`                                  |
+| `workspace.removed`         | `session`; `kind: directory \| worktree`                                          |
 
 The `stall` dispositions are `routed`, `suppressed`, `reported-to-operator`, `sentinel-down`,
 `ignored-auto-off`, and `ignored-paused`. Pause takes precedence when a session is both paused and
@@ -111,6 +138,12 @@ and can arrive without a preceding `session.started`; consumers must treat stopp
 idempotent. Lifecycle causes reflect the mechanical detection path, so equivalent external
 failures found by different health or lifecycle checks can carry different causes. Events
 describe observed outcomes, not requested commands.
+
+Message events cover direct messages only. Broadcasts have neither per-recipient receipt rows nor
+delivery confirmation and therefore emit no message event. `launchModel` and `launchEffort` are
+the settings Conductor selected for process launch, not proof of the provider's currently served
+model or retained effort. Workspace events never include local paths. Runbook adoption events are
+emitted only by the operator-authorized provenance operations described in the runbook guide.
 
 ## Consumer checklist
 

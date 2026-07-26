@@ -217,6 +217,30 @@ in code defaults or fully commented examples. Existing files must not be overwri
 - Make shutdown safe and repeatable; a failed update or network request must not terminate a
   long-running receive loop.
 
+## Contributing runbooks
+
+Runbooks are inert, versioned knowledge bundles—not executable plugins or product modes. Read
+[Authoring and sharing runbooks](guides/runbooks.md) before adding one. A contributed bundle must:
+
+- solve a reusable workflow problem using public Conductor primitives;
+- begin with the smallest useful arrangement and state the cost and expected signal of optional
+  stages;
+- contain no private names, local paths, credentials, organization policy, model assumptions, or
+  environment-specific claims;
+- document prerequisites, operator decisions, verification, recovery, and safe teardown;
+- use exact semantic versions and bump the version for every meaningful content change;
+- include no scripts, lifecycle hooks, environment interpolation, dependency resolution, hidden
+  config mutation, or implied authority; and
+- pass `conductor runbook validate <path>` plus the registry, documentation, privacy, stale-name,
+  packed-artifact, and onboarding tests applicable to a built-in bundle.
+
+Community bundles do not need to live in this repository. A normal Git repository copied under a
+fleet's `.conductor/runbooks/` directory or listed in `runbooks.paths` is the preferred first
+distribution mechanism. `variantOf` and `delta` may document ancestry, but Conductor never fetches
+or merges the parent. Published measurements must link their dataset and methodology, preserve
+denominators, and identify their authoring context rather than presenting one fleet's result as a
+universal product claim.
+
 ## Pull requests
 
 Keep changes focused and explain both the user-visible outcome and the architectural seam

@@ -1,7 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { RuntimeName } from '../config/schema.js';
 import type { Activity } from '../core/types.js';
-import { applyMigrations, openSqliteDatabase, withTransaction } from './sqlite.js';
+import type { ConductorEvent } from '../events/types.js';
+import type { RunbookSource } from '../runbooks/types.js';
+import { applyMigrations, openSqliteDatabase, openSqliteDatabaseReadOnly, withTransaction } from './sqlite.js';
 
 /** One launch of a session's CLI (start → stop). A session has many runs over time. */
 export interface RunRow {
@@ -61,6 +63,33 @@ export interface OperatorRequestRow {
   selectedIndex: number | null;
   createdAt: string;
   resolvedAt: string | null;
+}
+
+export interface RunbookAdoptionSessionRole {
+  codename: string;
+  role: string;
+}
+
+export interface RunbookAdoptionRow {
+  adoptionId: string;
+  runbookId: string;
+  version: string;
+  source: RunbookSource;
+  topic: string;
+  sessionRoles: RunbookAdoptionSessionRole[];
+  status: 'active' | 'superseded' | 'ended';
+  supersededBy: string | null;
+  createdAt: string;
+  closedAt: string | null;
+}
+
+export interface NewRunbookAdoption {
+  adoptionId: string;
+  runbookId: string;
+  version: string;
+  source: RunbookSource;
+  topic: string;
+  sessionRoles: readonly RunbookAdoptionSessionRole[];
 }
 
 /** Versioned migrations. Append only — never edit an existing entry (post first release). */
@@ -202,6 +231,34 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_federation_inbox_recipient
     ON federation_inbox(recipient_session, received_at);
   `,
+  `
+  CREATE TABLE event_journal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instance_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    occurred_at TEXT NOT NULL,
+    type TEXT NOT NULL,
+    session TEXT,
+    event_json TEXT NOT NULL,
+    UNIQUE(instance_id, seq)
+  );
+  CREATE INDEX idx_event_journal_occurred ON event_journal(occurred_at, id);
+  `,
+  `
+  CREATE TABLE runbook_adoptions (
+    adoption_id TEXT PRIMARY KEY,
+    runbook_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    source TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    session_roles_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'superseded', 'ended')),
+    superseded_by TEXT REFERENCES runbook_adoptions(adoption_id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    closed_at TEXT
+  );
+  CREATE INDEX idx_runbook_adoptions_status ON runbook_adoptions(status, created_at);
+  `,
 ];
 
 export class Store {
@@ -314,13 +371,15 @@ export class Store {
       .get(sender, idempotencyKey) as MessageRow | undefined;
   }
 
-  markMessageDelivered(id: number): void {
-    this.db
-      .prepare(
-        "UPDATE messages SET status = 'delivered', delivered_at = datetime('now'), " +
-          "last_flush_attempt_at = datetime('now'), flush_skip_reason = NULL WHERE id = ? AND status = 'pending'",
-      )
-      .run(id);
+  markMessageDelivered(id: number): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE messages SET status = 'delivered', delivered_at = datetime('now'), " +
+            "last_flush_attempt_at = datetime('now'), flush_skip_reason = NULL WHERE id = ? AND status = 'pending'",
+        )
+        .run(id).changes === 1
+    );
   }
 
   recordMessageFlushAttempt(id: number, skipReason: string | null): void {
@@ -344,15 +403,128 @@ export class Store {
   }
 
   /** Cancel direct messages left pending by an earlier conductor process. */
-  cancelPendingLocalMessagesOnRestart(): number {
-    const result = this.db
+  cancelPendingLocalMessagesOnRestart(): MessageRow[] {
+    return withTransaction(this.db, () => {
+      const pending = this.getPendingMessages();
+      this.db
+        .prepare(
+          "UPDATE messages SET status = 'cancelled', cancelled_at = datetime('now'), " +
+            "flush_skip_reason = 'conductor-restarted' " +
+            "WHERE type = 'message' AND status = 'pending'",
+        )
+        .run();
+      return pending;
+    });
+  }
+
+  // ── operator-approved runbook adoption provenance ──────────────────────
+
+  insertRunbookAdoption(input: NewRunbookAdoption): RunbookAdoptionRow {
+    this.db
       .prepare(
-        "UPDATE messages SET status = 'cancelled', cancelled_at = datetime('now'), " +
-          "flush_skip_reason = 'conductor-restarted' " +
-          "WHERE type = 'message' AND status = 'pending'",
+        `INSERT INTO runbook_adoptions
+         (adoption_id, runbook_id, version, source, topic, session_roles_json)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run();
-    return Number(result.changes);
+      .run(
+        input.adoptionId,
+        input.runbookId,
+        input.version,
+        input.source,
+        input.topic,
+        JSON.stringify(input.sessionRoles),
+      );
+    const row = this.getRunbookAdoption(input.adoptionId);
+    if (row === undefined) throw new Error('Runbook adoption was not persisted.');
+    return row;
+  }
+
+  getRunbookAdoption(adoptionId: string): RunbookAdoptionRow | undefined {
+    const row = this.db.prepare('SELECT * FROM runbook_adoptions WHERE adoption_id = ?').get(adoptionId) as
+      | {
+          adoption_id: string;
+          runbook_id: string;
+          version: string;
+          source: string;
+          topic: string;
+          session_roles_json: string;
+          status: string;
+          superseded_by: string | null;
+          created_at: string;
+          closed_at: string | null;
+        }
+      | undefined;
+    if (row === undefined) return undefined;
+    const sessionRoles = JSON.parse(row.session_roles_json) as unknown;
+    if (
+      !Array.isArray(sessionRoles) ||
+      !sessionRoles.every(
+        (item) =>
+          typeof item === 'object' &&
+          item !== null &&
+          typeof (item as { codename?: unknown }).codename === 'string' &&
+          typeof (item as { role?: unknown }).role === 'string',
+      )
+    ) {
+      throw new Error(`Runbook adoption '${adoptionId}' has invalid stored session roles.`);
+    }
+    if (row.source !== 'built-in' && row.source !== 'fleet' && row.source !== 'external') {
+      throw new Error(`Runbook adoption '${adoptionId}' has invalid stored source.`);
+    }
+    if (row.status !== 'active' && row.status !== 'superseded' && row.status !== 'ended') {
+      throw new Error(`Runbook adoption '${adoptionId}' has invalid stored status.`);
+    }
+    return {
+      adoptionId: row.adoption_id,
+      runbookId: row.runbook_id,
+      version: row.version,
+      source: row.source,
+      topic: row.topic,
+      sessionRoles: sessionRoles as RunbookAdoptionSessionRole[],
+      status: row.status,
+      supersededBy: row.superseded_by,
+      createdAt: row.created_at,
+      closedAt: row.closed_at,
+    };
+  }
+
+  supersedeRunbookAdoption(adoptionId: string, replacement: NewRunbookAdoption): RunbookAdoptionRow {
+    return withTransaction(this.db, () => {
+      const previous = this.getRunbookAdoption(adoptionId);
+      if (previous === undefined) throw new Error(`Unknown runbook adoption: ${adoptionId}`);
+      if (previous.status !== 'active') throw new Error(`Runbook adoption '${adoptionId}' is not active.`);
+      const inserted = this.insertRunbookAdoption(replacement);
+      const changed = this.db
+        .prepare(
+          "UPDATE runbook_adoptions SET status = 'superseded', superseded_by = ?, closed_at = datetime('now') " +
+            "WHERE adoption_id = ? AND status = 'active'",
+        )
+        .run(replacement.adoptionId, adoptionId).changes;
+      if (changed !== 1) throw new Error(`Runbook adoption '${adoptionId}' could not be superseded.`);
+      return inserted;
+    });
+  }
+
+  endRunbookAdoption(adoptionId: string): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE runbook_adoptions SET status = 'ended', closed_at = datetime('now') " +
+            "WHERE adoption_id = ? AND status = 'active'",
+        )
+        .run(adoptionId).changes === 1
+    );
+  }
+
+  // ── durable conductor events ─────────────────────────────────────────────
+
+  appendEvent(event: ConductorEvent): void {
+    const session = 'session' in event && typeof event.session === 'string' ? event.session : null;
+    this.db
+      .prepare(
+        'INSERT INTO event_journal (instance_id, seq, occurred_at, type, session, event_json) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(event.conductorInstanceId, event.seq, event.occurredAt, event.type, session, JSON.stringify(event));
   }
 
   getMessage(id: number): MessageRow | undefined {
@@ -541,5 +713,25 @@ export class Store {
 
   deleteWorkspaceValue(key: string): void {
     this.db.prepare('DELETE FROM workspace WHERE key = ?').run(key);
+  }
+}
+
+/** Stream stored envelopes verbatim so future event types survive older exporters. */
+export function* exportEventJournalJsonl(dbPath: string, since?: string): Generator<string> {
+  const normalizedSince = since === undefined ? undefined : new Date(since).toISOString();
+  const db = openSqliteDatabaseReadOnly(dbPath);
+  try {
+    const statement =
+      normalizedSince === undefined
+        ? db.prepare('SELECT event_json FROM event_journal ORDER BY id')
+        : db.prepare('SELECT event_json FROM event_journal WHERE occurred_at >= ? ORDER BY id');
+    const rows = normalizedSince === undefined ? statement.iterate() : statement.iterate(normalizedSince);
+    for (const row of rows) {
+      const eventJson = (row as { event_json?: unknown }).event_json;
+      if (typeof eventJson !== 'string') throw new Error('Event journal contains a non-text envelope.');
+      yield eventJson;
+    }
+  } finally {
+    db.close();
   }
 }

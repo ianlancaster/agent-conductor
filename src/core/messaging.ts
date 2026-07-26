@@ -5,6 +5,7 @@ import type { DeliveryQueue, DeliveryResult } from './delivery.js';
 import type { SessionStateManager } from './state.js';
 import { broadcastEnvelope, messageEnvelope } from './utils.js';
 import { InvalidRequestError } from './errors.js';
+import type { ConductorEventPublisher } from '../events/types.js';
 
 export interface MessagingDeps {
   store: Store;
@@ -12,6 +13,7 @@ export interface MessagingDeps {
   states: SessionStateManager;
   sessions(): Map<string, SessionConfig>;
   startSession(codename: string, opts: { prompt?: string }): Promise<string>;
+  events?: ConductorEventPublisher;
 }
 
 export interface MessageReceipt {
@@ -55,6 +57,13 @@ export class Messaging {
     if (inserted.deduplicated) {
       return this.receipt(inserted.row, true);
     }
+    this.deps.events?.emit({
+      type: 'message.created',
+      receiptId: id,
+      sender: from,
+      recipient: target,
+      byteCount: Buffer.byteLength(message, 'utf8'),
+    });
 
     if (this.deps.states.get(target)?.running === true) {
       const result = await this.schedule(id, target, envelope);
@@ -87,7 +96,7 @@ export class Messaging {
       if (started !== `${target} started.`) {
         return { messageId: id, recipient: target, status: 'queued', deduplicated: false };
       }
-      this.deps.store.markMessageDelivered(id);
+      this.markDelivered(id);
       return { messageId: id, recipient: target, status: 'delivered', deduplicated: false };
     } finally {
       this.startingDelivery.delete(id);
@@ -156,6 +165,13 @@ export class Messaging {
         : `Message #${String(id)} could not be cancelled.`;
     }
     this.scheduled.delete(id);
+    this.deps.events?.emit({
+      type: 'message.cancelled',
+      receiptId: id,
+      sender: row.sender,
+      recipient: row.recipient,
+      reason: 'requested',
+    });
     return `Message #${String(id)} cancelled.`;
   }
 
@@ -168,7 +184,7 @@ export class Messaging {
           this.deps.store.recordMessageFlushAttempt(id, skipReason);
         },
         onDelivered: () => {
-          this.deps.store.markMessageDelivered(id);
+          this.markDelivered(id);
           this.scheduled.delete(id);
         },
       });
@@ -178,6 +194,18 @@ export class Messaging {
       this.scheduled.delete(id);
       throw error;
     }
+  }
+
+  private markDelivered(id: number): void {
+    if (!this.deps.store.markMessageDelivered(id)) return;
+    const row = this.deps.store.getMessage(id);
+    if (row === undefined) return;
+    this.deps.events?.emit({
+      type: 'message.delivered',
+      receiptId: row.id,
+      sender: row.sender,
+      recipient: row.recipient,
+    });
   }
 
   private receipt(row: MessageRow, deduplicated: boolean): MessageReceipt {

@@ -6,6 +6,7 @@ import { SessionStateManager } from '../src/core/state.js';
 import { Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
+import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
 
 const CONFIG = { queueDrainMs: 2_000, queueMaxAgeMs: 60_000 };
 
@@ -53,7 +54,7 @@ describe('Messaging delivery receipts', () => {
     expect(store.getMessage(1)?.status).toBe('pending');
     firstQueue.stop();
 
-    expect(store.cancelPendingLocalMessagesOnRestart()).toBe(1);
+    expect(store.cancelPendingLocalMessagesOnRestart()).toHaveLength(1);
 
     const restartedQueue = makeQueue(new FakeRuntime(), pane.id);
     const restartedMessaging = makeMessaging(restartedQueue);
@@ -88,6 +89,46 @@ describe('Messaging delivery receipts', () => {
     expect(first).toEqual({ messageId: 1, recipient: 'beta', status: 'delivered', deduplicated: false });
     expect(repeated).toEqual({ messageId: 1, recipient: 'beta', status: 'delivered', deduplicated: true });
     expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] once']);
+  });
+
+  it('emits content-free direct-message lifecycle facts and excludes broadcasts', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const runtime = new FakeRuntime();
+    const queue = makeQueue(runtime, pane.id);
+    const events = new FakeEventPublisher();
+    const messaging = makeMessaging(queue, events);
+
+    await messaging.sendToSession('alpha', 'beta', 'héllo secret');
+    await messaging.broadcast('alpha', 'broadcast secret');
+
+    expect(events.events).toEqual([
+      { type: 'message.created', receiptId: 1, sender: 'alpha', recipient: 'beta', byteCount: 13 },
+      { type: 'message.delivered', receiptId: 1, sender: 'alpha', recipient: 'beta' },
+    ]);
+    expect(JSON.stringify(events.events)).not.toContain('secret');
+  });
+
+  it('emits requested cancellation only after the pending receipt changes state', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const runtime = new FakeRuntime();
+    runtime.inputState = 'draft';
+    const queue = makeQueue(runtime, pane.id);
+    const events = new FakeEventPublisher();
+    const messaging = makeMessaging(queue, events);
+
+    await messaging.sendToSession('alpha', 'beta', 'cancel me');
+    expect(messaging.cancelMessage(1, 'alpha')).toBe('Message #1 cancelled.');
+    expect(events.events.at(-1)).toEqual({
+      type: 'message.cancelled',
+      receiptId: 1,
+      sender: 'alpha',
+      recipient: 'beta',
+      reason: 'requested',
+    });
   });
 
   it('exposes flush diagnostics and cancels a pending receipt without later delivery', async () => {
@@ -162,13 +203,14 @@ describe('Messaging delivery receipts', () => {
     return queue;
   }
 
-  function makeMessaging(delivery: DeliveryQueue): Messaging {
+  function makeMessaging(delivery: DeliveryQueue, events?: FakeEventPublisher): Messaging {
     return new Messaging({
       store,
       delivery,
       states,
       sessions: () => sessions,
       startSession: async () => 'started',
+      events,
     });
   }
 });

@@ -146,6 +146,13 @@ describe('lifecycle edges', () => {
     expect(runtime.launches.at(-1)?.opts.effort).toBe('future-provider-level');
     expect(states.get('alpha')?.effort).toBe('future-provider-level');
     expect(store.getSessionState('alpha')?.activeEffort).toBe('future-provider-level');
+    expect(lifecycleEvents.events).toContainEqual({
+      type: 'session.started',
+      session: 'alpha',
+      cause: 'start',
+      runtime: 'claude-code',
+      launchEffort: 'future-provider-level',
+    });
 
     await lifecycle.stop('alpha');
     expect(states.get('alpha')?.effort).toBeUndefined();
@@ -311,6 +318,23 @@ describe('lifecycle edges', () => {
     await lifecycle.teardown('alpha');
     expect(backend.panes.get(pane.id)?.alive).toBe(false);
     expect(lifecycle.getPane('alpha')).toBeUndefined();
+  });
+
+  it('emits path-free workspace facts for an empty spawned lane and its removal', async () => {
+    await lifecycle.spawn('worker');
+    expect(lifecycleEvents.events).toContainEqual({
+      type: 'workspace.provisioned',
+      session: 'worker',
+      kind: 'empty',
+    });
+
+    await lifecycle.teardown('worker', true);
+    expect(lifecycleEvents.events).toContainEqual({
+      type: 'workspace.removed',
+      session: 'worker',
+      kind: 'directory',
+    });
+    expect(JSON.stringify(lifecycleEvents.events)).not.toContain(join(baseDir, 'spawned', 'worker'));
   });
 
   it('restart cycles the pane', async () => {

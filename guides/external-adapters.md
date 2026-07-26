@@ -35,9 +35,10 @@ CLI deliberately does not load arbitrary packages from YAML.
 
 Implement `ConductorEventSubscriber` when a plugin needs typed fleet facts without polling or
 terminal tailing. Inject subscribers with `new Supervisor(fleetDir, { eventSubscribers: [...] })`.
-They are observation-only and best-effort; they do not replace commands, operations, channels, or
-durable application storage. See the complete [event subscriber contract](event-subscribers.md)
-for the event catalog, ordering, overflow, failure, privacy, and compatibility guarantees.
+They are observation-only and best-effort; they do not replace commands, operations, or channels.
+Conductor also keeps a separate local durable event journal for export, but exposes no subscriber
+replay or cursor API. See the complete [event subscriber contract](event-subscribers.md) for the
+event catalog, journal, ordering, overflow, failure, privacy, and compatibility guarantees.
 
 ## Operator channels
 

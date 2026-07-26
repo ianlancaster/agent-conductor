@@ -62,6 +62,19 @@ export function openSqliteDatabase(dbPath: string): DatabaseSync {
   }
 }
 
+/** Open an existing database without migrations or write-capable pragmas. */
+export function openSqliteDatabaseReadOnly(dbPath: string): DatabaseSync {
+  const DatabaseSync = getDatabaseSync();
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    db.exec(`PRAGMA busy_timeout = ${String(BUSY_TIMEOUT_MS)}; PRAGMA foreign_keys = ON;`);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
 /** Execute a synchronous unit of work atomically, preserving the original failure on rollback. */
 export function withTransaction<T>(db: DatabaseSync, operation: () => T): T {
   db.exec('BEGIN');

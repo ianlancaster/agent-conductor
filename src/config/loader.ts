@@ -1,11 +1,16 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import type { ZodError } from 'zod';
 import { log } from '../logger.js';
 import { deriveInstanceDefaults } from './instance.js';
 import { resolveFleetPaths } from './paths.js';
 import { sessionConfigSchema, supervisorConfigSchema, type SessionConfig, type SupervisorConfig } from './schema.js';
+import { configuredRunbookRegistry } from '../runbooks/registry.js';
+import { PACKAGE_VERSION } from '../version.js';
+
+const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 
 export interface LoadedConfig {
   supervisor: SupervisorConfig;
@@ -170,6 +175,22 @@ export function validateConfig(baseDir: string): string[] {
       } catch (err) {
         problems.push(`${file}: ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+  }
+  if (problems.length === 0) {
+    try {
+      const supervisor = loadSupervisorConfig(baseDir);
+      for (const diagnostic of configuredRunbookRegistry(
+        baseDir,
+        supervisor,
+        PACKAGE_VERSION,
+        join(PACKAGE_ROOT, 'runbooks'),
+      ).snapshot().diagnostics) {
+        problems.push(`${diagnostic.path}: ${diagnostic.message}`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!problems.includes(message)) problems.push(message);
     }
   }
   return problems;

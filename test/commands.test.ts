@@ -17,6 +17,7 @@ import { SessionStateManager } from '../src/core/state.js';
 import { Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
+import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
 
 let baseDir: string;
 let store: Store;
@@ -29,6 +30,8 @@ let lifecycle: Lifecycle;
 let router: CommandRouter;
 let operatorMessages: ChannelMessage[];
 let sessions: Map<string, SessionConfig>;
+let events: FakeEventPublisher;
+let runbookCalls: { action: string; input: unknown }[];
 
 function writeSessionConfig(codename: string): void {
   const repo = join(baseDir, 'repos', codename);
@@ -61,6 +64,8 @@ beforeEach(() => {
   states = new SessionStateManager(store, false);
   operatorMessages = [];
   sessions = loadSessionConfigs(baseDir);
+  events = new FakeEventPublisher();
+  runbookCalls = [];
 
   delivery = new DeliveryQueue({
     backend,
@@ -100,6 +105,7 @@ beforeEach(() => {
       for (const codename of sessions.keys()) states.register(codename, false);
     },
     supervisionReset: () => undefined,
+    events,
   });
 
   const messaging = new Messaging({
@@ -108,6 +114,7 @@ beforeEach(() => {
     states,
     sessions: () => sessions,
     startSession: (codename, opts) => lifecycle.start(codename, opts),
+    events,
   });
   const operatorRequests = new OperatorRequests({
     store,
@@ -166,6 +173,20 @@ beforeEach(() => {
       sentinel.setSentinel(codename);
     },
     getDocumentation: async (topic) => `docs:${topic ?? 'index'}`,
+    runbookAdoptions: {
+      adopt: (input) => {
+        runbookCalls.push({ action: 'adopt', input });
+        return 'adoption-created';
+      },
+      supersede: (input) => {
+        runbookCalls.push({ action: 'supersede', input });
+        return 'adoption-superseded';
+      },
+      end: (adoptionId) => {
+        runbookCalls.push({ action: 'end', input: adoptionId });
+        return 'adoption-ended';
+      },
+    },
   });
   router = new CommandRouter(operations);
 });
@@ -185,6 +206,44 @@ describe('tokenize', () => {
       'do the thing',
       '--tab',
     ]);
+  });
+});
+
+describe('runbook provenance command', () => {
+  it('parses adopt, supersede, and end through the canonical operations', async () => {
+    await expect(
+      router.route(
+        '/runbook adopt team/workflow --version 1.2.0 --topic lean --session alpha=manager --session "beta=senior reviewer"',
+      ),
+    ).resolves.toBe('adoption-created');
+    await expect(
+      router.route('/runbook supersede adoption-1 --with team/lean --version 2.0.0 --topic overview'),
+    ).resolves.toBe('adoption-superseded');
+    await expect(router.route('/runbook end adoption-2')).resolves.toBe('adoption-ended');
+
+    expect(runbookCalls).toEqual([
+      {
+        action: 'adopt',
+        input: {
+          runbookId: 'team/workflow',
+          version: '1.2.0',
+          topic: 'lean',
+          sessions: ['alpha=manager', 'beta=senior reviewer'],
+        },
+      },
+      {
+        action: 'supersede',
+        input: { adoptionId: 'adoption-1', runbookId: 'team/lean', version: '2.0.0', topic: 'overview' },
+      },
+      { action: 'end', input: 'adoption-2' },
+    ]);
+  });
+
+  it('documents the full command and rejects incomplete provenance', async () => {
+    const help = await router.route('/help');
+    expect(help).toContain('/runbook <adopt|supersede|end> ...');
+    expect(help).toContain('adopt <id> --version <v> --topic <topic>');
+    await expect(router.route('/runbook adopt team/workflow --version 1.0.0')).resolves.toContain('Usage:');
   });
 });
 
@@ -636,6 +695,7 @@ describe('spawn and teardown', () => {
     const worktree = join(baseDir, 'spawned', 'worker');
     expect(sessions.get('worker')?.repo).toBe(worktree);
     expect(git(worktree, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('worker-branch');
+    expect(events.events).toContainEqual({ type: 'workspace.provisioned', session: 'worker', kind: 'worktree' });
 
     writeFileSync(join(worktree, 'dirty.txt'), 'do not lose me\n');
     const refused = await router.route('/teardown worker --delete');
@@ -651,5 +711,7 @@ describe('spawn and teardown', () => {
     expect(existsSync(worktree)).toBe(false);
     expect(git(repo, 'show-ref', '--verify', 'refs/heads/worker-branch')).toContain('refs/heads/worker-branch');
     expect(git(repo, 'status', '--porcelain')).toBe('');
+    expect(events.events).toContainEqual({ type: 'workspace.removed', session: 'worker', kind: 'worktree' });
+    expect(JSON.stringify(events.events)).not.toContain(worktree);
   });
 });

@@ -56,6 +56,7 @@ describe('ensureFleetScaffold', () => {
 
     expect(text).toContain('heartbeatIntervalSeconds: 30');
     expect(text).toContain('auto: false');
+    expect(text).toContain('events:\n  journal:\n    enabled: true');
     expect(text).toContain('telegram:\n    enabled: false');
     expect(text).toContain('slack:\n    enabled: false');
     expect(text).toContain('agent:\n      source: https://github.com/ianlancaster/cognitive-agent-template');

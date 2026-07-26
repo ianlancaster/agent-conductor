@@ -13,6 +13,14 @@ export const CONDUCTOR_EVENT_TYPES = [
   'schedule',
   'operator.request.created',
   'operator.request.resolved',
+  'runbook.adopted',
+  'runbook.superseded',
+  'runbook.adoption.ended',
+  'message.created',
+  'message.delivered',
+  'message.cancelled',
+  'workspace.provisioned',
+  'workspace.removed',
 ] as const;
 
 export type ConductorEventType = (typeof CONDUCTOR_EVENT_TYPES)[number];
@@ -44,6 +52,10 @@ export type ConductorEvent = ConductorEventEnvelope &
         readonly session: string;
         readonly cause: 'start' | 'continue' | 'adopt' | 'discovered';
         readonly runtime: RuntimeName;
+        /** Conductor's launch selection, not proof of the runtime's current served model. */
+        readonly launchModel?: string;
+        /** Conductor's launch selection, not proof that the runtime retained this effort. */
+        readonly launchEffort?: string;
       }
     | { readonly type: 'session.ready'; readonly session: string }
     | {
@@ -88,6 +100,62 @@ export type ConductorEvent = ConductorEventEnvelope &
         /** One-based option number, matching the public response command. */
         readonly selectedOption: number;
       }
+    | {
+        readonly type: 'runbook.adopted';
+        readonly adoptionId: string;
+        readonly runbookId: string;
+        readonly runbookVersion: string;
+        readonly source: 'built-in' | 'fleet' | 'external';
+        readonly topic: string;
+        readonly approvedBy: 'operator';
+        readonly sessions: readonly { readonly codename: string; readonly role: string }[];
+      }
+    | {
+        readonly type: 'runbook.superseded';
+        readonly adoptionId: string;
+        readonly replacementAdoptionId: string;
+        readonly runbookId: string;
+        readonly runbookVersion: string;
+        readonly source: 'built-in' | 'fleet' | 'external';
+        readonly topic: string;
+        readonly approvedBy: 'operator';
+        readonly sessions: readonly { readonly codename: string; readonly role: string }[];
+      }
+    | {
+        readonly type: 'runbook.adoption.ended';
+        readonly adoptionId: string;
+        readonly approvedBy: 'operator';
+      }
+    | {
+        readonly type: 'message.created';
+        readonly receiptId: number;
+        readonly sender: string;
+        readonly recipient: string;
+        readonly byteCount: number;
+      }
+    | {
+        readonly type: 'message.delivered';
+        readonly receiptId: number;
+        readonly sender: string;
+        readonly recipient: string;
+      }
+    | {
+        readonly type: 'message.cancelled';
+        readonly receiptId: number;
+        readonly sender: string;
+        readonly recipient: string;
+        readonly reason: 'requested' | 'conductor-restarted';
+      }
+    | {
+        readonly type: 'workspace.provisioned';
+        readonly session: string;
+        readonly kind: 'empty' | 'template' | 'worktree';
+      }
+    | {
+        readonly type: 'workspace.removed';
+        readonly session: string;
+        readonly kind: 'directory' | 'worktree';
+      }
   );
 
 type EnvelopeKey = keyof ConductorEventEnvelope;
@@ -105,4 +173,15 @@ export interface ConductorEventSubscriber {
 
 export interface ConductorEventPublisher {
   emit(event: ConductorEventInput): ConductorEvent;
+}
+
+export interface ConductorEventJournal {
+  appendEvent(event: ConductorEvent): void;
+}
+
+export interface ConductorEventJournalStatus {
+  readonly enabled: boolean;
+  readonly degraded: boolean;
+  readonly failureCount: number;
+  readonly lastError?: string;
 }

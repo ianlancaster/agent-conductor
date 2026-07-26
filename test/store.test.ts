@@ -2,8 +2,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Store } from '../src/store/index.js';
+import { exportEventJournalJsonl, Store } from '../src/store/index.js';
+import { ConductorEventBus } from '../src/events/bus.js';
 import { openSqliteDatabase } from '../src/store/sqlite.js';
+import { evaluateEventJsonl } from './fakes/fake-event-evaluator.js';
 
 let store: Store;
 
@@ -68,7 +70,7 @@ describe('messages', () => {
 
   it('cancels stale queues on restart', () => {
     const local = store.insertDirectMessage('alpha', 'beta', 'local').row;
-    expect(store.cancelPendingLocalMessagesOnRestart()).toBe(1);
+    expect(store.cancelPendingLocalMessagesOnRestart().map((row) => row.id)).toEqual([local.id]);
     expect(store.getMessage(local.id)).toMatchObject({
       status: 'cancelled',
       flush_skip_reason: 'conductor-restarted',
@@ -86,7 +88,7 @@ describe('messages', () => {
 
   it('lets an explicit idempotent retry revive a queue cancelled by restart', () => {
     const first = store.insertDirectMessage('alpha', 'beta', 'first attempt', 'key-1');
-    expect(store.cancelPendingLocalMessagesOnRestart()).toBe(1);
+    expect(store.cancelPendingLocalMessagesOnRestart()).toHaveLength(1);
 
     const retried = store.insertDirectMessage('alpha', 'beta', 'explicit retry', 'key-1');
     expect(retried).toMatchObject({ deduplicated: false });
@@ -97,6 +99,89 @@ describe('messages', () => {
       cancelled_at: null,
       flush_skip_reason: null,
     });
+  });
+});
+
+describe('event journal', () => {
+  it('exports live WAL rows in insertion order and preserves unknown future envelopes verbatim', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conductor-events-'));
+    const dbPath = join(dir, 'conductor.db');
+    const persistent = new Store(dbPath);
+    try {
+      const bus = new ConductorEventBus('fleet', [], { conductorInstanceId: 'instance', journal: persistent });
+      bus.emit({ type: 'session.ready', session: 'alpha' });
+      bus.emit({ type: 'session.ready', session: 'beta' });
+      const future = {
+        schemaVersion: 1,
+        id: 'future:1',
+        seq: 1,
+        occurredAt: '2099-01-01T00:00:00.000Z',
+        conductorInstanceId: 'future',
+        fleetId: 'fleet',
+        type: 'future.event',
+        opaque: { retained: true },
+      };
+      persistent.appendEvent(future as never);
+
+      const exported = [...exportEventJournalJsonl(dbPath)];
+      expect(exported.map((line) => JSON.parse(line) as unknown)).toEqual([
+        expect.objectContaining({ id: 'instance:1', session: 'alpha' }),
+        expect.objectContaining({ id: 'instance:2', session: 'beta' }),
+        future,
+      ]);
+      expect(exported[2]).toBe(JSON.stringify(future));
+      expect([...exportEventJournalJsonl(dbPath, '2099-01-01T00:00:00.000Z')]).toEqual([JSON.stringify(future)]);
+      expect(evaluateEventJsonl(exported)).toEqual({
+        ids: ['instance:1', 'instance:2', 'future:1'],
+        types: ['session.ready', 'session.ready', 'future.event'],
+        sequenceGaps: 0,
+      });
+    } finally {
+      persistent.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('migrates a pre-journal beta database without replacing existing schema', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conductor-events-migration-'));
+    const dbPath = join(dir, 'conductor.db');
+    const legacy = openSqliteDatabase(dbPath);
+    legacy.exec('CREATE TABLE legacy_fact (value TEXT); PRAGMA user_version = 8;');
+    legacy.close();
+
+    const migrated = new Store(dbPath);
+    try {
+      const bus = new ConductorEventBus('fleet', [], { journal: migrated });
+      bus.emit({ type: 'session.ready', session: 'alpha' });
+      expect([...exportEventJournalJsonl(dbPath)]).toHaveLength(1);
+    } finally {
+      migrated.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes second-precision and offset --since timestamps before comparison', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conductor-events-since-'));
+    const dbPath = join(dir, 'conductor.db');
+    const persistent = new Store(dbPath);
+    const boundary = {
+      schemaVersion: 1,
+      id: 'instance:1',
+      seq: 1,
+      occurredAt: '2026-07-26T00:00:00.000Z',
+      conductorInstanceId: 'instance',
+      fleetId: 'fleet',
+      type: 'session.ready',
+      session: 'alpha',
+    };
+    try {
+      persistent.appendEvent(boundary as never);
+      expect([...exportEventJournalJsonl(dbPath, '2026-07-26T00:00:00Z')]).toEqual([JSON.stringify(boundary)]);
+      expect([...exportEventJournalJsonl(dbPath, '2026-07-26T02:00:00+02:00')]).toEqual([JSON.stringify(boundary)]);
+    } finally {
+      persistent.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

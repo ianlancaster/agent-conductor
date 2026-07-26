@@ -4,14 +4,17 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, openSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Command } from 'commander';
 import { validateConfig, loadSupervisorConfig } from '../config/loader.js';
 import { resolveFleetDataDir } from '../config/paths.js';
 import { Supervisor } from '../core/supervisor.js';
-import { Store } from '../store/index.js';
+import { exportEventJournalJsonl, Store } from '../store/index.js';
 import { PACKAGE_VERSION } from '../version.js';
+import { configuredRunbookRegistry } from '../runbooks/registry.js';
+import { initializeRunbook, validateRunbookPath } from '../runbooks/authoring.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
 import { formatPreflight, preflightFailures, runPreflight } from './doctor.js';
 import { subscribeFeed } from './feed.js';
@@ -22,6 +25,7 @@ import { formatTerminalReply } from './terminal-format.js';
 
 const program = new Command();
 const interactionId = randomUUID();
+const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 program
   .name('conductor')
   .description('Lightweight supervisor for terminal coding agents')
@@ -149,6 +153,59 @@ function runConsole(): Promise<void> {
     });
   });
 }
+
+const runbook = program.command('runbook').description('Author and inspect inert local runbook bundles');
+runbook
+  .command('list')
+  .description('List built-in, fleet-local, and configured local runbooks')
+  .action(() => {
+    const config = loadSupervisorConfig(baseDir());
+    const snapshot = configuredRunbookRegistry(
+      baseDir(),
+      config,
+      PACKAGE_VERSION,
+      join(PACKAGE_ROOT, 'runbooks'),
+    ).snapshot();
+    if (snapshot.runbooks.length === 0) process.stdout.write('No valid runbooks discovered.\n');
+    for (const item of snapshot.runbooks) {
+      process.stdout.write(`${item.id}@${item.version}  ${item.source}  ${item.name}\n`);
+    }
+    for (const diagnostic of snapshot.diagnostics) {
+      process.stderr.write(`! ${diagnostic.source} ${diagnostic.path}: ${diagnostic.message}\n`);
+    }
+  });
+
+const events = program.command('events').description('Read the local durable Conductor event journal');
+events
+  .command('export')
+  .description('Stream stored event envelopes in deterministic order')
+  .option('--format <format>', 'Output format (jsonl)', 'jsonl')
+  .option('--since <timestamp>', 'Include events at or after this ISO-8601 timestamp')
+  .action((opts: { format: string; since?: string }) => {
+    if (opts.format !== 'jsonl') throw new Error("events export currently supports only '--format jsonl'.");
+    if (
+      opts.since !== undefined &&
+      (!/^\d{4}-\d{2}-\d{2}T/u.test(opts.since) || Number.isNaN(Date.parse(opts.since)))
+    ) {
+      throw new Error('--since must be a valid ISO-8601 timestamp.');
+    }
+    const config = loadSupervisorConfig(baseDir());
+    const dbPath = join(resolveFleetDataDir(baseDir(), config.paths.dataDir), 'conductor.db');
+    for (const line of exportEventJournalJsonl(dbPath, opts.since)) process.stdout.write(`${line}\n`);
+  });
+runbook
+  .command('init <path>')
+  .description('Create a minimal runbook bundle without overwriting an existing path')
+  .action((path: string) => {
+    process.stdout.write(`Initialized runbook at ${initializeRunbook(path)}\n`);
+  });
+runbook
+  .command('validate <path>')
+  .description('Validate one runbook with the production manifest and filesystem rules')
+  .action((path: string) => {
+    validateRunbookPath(path, PACKAGE_VERSION);
+    process.stdout.write('Runbook OK.\n');
+  });
 
 /** Run the supervisor in THIS process (visible log feed). Used by --foreground and daemons. */
 async function runForeground(startAll: boolean): Promise<void> {

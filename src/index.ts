@@ -10,6 +10,16 @@ export type {
   ConductorEventType,
 } from './events/types.js';
 export type {
+  ResolvedRunbook,
+  RunbookDiagnostic,
+  RunbookManifest,
+  RunbookRegistrySnapshot,
+  RunbookResourceManifest,
+  RunbookSource,
+  RunbookTopicManifest,
+  RunbookVariant,
+} from './runbooks/types.js';
+export type {
   CreatePaneOptions,
   DeliveryCapture,
   DeliveryCaptureOptions,

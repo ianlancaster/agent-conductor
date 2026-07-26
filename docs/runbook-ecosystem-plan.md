@@ -1,7 +1,9 @@
 # Runbook Ecosystem Plan
 
-Status: proposal  
-Audience: maintainers, runbook authors, and integration contributors  
+Status: implemented and verified
+
+Audience: maintainers, runbook authors, and integration contributors
+
 Scope: a local-first, shareable runbook format and discovery system for Agent Conductor
 
 ## Summary
@@ -136,7 +138,8 @@ resources:
 
 Initial schema rules:
 
-- `schemaVersion`, `id`, `name`, `version`, `summary`, and at least one topic are required.
+- `schemaVersion`, `id`, `name`, `version`, `summary`, `requires.conductor`, and at least one topic
+  are required. Every bundle explicitly declares the Conductor versions it supports.
 - `id` is stable and namespaced, using an owner/name form such as
   `agent-conductor/engineering-management`.
 - Topic and resource IDs are unique within the bundle and use a conservative identifier grammar.
@@ -339,23 +342,24 @@ than renaming them:
 - existing session registration, start, readiness, stop, and activity transitions;
 - existing stall, fleet-stall, schedule, and operator-request outcomes;
 - `runbook.adopted`, `runbook.superseded`, and `runbook.adoption.ended`;
-- `message.created`, `message.delivered`, and `message.cancelled`, containing sender, recipient,
-  receipt ID, UTF-8 byte count, timestamps, and mechanically derived delivery latency, never message
-  content;
+- `message.created`, `message.delivered`, and `message.cancelled` for direct messages, containing
+  sender, recipient, receipt ID, UTF-8 byte count on creation, and cancellation reason
+  (`requested` or `conductor-restarted`), never message content; evaluators derive latency from the
+  two event timestamps instead of trusting false-precision stored calculations;
 - workspace provisioning and teardown facts for Conductor-created empty directories, Git templates,
   and worktrees, using neutral workspace terminology rather than assuming every session is a lane;
   and
-- turn-completion metrics only when supplied authoritatively by the runtime adapter.
+- no turn-completion metrics in v1; runtime evidence and capability semantics remain too uneven for
+  a truthful shared contract.
 
 Lifecycle events may add the configured model and effort used for the launch. Field names must make
 clear that these are Conductor launch settings, not proof that a user did not switch models inside
 the runtime afterward.
 
-Turn metrics require capability-aware optional fields. Claude Code and Codex expose different data,
-and the contract must never synthesize parity by scraping unstable terminal text. Token input/output,
-cache counts, runtime-reported duration, and context utilization may be recorded when a supported
-adapter supplies them with a declared source. Conductor should not calculate dollar cost; an
-evaluator applies a versioned price table to tokens and runtime/model metadata.
+Turn metrics are deliberately deferred to a separately reviewed runtime-capability contract. Claude
+Code and Codex expose different data, and this release does not synthesize parity by scraping
+unstable terminal text. Conductor also does not calculate dollar cost; an evaluator may combine
+future authoritative token facts with a versioned external price table.
 
 Conductor must not claim facts it cannot mechanically observe:
 
@@ -587,53 +591,22 @@ one fleet's uncited measurements into universal product guidance.
 
 ## Implementation sequence
 
-### Phase 1: format and registry
+The implementation was divided into five independently reviewed gates:
 
-1. Add strict manifest and resolved-runbook types.
-2. Add contained resource resolution and safety limits.
-3. Add built-in, fleet-local, and configured-path discovery.
-4. Extend fleet paths and supervisor configuration with the default directory and optional paths.
-5. Add validation errors and optional-runtime warning behavior.
+1. **Format and registry:** strict types and filesystem rules; built-in, fleet, and configured-path
+   discovery; path/config support; and the `runbook list`, `init`, and `validate` authoring CLI.
+2. **Knowledge integration:** dynamic documentation catalog/resources, compatibility aliases, and
+   migration of Engineering Management into the built-in lean-first reference bundle.
+3. **Durable events:** the shared vocabulary extensions, synchronous append-only journal before
+   live fanout, content-free message/workspace facts, JSONL export, and visible degradation.
+4. **Adoption provenance:** a dedicated operational adoption table, operator-only adopt/supersede/end
+   operations, shared command routing, strict live-catalog/session validation, and runbook events.
+5. **Author and onboarding experience:** delegated cognitive-agent awakening, authoring and
+   contribution guidance, user-facing request language, and packed-artifact verification of the
+   registry, validator, exporter, public types, and external evaluator boundary.
 
-### Phase 2: knowledge integration
-
-1. Separate static core topics from dynamic runbook resources.
-2. Extend the documentation catalog response with runbook metadata.
-3. Support canonical namespaced resource keys.
-4. Preserve existing Engineering Management topic aliases.
-5. Update `get_conductor_docs` schema and error messages for dynamic keys.
-
-### Phase 3: adoption provenance and durable events
-
-1. Extend the canonical event union with runbook-adoption, content-free message lifecycle, and
-   mechanically known workspace events.
-2. Add an append-only SQLite event journal before live subscriber fanout.
-3. Surface journal degradation through logs, status, and doctor without taking the control plane
-   offline.
-4. Add the operator-only adoption, supersede, and end operation plus consistent command routing.
-5. Join stable adoption IDs to session-role assignments without creating a runtime role policy.
-6. Add capability-aware optional turn metrics where runtime evidence is authoritative.
-7. Add a stable JSONL event export that hides the private database schema.
-
-### Phase 4: reference migration and onboarding
-
-1. Convert Engineering Management into the reference bundle.
-2. Make Tier 1 the lean baseline and document the incremental cost and evidence standard for every
-   higher tier.
-3. Add the cognitive-agent awakening recipe.
-4. Update the onboarding topic to present the live catalog, adoption choices, and exact
-   operator-only provenance command.
-5. Update README and getting-started examples with user-facing request language.
-6. Keep the initial hand-driven shakedown mandatory before optional runbook adoption.
-
-### Phase 5: author and evaluator experience
-
-1. Add `conductor runbook list`.
-2. Add non-overwriting `conductor runbook init`.
-3. Add `conductor runbook validate` using production validation code.
-4. Add `conductor events export --format jsonl` against the durable journal.
-5. Publish authoring, experiment-instrumentation, and contribution guidance.
-6. Include a minimal standalone bundle and external evaluator fixture in package verification.
+No release boundary should split gates 3 and 4 because the event vocabulary is intentionally
+staged before the owning adoption operations begin emitting it.
 
 ### Deferred phases
 
@@ -693,12 +666,14 @@ Each deferred feature must independently clear the contributor feature bar.
   subscriber ordering, overflow, and failure isolation.
 - Verify restart boundaries, event sequence continuity within an instance, and append-only adoption
   history across instances.
-- Prove message events contain byte counts, receipt IDs, and latency but no message content.
+- Prove direct-message events contain byte counts and receipt IDs but no message content; derive
+  latency externally from creation and delivery event timestamps.
 - Prove journal payloads exclude prompts, pane captures, transcripts, paths, credentials, runtime
   reason text, and source code.
 - Exercise journal write failure: lifecycle and messaging remain online while status and doctor
   report degraded telemetry integrity.
-- Verify optional runtime metrics are omitted rather than guessed when a runtime lacks evidence.
+- Verify turn metrics are absent until a separately reviewed runtime capability can supply them
+  authoritatively.
 - Export stable JSONL in deterministic order and consume it from an external evaluator fixture
   without importing private store types or reading SQLite directly.
 - Verify an evaluator can join two simultaneous adoption scopes by `adoptionId` and session-role

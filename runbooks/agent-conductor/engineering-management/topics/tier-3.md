@@ -1,5 +1,3 @@
-<!-- conductor-topic:runbook-engineering-management-tier-3 -->
-
 ## Engineering management — Tier 3: PR Shepherd and review lanes
 
 PR Shepherd observes GitHub facts and delivers them to the EM. It does not replace review judgment

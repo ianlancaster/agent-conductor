@@ -3,12 +3,15 @@ import { log } from '../logger.js';
 import type {
   ConductorEvent,
   ConductorEventInput,
+  ConductorEventJournal,
+  ConductorEventJournalStatus,
   ConductorEventPublisher,
   ConductorEventSubscriber,
 } from './types.js';
 
 const DEFAULT_QUEUE_LIMIT = 1_000;
 const OVERFLOW_WARNING_INTERVAL_MS = 60_000;
+const JOURNAL_WARNING_INTERVAL_MS = 60_000;
 
 interface SubscriberState {
   subscriber: ConductorEventSubscriber;
@@ -20,6 +23,9 @@ interface SubscriberState {
 interface ConductorEventBusOptions {
   conductorInstanceId?: string;
   queueLimit?: number;
+  journal?: ConductorEventJournal;
+  initialJournalDegraded?: boolean;
+  onJournalFailure?: (error: unknown) => void;
 }
 
 /**
@@ -32,6 +38,12 @@ export class ConductorEventBus implements ConductorEventPublisher {
   private seq = 0;
   private readonly queueLimit: number;
   private readonly subscribers: SubscriberState[];
+  private readonly journal: ConductorEventJournal | undefined;
+  private journalDegraded: boolean;
+  private journalFailureCount = 0;
+  private journalLastError: string | undefined;
+  private lastJournalWarningAt = 0;
+  private readonly onJournalFailure: ((error: unknown) => void) | undefined;
 
   constructor(
     private readonly fleetId: string,
@@ -40,6 +52,9 @@ export class ConductorEventBus implements ConductorEventPublisher {
   ) {
     this.conductorInstanceId = options.conductorInstanceId ?? randomUUID();
     this.queueLimit = options.queueLimit ?? DEFAULT_QUEUE_LIMIT;
+    this.journal = options.journal;
+    this.journalDegraded = options.initialJournalDegraded ?? false;
+    this.onJournalFailure = options.onJournalFailure;
     if (!Number.isInteger(this.queueLimit) || this.queueLimit < 1) {
       throw new Error('Event subscriber queue limit must be a positive integer.');
     }
@@ -64,7 +79,12 @@ export class ConductorEventBus implements ConductorEventPublisher {
 
   emit(input: ConductorEventInput): ConductorEvent {
     const seq = ++this.seq;
-    const payload = input.type === 'fleet.stalled' ? { ...input, sessions: Object.freeze([...input.sessions]) } : input;
+    const payload =
+      input.type === 'fleet.stalled'
+        ? { ...input, sessions: Object.freeze([...input.sessions]) }
+        : input.type === 'runbook.adopted' || input.type === 'runbook.superseded'
+          ? { ...input, sessions: Object.freeze(input.sessions.map((session) => Object.freeze({ ...session }))) }
+          : input;
     const event = Object.freeze({
       ...payload,
       schemaVersion: 1 as const,
@@ -74,6 +94,29 @@ export class ConductorEventBus implements ConductorEventPublisher {
       conductorInstanceId: this.conductorInstanceId,
       fleetId: this.fleetId,
     }) as ConductorEvent;
+
+    if (this.journal !== undefined) {
+      try {
+        this.journal.appendEvent(event);
+      } catch (error) {
+        this.journalDegraded = true;
+        this.journalFailureCount += 1;
+        this.journalLastError = error instanceof Error ? error.message : String(error);
+        try {
+          this.onJournalFailure?.(error);
+        } catch {
+          // The degradation reporter is best-effort too; event emission must continue.
+        }
+        const now = Date.now();
+        if (now - this.lastJournalWarningAt >= JOURNAL_WARNING_INTERVAL_MS) {
+          this.lastJournalWarningAt = now;
+          log().error(
+            'events',
+            `Durable event journal write failed; continuing with incomplete telemetry: ${this.journalLastError}`,
+          );
+        }
+      }
+    }
 
     for (const state of this.subscribers) {
       if (state.queue.length >= this.queueLimit) {
@@ -91,6 +134,15 @@ export class ConductorEventBus implements ConductorEventPublisher {
       this.scheduleDrain(state);
     }
     return event;
+  }
+
+  journalStatus(): ConductorEventJournalStatus {
+    return {
+      enabled: this.journal !== undefined,
+      degraded: this.journalDegraded,
+      failureCount: this.journalFailureCount,
+      ...(this.journalLastError === undefined ? {} : { lastError: this.journalLastError }),
+    };
   }
 
   private scheduleDrain(state: SubscriberState): void {

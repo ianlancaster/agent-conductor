@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -11,6 +11,7 @@ import {
   type PreflightDependencies,
 } from '../src/cli/doctor.js';
 import { ensureFleetScaffold } from '../src/cli/scaffold.js';
+import { eventJournalDegradedPath } from '../src/events/journal.js';
 
 let baseDir: string;
 
@@ -57,6 +58,19 @@ describe('conductor doctor', () => {
     expect(preflightFailures(results)).toEqual([]);
     expect(formatPreflight(results)).toContain('✓ Fleet config:');
     expect(formatPreflight(results)).toContain('✓ tmux backend: tmux 3.4');
+    expect(formatPreflight(results)).toContain('✓ Event journal: enabled; no recorded write failures');
+  });
+
+  it('warns when a previous journal write failure made the exported history incomplete', async () => {
+    const dataDir = join(baseDir, '.conductor', 'data');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(eventJournalDegradedPath(dataDir), '{}\n');
+    const results = await runPreflight(baseDir, dependencies());
+    const journal = results.find((item) => item.label === 'Event journal');
+    expect(journal).toMatchObject({ level: 'warn' });
+    expect(journal?.detail).not.toContain('{}');
+    expect(journal?.detail).toContain(eventJournalDegradedPath(dataDir));
+    expect(journal?.detail).toContain('remove');
   });
 
   it('reports unsupported Node and malformed config as blockers', async () => {

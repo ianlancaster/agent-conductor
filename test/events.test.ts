@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { ConductorEventBus } from '../src/events/bus.js';
-import { CONDUCTOR_EVENT_TYPES, type ConductorEvent, type ConductorEventSubscriber } from '../src/events/types.js';
+import {
+  CONDUCTOR_EVENT_TYPES,
+  type ConductorEvent,
+  type ConductorEventJournal,
+  type ConductorEventSubscriber,
+} from '../src/events/types.js';
 
 describe('ConductorEventBus', () => {
   it('assigns one globally ordered sequence and preserves FIFO per subscriber', async () => {
@@ -96,7 +101,58 @@ describe('ConductorEventBus', () => {
       'schedule',
       'operator.request.created',
       'operator.request.resolved',
+      'runbook.adopted',
+      'runbook.superseded',
+      'runbook.adoption.ended',
+      'message.created',
+      'message.delivered',
+      'message.cancelled',
+      'workspace.provisioned',
+      'workspace.removed',
     ]);
+  });
+
+  it('writes the durable journal before live fanout', async () => {
+    const order: string[] = [];
+    const journal: ConductorEventJournal = {
+      appendEvent: (event) => void order.push(`journal:${String(event.seq)}`),
+    };
+    const bus = new ConductorEventBus(
+      'fleet',
+      [{ name: 'observer', onEvent: (event) => void order.push(`subscriber:${String(event.seq)}`) }],
+      { conductorInstanceId: 'instance', journal },
+    );
+
+    bus.emit({ type: 'session.ready', session: 'alpha' });
+    await until(() => order.length === 2);
+
+    expect(order).toEqual(['journal:1', 'subscriber:1']);
+    expect(bus.journalStatus()).toEqual({ enabled: true, degraded: false, failureCount: 0 });
+  });
+
+  it('keeps live delivery running and reports degradation when the journal fails', async () => {
+    const received: ConductorEvent[] = [];
+    const failures: unknown[] = [];
+    const bus = new ConductorEventBus('fleet', [subscriber('observer', received)], {
+      journal: {
+        appendEvent: () => {
+          throw new Error('disk full');
+        },
+      },
+      onJournalFailure: (error) => void failures.push(error),
+    });
+
+    bus.emit({ type: 'session.ready', session: 'alpha' });
+    await until(() => received.length === 1);
+
+    expect(received[0]?.type).toBe('session.ready');
+    expect(failures).toHaveLength(1);
+    expect(bus.journalStatus()).toMatchObject({
+      enabled: true,
+      degraded: true,
+      failureCount: 1,
+      lastError: 'disk full',
+    });
   });
 
   it('rejects ambiguous subscriber registration', () => {

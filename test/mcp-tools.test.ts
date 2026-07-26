@@ -146,6 +146,11 @@ beforeEach(() => {
       sentinel.setSentinel(codename);
     },
     getDocumentation: async (topic) => `docs:${topic ?? 'index'}`,
+    runbookAdoptions: {
+      adopt: () => 'adopted',
+      supersede: () => 'superseded',
+      end: () => 'ended',
+    },
   });
   tools = buildMcpTools(operations);
 });
@@ -173,8 +178,14 @@ describe('surface contract', () => {
     expect(mcpNames).toContain('get_conductor_docs');
     expect(mcpNames).not.toContain('summon_session');
     expect(mcpNames).not.toContain('respond_to_operator_request');
+    expect(mcpNames).not.toContain('adopt_runbook');
+    expect(mcpNames).not.toContain('supersede_runbook_adoption');
+    expect(mcpNames).not.toContain('end_runbook_adoption');
     expect(operatorNames).toContain('summon_session');
     expect(operatorNames).toContain('respond_to_operator_request');
+    expect(operatorNames).toContain('adopt_runbook');
+    expect(operatorNames).toContain('supersede_runbook_adoption');
+    expect(operatorNames).toContain('end_runbook_adoption');
     expect(operatorNames).not.toContain('whoami');
     expect(operatorNames).not.toContain('get_conductor_docs');
   });
@@ -182,11 +193,12 @@ describe('surface contract', () => {
   it('exposes the lazy Conductor handbook to sessions with discoverable topics', async () => {
     const docs = tool('get_conductor_docs');
     const properties = docs.inputSchema.properties as Record<string, { enum?: string[] }>;
-    expect(properties.topic?.enum).toContain('worktrees');
-    expect(properties.topic?.enum).toContain('event-subscribers');
-    expect(properties.topic?.enum).toContain('troubleshooting');
+    expect(properties.topic?.enum).toBeUndefined();
     expect(await docs.handler({}, 'alpha')).toBe('docs:index');
     expect(await docs.handler({ topic: 'supervision' }, 'alpha')).toBe('docs:supervision');
+    expect(await docs.handler({ topic: 'runbook:team/workflow/overview' }, 'alpha')).toBe(
+      'docs:runbook:team/workflow/overview',
+    );
   });
 
   it('keeps removed conveniences and duplicate tools out of the MCP surface', () => {
