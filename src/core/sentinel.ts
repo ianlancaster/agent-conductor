@@ -4,6 +4,7 @@ import type { TerminalBackend } from '../terminals/types.js';
 import type { StallInfo } from './health.js';
 import { contentSimilarity, fleetStallEnvelope, stallEnvelope, truncate } from './utils.js';
 import type { PaneRef, StallKind } from './types.js';
+import type { ConductorEventPublisher } from '../events/types.js';
 
 const SENTINEL_DOWN_WARN_INTERVAL_MS = 10 * 60 * 1000;
 
@@ -33,6 +34,7 @@ export interface SentinelDeps {
   initialFleetWatchEnabled?: boolean;
   initialSessions?: Iterable<string>;
   onFleetWatchChanged?(enabled: boolean): void;
+  events?: ConductorEventPublisher;
 }
 
 /**
@@ -129,6 +131,11 @@ export class StallSentinelRouter {
       return;
     }
 
+    // session-end is handled as a lifecycle stop before it reaches this
+    // router. Keep this guard mechanical if a custom health source violates
+    // that contract; it is not part of the public stall vocabulary.
+    if (kind === 'session-end') return;
+
     // A second completed turn is proof the session worked between stalls even
     // when its runtime has no turn-start event (Codex). Treat it as a recovery
     // boundary before recording the new stall.
@@ -136,8 +143,15 @@ export class StallSentinelRouter {
     this.stalledSessions.add(session);
     this.evaluateFleetWatch();
 
-    if (!this.deps.isAuto(session) || this.deps.isPaused(session)) {
-      log().debug('sentinel', `${session}: ${kind} stall ignored (auto is off or paused)`);
+    // Pause is the temporary override and therefore wins when auto is also off.
+    if (this.deps.isPaused(session)) {
+      this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'ignored-paused' });
+      log().debug('sentinel', `${session}: ${kind} stall ignored (session is paused)`);
+      return;
+    }
+    if (!this.deps.isAuto(session)) {
+      this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'ignored-auto-off' });
+      log().debug('sentinel', `${session}: ${kind} stall ignored (auto is off)`);
       return;
     }
 
@@ -150,6 +164,7 @@ export class StallSentinelRouter {
       contentSimilarity(capture, last.capture) > this.deps.config.suppressSimilarity
     ) {
       this.deps.logEvent(session, 'stall_suppressed', `similar ${kind} stall within window`);
+      this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'suppressed' });
       return;
     }
 
@@ -163,6 +178,7 @@ export class StallSentinelRouter {
       const summary = info.reason !== undefined ? `: ${truncate(info.reason, 120)}` : '';
       this.deps.logEvent(session, 'stall_reported', `${kind} → operator`);
       await this.deps.notifyOperator(`⚠️ ${session} stalled (${kind})${summary}`);
+      this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'reported-to-operator' });
       return;
     }
 
@@ -174,6 +190,7 @@ export class StallSentinelRouter {
         this.lastSentinelDownWarnAt = now;
         await this.deps.notifyOperator(`⚠️ ${session} stalled (${kind}) but sentinel ${sentinel} is not running.`);
       }
+      this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'sentinel-down' });
       return;
     }
 
@@ -185,6 +202,7 @@ export class StallSentinelRouter {
       (await this.readTranscript(session, info.transcriptPath)) ?? info.reason ?? '(no last message available)';
     this.deps.logEvent(session, 'stall_routed', `${kind} → ${sentinel}`);
     await this.deps.deliver(sentinel, stallEnvelope(session, kind, `last: ${truncate(lastMessage, 400)}`));
+    this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'routed' });
   }
 
   stop(): void {
@@ -237,15 +255,18 @@ export class StallSentinelRouter {
     const sentinel = this.sentinel;
     if (sentinel === undefined) {
       await this.deps.notifyOperator(`🚨 Fleet stalled: ${sessions.join(', ')}.`);
+      this.deps.events?.emit({ type: 'fleet.stalled', sessions, disposition: 'reported-to-operator' });
       return;
     }
     if (!(await this.deps.isActive(sentinel))) {
       await this.deps.notifyOperator(
         `🚨 Fleet stalled (${sessions.join(', ')}) but sentinel ${sentinel} is not running.`,
       );
+      this.deps.events?.emit({ type: 'fleet.stalled', sessions, disposition: 'sentinel-down' });
       return;
     }
     await this.deps.deliver(sentinel, fleetStallEnvelope(sessions, thresholdSeconds));
+    this.deps.events?.emit({ type: 'fleet.stalled', sessions, disposition: 'routed' });
   }
 
   private async captureStripped(session: string): Promise<string> {

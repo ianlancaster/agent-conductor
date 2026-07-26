@@ -1,5 +1,3 @@
-<!-- conductor-topic:runbook-engineering-management-tier-1 -->
-
 ## Engineering management — Tier 1: dispatch and report
 
 Start with one persistent EM and disposable implementation lanes. The EM owns decomposition and

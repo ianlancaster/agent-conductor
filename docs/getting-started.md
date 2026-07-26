@@ -22,8 +22,10 @@ also prints a pane-driven onboarding flow. At the new `conductor>` prompt, run
 `/spawn onboarding-helper` for Claude Code or `/spawn onboarding-helper -r codex` for Codex. Move to
 the agent pane Conductor opens and paste the printed onboarding brief directly into the assistant.
 The agent will interview you one decision at a time and will keep optional automation off until one
-hand-driven session works. It can then offer the shipped runbook catalog; choose a workflow and tier
-before allowing it to configure an opinionated fleet arrangement.
+hand-driven session works. It can then offer the live runbook catalog. To request the built-in
+baseline directly, say: “Show me the runbook catalog and help me configure Engineering Management
+Tier 1.” Choose a workflow and topic before allowing it to configure an opinionated fleet
+arrangement; reading a runbook alone never applies it.
 
 Run the diagnostic report directly at any time:
 
@@ -158,10 +160,17 @@ doesn't exist, or iTerm2 automation permission (macOS will prompt the first time
 `.conductor/data/conductor.log`.
 
 Once the shakedown works, you can stay hand-driven or adopt an example workflow. The
-[engineering management runbook](runbooks/engineering-management.md) starts with one persistent EM
+[engineering management runbook](../runbooks/agent-conductor/engineering-management/README.md) starts with one persistent EM
 and disposable worker tabs, then adds plans, independent review, PR Shepherd, and bounded autonomy
 one tier at a time. Its recommended main window keeps the EM on the right and stacks persistent
 status, the Conductor console, and the Stall Sentinel on the left.
+
+These shareable workflow bundles are called **runbooks**. Ask the onboarding agent to show the live
+catalog rather than relying on a remembered name. After you choose a topic, it can load the exact
+instructions, interview you for fleet-specific choices, and drive an approved setup. If you want
+the condition recorded for later event-log analysis, the agent prepares an exact `/runbook adopt`
+command for you to run; managed sessions cannot record operator approval themselves. See
+[Authoring and sharing runbooks](../guides/runbooks.md) to add or publish your own.
 
 ---
 

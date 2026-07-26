@@ -64,7 +64,7 @@ Conductor opens the assistant in a new pane. Move to that pane and paste this pr
 directly into the assistant:
 
 ```text
-Help me onboard this Conductor fleet. First call get_conductor_docs without a topic, then read onboarding and fleet-configuration. Interview me one decision at a time, explain the safe defaults and tradeoffs, and make only changes I approve. Finish by validating the configuration and helping me run one hand-driven test session. After that succeeds, offer the runbook catalog without configuring a runbook unless I choose one.
+Help me onboard this Conductor fleet. First call get_conductor_docs without a topic, then read onboarding and fleet-configuration. Interview me one decision at a time, explain the safe defaults and tradeoffs, and make only changes I approve. Finish by validating the configuration and helping me run one hand-driven test session. After that succeeds, offer the runbook catalog without configuring a runbook unless I choose one. If I choose a bootstrap recipe, offer to create and drive its awakening flows from briefs I approve, pausing whenever an answer is not explicit.
 ```
 
 The assistant can discover the version-matched handbook and the active fleet's real
@@ -107,6 +107,7 @@ version-matched reference; these are the commands used most often:
 | Make free text target one session         | `/talk <session>`                                              |
 | Inspect recent terminal output            | `/tail <session> [lines]`                                      |
 | Temporarily suspend or restore automation | `/pause <session>` · `/resume <session>`                       |
+| Record an approved runbook condition      | `/runbook adopt <id> --version <v> --topic <topic>`            |
 | Remove a spawned session                  | `/teardown <session> [--delete]`                               |
 
 A typical hand-driven session looks like this:
@@ -241,10 +242,11 @@ workflow tradeoffs, and source links.
 | Claude Code + Codex | Runtime overrides, model and effort selection, isolated runtime configuration            | [Getting Started](docs/getting-started.md#step-1--one-hand-driven-session-the-shakedown)             |
 | Agent messaging     | Direct messages, broadcasts, operator messages, delivery receipts, and cancellation      | [Communication and receipts](docs/agent-guide.md#communication-receipts-and-operator-escalation)     |
 | Parallel workspaces | Empty sessions, registered Git templates, and linked Git worktrees                       | [Worktrees and templates](docs/agent-guide.md#worktrees-templates-and-full-fleet-workspace-patterns) |
-| Example runbooks    | Opinionated end-to-end fleet arrangements built from ordinary primitives                 | [Engineering management](docs/runbooks/engineering-management.md)                                    |
+| Shareable runbooks  | Versioned local workflow knowledge built from ordinary primitives                        | [Authoring and sharing runbooks](guides/runbooks.md)                                                 |
 | Stall supervision   | Per-session auto mode, a normal agent acting as sentinel, and fleet-wide stall detection | [Supervision](docs/agent-guide.md#auto-mode-sentinels-fleet-watch-and-escalation-policy)             |
 | Recurring work      | Cron schedules that prompt managed sessions using normal lifecycle behavior              | [Scheduling](docs/agent-guide.md#cron-schedules-and-recurring-agent-work)                            |
 | Operator access     | Local console, one-shot commands, live status, Telegram, Slack, and adapter APIs         | [Operator channels](docs/agent-guide.md#operator-console-telegram-slack-and-injected-channels)       |
+| Plugin events       | Typed live observations plus a local content-free event journal and JSONL export         | [Event subscribers](guides/event-subscribers.md)                                                     |
 | PR Shepherd         | Optional GitHub PR polling and policy-driven coordination                                | [PR Shepherd V2](docs/pr-shepherd.md)                                                                |
 
 All operator interfaces use the same command language, and all managed agents receive
@@ -269,6 +271,24 @@ The tmux backend supports `--headless` sessions and unattended operation over SS
 installed release. These features use the same lifecycle and messaging primitives as
 visible panes rather than introducing a separate worker model.
 
+### Runbooks and workflow recipes
+
+Runbooks let a fleet author or community contributor package the arrangement that makes their
+agents productive: roles, layout, prompts, review gates, verification, and recovery. They are
+versioned local knowledge bundles, not executable workflow definitions. Conductor discovers
+built-in, fleet-owned, and explicitly configured local bundles and exposes their declared topics
+through the same `get_conductor_docs` catalog agents already use.
+
+After the first hand-driven session works, ask the onboarding assistant: “Show me the runbook
+catalog and help me configure Engineering Management Tier 1.” It should explain the selected
+workflow, gather your choices, and make only approved changes. If you want to label the resulting
+work for later evaluation, it prepares an exact operator-only `/runbook adopt` command; merely
+reading a runbook never activates it or grants authority.
+
+Start with the built-in [Engineering Management](runbooks/agent-conductor/engineering-management/README.md)
+bundle, then see [Authoring and sharing runbooks](guides/runbooks.md) to create, validate, version,
+share, and record adoption of your own recipes.
+
 ### Operator adapters
 
 The local console, Telegram, Slack, and injected operator channels all adapt the same
@@ -283,6 +303,16 @@ concerns—authentication, parsing, formatting, service limits, retries, and shu
 commands and policy remain in `ConductorOperations`, so a new channel does not need to
 reimplement fleet behavior. See the [Telegram guide](guides/telegram-adapter.md),
 [Slack guide](guides/slack-adapter.md), and [external adapter contract](guides/external-adapters.md).
+
+### Plugin and integration events
+
+Embedding hosts can inject typed `ConductorEventSubscriber` implementations to react to
+lifecycle, activity, stall, fleet-stall, schedule, and operator-request outcomes without polling
+status or tailing panes. Subscribers observe metadata-only facts and never enter Conductor's
+control path. Delivery is live, ordered, best-effort, and failure-isolated; sequence numbers make
+restarts and dropped events detectable so consumers can reconcile through existing pull surfaces.
+See the [event subscriber contract](guides/event-subscribers.md) for the exported TypeScript API,
+event catalog, privacy boundary, and delivery semantics.
 
 ### PR Shepherd
 
@@ -340,8 +370,10 @@ Start here:
   can also read it lazily through `get_conductor_docs`.
 - [Complete supervisor example](examples/supervisor.yaml) — every setting and effective
   default.
-- [Engineering management runbook](docs/runbooks/engineering-management.md) — a tiered,
+- [Engineering management runbook](runbooks/agent-conductor/engineering-management/README.md) — a tiered,
   end-to-end EM, worker, review, Sentinel, and PR Shepherd fleet pattern.
+- [Authoring and sharing runbooks](guides/runbooks.md) — bundle format, local discovery,
+  versioning, adoption provenance, event export, and contribution rules.
 
 Optional integrations:
 
@@ -352,7 +384,9 @@ Optional integrations:
 Extending or contributing:
 
 - [External adapters and embedding](guides/external-adapters.md) — operator channels,
-  terminal backends, and experimental runtime adapters.
+  event subscribers, terminal backends, and experimental runtime adapters.
+- [Event subscribers](guides/event-subscribers.md) — typed plugin events, ordering, failure
+  isolation, compatibility, and privacy guarantees.
 - [Contributing](CONTRIBUTING.md) — product bar, tests, documentation, and completion
   contract.
 - [Architecture and agent guide](CLAUDE.md) — core boundaries and repository invariants.

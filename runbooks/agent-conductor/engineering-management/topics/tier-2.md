@@ -1,5 +1,3 @@
-<!-- conductor-topic:runbook-engineering-management-tier-2 -->
-
 ## Engineering management — Tier 2: plans, deliverables, and fresh review
 
 Add explicit artifacts and gates before increasing autonomy. A typical lane produces:

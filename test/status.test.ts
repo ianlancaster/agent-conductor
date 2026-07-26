@@ -81,6 +81,18 @@ describe('formatFleetStatusReport', () => {
       }),
     ).toBe('Agent Conductor Status 🔄\nPR Shepherd Status Online\n\nSessions:\n  alpha - CC 🐑 · 🟢 working');
   });
+
+  it('surfaces a degraded event journal without exposing its error text', () => {
+    expect(
+      formatFleetStatusReport('Sessions:\n  alpha - CC · 🟢 working', {
+        fleetWatchActive: false,
+        shepherdOnline: false,
+        eventJournal: { enabled: true, degraded: true, failureCount: 2, lastError: 'secret disk path' },
+      }),
+    ).toContain(
+      'Event journal DEGRADED — exported history is incomplete (2 failure(s) this run). Run conductor doctor.',
+    );
+  });
 });
 
 describe('resolvedSessionModel', () => {

@@ -92,6 +92,9 @@ that owns the environment-specific behavior:
   generated identity/hook configuration, lifecycle-event parsing, and terminal UI parsing.
 - **Terminal backend** (`TerminalBackend`) — owns pane creation, process interaction, capture,
   rediscovery, and backend capabilities.
+- **Event subscriber** (`ConductorEventSubscriber`) — observes typed, metadata-only facts from
+  owning core modules. It is live, best-effort, failure-isolated, and one-way; it must never become
+  control flow or an inbound event path.
 
 Built-in channels ship in this package and may discover opt-in configuration outside the
 core. External channels are ordinary `ChannelAdapter` instances injected through
@@ -127,6 +130,10 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
   `new Supervisor(baseDir, { channels: [...] })`. Built-in environment/config discovery is
   only needed when shipping the adapter inside this package.
 - **New runtime/backend**: implement the interface in its directory and add fake-based tests.
+- **New observable fact**: add the narrowest mechanical event at the owning core choke point,
+  update the discriminated union and vocabulary contract test, and preserve the privacy and
+  non-blocking guarantees in `guides/event-subscribers.md`. Do not turn existing control-flow
+  callbacks into event consumers.
 
 ### Change-completeness checklist
 
@@ -136,6 +143,7 @@ For every user-visible change, decide explicitly whether each row applies:
 - operator commands, aliases, validation, and generated `/help`;
 - session MCP schemas/descriptions and `prompts/conductor-protocol.md`;
 - every built-in adapter plus the public injected-adapter contract;
+- public event-subscriber types, vocabulary, ordering, failure isolation, and privacy contract;
 - strict configuration schema, scaffolded defaults, examples, environment template, and secrets;
 - store migrations, restart/recovery behavior, and backwards compatibility;
 - public exports and package contents;

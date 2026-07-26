@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionConfig } from '../src/config/schema.js';
 import { Scheduler } from '../src/core/scheduler.js';
+import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
 
 function sessionWith(schedules: SessionConfig['schedules']): SessionConfig {
   return { codename: 'alpha', repo: '/tmp/alpha', runtime: 'claude-code', additionalDirs: [], schedules };
@@ -13,6 +14,7 @@ let paused: boolean;
 let started: { session: string; prompt?: string }[];
 let stopped: string[];
 let delivered: { session: string; text: string }[];
+let events: FakeEventPublisher;
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -27,6 +29,7 @@ beforeEach(() => {
   started = [];
   stopped = [];
   delivered = [];
+  events = new FakeEventPublisher();
   scheduler = new Scheduler({
     sessions: () => sessions,
     isActive: () => active,
@@ -45,6 +48,7 @@ beforeEach(() => {
       delivered.push({ session, text });
       return 'delivered';
     },
+    events,
   });
 });
 
@@ -65,6 +69,12 @@ describe('Scheduler', () => {
     await vi.advanceTimersByTimeAsync(1100);
     expect(delivered[0]).toEqual({ session: 'alpha', text: 'tick' });
     expect(started).toEqual([]);
+    expect(events.events).toContainEqual({
+      type: 'schedule',
+      session: 'alpha',
+      label: EVERY_SECOND,
+      outcome: 'fired',
+    });
   });
 
   it('starts an inactive session with the prompt', async () => {
@@ -84,6 +94,12 @@ describe('Scheduler', () => {
     expect(started).toEqual([]);
     await vi.advanceTimersByTimeAsync(3100); // settle period elapses
     expect(started[0]).toEqual({ session: 'alpha', prompt: 'nightly' });
+    expect(events.events).toContainEqual({
+      type: 'schedule',
+      session: 'alpha',
+      label: EVERY_SECOND,
+      outcome: 'fired-fresh',
+    });
   });
 
   it('defers when the session is paused', async () => {
@@ -93,6 +109,12 @@ describe('Scheduler', () => {
     await vi.advanceTimersByTimeAsync(1100);
     expect(started).toEqual([]);
     expect(delivered).toEqual([]);
+    expect(events.events).toContainEqual({
+      type: 'schedule',
+      session: 'alpha',
+      label: EVERY_SECOND,
+      outcome: 'deferred-paused',
+    });
   });
 
   it('skips schedule entries marked paused', async () => {
@@ -162,6 +184,7 @@ describe('Scheduler', () => {
       deliver: async (session, text) => {
         delivered.push({ session, text });
       },
+      events,
     });
     sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'restart', paused: false, freshContext: false }]));
     scheduler.rebuild();
@@ -169,5 +192,32 @@ describe('Scheduler', () => {
     expect(inspected).toBe(1);
     expect(started[0]?.prompt).toBe('restart');
     expect(delivered).toEqual([]);
+  });
+
+  it('emits a mechanical failed outcome without exposing the error text', async () => {
+    scheduler = new Scheduler({
+      sessions: () => sessions,
+      isActive: () => false,
+      isPaused: () => false,
+      startSession: async () => {
+        throw new Error('secret provider detail');
+      },
+      stopSession: async () => 'stopped',
+      deliver: async () => undefined,
+      events,
+    });
+    sessions.set(
+      'alpha',
+      sessionWith([{ cron: EVERY_SECOND, prompt: 'restart', label: 'safe label', paused: false, freshContext: false }]),
+    );
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(events.events).toContainEqual({
+      type: 'schedule',
+      session: 'alpha',
+      label: 'safe label',
+      outcome: 'failed',
+    });
+    expect(JSON.stringify(events.events)).not.toContain('secret provider detail');
   });
 });

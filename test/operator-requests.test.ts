@@ -3,16 +3,19 @@ import { describe, expect, it } from 'vitest';
 import type { ChannelMessage } from '../src/channels/types.js';
 import { OperatorRequests } from '../src/core/operator-requests.js';
 import { Store } from '../src/store/index.js';
+import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
 
 function setup(options: { delivered?: boolean; delivery?: () => Promise<string> } = {}): {
   store: Store;
   requests: OperatorRequests;
   outbound: ChannelMessage[];
   sessionMessages: { from: string; target: string; message: string }[];
+  events: FakeEventPublisher;
 } {
   const store = new Store(':memory:');
   const outbound: ChannelMessage[] = [];
   const sessionMessages: { from: string; target: string; message: string }[] = [];
+  const events = new FakeEventPublisher();
   const requests = new OperatorRequests({
     store,
     channelSend: async (message) => {
@@ -25,8 +28,9 @@ function setup(options: { delivered?: boolean; delivery?: () => Promise<string> 
         return options.delivery === undefined ? 'Delivered to alpha.' : options.delivery();
       },
     },
+    events,
   });
-  return { store, requests, outbound, sessionMessages };
+  return { store, requests, outbound, sessionMessages, events };
 }
 
 describe('OperatorRequests', () => {
@@ -39,7 +43,7 @@ describe('OperatorRequests', () => {
   });
 
   it('persists a selectable request and emits channel-neutral actions', async () => {
-    const { store, requests, outbound } = setup();
+    const { store, requests, outbound, events } = setup();
     expect(await requests.send('alpha', 'Deploy where?', [' Staging ', 'Production'])).toBe(
       'Request #1 sent to the operator.',
     );
@@ -56,11 +60,14 @@ describe('OperatorRequests', () => {
         { label: 'Production', command: '/respond 1 2' },
       ],
     });
+    expect(events.events).toEqual([
+      { type: 'operator.request.created', session: 'alpha', requestId: 1, optionCount: 2 },
+    ]);
     store.close();
   });
 
   it('delivers the selected choice to the original session with operator identity and context', async () => {
-    const { store, requests, sessionMessages } = setup();
+    const { store, requests, sessionMessages, events } = setup();
     await requests.send('alpha', 'Deploy where?', ['Staging', 'Production']);
     expect(await requests.respond(1, 2)).toBe('Delivered to alpha. Response recorded: Production');
     expect(sessionMessages).toEqual([
@@ -72,6 +79,10 @@ describe('OperatorRequests', () => {
     ]);
     expect(store.getOperatorRequest(1)).toMatchObject({ status: 'responded', selectedIndex: 1 });
     expect(await requests.respond(1, 1)).toBe('Operator request #1 was already answered: Production');
+    expect(events.events).toEqual([
+      { type: 'operator.request.created', session: 'alpha', requestId: 1, optionCount: 2 },
+      { type: 'operator.request.resolved', session: 'alpha', requestId: 1, selectedOption: 2 },
+    ]);
     store.close();
   });
 

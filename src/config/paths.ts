@@ -10,6 +10,7 @@ export interface FleetPaths {
   rootDir: string;
   configDir: string;
   sessionsDir: string;
+  runbooksDir: string;
   supervisorFile: string;
   shepherdConfigFile: string;
   dataDirDefault: string;
@@ -55,6 +56,7 @@ export function resolveFleetPaths(baseDir: string): FleetPaths {
     rootDir,
     configDir,
     sessionsDir: join(configDir, 'sessions'),
+    runbooksDir: join(rootDir, 'runbooks'),
     supervisorFile: join(configDir, 'supervisor.yaml'),
     shepherdConfigFile: join(configDir, 'pr-shepherd.yaml'),
     dataDirDefault: layout === 'legacy-root' ? './data' : './.conductor/data',

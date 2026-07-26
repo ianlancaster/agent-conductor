@@ -1,0 +1,43 @@
+schemaVersion: 1
+id: agent-conductor/engineering-management
+name: Engineering Management Fleet
+version: 1.0.0
+summary: Build a lean dispatch-and-review fleet around a persistent engineering manager and stall sentinel.
+license: MIT
+repository: https://github.com/ianlancaster/agent-conductor
+requires:
+  conductor: '>=0.1.0'
+topics:
+  - id: overview
+    title: Engineering management fleet
+    summary: Roles, layout, prerequisites, and the lean-first adoption path.
+    path: README.md
+  - id: tier-1
+    title: Tier 1 — dispatch and report
+    summary: Start with one manager dispatching isolated workers that report completion.
+    path: topics/tier-1.md
+  - id: tier-2
+    title: Tier 2 — plans, deliverables, and fresh review
+    summary: Add written contracts and an independent review only where the expected signal justifies it.
+    path: topics/tier-2.md
+  - id: tier-3
+    title: Tier 3 — PR Shepherd and review lanes
+    summary: Route pull-request facts to the manager and review immutable commits in fresh lanes.
+    path: topics/tier-3.md
+  - id: tier-4
+    title: Tier 4 — bounded autonomous initiatives
+    summary: Add cross-model challenge, milestones, automatic stall routing, and explicit context gates.
+    path: topics/tier-4.md
+  - id: practices
+    title: Role scripts and mechanics
+    summary: Customize role instructions and understand the mechanical boundaries under the workflow.
+    path: topics/practices.md
+  - id: templates
+    title: Copyable templates
+    summary: Generic session, dispatch, plan, delivery, and review-gate examples.
+    path: topics/templates.md
+  - id: cognitive-agent-bootstrap
+    title: Cognitive-agent bootstrap
+    summary: Safely create and awaken persistent manager and sentinel roles from an approved brief.
+    path: topics/cognitive-agent-bootstrap.md
+resources: []

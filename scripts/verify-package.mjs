@@ -42,14 +42,13 @@ try {
     'package/dist/cli/index.js',
     'package/dist/shepherd/cli.js',
     'package/docs/agent-guide.md',
-    'package/docs/runbooks/engineering-management.md',
-    'package/docs/runbooks/engineering-management-tier-1.md',
-    'package/docs/runbooks/engineering-management-tier-2.md',
-    'package/docs/runbooks/engineering-management-tier-3.md',
-    'package/docs/runbooks/engineering-management-tier-4.md',
-    'package/docs/runbooks/engineering-management-practices.md',
-    'package/docs/runbooks/engineering-management-templates.md',
+    'package/runbooks/agent-conductor/engineering-management/runbook.yaml',
+    'package/runbooks/agent-conductor/engineering-management/README.md',
+    'package/runbooks/agent-conductor/engineering-management/topics/tier-1.md',
+    'package/runbooks/agent-conductor/engineering-management/topics/cognitive-agent-bootstrap.md',
     'package/guides/external-adapters.md',
+    'package/guides/event-subscribers.md',
+    'package/guides/runbooks.md',
     'package/prompts/conductor-protocol.md',
     'package/prompts/sentinel.md',
     'package/examples/supervisor.yaml',
@@ -121,6 +120,28 @@ try {
   if (!existsSync(join(fleet, '.conductor', 'config', 'supervisor.yaml'))) {
     throw new Error('fresh start did not create the fleet scaffold');
   }
+  const runbookList = run(conductor, ['-C', fleet, 'runbook', 'list'], { env: fleetEnv });
+  if (!runbookList.includes('agent-conductor/engineering-management@1.0.0')) {
+    throw new Error('packed CLI did not discover the built-in runbook');
+  }
+  const builtInRunbook = join(
+    prefix,
+    'lib',
+    'node_modules',
+    'agent-conductor',
+    'runbooks',
+    'agent-conductor',
+    'engineering-management',
+  );
+  if (!run(conductor, ['runbook', 'validate', builtInRunbook]).includes('Runbook OK.')) {
+    throw new Error('packed CLI did not validate the built-in runbook');
+  }
+  const authoredRunbook = join(scratch, 'sample-runbook');
+  run(conductor, ['runbook', 'init', authoredRunbook]);
+  if (!run(conductor, ['runbook', 'validate', authoredRunbook]).includes('Runbook OK.')) {
+    throw new Error('packed CLI did not validate an initialized external runbook');
+  }
+  run(conductor, ['-C', fleet, 'events', 'export', '--format', 'jsonl'], { env: fleetEnv });
 
   const shepherdFleet = join(scratch, 'shepherd-fleet');
   mkdirSync(shepherdFleet);
@@ -135,9 +156,9 @@ try {
   run('npm', ['install', '--prefix', consumer, tarball]);
   writeFileSync(
     join(consumer, 'index.ts'),
-    `import { Supervisor, type ChannelAdapter, type SessionRuntime, type TerminalBackend } from 'agent-conductor';\n` +
-      `declare const channel: ChannelAdapter; declare const runtime: SessionRuntime; declare const terminal: TerminalBackend;\n` +
-      `new Supervisor('.', { channels: [channel], runtimes: [runtime], terminalBackend: terminal });\n`,
+    `import { Supervisor, type ChannelAdapter, type ConductorEventSubscriber, type RunbookManifest, type SessionRuntime, type TerminalBackend } from 'agent-conductor';\n` +
+      `declare const channel: ChannelAdapter; declare const subscriber: ConductorEventSubscriber; declare const runbook: RunbookManifest; declare const runtime: SessionRuntime; declare const terminal: TerminalBackend; void runbook;\n` +
+      `new Supervisor('.', { channels: [channel], eventSubscribers: [subscriber], runtimes: [runtime], terminalBackend: terminal });\n`,
   );
   run(process.execPath, [
     resolve('node_modules/typescript/bin/tsc'),

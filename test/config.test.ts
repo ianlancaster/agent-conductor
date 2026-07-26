@@ -75,6 +75,8 @@ describe('loadSupervisorConfig', () => {
       configPath: join(baseDir, 'config', 'pr-shepherd.yaml'),
     });
     expect(config.paths.dataDir).toBe('./data');
+    expect(config.runbooks.paths).toEqual([]);
+    expect(config.events.journal.enabled).toBe(true);
   });
 
   it('resolves a strict root-level Shepherd config beside supervisor.yaml', () => {
@@ -106,6 +108,25 @@ describe('loadSupervisorConfig', () => {
     expect(loadSupervisorConfig(baseDir).spawn.templates).toEqual({});
   });
 
+  it('accepts only a strict list of additional local runbook paths', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'runbooks:\n  paths:\n    - ../shared-runbooks\n    - /opt/team-runbooks\n',
+    );
+    expect(loadSupervisorConfig(baseDir).runbooks.paths).toEqual(['../shared-runbooks', '/opt/team-runbooks']);
+
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'runbooks:\n  enabled: true\n');
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/runbooks/);
+  });
+
+  it('allows the durable event journal to be disabled without accepting extra knobs', () => {
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'events:\n  journal:\n    enabled: false\n');
+    expect(loadSupervisorConfig(baseDir).events.journal.enabled).toBe(false);
+
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'events:\n  journal:\n    retentionDays: 30\n');
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/events/);
+  });
+
   it('rejects malformed template registry entries', () => {
     writeFileSync(
       join(baseDir, 'config', 'supervisor.yaml'),
@@ -130,6 +151,7 @@ describe('loadSupervisorConfig', () => {
     expect(loadSupervisorConfig(baseDir).paths.dataDir).toBe('./.conductor/data');
     expect(resolveFleetPaths(baseDir).supervisorFile).toBe(join(baseDir, '.conductor', 'config', 'supervisor.yaml'));
     expect(sessionConfigDir(baseDir)).toBe(join(baseDir, '.conductor', 'config', 'sessions'));
+    expect(resolveFleetPaths(baseDir).runbooksDir).toBe(join(baseDir, '.conductor', 'runbooks'));
   });
 
   it('rejects ambiguous preferred and legacy configuration layouts', () => {

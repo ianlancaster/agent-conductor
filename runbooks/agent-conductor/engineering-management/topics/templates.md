@@ -1,5 +1,3 @@
-<!-- conductor-topic:runbook-engineering-management-templates -->
-
 ## Engineering management — copyable configuration and artifact templates
 
 These examples are starting points. Replace paths and policy, keep each persistent role in a
@@ -43,7 +41,7 @@ schedules: []
 ```
 
 Create the directories, run `conductor validate`, then start and designate the Sentinel. Arrange the
-main window as described in `runbook-engineering-management`; workers use tab placement.
+main window as described in the runbook overview; workers use tab placement.
 
 ### Engineering Manager role script
 

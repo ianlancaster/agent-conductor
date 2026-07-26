@@ -1,6 +1,7 @@
 import type { Store } from '../store/index.js';
 import type { RuntimeName } from '../config/schema.js';
 import type { Activity, SessionState } from './types.js';
+import type { ConductorEventPublisher } from '../events/types.js';
 
 /**
  * Per-session state registry. Auto/tag/pause persist to SQLite; session and
@@ -12,6 +13,7 @@ export class SessionStateManager {
   constructor(
     private readonly store: Store,
     private readonly defaultAuto: boolean,
+    private readonly events?: ConductorEventPublisher,
   ) {}
 
   register(codename: string, isAgentProject: boolean): void {
@@ -123,7 +125,9 @@ export class SessionStateManager {
   /** The runtime was observed up through a hook, process, chrome, or adopted live pane. */
   setReady(codename: string): void {
     const state = this.states.get(codename);
-    if (state?.running === true) state.ready = true;
+    if (state?.running !== true || state.ready) return;
+    state.ready = true;
+    this.events?.emit({ type: 'session.ready', session: codename });
   }
 
   isReady(codename: string): boolean {
@@ -132,8 +136,11 @@ export class SessionStateManager {
 
   setActivity(codename: string, activity: Activity): void {
     const state = this.mustGet(codename);
+    const previous = state.activity;
+    if (previous === activity) return;
     state.activity = activity;
     this.persist(codename);
+    this.events?.emit({ type: 'session.activity.changed', session: codename, previous, activity });
   }
 
   private mustGet(codename: string): SessionState {

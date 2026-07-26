@@ -3,12 +3,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Supervisor } from '../src/core/supervisor.js';
 import type { ChannelAdapter, ChannelHandlers, ChannelMessage } from '../src/channels/types.js';
-import { Store } from '../src/store/index.js';
+import { exportEventJournalJsonl, Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
+import { FakeEventSubscriber } from './fakes/fake-subscriber.js';
+import { FakeChannel } from './fakes/fake-channel.js';
 
 let baseDir: string;
 let supervisor: Supervisor | undefined;
@@ -37,6 +39,200 @@ afterEach(async () => {
  * of at runtime. No terminal/network side effects before start().
  */
 describe('Supervisor construction', () => {
+  it('serves a dynamic fleet runbook topic through the real MCP HTTP surface', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {});
+    const bundle = join(baseDir, 'runbooks', 'team', 'workflow');
+    mkdirSync(bundle, { recursive: true });
+    writeFileSync(join(bundle, 'README.md'), '# Fleet workflow\n\nLoaded over MCP.\n');
+    writeFileSync(
+      join(bundle, 'runbook.yaml'),
+      'schemaVersion: 1\nid: team/workflow\nname: Team Workflow\nversion: 1.0.0\nsummary: A local workflow.\nrequires:\n  conductor: ">=0.1.0"\ntopics:\n  - id: overview\n    title: Fleet workflow\n    summary: Start here.\n    path: README.md\nresources: []\n',
+    );
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+    const response = await fetch(`http://127.0.0.1:${String(port)}/mcp/reader`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'get_conductor_docs', arguments: { topic: 'runbook:team/workflow/overview' } },
+      }),
+    });
+    const rpc = (await response.json()) as { result: { content: { text: string }[] } };
+    const documentation = JSON.parse(rpc.result.content[0]?.text ?? '{}') as { content?: string };
+    expect(documentation.content).toContain('Loaded over MCP');
+
+    const forbiddenResponse = await fetch(`http://127.0.0.1:${String(port)}/mcp/reader`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'adopt_runbook',
+          arguments: { runbookId: 'team/workflow', version: '1.0.0', topic: 'overview' },
+        },
+      }),
+    });
+    const forbidden = (await forbiddenResponse.json()) as { error?: { code?: number; message?: string } };
+    expect(forbidden.error).toEqual({ code: -32602, message: 'Unknown tool: adopt_runbook' });
+  });
+
+  it('feeds a boot-complete ordered event stream to an injected subscriber without blocking control flow', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const terminal = new FakeTerminalBackend();
+    const survivingPane = await terminal.createPane('alpha', 'pane', baseDir);
+    terminal.panes.get(survivingPane.id)!.sessionActive = true;
+    terminal.survivors.set('alpha', survivingPane);
+    const subscriber = new FakeEventSubscriber();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      eventSubscribers: [subscriber],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start();
+    await until(() => subscriber.events.some((event) => event.type === 'session.started'));
+    const registeredAt = subscriber.events.findIndex((event) => event.type === 'session.registered');
+    const startedAt = subscriber.events.findIndex((event) => event.type === 'session.started');
+    expect(registeredAt).toBe(0);
+    expect(startedAt).toBeGreaterThan(registeredAt);
+    expect(subscriber.events[startedAt]).toMatchObject({
+      type: 'session.started',
+      session: 'alpha',
+      cause: 'adopt',
+    });
+
+    // Repeated runtime working signals are a storm-prone path. The state choke
+    // point emits only the initial stopped -> working transition.
+    await fetch(`http://127.0.0.1:${String(port)}/events/alpha`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }),
+    });
+    await fetch(`http://127.0.0.1:${String(port)}/events/alpha`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }),
+    });
+    await until(() => subscriber.events.some((event) => event.type === 'session.ready'));
+    expect(subscriber.events.filter((event) => event.type === 'session.activity.changed')).toHaveLength(1);
+  });
+
+  it('reports journal degradation while lifecycle and live subscribers continue', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const subscriber = new FakeEventSubscriber();
+    const append = vi.spyOn(Store.prototype, 'appendEvent').mockImplementation(() => {
+      throw new Error('simulated journal failure at a private path');
+    });
+    try {
+      supervisor = new Supervisor(baseDir, {
+        terminalBackend: new FakeTerminalBackend(),
+        eventSubscribers: [subscriber],
+        includeConfiguredChannels: false,
+        env: {},
+      });
+      await supervisor.start();
+      expect(await supervisor.command('/start alpha')).toBe('alpha started.');
+      await until(() => subscriber.events.some((event) => event.type === 'session.started'));
+      const status = supervisor.statusReport();
+      expect(status).toContain('Event journal DEGRADED');
+      expect(status).not.toContain('private path');
+    } finally {
+      append.mockRestore();
+    }
+  });
+
+  it('journals restart cancellation as a distinct mechanical message reason', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+      beta: `codename: beta\nrepo: ${baseDir}\n`,
+    });
+    const seed = new Store(join(baseDir, 'data', 'conductor.db'));
+    seed.insertDirectMessage('alpha', 'beta', 'stale secret');
+    seed.close();
+    const subscriber = new FakeEventSubscriber();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      eventSubscribers: [subscriber],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start();
+    await until(() => subscriber.events.some((event) => event.type === 'message.cancelled'));
+    const cancelled = subscriber.events.find((event) => event.type === 'message.cancelled');
+    expect(cancelled).toMatchObject({
+      type: 'message.cancelled',
+      receiptId: 1,
+      sender: 'alpha',
+      recipient: 'beta',
+      reason: 'conductor-restarted',
+    });
+    expect(JSON.stringify(cancelled)).not.toContain('stale secret');
+  });
+
+  it('routes operator-only runbook adoption identically through an injected channel', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      manager: `codename: manager\nrepo: ${baseDir}\n`,
+    });
+    const bundle = join(baseDir, 'runbooks', 'team', 'workflow');
+    mkdirSync(bundle, { recursive: true });
+    writeFileSync(join(bundle, 'README.md'), '# Workflow\n');
+    writeFileSync(
+      join(bundle, 'runbook.yaml'),
+      'schemaVersion: 1\nid: team/workflow\nname: Team Workflow\nversion: 1.0.0\nsummary: Test.\nrequires:\n  conductor: ">=0.1.0"\ntopics:\n  - id: overview\n    title: Overview\n    summary: Start.\n    path: README.md\nresources: []\n',
+    );
+    const channel = new FakeChannel();
+    const events = new FakeEventSubscriber();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      channels: [channel],
+      eventSubscribers: [events],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+
+    const reply = await channel.command('runbook', [
+      'adopt',
+      'team/workflow',
+      '--version',
+      '1.0.0',
+      '--topic',
+      'overview',
+      '--session',
+      'manager=engineering-manager',
+    ]);
+    expect(reply).toMatch(/^Adopted team\/workflow@1\.0\.0 topic 'overview' as [0-9a-f-]+\.$/u);
+    await until(() => events.events.some((event) => event.type === 'runbook.adopted'));
+    expect(events.events.find((event) => event.type === 'runbook.adopted')).toMatchObject({
+      runbookId: 'team/workflow',
+      sessions: [{ codename: 'manager', role: 'engineering-manager' }],
+    });
+    const journal = [...exportEventJournalJsonl(join(baseDir, 'data', 'conductor.db'))].map(
+      (line) => JSON.parse(line) as { type?: string; runbookId?: string },
+    );
+    expect(journal).toContainEqual(expect.objectContaining({ type: 'runbook.adopted', runbookId: 'team/workflow' }));
+  });
+
   it('selects an injected runtime from fleet config and exposes it through lifecycle commands', async () => {
     writeConfig('defaults:\n  runtime: external\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
@@ -376,11 +572,38 @@ describe('Supervisor construction', () => {
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43397\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
     });
-    supervisor = new Supervisor(baseDir);
+    const subscriber = new FakeEventSubscriber();
+    supervisor = new Supervisor(baseDir, { eventSubscribers: [subscriber] });
     await supervisor.command('/auto alpha');
     rmSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'));
     supervisor.reloadSessionsForTest();
     expect(supervisor.statusReport()).toContain('No sessions configured');
+    await until(() => subscriber.events.length > 0);
+    expect(subscriber.events).toContainEqual(
+      expect.objectContaining({
+        type: 'session.deregistered',
+        session: 'alpha',
+        cause: 'config-removed',
+      }),
+    );
+  });
+
+  it('distinguishes explicit teardown from a hand-removed config', async () => {
+    writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43397\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const subscriber = new FakeEventSubscriber();
+    supervisor = new Supervisor(baseDir, { eventSubscribers: [subscriber] });
+
+    expect(await supervisor.command('/teardown alpha')).toContain('alpha deregistered.');
+    await until(() => subscriber.events.length > 0);
+    expect(subscriber.events).toContainEqual(
+      expect.objectContaining({
+        type: 'session.deregistered',
+        session: 'alpha',
+        cause: 'teardown',
+      }),
+    );
   });
 
   it('keeps fleet watch enabled as registered membership changes', async () => {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StallSentinelRouter } from '../src/core/sentinel.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
+import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
 
 let backend: FakeTerminalBackend;
 let runtime: FakeRuntime;
@@ -12,6 +13,7 @@ let autoSessions: Set<string>;
 let pausedSessions: Set<string>;
 let activeSessions: Set<string>;
 let panes: Map<string, string>;
+let events: FakeEventPublisher;
 
 function makeRouter(
   sentinelCodename: string | undefined,
@@ -45,6 +47,7 @@ function makeRouter(
     },
     logEvent: () => undefined,
     initialSessions: ['alpha', 'beta', 'watch'],
+    events,
   });
 }
 
@@ -57,6 +60,7 @@ beforeEach(async () => {
   pausedSessions = new Set();
   activeSessions = new Set(['alpha', 'beta', 'watch']);
   panes = new Map();
+  events = new FakeEventPublisher();
   const alphaPane = await backend.createPane('alpha', 'pane');
   panes.set('alpha', alphaPane.id);
   backend.setPaneContent(alphaPane.id, 'some terminal output\nlast line');
@@ -101,12 +105,37 @@ describe('stall routing', () => {
     autoSessions.delete('alpha');
     await router.handleStall('alpha', 'idle', {});
     expect(delivered).toEqual([]);
+    expect(events.events).toContainEqual({
+      type: 'stall',
+      session: 'alpha',
+      kind: 'idle',
+      disposition: 'ignored-auto-off',
+    });
   });
 
   it('ignores stalls while paused', async () => {
     pausedSessions.add('alpha');
     await router.handleStall('alpha', 'idle', {});
     expect(delivered).toEqual([]);
+    expect(events.events).toContainEqual({
+      type: 'stall',
+      session: 'alpha',
+      kind: 'idle',
+      disposition: 'ignored-paused',
+    });
+  });
+
+  it('reports paused as the mechanical reason when pause and auto-off both apply', async () => {
+    pausedSessions.add('alpha');
+    autoSessions.delete('alpha');
+    await router.handleStall('alpha', 'idle', {});
+    expect(events.events).toContainEqual({
+      type: 'stall',
+      session: 'alpha',
+      kind: 'idle',
+      disposition: 'ignored-paused',
+    });
+    expect(events.events).not.toContainEqual(expect.objectContaining({ disposition: 'ignored-auto-off' }));
   });
 
   it("ignores the sentinel's own stalls — idle is its normal state, not an emergency", async () => {
@@ -114,12 +143,19 @@ describe('stall routing', () => {
     await router.handleStall('watch', 'silent', {});
     expect(operatorMessages).toEqual([]);
     expect(delivered).toEqual([]);
+    expect(events.events).toEqual([]);
   });
 
   it('suppresses a repeat stall with similar pane content', async () => {
     await router.handleStall('alpha', 'idle', {});
     await router.handleStall('alpha', 'idle', {});
     expect(delivered.length).toBe(1);
+    expect(events.events).toContainEqual({
+      type: 'stall',
+      session: 'alpha',
+      kind: 'idle',
+      disposition: 'suppressed',
+    });
   });
 
   it('does not carry duplicate suppression across session runs', async () => {

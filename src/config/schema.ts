@@ -98,6 +98,25 @@ export const supervisorConfigSchema = z
       })
       .strict()
       .default({}),
+    runbooks: z
+      .object({
+        /** Additional local bundle directories or collections, resolved from the fleet directory. */
+        paths: z.array(z.string().trim().min(1)).default([]),
+      })
+      .strict()
+      .default({}),
+    events: z
+      .object({
+        journal: z
+          .object({
+            /** Append the content-free typed event stream to the local SQLite store. */
+            enabled: z.boolean().default(true),
+          })
+          .strict()
+          .default({}),
+      })
+      .strict()
+      .default({}),
     mcp: z
       .object({
         /** Default: derived per fleet dir (stable hash into 3456..3955) so multiple conductors don't collide. */

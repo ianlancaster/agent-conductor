@@ -11,7 +11,7 @@ export function tokenize(line: string): string[] {
   return tokens;
 }
 
-export type CommandGroup = 'Sessions' | 'Conversation' | 'Modes' | 'Lifecycle';
+export type CommandGroup = 'Sessions' | 'Conversation' | 'Modes' | 'Lifecycle' | 'Runbooks';
 
 export interface OperatorCommandDefinition {
   command: string;
@@ -318,6 +318,22 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       },
     },
     {
+      command: 'runbook',
+      operations: ['adopt_runbook', 'supersede_runbook_adoption', 'end_runbook_adoption'],
+      group: 'Runbooks',
+      usage: '/runbook <adopt|supersede|end> ...',
+      description: 'Record operator-approved adoption provenance for installed runbook topics.',
+      details: [
+        '    adopt <id> --version <v> --topic <topic> [--session codename=role ...]',
+        '    supersede <adoption-id> --with <id> --version <v> --topic <topic>',
+        '    end <adoption-id>',
+      ],
+      invoke: (args, actor) => {
+        const parsed = parseRunbookCommand(args);
+        return invoke(parsed.operation, parsed.input, actor);
+      },
+    },
+    {
       command: 'spawn',
       operations: ['spawn_session'],
       group: 'Lifecycle',
@@ -405,9 +421,53 @@ function parseSpawn(args: string[]): Record<string, unknown> {
   return output;
 }
 
+function parseRunbookCommand(args: string[]): { operation: string; input: Record<string, unknown> } {
+  const action = args[0];
+  const target = args[1];
+  if (action === 'end') {
+    if (target === undefined || args.length !== 2) usage('/runbook end <adoption-id>');
+    return { operation: 'end_runbook_adoption', input: { adoptionId: target } };
+  }
+  if (action !== 'adopt' && action !== 'supersede') {
+    usage('/runbook <adopt|supersede|end> ...');
+  }
+  if (target === undefined) usage(`/runbook ${action} <${action === 'adopt' ? 'id' : 'adoption-id'}> [flags]`);
+
+  let runbookId = action === 'adopt' ? target : undefined;
+  let version: string | undefined;
+  let topic: string | undefined;
+  const sessions: string[] = [];
+  for (let index = 2; index < args.length; index += 2) {
+    const flag = args[index];
+    const value = args[index + 1];
+    if (flag === undefined || value === undefined) usage(`/runbook ${action} ...`);
+    if (flag === '--version' && version === undefined) version = value;
+    else if (flag === '--topic' && topic === undefined) topic = value;
+    else if (action === 'adopt' && flag === '--session') sessions.push(value);
+    else if (action === 'supersede' && flag === '--with' && runbookId === undefined) runbookId = value;
+    else usage(`/runbook ${action} ...`);
+  }
+  if (runbookId === undefined || version === undefined || topic === undefined) {
+    usage(
+      action === 'adopt'
+        ? '/runbook adopt <id> --version <v> --topic <topic> [--session codename=role ...]'
+        : '/runbook supersede <adoption-id> --with <id> --version <v> --topic <topic>',
+    );
+  }
+  return action === 'adopt'
+    ? {
+        operation: 'adopt_runbook',
+        input: { runbookId, version, topic, ...(sessions.length > 0 ? { sessions } : {}) },
+      }
+    : {
+        operation: 'supersede_runbook_adoption',
+        input: { adoptionId: target, runbookId, version, topic },
+      };
+}
+
 export function renderOperatorHelp(commands: readonly OperatorCommandDefinition[]): string {
   const lines: string[] = [];
-  const groups: CommandGroup[] = ['Sessions', 'Conversation', 'Modes', 'Lifecycle'];
+  const groups: CommandGroup[] = ['Sessions', 'Conversation', 'Modes', 'Runbooks', 'Lifecycle'];
   for (const group of groups) {
     const candidates = commands.filter((candidate) => candidate.group === group);
     if (candidates.length === 0) continue;

@@ -2,6 +2,7 @@ import type { ChannelAction, ChannelMessage } from '../channels/types.js';
 import type { Store } from '../store/index.js';
 import { renderMessageReceipt, type Messaging } from './messaging.js';
 import { messageEnvelope } from './utils.js';
+import type { ConductorEventPublisher } from '../events/types.js';
 
 const MAX_OPTIONS = 8;
 const MAX_OPTION_LENGTH = 80;
@@ -10,6 +11,7 @@ export interface OperatorRequestsDeps {
   store: Store;
   messaging: Pick<Messaging, 'sendToSession'>;
   channelSend(message: ChannelMessage): Promise<boolean>;
+  events?: ConductorEventPublisher;
 }
 
 /** Correlates selectable operator questions with one ordinary session reply. */
@@ -31,6 +33,12 @@ export class OperatorRequests {
 
     const options = this.normalizeOptions(rawOptions);
     const requestId = this.deps.store.insertOperatorRequest(from, message, options);
+    this.deps.events?.emit({
+      type: 'operator.request.created',
+      session: from,
+      requestId,
+      optionCount: options.length,
+    });
     const actions: ChannelAction[] = options.map((label, index) => ({
       label,
       command: `/respond ${String(requestId)} ${String(index + 1)}`,
@@ -66,6 +74,12 @@ export class OperatorRequests {
       if (!this.deps.store.finalizeOperatorRequest(requestId, selectedIndex)) {
         throw new Error(`Operator request #${String(requestId)} could not be finalized.`);
       }
+      this.deps.events?.emit({
+        type: 'operator.request.resolved',
+        session: request.session,
+        requestId,
+        selectedOption: option,
+      });
       const renderedDelivery = typeof delivery === 'string' ? delivery : renderMessageReceipt(delivery);
       return `${renderedDelivery} Response recorded: ${selected}`;
     } catch (error) {

@@ -3,6 +3,7 @@ import { sep } from 'node:path';
 import type { SessionConfig } from '../config/schema.js';
 import type { SessionState } from './types.js';
 import { currentBranch } from './worktree.js';
+import type { ConductorEventJournalStatus } from '../events/types.js';
 
 const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
   working: '🟢',
@@ -145,8 +146,22 @@ export function statusReport(deps: StatusDeps, codename?: string, markers: Statu
 /** Add the canonical fleet heading and optional companion-health summary. */
 export function formatFleetStatusReport(
   report: string,
-  options: { fleetWatchActive: boolean; shepherdOnline: boolean },
+  options: {
+    fleetWatchActive: boolean;
+    shepherdOnline: boolean;
+    eventJournal?: ConductorEventJournalStatus;
+  },
 ): string {
   const heading = `Agent Conductor Status${options.fleetWatchActive ? ' 🔄' : ''}`;
-  return [heading, ...(options.shepherdOnline ? [PR_SHEPHERD_ONLINE_STATUS] : []), '', report].join('\n');
+  return [
+    heading,
+    ...(options.shepherdOnline ? [PR_SHEPHERD_ONLINE_STATUS] : []),
+    ...(options.eventJournal?.degraded === true
+      ? [
+          `Event journal DEGRADED — exported history is incomplete (${String(options.eventJournal.failureCount)} failure(s) this run). Run conductor doctor.`,
+        ]
+      : []),
+    '',
+    report,
+  ].join('\n');
 }

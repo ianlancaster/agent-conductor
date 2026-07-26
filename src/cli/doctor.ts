@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { loadConfig, validateConfig } from '../config/loader.js';
 import { resolveFleetDataDir, resolveFleetPaths } from '../config/paths.js';
 import { assertShepherdProfileReady } from '../shepherd/config.js';
+import { eventJournalDegradedPath } from '../events/journal.js';
 
 export type PreflightLevel = 'pass' | 'warn' | 'fail';
 
@@ -138,6 +139,21 @@ export async function runPreflight(
         ? result('pass', label, path)
         : result('fail', label, `${path} is not writable; correct its ownership or permissions`),
     );
+  }
+
+  if (!loaded.supervisor.events.journal.enabled) {
+    results.push(result('pass', 'Event journal', 'disabled by fleet configuration'));
+  } else if (existsSync(eventJournalDegradedPath(dataDir))) {
+    const markerPath = eventJournalDegradedPath(dataDir);
+    results.push(
+      result(
+        'warn',
+        'Event journal',
+        `degraded — exported event history is incomplete; inspect conductor.log, record the gap, then remove ${markerPath} to acknowledge it`,
+      ),
+    );
+  } else {
+    results.push(result('pass', 'Event journal', 'enabled; no recorded write failures'));
   }
 
   const selectedRuntimes = new Set([

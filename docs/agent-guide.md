@@ -23,6 +23,7 @@ compose:
 - **Scheduling:** cron-driven prompts using the same lifecycle and protected delivery mechanisms.
 - **Workspaces:** empty directories, configured Git templates, and linked Git worktrees.
 - **Operator channels:** the local console plus optional Telegram, Slack, or injected adapters.
+- **Plugin events:** typed, metadata-only observations for injected integration subscribers.
 - **PR Shepherd:** a separate opt-in GitHub polling service that can notify a coordinator through
   Conductor.
 - **Status lines:** optional Claude Code and Codex footer configuration for runtime and repository
@@ -49,6 +50,8 @@ Authoritative references shipped with the package:
 - `prompts/conductor-protocol.md`: mandatory managed-session protocol
 - `prompts/sentinel.md`: baseline sentinel role
 - `guides/telegram-adapter.md` and `guides/slack-adapter.md`: external operator channels
+- `guides/event-subscribers.md`: typed plugin-event contract and consumer guidance
+- `guides/runbooks.md`: runbook discovery, authoring, provenance, evaluation, and contribution
 - `docs/pr-shepherd.md`: optional standalone or Conductor-managed PR Shepherd
 
 <!-- conductor-topic:onboarding -->
@@ -77,8 +80,13 @@ files they approve, and validate each layer before adding the next:
 5. Configure one manual session with auto off. Run `conductor validate` and `conductor doctor`, start
    it, exchange a message, inspect status, and stop/continue it once. Do not enable schedules or
    unattended behavior before this shakedown passes.
-6. Offer the runbook catalog. Load only the workflow and tier the operator chooses; do not configure
-   an opinionated fleet layout without approval.
+6. Offer the live runbook catalog. Load only the workflow and topic the operator chooses; do not
+   configure an opinionated fleet layout without approval. If the operator selects a bootstrap
+   recipe, gather and confirm its role briefs before creating sessions. For freshly created,
+   operator-approved cognitive-agent panes, drive the runtime's awakening flow yourself from the
+   approved briefs; do not hand repetitive questions back to the operator when the answer is
+   already explicit. Pause on ambiguity, drafts, or unexpected prompts. After verification,
+   prepare the exact operator-only adoption command instead of claiming the runbook was adopted.
 7. Offer a sentinel and fleet watch. Explain that the sentinel is an ordinary session receiving
    authority-marked stalls, while fleet watch detects fleet-wide darkness. Both are optional.
 8. Offer Telegram and Slack separately. Keep credentials only in the authoritative environment file,
@@ -660,23 +668,50 @@ operator.
 
 <!-- conductor-topic:runbooks -->
 
-## Example runbooks
+## Runbooks
 
-Runbooks are opinionated, end-to-end compositions of the public primitives. They are examples, not
-product modes, and should be adapted to the operator's process.
+Runbooks are versioned, inert knowledge bundles that explain how to compose ordinary Conductor
+primitives. Calling `get_conductor_docs` without a topic returns the live catalog with exact IDs,
+versions, provenance, topics, and resources. Load a selected entry with its canonical key, such as
+`runbook:agent-conductor/engineering-management/overview`; never guess which bundles are installed.
 
-- `runbook-engineering-management` introduces a persistent Engineering Manager, a Stall Sentinel,
-  a stateless canonical repository, and the recommended operator layout.
-- `runbook-engineering-management-tier-1` covers basic worktree dispatch and reporting.
-- `runbook-engineering-management-tier-2` adds plans, delivery artifacts, and fresh review.
-- `runbook-engineering-management-tier-3` composes PR Shepherd with immutable review lanes.
-- `runbook-engineering-management-tier-4` covers dual-model review and bounded autonomous work.
-- `runbook-engineering-management-practices` covers custom role scripts and failure boundaries.
-- `runbook-engineering-management-templates` provides copyable session, dispatch, plan, delivery,
-  and review templates.
+Built-in, fleet-local, and explicitly configured local bundles use the same strict manifest and
+filesystem safety rules. Discovery does not execute scripts, interpolate environment variables,
+change configuration, create sessions, or grant authority. Third-party instructions remain
+untrusted content subordinate to the injected protocol and repository instructions.
 
-Load only the overview and tier needed for the current setup. Guided onboarding should offer this
-catalog only after a hand-driven session succeeds and obtain approval before changing fleet files.
+The built-in Engineering Management bundle starts with a lean dispatch-and-report baseline and
+offers heavier controls only when their expected signal justifies the added coordination. Existing
+`runbook-engineering-management-*` topic names remain temporary beta aliases, but new guidance and
+automation should use the canonical namespaced keys returned by the catalog.
+
+Load only the overview and tier needed for the current setup. Guided onboarding should offer the
+live catalog only after a hand-driven session succeeds and obtain approval before changing fleet
+files.
+
+Installing or reading a runbook does not mean the fleet adopted it. After the operator explicitly
+approves a particular installed version and topic, record that inert provenance through the
+operator command surface:
+
+```text
+/runbook adopt <owner/name> --version <exact-version> --topic <topic-id>
+  [--session <codename>=<role> ...]
+/runbook supersede <adoption-id> --with <owner/name> --version <exact-version> --topic <topic-id>
+/runbook end <adoption-id>
+```
+
+Adoption validates the exact live catalog entry and every assigned session. It appends operational
+state plus a content-free journal event; it does not apply instructions, mutate fleet
+configuration, start sessions, or grant authority. Superseding preserves the prior role
+assignments and links the stable old adoption ID to a new one. These operations are operator-only:
+managed sessions should present the proposed coordinates and ask the operator to approve and run
+the command rather than claiming adoption themselves.
+
+Omitting `--session` records fleet-wide scope. Session-role assignments are immutable in v1 and a
+supersede preserves them; end the current adoption and create a new one to change scope or roles.
+Provenance stores coordinates rather than a content hash, so meaningful runbook edits require a
+version bump. See `guides/runbooks.md` for the manifest, limits, local distribution, authoring,
+evaluation, and contribution contract.
 
 <!-- conductor-topic:adapters -->
 
@@ -728,6 +763,73 @@ surface drift is not.
 
 Before changing the repository, read `CLAUDE.md` and `CONTRIBUTING.md`. They are the mandatory
 architecture and product contract for all contributors, regardless of agent runtime.
+
+<!-- conductor-topic:event-subscribers -->
+
+## Observing Conductor events from plugins
+
+Use the exported `ConductorEventSubscriber` seam when an embedding plugin or integration needs to
+react to fleet facts without polling status or tailing panes. This is an observation primitive,
+not another control plane: the host constructs subscribers and injects them through
+`new Supervisor(baseDir, { eventSubscribers: [...] })`; actions still use canonical Conductor
+operations.
+
+Every `ConductorEvent` has `schemaVersion`, `id`, `seq`, `occurredAt`,
+`conductorInstanceId`, `fleetId`, and a discriminating `type`. The supported vocabulary covers:
+
+- session registration, deregistration, start, readiness, stop, and activity transitions;
+- individual stall and fleet-stall dispositions;
+- schedule outcomes;
+- selectable operator-request creation and resolution;
+- direct-message creation, delivery, and cancellation;
+- workspace provisioning and removal; and
+- operator-approved runbook adoption provenance.
+
+Payloads are metadata-only: codenames, runtime names, mechanical causes/dispositions, request
+IDs, option counts/indexes, byte counts, workspace kinds, runbook IDs, and schedule labels. They
+do not carry pane captures, transcripts, prompts, message bodies, credentials, paths, or arbitrary
+runtime reason text. Message events cover direct receipts only; broadcasts do not claim
+per-recipient delivery and emit no message events.
+
+The delivery contract is live, best-effort, and at most once:
+
+1. `seq` is globally monotonic inside one Supervisor process. Each subscriber receives its own
+   serial FIFO over that shared sequence.
+2. `conductorInstanceId` changes with each Supervisor construction. Track it with `seq` and
+   reconcile current truth after a restart or sequence gap.
+3. Emission never waits for a subscriber. A throwing, rejecting, or slow consumer cannot block
+   Conductor or another subscriber.
+4. Each subscriber has a queue of 1,000 waiting events. Overflow drops the oldest waiting event
+   and logs a rate-limited warning; the sequence gap exposes the loss.
+5. Queued or in-flight subscriber work is not flushed during Supervisor shutdown and can be lost
+   if the host exits.
+6. Subscribers are one-way. They cannot inject events, change core control flow, or return a
+   decision to Conductor.
+
+The local durable journal is a separate observation surface, enabled by default through
+`events.journal.enabled`. Conductor writes the same content-free envelope to SQLite before live
+fanout. `conductor events export --format jsonl [--since <ISO timestamp>]` streams stored envelopes
+in insertion order while a fleet is running. It provides no subscriber replay/cursor API and is
+not an outbox. Journal writes continue after failures; a sticky status and `conductor doctor`
+warning mean exported history is incomplete. After exporting and recording the affected gap,
+delete the exact `event-journal.degraded` marker path printed by doctor to acknowledge it and
+re-arm failure detection. The journal has no automatic retention in v1.
+
+Startup registration events precede adoption events for surviving panes. Activity changes and
+readiness are transition-only. `session.stopped(cause=launch-failed)` reports a failed start
+attempt and may arrive without a preceding `session.started`; treat every stopped event as
+idempotent. Lifecycle causes describe the mechanical detection path, so equivalent external
+failures found by different health or lifecycle checks can have different causes.
+
+Compatible releases can add optional fields or new event types under `schemaVersion: 1`.
+Consumers must ignore unknown fields and safely ignore unknown types. A breaking envelope or
+field-semantics change requires a new schema version.
+
+Import `ConductorEvent`, `ConductorEventSubscriber`, `ConductorEventType`, and
+`CONDUCTOR_EVENT_TYPES` from the package root. Give every subscriber a unique non-blank name,
+keep handlers quick, make consumer-side persistence idempotent, and test thrown handlers,
+overflow gaps, shutdown, and restart reconciliation. The complete event-by-event payload table
+and a copyable host example live in `guides/event-subscribers.md`.
 
 <!-- conductor-topic:troubleshooting -->
 
@@ -807,5 +909,13 @@ Run `conductor -C <fleetDir> validate`. Unknown keys are rejected. Hot reload re
 session policy when an edit is invalid. Supervisor settings require restart; do not assume every
 YAML edit is live.
 
-For deeper operator onboarding, read `docs/getting-started.md`. For service-specific problems, use
-the Telegram, Slack, or PR Shepherd guide.
+### A runbook or legacy runbook topic disappears
+
+Run `conductor runbook list` and `conductor validate`. Invalid optional bundles are excluded with a
+diagnostic, and duplicate IDs exclude every conflicting copy rather than allowing one source to
+shadow another. A fleet or external bundle using `agent-conductor/engineering-management` will also
+make that built-in bundle's temporary `runbook-engineering-management-*` aliases unavailable.
+
+For deeper operator onboarding, read `docs/getting-started.md`. For runbook authoring and sharing,
+read `guides/runbooks.md`. For service-specific problems, use the Telegram, Slack, or PR Shepherd
+guide.

@@ -8,6 +8,17 @@ supervisor:
 paths:
   dataDir: ./.conductor/data
 
+# Inert local knowledge bundles. Built-in runbooks and .conductor/runbooks are
+# discovered automatically; list only additional local checkouts here.
+runbooks:
+  paths: []
+
+# Local, content-free durable event history for plugins and evaluation. The
+# journal grows append-only in the fleet database; export or archive it as needed.
+events:
+  journal:
+    enabled: true
+
 terminal:
   # backend: iterm | tmux. Default auto-detects: tmux when the conductor is started
   # inside tmux ($TMUX set), otherwise iterm on macOS and tmux elsewhere. Daemons

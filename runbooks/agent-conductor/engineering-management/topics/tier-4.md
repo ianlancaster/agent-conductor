@@ -1,8 +1,6 @@
-<!-- conductor-topic:runbook-engineering-management-tier-4 -->
-
 ## Engineering management — Tier 4: bounded autonomous initiatives
 
-The full pattern adds a peer EM from a different model family. Each EM has a separate workspace and
+This most elaborate included pattern adds a peer EM from a different model family. Each EM has a separate workspace and
 conversation. One remains the operator-facing owner; the peer performs adversarial reviews of
 master plans, architecture, milestone boundaries, and high-risk conclusions. Disagreement is
 recorded and resolved explicitly rather than averaged away.

@@ -1,5 +1,3 @@
-<!-- conductor-topic:runbook-engineering-management-practices -->
-
 ## Engineering management — role scripts and underlying mechanics
 
 The runbook becomes useful when the operator writes small role prompts for their own process. Keep

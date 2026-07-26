@@ -52,9 +52,9 @@ return to direct messages.
 ## Version-matched documentation
 
 Use `get_conductor_docs` for configuration, onboarding, worktrees, supervision, schedules,
-operator channels, adapters, runbooks, PR Shepherd, and troubleshooting. Call it without a topic first to
-discover available topics and the active fleet's authoritative paths, then load only what the task
-needs.
+operator channels, adapters, event subscribers, runbooks, PR Shepherd, and troubleshooting. Call
+it without a topic first to discover available topics and the active fleet's authoritative paths,
+then load only what the task needs.
 
 Before maintaining fleet configuration, use those returned paths. Treat the fleet environment
 file as secret: never print, quote, summarize, or message its values.

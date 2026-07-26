@@ -2,6 +2,7 @@ import { Cron } from 'croner';
 import { log } from '../logger.js';
 import type { SessionConfig, ScheduleEntry } from '../config/schema.js';
 import { sleep } from './utils.js';
+import type { ConductorEventPublisher } from '../events/types.js';
 
 const FRESH_SESSION_SETTLE_MS = 3000;
 
@@ -12,6 +13,7 @@ export interface SchedulerDeps {
   startSession(session: string, opts: { prompt?: string }): Promise<string>;
   stopSession(session: string): Promise<string>;
   deliver(session: string, text: string): Promise<unknown>;
+  events?: ConductorEventPublisher;
 }
 
 /** Cron scheduling of session prompts, on croner. Rebuilt whenever configs reload. */
@@ -69,6 +71,7 @@ export class Scheduler {
     try {
       if (this.deps.isPaused(codename)) {
         log().info('scheduler', `${codename}: '${label}' deferred (session is paused)`);
+        this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'deferred-paused' });
         return;
       }
       if (entry.freshContext) {
@@ -78,6 +81,7 @@ export class Scheduler {
         }
         await this.deps.startSession(codename, { prompt: entry.prompt });
         log().info('scheduler', `${codename}: '${label}' fired (fresh session)`);
+        this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'fired-fresh' });
         return;
       }
       if (await this.deps.isActive(codename)) {
@@ -86,8 +90,10 @@ export class Scheduler {
         await this.deps.startSession(codename, { prompt: entry.prompt });
       }
       log().info('scheduler', `${codename}: '${label}' fired`);
+      this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'fired' });
     } catch (err) {
       log().error('scheduler', `${codename}: '${label}' failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'failed' });
     }
   }
 }
