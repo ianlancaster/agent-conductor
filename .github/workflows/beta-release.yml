@@ -1,0 +1,104 @@
+name: GitHub beta release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Prerelease version without the v prefix
+        required: true
+        default: 0.2.0-beta.0
+      confirm:
+        description: Type release to authorize the externally visible GitHub prerelease
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main' && inputs.confirm == 'release'
+    runs-on: ubuntu-latest
+    environment: beta-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: pnpm install --frozen-lockfile
+
+      - name: Materialize the beta version from Changesets
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          test -f .changeset/pre.json || pnpm changeset pre enter beta
+          pnpm changeset version
+          node --input-type=module -e "import fs from 'node:fs'; const v=JSON.parse(fs.readFileSync('package.json')).version; if(v!==process.env.EXPECTED_VERSION) throw new Error('expected '+process.env.EXPECTED_VERSION+', got '+v)"
+
+      - name: Full release gate
+        run: |
+          pnpm typecheck
+          pnpm lint
+          pnpm format:check
+          pnpm test:coverage
+
+      - name: Pack and certify the consumer artifact
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          mkdir release
+          npm pack --pack-destination release
+          TARBALL="release/agent-conductor-${VERSION}.tgz"
+          test -f "$TARBALL"
+          node scripts/verify-package.mjs "$TARBALL"
+          shasum -a 256 "$TARBALL" > "${TARBALL}.sha256"
+
+      - name: Write cohort release notes
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          cat > release/RELEASE_NOTES.md <<EOF
+          Internal-cohort beta ${VERSION}, built from commit ${GITHUB_SHA}.
+
+          Install with npm:
+          npm install --global https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/agent-conductor-${VERSION}.tgz
+
+          pnpm users may substitute pnpm add --global; Yarn Classic 1.x users may use yarn global add. Yarn Modern has no durable global-install command, so use npm or pnpm.
+
+          Verify the adjacent SHA-256 file before installation when required. Upgrade by installing a newer asset URL; uninstall with npm uninstall --global agent-conductor (or the corresponding pnpm/Yarn Classic remove command).
+
+          This beta begins a one-to-two-week internal feedback window. Configuration and public APIs may still change between beta builds; changes will be called out in release notes. The external runtime classes are experimental during beta, while the runtime, terminal, and channel interfaces are the intended extension contracts.
+          EOF
+
+      - name: Create the approved GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "v${VERSION}" \
+            "release/agent-conductor-${VERSION}.tgz" \
+            "release/agent-conductor-${VERSION}.tgz.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "Agent Conductor v${VERSION}" \
+            --notes-file release/RELEASE_NOTES.md \
+            --prerelease
+
+      - name: Verify installation from the final GitHub asset URL
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          PREFIX="$(mktemp -d)"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/agent-conductor-${VERSION}.tgz"
+          npm install --global --prefix "$PREFIX" "$URL"
+          test "$("$PREFIX/bin/conductor" --version)" = "$VERSION"
+          test "$("$PREFIX/bin/pr-shepherd" --version)" = "$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-conductor-${{ inputs.version }}
+          path: |
+            release/agent-conductor-${{ inputs.version }}.tgz
+            release/agent-conductor-${{ inputs.version }}.tgz.sha256
+          if-no-files-found: error

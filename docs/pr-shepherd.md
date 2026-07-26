@@ -16,16 +16,15 @@ concisely in fleet `/status`; companion failure never takes down Conductor.
 - Read access to the configured repositories; write access is required only for automation policies set to `execute`
 - A local Conductor process only when using `delivery.type: conductor`
 
-When working from this repository:
+Install the GitHub beta package:
 
 ```bash
-pnpm install
-pnpm build
-pnpm link --global
+npm install --global https://github.com/ianlancaster/agent-conductor/releases/download/v0.2.0-beta.0/agent-conductor-0.2.0-beta.0.tgz
 pr-shepherd --help
 ```
 
-The linked package provides both `conductor` and `pr-shepherd`. The Shepherd is still a separate process; linking the command does not enable it.
+The package provides both `conductor` and `pr-shepherd`. The Shepherd is still a separate process;
+installing the command does not enable it.
 
 ## Safe first run
 

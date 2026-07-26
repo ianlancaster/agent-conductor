@@ -1,8 +1,27 @@
 export { Supervisor } from './core/supervisor.js';
 export type { SupervisorOptions } from './core/supervisor.js';
-export type { SupervisorConfig, SessionConfig, SpawnTemplate } from './config/schema.js';
-export type { DeliveryCapture, TerminalBackend } from './terminals/types.js';
-export type { SessionRuntime } from './runtimes/types.js';
+export type { RuntimeName, SessionConfig, SpawnTemplate, SupervisorConfig } from './config/schema.js';
+export type { PaneRef, Placement } from './core/types.js';
+export type {
+  CreatePaneOptions,
+  DeliveryCapture,
+  DeliveryCaptureOptions,
+  TerminalBackend,
+  TerminalCapabilities,
+} from './terminals/types.js';
+export type {
+  IdentityEndpoints,
+  InputState,
+  LaunchOptions,
+  RuntimeCapabilities,
+  SessionRuntime,
+} from './runtimes/types.js';
+/** Experimental during beta: runtime harness details may evolve from provider testing. */
+export { ClaudeCodeRuntime } from './runtimes/claude-code/index.js';
+export type { ClaudeCodeRuntimeOptions } from './runtimes/claude-code/index.js';
+/** Experimental during beta: runtime harness details may evolve from provider testing. */
+export { CodexRuntime } from './runtimes/codex/index.js';
+export type { CodexRuntimeOptions, CodexRuntimeSettings } from './runtimes/codex/index.js';
 export type {
   ChannelAction,
   ChannelAdapter,

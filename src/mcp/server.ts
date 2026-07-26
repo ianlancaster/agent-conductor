@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { log } from '../logger.js';
 import type { ChannelMessage } from '../channels/types.js';
 import { InvalidRequestError } from '../core/errors.js';
+import { PACKAGE_VERSION } from '../version.js';
 
 export interface McpToolDefinition {
   name: string;
@@ -236,7 +237,7 @@ export class ConductorMcpServer {
         this.respondRpc(res, id, {
           protocolVersion: requested,
           capabilities: { tools: {} },
-          serverInfo: { name: 'agent-conductor', version: '0.1.0' },
+          serverInfo: { name: 'agent-conductor', version: PACKAGE_VERSION },
         });
         return;
       }

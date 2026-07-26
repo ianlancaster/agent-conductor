@@ -155,7 +155,12 @@ export class HealthMonitor {
       return; // events are flowing — no need to scrape
     }
 
-    const capture = await this.deps.backend.capture(pane, this.deps.config.captureLines);
+    const rawCapture = await this.deps.backend.capture(pane, this.deps.config.captureLines);
+    // Runtime chrome is not evidence of work. In particular, Codex redraws its
+    // elapsed timer and background-terminal counter while a dead internal
+    // handle is otherwise frozen. Compare the same semantic pane content that
+    // the sentinel uses, so animated status rows cannot suppress a stall.
+    const capture = runtime !== undefined ? runtime.stripChrome(rawCapture) : rawCapture;
     const previousCapture = this.lastCapture.get(session);
     if (capture === previousCapture) {
       const beats = (this.stillBeats.get(session) ?? 0) + 1;

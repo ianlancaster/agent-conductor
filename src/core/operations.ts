@@ -1,4 +1,4 @@
-import type { RuntimeName, SessionConfig } from '../config/schema.js';
+import type { SessionConfig } from '../config/schema.js';
 import { CONDUCTOR_DOC_TOPICS } from './documentation.js';
 import type { Lifecycle } from './lifecycle.js';
 import type { Messaging } from './messaging.js';
@@ -27,6 +27,8 @@ export type OperationActor = { audience: 'operator'; id: string } | { audience: 
 export interface OperationDefinition {
   name: string;
   description: string;
+  /** Canonical description of the successful result exposed by every adapter. */
+  resultDescription: string;
   audiences: readonly OperationAudience[];
   inputSchema: OperationInputSchema;
   /** The actor's identity is applied mechanically to messages made by this operation. */
@@ -41,8 +43,9 @@ export interface ConductorOperationDeps {
   sentinel: StallSentinelRouter;
   states: SessionStateManager;
   sessions(): Map<string, SessionConfig>;
-  modelHints: Record<RuntimeName, readonly string[]>;
-  effortHints: Record<RuntimeName, readonly string[]>;
+  modelHints: Record<string, readonly string[]>;
+  effortHints: Record<string, readonly string[]>;
+  runtimeNames?: readonly string[];
   statusReport(codename?: string): string;
   tail(codename: string, lines: number): Promise<string>;
   /** Deliberately bypass the protected delivery queue for terminal control input. */
@@ -83,11 +86,14 @@ const bypassPermissionsProperty: JsonPropertySchema = {
   description: 'Override the fleet approval/sandbox bypass default for the new session',
 };
 
-const runtimeProperty: JsonPropertySchema = {
-  type: 'string',
-  enum: ['claude-code', 'cc', 'codex'],
-  description: "Runtime for this run; cc aliases claude-code (default: the session's configured runtime)",
-};
+function runtimeProperty(runtimeNames: readonly string[]): JsonPropertySchema {
+  const choices = runtimeNames.flatMap((name) => (name === 'claude-code' ? [name, 'cc'] : [name]));
+  return {
+    type: 'string',
+    enum: choices,
+    description: "Runtime for this run; cc aliases claude-code (default: the session's configured runtime)",
+  };
+}
 
 function optionalStringArray(args: Record<string, unknown>, name: string): string[] | undefined {
   const value = args[name];
@@ -97,7 +103,7 @@ function optionalStringArray(args: Record<string, unknown>, name: string): strin
 function runtime(args: Record<string, unknown>): SessionConfig['runtime'] | undefined {
   const value = optionalString(args, 'runtime');
   if (value === undefined) return undefined;
-  return value === 'cc' ? 'claude-code' : (value as SessionConfig['runtime']);
+  return value === 'cc' ? 'claude-code' : value;
 }
 
 function placement(args: Record<string, unknown>): Placement | undefined {
@@ -109,9 +115,10 @@ function actorName(actor: OperationActor): string {
   return actor.audience === 'operator' ? 'operator' : actor.codename;
 }
 
-function runtimeHintDescription(setting: 'model' | 'effort', hints: Record<RuntimeName, readonly string[]>): string {
-  const runtimeHints = (['claude-code', 'codex'] as const)
-    .map((runtime) => `${runtime}: ${hints[runtime].join(', ') || 'none configured'}`)
+function runtimeHintDescription(setting: 'model' | 'effort', hints: Record<string, readonly string[]>): string {
+  const runtimeHints = Object.entries(hints)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([runtime, values]) => `${runtime}: ${values.join(', ') || 'none configured'}`)
     .join('; ');
   return `Optional ${setting} override. Availability hints only (not exhaustive or validated): ${runtimeHints}.`;
 }
@@ -140,6 +147,10 @@ export class ConductorOperations {
     return this.byName.get(name);
   }
 
+  runtimeChoices(): readonly string[] {
+    return runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex']).enum ?? [];
+  }
+
   hasSession(codename: string): boolean {
     return this.deps.sessions().has(codename);
   }
@@ -156,10 +167,12 @@ export class ConductorOperations {
 
   private buildDefinitions(): OperationDefinition[] {
     const templateNames = this.deps.lifecycle.templateNames();
+    const runRuntimeProperty = runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex']);
     return [
       {
         name: 'send_to_session',
         description: "Send a message to another session's pane, starting it if needed.",
+        resultDescription: 'Returns a structured receipt with the message id and delivered or queued status.',
         audiences: BOTH,
         signedIdentity: true,
         inputSchema: schema(
@@ -186,6 +199,7 @@ export class ConductorOperations {
       {
         name: 'broadcast',
         description: 'Send a message to every active session except the sender. Use sparingly.',
+        resultDescription: 'Returns a delivery summary for the active recipients.',
         audiences: BOTH,
         signedIdentity: true,
         inputSchema: schema({ message: stringProperty('Message text') }, ['message']),
@@ -194,6 +208,7 @@ export class ConductorOperations {
       {
         name: 'send_to_operator',
         description: 'Send a message, optionally with selectable choices, to the operator.',
+        resultDescription: 'Returns an acknowledgement and request id when selectable choices were supplied.',
         audiences: SESSION_ONLY,
         signedIdentity: true,
         inputSchema: schema({ message: stringProperty('Message text'), options: optionsProperty }, ['message']),
@@ -207,6 +222,7 @@ export class ConductorOperations {
       {
         name: 'respond_to_operator_request',
         description: 'Answer one pending selectable request from a session.',
+        resultDescription: 'Returns a delivery acknowledgement or reports that the request cannot be claimed.',
         audiences: OPERATOR_ONLY,
         inputSchema: schema(
           {
@@ -221,11 +237,12 @@ export class ConductorOperations {
         name: 'start_session',
         description:
           'Start one registered session, or all registered sessions, with optional runtime and effort overrides.',
+        resultDescription: 'Returns one result line per targeted session.',
         audiences: BOTH,
         inputSchema: schema(
           {
             codename: stringProperty("Session codename or 'all'"),
-            runtime: runtimeProperty,
+            runtime: runRuntimeProperty,
             effort: stringProperty(runtimeHintDescription('effort', this.deps.effortHints)),
             placement: placementProperty,
             headless: headlessProperty,
@@ -245,6 +262,7 @@ export class ConductorOperations {
       {
         name: 'stop_session',
         description: 'Stop one running session, or all running sessions.',
+        resultDescription: 'Returns one result line per targeted session.',
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
@@ -254,11 +272,12 @@ export class ConductorOperations {
         name: 'continue_session',
         description:
           "Continue one session's most recent conversation, or all sessions, with optional runtime and effort overrides.",
+        resultDescription: 'Returns one result line per targeted session.',
         audiences: BOTH,
         inputSchema: schema(
           {
             codename: stringProperty("Session codename or 'all'"),
-            runtime: runtimeProperty,
+            runtime: runRuntimeProperty,
             effort: stringProperty(runtimeHintDescription('effort', this.deps.effortHints)),
             placement: placementProperty,
             headless: headlessProperty,
@@ -279,6 +298,7 @@ export class ConductorOperations {
         name: 'spawn_session',
         description:
           "Create, register, and start a session from an empty directory, registered template, or Git worktree. The destination is path or spawn.dirPattern; relative destinations resolve from the fleet directory. A new worktree branch starts at the source repository's current HEAD; existing branches are checked out as-is.",
+        resultDescription: 'Returns the new session path and launch result.',
         audiences: BOTH,
         inputSchema: schema(
           {
@@ -287,7 +307,7 @@ export class ConductorOperations {
               'Destination working directory (default: spawn.dirPattern with {codename} substituted)',
             ),
             runtime: {
-              ...runtimeProperty,
+              ...runRuntimeProperty,
               description: 'Agent runtime (default: supervisor defaults.runtime)',
             },
             bypassPermissions: bypassPermissionsProperty,
@@ -326,6 +346,7 @@ export class ConductorOperations {
         name: 'teardown_session',
         description:
           'Stop and deregister a session, optionally removing its guarded working directory. Git-ignored files do not make a worktree dirty and are deleted with it.',
+        resultDescription: 'Returns the teardown result and explains any directory retained for safety.',
         audiences: BOTH,
         inputSchema: schema(
           {
@@ -345,7 +366,10 @@ export class ConductorOperations {
       },
       {
         name: 'get_message_status',
-        description: 'Inspect a direct-message receipt, including delivery time and the latest flush decision.',
+        description:
+          'Inspect a direct-message receipt that you sent or received, including delivery time and the latest flush decision. Receipt ids are fleet-wide, so an unrelated id is intentionally not visible.',
+        resultDescription:
+          'Returns the visible receipt as formatted JSON, or an ambiguity-preserving not-found/not-visible response.',
         audiences: BOTH,
         inputSchema: schema({ messageId: { type: 'number', minimum: 1, description: 'Message receipt id' } }, [
           'messageId',
@@ -364,6 +388,7 @@ export class ConductorOperations {
       {
         name: 'cancel_message',
         description: 'Cancel a pending direct message by receipt id before it begins writing to the recipient pane.',
+        resultDescription: 'Returns the updated receipt as formatted JSON.',
         audiences: BOTH,
         inputSchema: schema({ messageId: { type: 'number', minimum: 1, description: 'Message receipt id' } }, [
           'messageId',
@@ -382,6 +407,7 @@ export class ConductorOperations {
       {
         name: 'toggle_auto',
         description: 'Toggle auto stall handling for one session, or all sessions.',
+        resultDescription: 'Returns the resulting auto state for each targeted session.',
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
@@ -394,6 +420,7 @@ export class ConductorOperations {
       {
         name: 'pause_session',
         description: 'Pause one session, or all sessions: suppress schedules and stall routing.',
+        resultDescription: 'Returns the resulting pause state for each targeted session.',
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
@@ -406,6 +433,7 @@ export class ConductorOperations {
       {
         name: 'resume_session',
         description: 'Resume one paused session, or all paused sessions.',
+        resultDescription: 'Returns the resulting pause state for each targeted session.',
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
@@ -418,6 +446,7 @@ export class ConductorOperations {
       {
         name: 'set_sentinel',
         description: 'Designate a registered session as the stall sentinel, or omit codename to clear it.',
+        resultDescription: 'Returns the resulting sentinel assignment.',
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty('Session codename; omit to clear') }),
         handler: (args) => {
@@ -431,6 +460,7 @@ export class ConductorOperations {
       {
         name: 'toggle_fleet_watch',
         description: 'Toggle stall detection for the full registered fleet, excluding the sentinel.',
+        resultDescription: 'Returns whether fleet watch is now on or off.',
         audiences: BOTH,
         inputSchema: schema(),
         handler: () => Promise.resolve(`Fleet watch ${this.deps.sentinel.toggleFleetWatch() ? 'on' : 'off'}.`),
@@ -438,6 +468,7 @@ export class ConductorOperations {
       {
         name: 'set_tag',
         description: 'Set or clear a short status label on a session.',
+        resultDescription: 'Returns the resulting tag state.',
         audiences: BOTH,
         inputSchema: schema(
           { codename: stringProperty('Session codename'), tag: stringProperty('Status label; omit to clear') },
@@ -455,6 +486,7 @@ export class ConductorOperations {
       {
         name: 'whoami',
         description: 'Return the calling session identity and status derived from its MCP connection.',
+        resultDescription: 'Returns the connection-derived identity and session status as formatted JSON.',
         audiences: SESSION_ONLY,
         inputSchema: schema(),
         handler: (_args, actor) => {
@@ -484,6 +516,7 @@ export class ConductorOperations {
         name: 'get_conductor_docs',
         description:
           'List or lazily read the version-matched Agent Conductor handbook, including fleet recipes, configuration paths, adapters, worktrees, scheduling, supervision, and troubleshooting.',
+        resultDescription: 'Returns a JSON topic index or the requested handbook topic with authoritative fleet paths.',
         audiences: SESSION_ONLY,
         inputSchema: schema({
           topic: {
@@ -498,6 +531,7 @@ export class ConductorOperations {
         name: 'list_sessions',
         description:
           'List all registered sessions with runtime status, working-directory path, and current Git branch.',
+        resultDescription: 'Returns the rendered fleet status report.',
         audiences: BOTH,
         inputSchema: schema(),
         handler: async () => {
@@ -509,6 +543,7 @@ export class ConductorOperations {
         name: 'get_session_status',
         description:
           'Return detailed status for one session as JSON, including its working-directory path, branch, and Conductor-resolved model and effort.',
+        resultDescription: 'Returns the reconciled session status as formatted JSON.',
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty('Session codename') }, ['codename']),
         handler: async (args) => {
@@ -520,6 +555,7 @@ export class ConductorOperations {
       {
         name: 'tail_session',
         description: `Read trailing pane output (default ${String(this.deps.tailLimits.defaultLines)} lines, maximum ${String(this.deps.tailLimits.maxLines)}). Reserve this for user-requested inspection or diagnosing unanswered/failed peer communication; use send_to_session for normal agent conversation and status requests.`,
+        resultDescription: 'Returns the requested trailing pane text.',
         audiences: BOTH,
         inputSchema: schema(
           {
@@ -538,6 +574,7 @@ export class ConductorOperations {
         name: 'type_in_pane',
         description:
           "Type raw text immediately into a session's pane without a message envelope or delivery queue. This can overwrite terminal input; use it deliberately for prompts and slash commands.",
+        resultDescription: 'Returns a terminal-write confirmation.',
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty('Session codename'), text: stringProperty('Raw text') }, [
           'codename',
@@ -551,6 +588,7 @@ export class ConductorOperations {
       {
         name: 'summon_session',
         description: "Bring a session's pane into the operator's current view.",
+        resultDescription: 'Returns a placement confirmation or capability error.',
         audiences: OPERATOR_ONLY,
         inputSchema: schema({ codename: stringProperty('Session codename') }, ['codename']),
         handler: (args) => {
@@ -562,6 +600,7 @@ export class ConductorOperations {
       {
         name: 'banish_session',
         description: "Move a session's pane into the detached fleet session while it keeps running.",
+        resultDescription: 'Returns a placement confirmation or capability error.',
         audiences: OPERATOR_ONLY,
         inputSchema: schema({ codename: stringProperty('Session codename') }, ['codename']),
         handler: (args) => {

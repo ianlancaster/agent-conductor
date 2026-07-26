@@ -11,7 +11,7 @@ const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
   stopped: '⚪',
 };
 
-const RUNTIME_LABELS: Record<SessionConfig['runtime'], string> = {
+const RUNTIME_LABELS: Record<string, string> = {
   'claude-code': 'CC',
   'codex': 'codex',
 };
@@ -27,10 +27,7 @@ export interface StatusDeps {
   sentinelCodename(): string | undefined;
 }
 
-export interface RuntimeSettingDefaults {
-  'claude-code'?: string;
-  'codex'?: string;
-}
+export type RuntimeSettingDefaults = Record<string, string | undefined>;
 
 /** Shorten paths inside the current user's home for human- and agent-facing status output. */
 export function displayPath(value: string, homeDirectory = homedir()): string {
@@ -70,7 +67,7 @@ export function formatSessionLine(
   isSentinel: boolean,
   isShepherdRecipient = false,
 ): string {
-  const name = `${codename} - ${RUNTIME_LABELS[runtime]}${isSentinel ? ' 🛡' : ''}${isShepherdRecipient ? ' 🐑' : ''}`;
+  const name = `${codename} - ${RUNTIME_LABELS[runtime] ?? runtime}${isSentinel ? ' 🛡' : ''}${isShepherdRecipient ? ' 🐑' : ''}`;
   if (state === undefined) return `${name} · ⚪ unregistered`;
   const tag = state.tag !== undefined ? ` · ${state.tag}` : '';
   const activity = state.running ? state.activity : 'stopped';

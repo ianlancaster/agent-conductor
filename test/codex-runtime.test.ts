@@ -12,7 +12,10 @@ import {
   GENERATED_MARKER,
   appendConductorInstructions,
   buildConfigOverrides,
+  ensureProjectDocMaxBytes,
+  readProjectDocMaxBytes,
   renderAgentsOverride,
+  renderHomeAgentsOverride,
   renderNotifyScript,
   shellQuote,
   tomlString,
@@ -130,6 +133,37 @@ describe('config generation', () => {
     expect(refreshed).toContain('Session-specific rule.');
     expect(refreshed.match(/# Conductor protocol/gu)).toHaveLength(1);
   });
+
+  it('composes home guidance before mandatory protocol and session instructions', () => {
+    const rendered = renderHomeAgentsOverride('GLOBAL RULE', 'PROTOCOL TEXT', 'SESSION RULE').content;
+    expect(rendered.indexOf('GLOBAL RULE')).toBeLessThan(rendered.indexOf('PROTOCOL TEXT'));
+    expect(rendered.indexOf('PROTOCOL TEXT')).toBeLessThan(rendered.indexOf('SESSION RULE'));
+  });
+
+  it('bounds only inherited guidance and keeps mandatory instructions intact', () => {
+    const rendered = renderHomeAgentsOverride('abcdefghijk', 'PROTOCOL TEXT', 'SESSION RULE', 5);
+    expect(rendered.inheritedGuidanceTruncated).toBe(true);
+    expect(rendered.content).toContain('abcde');
+    expect(rendered.content).not.toContain('abcdefghijk');
+    expect(rendered.content).toContain('PROTOCOL TEXT');
+    expect(rendered.content).toContain('SESSION RULE');
+    expect(rendered.content).toContain('shortened inherited global guidance');
+  });
+
+  it('raises only the top-level project_doc_max_bytes while preserving larger values and tables', () => {
+    const source = 'model = "test"\nproject_doc_max_bytes = 1_000 # operator value\n\n[tui]\nanimations = false\n';
+    const raised = ensureProjectDocMaxBytes(source, 2_000);
+    expect(raised).toContain('project_doc_max_bytes = 2000 # operator value');
+    expect(raised).toContain('[tui]\nanimations = false');
+    expect(readProjectDocMaxBytes(raised)).toBe(2000);
+    expect(ensureProjectDocMaxBytes(raised, 1_500)).toBe(raised);
+  });
+
+  it('inserts a missing document limit before the first TOML table', () => {
+    const result = ensureProjectDocMaxBytes('[tui]\nproject_doc_max_bytes = 7\n', 1234);
+    expect(result.indexOf('project_doc_max_bytes = 1234')).toBeLessThan(result.indexOf('[tui]'));
+    expect(result).toContain('[tui]\nproject_doc_max_bytes = 7');
+  });
 });
 
 describe('buildLaunchCommand', () => {
@@ -224,19 +258,27 @@ describe('prepare', () => {
   let workDir: string;
   let repoDir: string;
   let configDir: string;
+  let sharedHome: string;
+  let previousCodexHome: string | undefined;
 
   beforeEach(async () => {
     workDir = await mkdtemp(path.join(tmpdir(), 'codex-runtime-'));
     repoDir = path.join(workDir, 'repo');
     configDir = path.join(workDir, 'cfg');
+    sharedHome = path.join(workDir, 'shared-codex');
     await mkdir(repoDir, { recursive: true });
+    await mkdir(sharedHome, { recursive: true });
+    previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = sharedHome;
   });
 
   afterEach(async () => {
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
     await rm(workDir, { recursive: true, force: true });
   });
 
-  it('writes an executable notify script and a repo AGENTS.override.md with a placeholder protocol', async () => {
+  it('writes the notify hook and placeholder protocol inside the per-session home only', async () => {
     const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
     await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
 
@@ -245,41 +287,47 @@ describe('prepare', () => {
     expect(notifyStat.mode & 0o100).toBe(0o100);
     expect(await readFile(notifyPath, 'utf8')).toContain('http://127.0.0.1:3456/events/sample');
 
-    const override = await readFile(path.join(repoDir, 'AGENTS.override.md'), 'utf8');
+    const override = await readFile(path.join(configDir, 'codex-home', 'AGENTS.override.md'), 'utf8');
     expect(override).toContain(GENERATED_MARKER);
     expect(override).toContain('conductor protocol placeholder');
-    expect(await readFile(path.join(repoDir, '.gitignore'), 'utf8')).toBe('AGENTS.override.md\n');
+    await expect(readFile(path.join(repoDir, 'AGENTS.override.md'), 'utf8')).rejects.toThrow();
+    await expect(readFile(path.join(repoDir, '.gitignore'), 'utf8')).rejects.toThrow();
   });
 
-  it('inlines the protocol file and the repo AGENTS.md when both exist', async () => {
+  it('inherits a non-empty global override before protocol and session instructions', async () => {
     const protocolPath = path.join(workDir, 'protocol.md');
+    const promptPath = path.join(workDir, 'session.md');
     await writeFile(protocolPath, 'Report to the conductor via MCP.');
-    await writeFile(path.join(repoDir, 'AGENTS.md'), '# House rules');
+    await writeFile(promptPath, 'Act as the reviewer.');
+    await writeFile(path.join(sharedHome, 'AGENTS.override.md'), '# Global override');
+    await writeFile(path.join(sharedHome, 'AGENTS.md'), '# Lower-priority global file');
 
     const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir, protocolPath });
-    await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
+    await runtime.prepare(makeSession({ repo: repoDir, systemPromptFile: promptPath }), makeIdentity(configDir));
 
-    const override = await readFile(path.join(repoDir, 'AGENTS.override.md'), 'utf8');
-    expect(override).toContain('# House rules');
+    const override = await readFile(path.join(configDir, 'codex-home', 'AGENTS.override.md'), 'utf8');
+    expect(override).toContain('# Global override');
+    expect(override).not.toContain('Lower-priority');
     expect(override).toContain('Report to the conductor via MCP.');
+    expect(override).toContain('Act as the reviewer.');
+    expect(override.indexOf('# Global override')).toBeLessThan(override.indexOf('Report to the conductor'));
+    expect(override.indexOf('Report to the conductor')).toBeLessThan(override.indexOf('Act as the reviewer'));
   });
 
-  it('is idempotent and refreshes its own generated override', async () => {
+  it('falls back from an empty global override to the shared AGENTS.md', async () => {
+    await writeFile(path.join(sharedHome, 'AGENTS.override.md'), ' \n');
+    await writeFile(path.join(sharedHome, 'AGENTS.md'), '# Global fallback');
     const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
-    const session = makeSession({ repo: repoDir });
-    await runtime.prepare(session, makeIdentity(configDir));
-    await writeFile(path.join(repoDir, 'AGENTS.md'), '# Added later');
-    await runtime.prepare(session, makeIdentity(configDir));
-
-    const override = await readFile(path.join(repoDir, 'AGENTS.override.md'), 'utf8');
-    expect(override).toContain('# Added later');
-    expect(override.match(/# Conductor protocol/gu)).toHaveLength(1);
-    expect(await readFile(path.join(repoDir, '.gitignore'), 'utf8')).toBe('AGENTS.override.md\n');
+    await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
+    expect(await readFile(path.join(configDir, 'codex-home', 'AGENTS.override.md'), 'utf8')).toContain(
+      '# Global fallback',
+    );
   });
 
-  it('preserves a tracked AGENTS.override.md and appends the conductor instructions', async () => {
+  it('removes only the managed block from a tracked legacy repository override', async () => {
     const overridePath = path.join(repoDir, 'AGENTS.override.md');
-    await writeFile(overridePath, '# Hand-written override\n\nKeep this rule.\n');
+    const legacy = appendConductorInstructions('# Hand-written override\n\nKeep this rule.', 'OLD PROTOCOL');
+    await writeFile(overridePath, legacy);
     execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
     execFileSync('git', ['add', 'AGENTS.override.md'], { cwd: repoDir, stdio: 'ignore' });
 
@@ -289,36 +337,56 @@ describe('prepare', () => {
 
     const override = await readFile(overridePath, 'utf8');
     expect(override.startsWith('# Hand-written override\n\nKeep this rule.')).toBe(true);
-    expect(override).toContain('# Conductor protocol');
-    expect(override.match(/# Conductor protocol/gu)).toHaveLength(1);
+    expect(override).not.toContain('OLD PROTOCOL');
+    expect(override).not.toContain('instructions begin');
     await expect(readFile(path.join(repoDir, '.gitignore'), 'utf8')).rejects.toThrow();
   });
 
-  it('preserves an untracked existing override, appends instructions, and ignores it', async () => {
+  it('deletes an untracked legacy file generated entirely by Conductor', async () => {
     const overridePath = path.join(repoDir, 'AGENTS.override.md');
-    await writeFile(overridePath, '# Local override\n');
-    await writeFile(path.join(repoDir, '.gitignore'), 'dist/');
+    await writeFile(overridePath, renderAgentsOverride('OLD PROTOCOL', '# Former embedded repo rules'));
 
     const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
     await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
 
-    const override = await readFile(overridePath, 'utf8');
-    expect(override.startsWith('# Local override')).toBe(true);
-    expect(override).toContain('# Conductor protocol');
+    await expect(readFile(overridePath, 'utf8')).rejects.toThrow();
+  });
+
+  it('leaves an unmarked repository override and existing .gitignore untouched', async () => {
+    const overridePath = path.join(repoDir, 'AGENTS.override.md');
+    await writeFile(overridePath, '# User-owned override\n');
+    await writeFile(path.join(repoDir, '.gitignore'), 'dist/\nAGENTS.override.md\n');
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+    await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
+    await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
+    expect(await readFile(overridePath, 'utf8')).toBe('# User-owned override\n');
     expect(await readFile(path.join(repoDir, '.gitignore'), 'utf8')).toBe('dist/\nAGENTS.override.md\n');
   });
 
-  it('recreates a deleted generated override on the next prepare', async () => {
-    const overridePath = path.join(repoDir, 'AGENTS.override.md');
+  it('keeps session instructions distinct for two sessions sharing one repository', async () => {
+    const firstPrompt = path.join(workDir, 'first.md');
+    const secondPrompt = path.join(workDir, 'second.md');
+    await writeFile(firstPrompt, 'FIRST SESSION ONLY');
+    await writeFile(secondPrompt, 'SECOND SESSION ONLY');
     const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
-    const session = makeSession({ repo: repoDir });
-    const identity = makeIdentity(configDir);
-    await runtime.prepare(session, identity);
-    await rm(overridePath);
+    const firstConfig = path.join(workDir, 'first-config');
+    const secondConfig = path.join(workDir, 'second-config');
 
-    await runtime.prepare(session, identity);
+    await runtime.prepare(
+      makeSession({ codename: 'first', repo: repoDir, systemPromptFile: firstPrompt }),
+      makeIdentity(firstConfig),
+    );
+    await runtime.prepare(
+      makeSession({ codename: 'second', repo: repoDir, systemPromptFile: secondPrompt }),
+      makeIdentity(secondConfig),
+    );
 
-    expect(await readFile(overridePath, 'utf8')).toContain('# Conductor protocol');
+    const first = await readFile(path.join(firstConfig, 'codex-home', 'AGENTS.override.md'), 'utf8');
+    const second = await readFile(path.join(secondConfig, 'codex-home', 'AGENTS.override.md'), 'utf8');
+    expect(first).toContain('FIRST SESSION ONLY');
+    expect(first).not.toContain('SECOND SESSION ONLY');
+    expect(second).toContain('SECOND SESSION ONLY');
+    expect(second).not.toContain('FIRST SESSION ONLY');
   });
 
   it('creates a per-session CODEX_HOME: auth symlinked, config copied with the repo pre-trusted (H4)', async () => {
@@ -341,6 +409,8 @@ describe('prepare', () => {
       // dir blocks the pane on an interactive prompt.
       const sessionConfig = await readFile(path.join(home, 'config.toml'), 'utf8');
       expect(sessionConfig).toContain('model = "gpt-5.5"');
+      const generatedOverride = await readFile(path.join(home, 'AGENTS.override.md'), 'utf8');
+      expect(readProjectDocMaxBytes(sessionConfig)).toBeGreaterThan(Buffer.byteLength(generatedOverride, 'utf8'));
       expect(sessionConfig).toContain(`[projects."${repoDir}"]`);
       expect(sessionConfig).toContain('trust_level = "trusted"');
       // The operator's real config was never touched.

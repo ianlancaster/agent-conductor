@@ -2,33 +2,30 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, openSync, readFileSync } from 'node:fs';
+import { mkdirSync, openSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { validateConfig, loadSupervisorConfig } from '../config/loader.js';
 import { resolveFleetDataDir } from '../config/paths.js';
 import { Supervisor } from '../core/supervisor.js';
 import { Store } from '../store/index.js';
+import { PACKAGE_VERSION } from '../version.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
+import { formatPreflight, preflightFailures, runPreflight } from './doctor.js';
 import { subscribeFeed } from './feed.js';
-import { ensureFleetScaffold } from './scaffold.js';
+import { ensureFleetScaffold, renderOnboardingCommands } from './scaffold.js';
 import { DEFAULT_STATUS_INTERVAL, parseStatusInterval, runStatusDashboard } from './live-status.js';
 import { configureStatusLines } from './statusline.js';
 import { formatTerminalReply } from './terminal-format.js';
-
-const packageJson = JSON.parse(
-  readFileSync(join(fileURLToPath(import.meta.url), '..', '..', '..', 'package.json'), 'utf8'),
-) as { version: string };
 
 const program = new Command();
 const interactionId = randomUUID();
 program
   .name('conductor')
   .description('Lightweight supervisor for terminal coding agents')
-  .version(packageJson.version)
+  .version(PACKAGE_VERSION)
   .option('-C, --dir <path>', 'Fleet directory containing .conductor/ (default: current directory)')
   .addHelpText(
     'after',
@@ -194,6 +191,30 @@ program
     if (created.length > 0) {
       log('Initialized missing fleet files:');
       for (const file of created) log(`  ${file}`);
+      log('\nFirst-session onboarding:');
+      log(renderOnboardingCommands());
+    }
+
+    // Ownership takes precedence over host prerequisites. `start` must never
+    // look like a valid way to attach to an existing conductor merely because
+    // this shell is missing one of the configured runtime binaries.
+    if (opts.foreground !== true) {
+      const config = loadSupervisorConfig(baseDir());
+      const base = `http://${config.mcp.host}:${config.mcp.port}`;
+      if (await conductorUp(base)) {
+        throw new Error(
+          'A conductor is already running for this fleet. `conductor start` only opens a console that owns and stops its conductor. Use `conductor console` for a non-owning attachment, or stop the existing conductor before starting again.',
+        );
+      }
+    }
+
+    const checks = await runPreflight(baseDir());
+    const failures = preflightFailures(checks);
+    for (const check of checks.filter((item) => item.level === 'warn')) log(`! ${check.label}: ${check.detail}`);
+    if (failures.length > 0) {
+      throw new Error(
+        `Startup preflight failed:\n${formatPreflight(failures)}\nRun conductor doctor for the full report.`,
+      );
     }
 
     if (opts.foreground === true) {
@@ -204,12 +225,6 @@ program
     setTerminalTitle(`conductor — ${basename(baseDir())}`);
     const config = loadSupervisorConfig(baseDir());
     const base = `http://${config.mcp.host}:${config.mcp.port}`;
-
-    if (await conductorUp(base)) {
-      throw new Error(
-        'A conductor is already running for this fleet. `conductor start` only opens a console that owns and stops its conductor. Use `conductor console` for a non-owning attachment, or stop the existing conductor before starting again.',
-      );
-    }
 
     // Spawn the supervisor as a hidden, headless child. Its terminal output
     // goes to a file; the structured log shares the configured data directory.
@@ -261,6 +276,15 @@ program
 
     await runConsole();
     process.exit(0);
+  });
+
+program
+  .command('doctor')
+  .description('Check fleet configuration and local prerequisites')
+  .action(async () => {
+    const results = await runPreflight(baseDir());
+    process.stdout.write(`${formatPreflight(results)}\n`);
+    if (preflightFailures(results).length > 0) process.exitCode = 1;
   });
 
 program

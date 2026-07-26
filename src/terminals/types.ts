@@ -15,6 +15,11 @@ export interface DeliveryCapture {
   token: string;
 }
 
+export interface DeliveryCaptureOptions {
+  /** Preserve ANSI styling when the runtime uses it to distinguish a draft from placeholder chrome. */
+  styled: boolean;
+}
+
 export interface CreatePaneOptions {
   /**
    * Create the pane in the detached fleet session instead of the operator's
@@ -70,7 +75,7 @@ export interface TerminalBackend {
    * token must describe the same pane observation. submitIfUnchanged returns
    * false without writing when the pane changed after that observation.
    */
-  captureForDelivery?(pane: PaneRef, lines: number): Promise<DeliveryCapture>;
+  captureForDelivery?(pane: PaneRef, lines: number, options?: DeliveryCaptureOptions): Promise<DeliveryCapture>;
   submitIfUnchanged?(pane: PaneRef, text: string, token: string): Promise<boolean>;
 
   /** Trailing `lines` of pane content. */

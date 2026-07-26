@@ -17,6 +17,23 @@ mkdir ~/fleet && cd ~/fleet
 conductor start
 ```
 
+Before launch, `conductor start` runs the same blocking checks as `conductor doctor`. The first start
+also prints a pane-driven onboarding flow. At the new `conductor>` prompt, run
+`/spawn onboarding-helper` for Claude Code or `/spawn onboarding-helper -r codex` for Codex. Move to
+the agent pane Conductor opens and paste the printed onboarding brief directly into the assistant.
+The agent will interview you one decision at a time and will keep optional automation off until one
+hand-driven session works.
+
+Run the diagnostic report directly at any time:
+
+```bash
+conductor doctor
+```
+
+Failures block startup and include remediation. Warnings identify optional or first-use concerns,
+such as an unselected runtime, iTerm automation permission, or daemon installation from a source
+checkout.
+
 The first start creates every missing fleet scaffold file automatically, then opens the operator console.
 Existing configuration and secrets are never overwritten. A new `supervisor.yaml` records the complete
 effective defaults, including the values derived for this fleet and disabled Telegram and Slack blocks.
@@ -83,8 +100,10 @@ conductor statusline
 ```
 
 It preserves unrelated runtime settings. New sessions use the configured lines immediately;
-restart an already-running session to pick them up. See the README for the fields each runtime
-can display.
+restart an already-running session to pick them up. Claude Code's line shows model, context used,
+cost, project, worktree, Git branch, and staged/modified counts. Codex uses its native status line
+for model and reasoning, context used, tokens used, project, and Git branch; Codex does not expose
+dollar cost, worktree name, or working-tree change counts as native status-line items.
 
 ---
 
@@ -307,10 +326,11 @@ primitive, not an approval or execution queue.
   can clean it and retry. Successful removal keeps the branch. Git-ignored files do not count as
   dirty; local reports, `.env.local`, and other ignored artifacts are deleted with the worktree.
 - **Codex sessions**: set `runtime: codex`. Before every start or continue, the conductor
-  ensures `AGENTS.override.md` injects the protocol. Existing tracked instructions are
-  preserved; otherwise the generated file is added to the repo's `.gitignore` automatically.
-  Each Codex session gets an isolated `CODEX_HOME` so sessions don't cross, plus a mechanically
-  scoped Conductor MCP endpoint and lifecycle notify hook.
+  generates `AGENTS.override.md` inside that session's isolated `CODEX_HOME`. The generated file
+  inherits the active global Codex instructions, then adds the Conductor protocol and optional
+  session prompt. Repository instruction files still load through Codex normally; Conductor does
+  not edit the repository or its `.gitignore`. The session also receives a mechanically scoped
+  Conductor MCP endpoint and lifecycle notify hook.
 
 ---
 
@@ -321,8 +341,8 @@ primitive, not an approval or execution queue.
   runs the supervisor in the terminal and starts every configured session immediately.
 - **As a service**: `conductor daemon install` writes a launchd (macOS) or systemd-user
   (Linux) unit that keeps the conductor running across logins. `conductor daemon
-uninstall` removes it. (Requires `pnpm build` + `pnpm link --global` first, so the
-  service runs the compiled binary.)
+uninstall` removes it. Install the GitHub release tarball globally first so the service has a
+  stable executable path; source-checkout and temporary package-runner paths are rejected.
 - **Multiple fleets**: just use separate fleet directories — ports, tmux session names,
   and daemon service names are derived per fleet dir, so nothing collides. Telegram
   needs a distinct bot token per fleet (Telegram allows one poller per token). Slack needs
@@ -330,7 +350,7 @@ uninstall` removes it. (Requires `pnpm build` + `pnpm link --global` first, so t
 
 ## Command reference
 
-`/help` lists everything in the console. Full reference is in the [README](../README.md).
+`/help` is the authoritative operator-command reference.
 Every fleet command works identically in the console, via `conductor cmd '<command>'`, and
 over Telegram. Slack exposes the same commands with an `!` prefix inside its private App Home
 conversation. `/clear` is local to the interactive console.
@@ -344,7 +364,7 @@ snapshot. Piped or redirected status output is automatically one-shot.
 
 | Symptom                                                 | Likely cause                                                                           |
 | ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `command not found: conductor`                          | `pnpm link --global` not run, or use `-C`/`npx tsx` (README Install)                   |
+| `command not found: conductor`                          | Install the GitHub release tarball globally; then confirm its bin directory is on PATH |
 | `conductor validate` says OK but nothing is configured  | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                       |
 | Pane never launches / hangs on start                    | `claude`/`codex` not on PATH, or bad `repo:` path                                      |
 | macOS dialog on first start                             | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)     |

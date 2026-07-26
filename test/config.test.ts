@@ -38,6 +38,13 @@ function writeSession(name: string, content: string): void {
 }
 
 describe('loadSupervisorConfig', () => {
+  it('preserves trimmed external runtime names for registry-time validation', () => {
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'defaults:\n  runtime: " external "\n');
+    expect(loadSupervisorConfig(baseDir).defaults.runtime).toBe('external');
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'defaults:\n  runtime: "   "\n');
+    expect(() => loadSupervisorConfig(baseDir)).toThrow('runtime must be a non-empty name');
+  });
+
   it('applies full defaults when no config file exists', () => {
     const config = loadSupervisorConfig(baseDir);
     expect(config.supervisor.heartbeatIntervalSeconds).toBe(30);

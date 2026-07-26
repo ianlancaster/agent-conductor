@@ -32,7 +32,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
+          node-version: 24
           cache: pnpm
       # Real-tmux E2E suite runs in CI (test/e2e-tmux.test.ts skips itself when tmux is absent).
       - run: sudo apt-get update && sudo apt-get install -y tmux

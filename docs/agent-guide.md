@@ -2,6 +2,8 @@
 
 This is the version-matched, extended operating reference for agents running under Agent
 Conductor. The injected protocol remains the authority for identity, communication, and safety.
+It intentionally does not duplicate the MCP tool catalog: tool schemas own local operation
+mechanics, while this handbook owns recipes, configuration, and troubleshooting.
 Use the session-only `get_conductor_docs` tool to load this guide one topic at a time. Calling it
 without a topic also returns the current fleet's authoritative configuration paths.
 
@@ -48,6 +50,46 @@ Authoritative references shipped with the package:
 - `prompts/sentinel.md`: baseline sentinel role
 - `guides/telegram-adapter.md` and `guides/slack-adapter.md`: external operator channels
 - `docs/pr-shepherd.md`: optional standalone or Conductor-managed PR Shepherd
+
+<!-- conductor-topic:onboarding -->
+
+## Agent-led first-fleet onboarding
+
+Your job is to help the operator reach one proven, hand-driven session before offering automation.
+Begin by calling `get_conductor_docs` without a topic. Use the returned fleet paths; never guess a
+configuration location or reveal values from the fleet environment file. Then load this topic and
+`fleet-configuration`.
+
+Interview the operator one decision at a time. Explain the safe default and its tradeoffs, edit only
+files they approve, and validate each layer before adding the next:
+
+1. Ask which repositories and workflows this fleet will manage. Establish whether the fleet
+   directory itself or another repository is the right working directory for the first session.
+2. Confirm which of Claude Code and Codex are installed. Choose the default runtime, optional model
+   and effort preferences, permission-bypass posture, and whether minimal runtime UI is desirable.
+   Claude Code native auto-memory is disabled by default so Conductor-managed sessions do not write
+   implicit project memory. Preserve that default unless the operator asks to override
+   `runtimes.claudeCode.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY` (set it to `0` to re-enable memory).
+3. Select and verify the terminal backend. Prefer iTerm2 on macOS for visible native panes and tmux
+   for portable or headless fleets; respect the operator's existing terminal workflow.
+4. Decide where spawned repositories live. Explain empty workspaces, registered Git templates, and
+   linked Git worktrees as alternatives rather than forcing one workflow.
+5. Configure one manual session with auto off. Run `conductor validate` and `conductor doctor`, start
+   it, exchange a message, inspect status, and stop/continue it once. Do not enable schedules or
+   unattended behavior before this shakedown passes.
+6. Offer a sentinel and fleet watch. Explain that the sentinel is an ordinary session receiving
+   authority-marked stalls, while fleet watch detects fleet-wide darkness. Both are optional.
+7. Offer Telegram and Slack separately. Keep credentials only in the authoritative environment file,
+   never print their values, and enable a channel only after its required credentials exist.
+8. Offer schedules only for a session already exercised manually. Start with a harmless prompt and
+   explain pause/resume and `freshContext`.
+9. Offer PR Shepherd last. Elicit GitHub identity, repository scope, checks/review policy, direct
+   versus merge-queue flow, delivery target, and rollout preferences. Keep `shepherd.enabled: false`
+   and all execution behavior out of `execute` while validating the profile in shadow/notify mode.
+
+Finish with evidence: the exact files changed, clean validation and doctor output, the first
+session's runtime/status, the message round trip performed, and a short list of optional features
+left disabled. Do not report onboarding complete if the hand-driven session has not worked.
 
 <!-- conductor-topic:fleet-configuration -->
 
@@ -155,6 +197,9 @@ Direct-message receipts are observable:
 - A Conductor restart cancels queued local messages rather than replaying stale conversation.
 - `get_message_status` reports `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`, so a
   sender can distinguish a queue that has not run from one waiting on occupied input.
+- Receipt IDs are fleet-wide. A session can inspect only receipts it sent or received, so a
+  not-found/not-visible response for a guessed ID cannot be used as a fleet ledger-gap check.
+  The operator command can inspect any receipt.
 - `cancel_message` can cancel a pending receipt before its pane write starts.
 - Reusing a sender-scoped `idempotencyKey` returns the original receipt.
 
@@ -289,9 +334,9 @@ Worktree practices:
 - Gitignored files do not make Git report the worktree dirty. They are deleted when the worktree
   is successfully removed; archive anything durable first.
 - A successful worktree teardown removes the worktree but keeps its Git branch.
-- Starting Codex may add `AGENTS.override.md` to the repository's tracked `.gitignore`. Until that
-  generated exclusion moves to a non-dirtying Git mechanism, inspect and restore or deliberately
-  commit that line before expecting an otherwise untouched worktree to tear down cleanly.
+- Current Codex sessions keep their generated override inside the isolated session home and do not
+  dirty the worktree. Fleets upgraded from an earlier release may retain an obsolete
+  `AGENTS.override.md` entry in `.gitignore`; remove that ignore line manually when convenient.
 
 A useful full-fleet pattern is:
 
@@ -626,6 +671,17 @@ Bundled adapters may add strict, disabled-by-default configuration and environme
 External adapters should use their host application's secret/config mechanism and do not need to
 be added to Conductor core.
 
+External runtimes are registered with `new Supervisor(baseDir, { runtimes: [...] })`. The final
+registry controls fleet/session validation and the spawn, start, continue, MCP, and help surfaces.
+An injected runtime may deliberately replace a built-in by name; duplicate injected names fail
+construction, and `cc` remains reserved as the `claude-code` command alias. Runtime harness types
+are experimental during beta. See `guides/external-adapters.md` and
+`examples/embedding-host.mjs` for the complete contracts and a runnable package-root-only host.
+
+An injected `TerminalBackend` is supported through `SupervisorOptions.terminalBackend`. The
+built-in backend classes are not public yet because their constructors still require private
+Conductor persistence; do not deep-import them from `dist/`.
+
 For a new control primitive, add one canonical `ConductorOperations` definition and then audit
 every applicable surface: MCP, operator commands and help, adapters, schema, examples, prompts,
 exports, persistence, tests, and docs. An intentional audience difference is valid; accidental
@@ -644,7 +700,7 @@ architecture and product contract for all contributors, regardless of agent runt
 
 ```bash
 pnpm build
-pnpm link --global
+pnpm add --global .
 ```
 
 A running process still holds its old code until deliberately restarted.
@@ -666,6 +722,11 @@ Inspect `get_message_status`. Any text in the target composer prevents protected
 regardless of age or length. Ask the operator to submit or clear it. Do not bypass the queue unless
 raw terminal control is explicitly intended.
 
+Receipt IDs share one fleet-wide sequence. A managed session sees only receipts it sent or
+received; unrelated IDs return the same not-found/not-visible result as absent IDs. Do not infer
+ledger gaps by probing neighboring IDs. Use the receipt returned by `send_to_session`, or ask the
+operator to inspect a known receipt through `/message-status`.
+
 ### A peer is silent
 
 First use direct communication and end the turn. If no reply arrives after a meaningful interval,
@@ -676,8 +737,9 @@ communication. Do not install a polling timer.
 
 Check `git status`. Conductor refuses dirty worktrees. Commit, stash, or deliberately remove user
 changes, then retry teardown. Remember that ignored files are not reported as dirty and will be
-deleted with a successful worktree removal. A Codex-prepared worktree may contain a generated
-`.gitignore` edit for `AGENTS.override.md`; restore or deliberately commit it before teardown.
+deleted with a successful worktree removal. Current Codex preparation does not write into the
+worktree. An obsolete `.gitignore` entry for `AGENTS.override.md` may remain after upgrading from
+an earlier release and can be removed manually.
 
 If a session was attached by `path` to another session's worktree, do not use `deleteDir` on the
 attached session. Deregister it without deletion and let the original host session own cleanup;

@@ -113,7 +113,9 @@ export class Messaging {
   messageStatus(id: number, requester?: string): string {
     const row = this.deps.store.getMessage(id);
     if (row === undefined || (requester !== undefined && row.sender !== requester && row.recipient !== requester)) {
-      return `Message #${String(id)} was not found.`;
+      return requester === undefined
+        ? `Message #${String(id)} was not found.`
+        : `Message #${String(id)} was not found or is not part of your conversation. Receipt ids are fleet-wide; this response does not indicate a ledger gap.`;
     }
     return JSON.stringify({
       id: row.id,

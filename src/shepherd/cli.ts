@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { ensureShepherdScaffold } from '../cli/scaffold.js';
 import { resolveFleetPaths } from '../config/paths.js';
+import { PACKAGE_VERSION } from '../version.js';
 import { assertShepherdProfileReady, loadShepherdConfig, type ConfigOverrides, type ShepherdConfig } from './config.js';
 import { ShepherdEngine } from './engine.js';
 import { GhGitHubProvider } from './github.js';
@@ -23,7 +24,7 @@ interface CommonOptions {
 const program = new Command()
   .name('pr-shepherd')
   .description('PR Shepherd V2')
-  .version('2.0.0')
+  .version(PACKAGE_VERSION)
   .option('-C, --dir <path>', 'Fleet directory (default: current directory)');
 
 function fleetDir(): string {

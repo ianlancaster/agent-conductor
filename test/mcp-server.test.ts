@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { get } from 'node:http';
 import { ConductorMcpServer, type McpToolDefinition } from '../src/mcp/server.js';
 import { InvalidRequestError } from '../src/core/errors.js';
+import { PACKAGE_VERSION } from '../src/version.js';
 
 const PORT = 43_217;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -163,9 +164,10 @@ describe('identity routing', () => {
 describe('JSON-RPC surface', () => {
   it('answers initialize with server info', async () => {
     const result = await rpc('/mcp/alpha', 'initialize', { protocolVersion: '2025-06-18' });
-    const payload = result.result as { protocolVersion: string; serverInfo: { name: string } };
+    const payload = result.result as { protocolVersion: string; serverInfo: { name: string; version: string } };
     expect(payload.protocolVersion).toBe('2025-06-18');
     expect(payload.serverInfo.name).toBe('agent-conductor');
+    expect(payload.serverInfo.version).toBe(PACKAGE_VERSION);
   });
 
   it('exposes the same tool surface to every session — no per-caller gating', async () => {

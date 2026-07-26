@@ -40,13 +40,13 @@ without referring to one private deployment, generalize the underlying primitive
 pnpm typecheck && pnpm lint && pnpm format:check && pnpm test   # the pre-commit gauntlet
 pnpm cli start            # conductor CLI from source (tsx)
 pnpm test:watch           # focused development test loop
-pnpm build && pnpm link --global  # refresh the compiled global CLI
+pnpm build && pnpm add --global . # refresh the compiled global CLI
 ```
 
 Husky runs all four checks on commit; `SKIP_HOOKS=1 git commit` is the escape hatch.
 
 `conductor` runs compiled `dist/` code. Source edits do not change that binary until
-`pnpm build`; use `pnpm link --global` after initial setup, pulling a new checkout, or
+`pnpm build`; use `pnpm add --global .` after initial setup, pulling a new checkout, or
 changing package/bin metadata. A running Conductor process keeps its loaded code until it
 is deliberately restarted—never restart an operator's fleet merely to test a build unless
 that disruption is in scope.

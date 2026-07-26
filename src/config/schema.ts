@@ -34,7 +34,8 @@ export function isValidCodename(value: string): boolean {
   return CODENAME_PATTERN.test(value);
 }
 
-export const runtimeSchema = z.enum(['claude-code', 'codex']);
+/** Runtime names are resolved against Supervisor's final built-in + injected registry. */
+export const runtimeSchema = z.string().trim().min(1, 'runtime must be a non-empty name');
 
 export const scheduleEntrySchema = z
   .object({
