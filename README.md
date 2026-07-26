@@ -213,20 +213,25 @@ is configured, Conductor sends stall alerts directly to the operator.
 ## Is Agent Conductor the right tool?
 
 Several good tools cover adjacent parts of multi-agent development. Choose based on the
-problem you most need to solve:
+problem you most need to solve. This compact view compares built-in product capabilities:
 
-| Start with                                                                                           | When your priority is                                                                                                                                              |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Agent Conductor**                                                                                  | A mixed Claude Code and Codex fleet whose separate agents need direct, identified communication, shared lifecycle controls, and optional stall/operator escalation |
-| [Herdr](https://herdr.dev/)                                                                          | A persistent, agent-aware terminal multiplexer with SSH reattachment, broad terminal-agent support, semantic state, and a plugin ecosystem                         |
-| [Gas Town](https://github.com/steveyegge/gastown)                                                    | An opinionated multi-agent operating model with roles, a durable task ledger, and merge workflow                                                                   |
-| Native Claude Code or Codex multi-agent features                                                     | Delegation contained inside one vendor runtime and led by a parent or team lead                                                                                    |
-| [claude-squad](https://github.com/smtg-ai/claude-squad) or [Conductor](https://www.conductor.build/) | Parallel worktrees and human-centered session or diff review, without a peer communication layer                                                                   |
-| [Happy](https://github.com/slopus/happy) or [Omnara](https://github.com/omnara-ai/omnara)            | Remote human access to coding agents from mobile or web clients                                                                                                    |
-| [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail)                                | Agent mailboxes and coordination without adopting a terminal/session supervisor                                                                                    |
+✅ built in · 🟡 partial, adjacent, or plugin-based · ❌ not a primary capability
 
-These categories overlap, and some tools can be composed. See [Choosing an agent fleet
-tool](docs/alternatives.md) for the maintained feature matrix and fuller tradeoffs.
+| Tool                                                                                                                        | Terminal fleet | Claude + Codex | Peer messaging | Stall response | Remote operator |
+| --------------------------------------------------------------------------------------------------------------------------- | :------------: | :------------: | :------------: | :------------: | :-------------: |
+| **Agent Conductor**                                                                                                         |       ✅       |       ✅       |       ✅       |       ✅       |       ✅        |
+| [Herdr](https://herdr.dev/)                                                                                                 |       ✅       |       ✅       |       🟡       |       🟡       |       🟡        |
+| [Gas Town](https://github.com/steveyegge/gastown)                                                                           |       ✅       |       ✅       |       ✅       |       ✅       |       ❌        |
+| [amux](https://github.com/mixpeek/amux)                                                                                     |       ✅       |       ✅       |       ✅       |       ✅       |       ✅        |
+| Native Claude Code or Codex teams                                                                                           |       🟡       |       ❌       |       🟡       |       ❌       |       🟡        |
+| [claude-squad](https://github.com/smtg-ai/claude-squad) / [Conductor](https://www.conductor.build/)                         |       ✅       |       ✅       |       ❌       |       ❌       |       ❌        |
+| [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail) / [Agent-MCP](https://github.com/rinadelph/Agent-MCP) |       ❌       |       ✅       |       ✅       |       ❌       |       🟡        |
+| [Happy](https://github.com/slopus/happy) / [Omnara](https://github.com/omnara-ai/omnara)                                    |       ❌       |       ✅       |       ❌       |       ❌       |       ✅        |
+
+Capability checks do not capture each product's philosophy: for example, Gas Town provides a
+more prescribed operating model, while Herdr goes deeper on terminal persistence. See
+[Choosing an agent fleet tool](docs/alternatives.md) for the maintained detailed matrix,
+workflow tradeoffs, and source links.
 
 ## Feature map
 
