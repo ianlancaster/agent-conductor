@@ -298,7 +298,9 @@ was good or its task is complete:
   The process remains alive. Whether the evidence is actionable is the sentinel's decision.
 - `stopped`: no active runtime process is available for that registered session.
 
-A later turn, visible work, or lifecycle restart returns an idle session to `working`. `blocked`,
+A later turn or visible work returns an idle session to `working`. After a Conductor restart,
+surviving panes are classified through the runtime's composer parser: a visible clear or occupied
+composer is `idle`; a hidden or unclassifiable composer remains `working`. `blocked`,
 `compaction`, `silent`, and normal turn completion remain causal kinds in health logs and stall
 events; they are deliberately not separate activity states. Older schema-v1 event journals may
 contain the retired `stalled` activity value, which current state migration normalizes to `idle`.

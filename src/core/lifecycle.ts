@@ -82,6 +82,8 @@ export interface LifecycleDeps {
   reloadSessions(teardownSession?: string): void;
   /** Reset per-run health and stall-routing tracking on lifecycle boundaries. */
   supervisionReset(session: string): void;
+  /** Resolve working/idle from the runtime's visible composer at recovery boundaries. */
+  activityForPane?(session: string, pane: PaneRef): Promise<'working' | 'idle'>;
   /** Notify orchestration that a live pane is available for this run's queued delivery. */
   onRunning?(session: string): void;
   events?: ConductorEventPublisher;
@@ -115,7 +117,7 @@ export class Lifecycle {
   }
 
   /** Adopt a surviving pane after a conductor restart. */
-  adopt(codename: string, pane: PaneRef): void {
+  async adopt(codename: string, pane: PaneRef): Promise<void> {
     this.panes.set(codename, pane);
     if (this.deps.states.has(codename)) {
       const configuredRuntime = this.deps.sessions().get(codename)?.runtime;
@@ -126,7 +128,7 @@ export class Lifecycle {
       this.emitStarted(codename, 'adopt');
       // A surviving pane's runtime was already up before we restarted.
       this.deps.states.setReady(codename);
-      this.deps.states.setActivity(codename, 'working');
+      this.deps.states.setActivity(codename, await this.recoveredActivity(codename, pane));
       this.deps.supervisionReset(codename);
       this.deps.onRunning?.(codename);
       log().info('lifecycle', `${codename}: adopted surviving pane ${pane.id}`);
@@ -166,7 +168,7 @@ export class Lifecycle {
           this.clearSession(target, 'runtime-exit', true);
         }
       } else if (sessionActive === true && this.deps.states.get(target)?.running !== true) {
-        this.markRunning(target, pane);
+        await this.markRunning(target, pane);
         log().info('lifecycle', `${target}: found active runtime in pane ${pane.id}`);
       }
     }
@@ -204,7 +206,7 @@ export class Lifecycle {
           return `${codename} has a pane, but its runtime status could not be determined.`;
         }
         if (sessionActive) {
-          if (this.deps.states.get(codename)?.running !== true) this.markRunning(codename, existingPane);
+          if (this.deps.states.get(codename)?.running !== true) await this.markRunning(codename, existingPane);
           return `${codename} is already running.`;
         }
         // Ctrl-C ended the runtime, not the pane. Close out the old run but
@@ -478,7 +480,7 @@ export class Lifecycle {
     this.deps.supervisionReset(codename);
   }
 
-  private markRunning(codename: string, pane: PaneRef): void {
+  private async markRunning(codename: string, pane: PaneRef): Promise<void> {
     const configuredRuntime = this.deps.sessions().get(codename)?.runtime;
     if (this.deps.states.get(codename)?.runtime === undefined && configuredRuntime !== undefined) {
       this.deps.states.setRuntime(codename, configuredRuntime);
@@ -486,9 +488,13 @@ export class Lifecycle {
     this.deps.states.setSession(codename, pane.id);
     this.emitStarted(codename, 'discovered');
     this.deps.states.setReady(codename);
-    this.deps.states.setActivity(codename, 'working');
+    this.deps.states.setActivity(codename, await this.recoveredActivity(codename, pane));
     this.deps.supervisionReset(codename);
     this.deps.onRunning?.(codename);
+  }
+
+  private async recoveredActivity(codename: string, pane: PaneRef): Promise<'working' | 'idle'> {
+    return (await this.deps.activityForPane?.(codename, pane)) ?? 'working';
   }
 
   private emitStarted(codename: string, cause: 'start' | 'continue' | 'adopt' | 'discovered'): void {

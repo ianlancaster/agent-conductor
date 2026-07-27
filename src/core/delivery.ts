@@ -1,5 +1,5 @@
 import { log } from '../logger.js';
-import type { SessionRuntime } from '../runtimes/types.js';
+import type { InputState, SessionRuntime } from '../runtimes/types.js';
 import type { TerminalBackend } from '../terminals/types.js';
 import type { PaneRef } from './types.js';
 
@@ -27,6 +27,8 @@ type TypingState = 'clear' | 'blocked';
 
 interface TypingObservation {
   state: TypingState;
+  /** Runtime-owned composer classification; undefined means observation failed. */
+  inputState?: InputState;
   skipReason: DeliverySkipReason | null;
   /** Opaque terminal revision used for an atomic compare-and-submit. */
   token?: string;
@@ -155,6 +157,16 @@ export class DeliveryQueue {
 
   pendingCount(session: string): number {
     return this.queues.get(session)?.length ?? 0;
+  }
+
+  /**
+   * Classify a live pane through the same runtime-owned composer signal that
+   * protects message delivery. A visible clear OR occupied composer means the
+   * runtime is idle; missing/uncertain composer evidence remains working.
+   */
+  async activityForPane(session: string, pane: PaneRef): Promise<'working' | 'idle'> {
+    const observation = await this.typingState(session, pane);
+    return observation.inputState === 'clear' || observation.inputState === 'draft' ? 'idle' : 'working';
   }
 
   /** Cancel a durable message while it is assessing or waiting in memory. */
@@ -317,12 +329,12 @@ export class DeliveryQueue {
       if (state !== 'clear' && selectedRuntime.resolveInputState !== undefined) {
         state = await selectedRuntime.resolveInputState(capture, session, state);
       }
-      if (state === null) return { state: 'blocked', skipReason: 'composer-not-visible' };
+      if (state === null) return { state: 'blocked', inputState: null, skipReason: 'composer-not-visible' };
       this.deps.onRuntimeObserved?.(session);
       if (state === 'clear') {
-        return { state: 'clear', skipReason: null, ...(token !== undefined ? { token } : {}) };
+        return { state: 'clear', inputState: 'clear', skipReason: null, ...(token !== undefined ? { token } : {}) };
       }
-      return { state: 'blocked', skipReason: 'input-occupied' };
+      return { state: 'blocked', inputState: 'draft', skipReason: 'input-occupied' };
     } catch {
       return { state: 'blocked', skipReason: 'capture-failed' };
     }

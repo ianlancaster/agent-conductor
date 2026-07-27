@@ -700,6 +700,34 @@ describe('Supervisor construction', () => {
     await until(() => channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled')));
   });
 
+  it('classifies a surviving idle composer before persisted fleet watch evaluates', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\nhealth:\n  fleetStallConfirmMs: 0\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const store = new Store(join(baseDir, 'data', 'conductor.db'));
+    store.setWorkspaceValue('sentinel.fleetWatchEnabled', true);
+    store.close();
+    const terminal = new FakeTerminalBackend();
+    const survivingPane = await terminal.createPane('alpha', 'pane', baseDir);
+    terminal.panes.get(survivingPane.id)!.sessionActive = true;
+    terminal.setPaneContent(survivingPane.id, 'completed output\n❯ ');
+    terminal.survivors.set('alpha', survivingPane);
+    const channel = new StrictStartChannel();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      channels: [channel],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start();
+
+    expect(channel.started).toBe(true);
+    expect(supervisor.statusReport('alpha')).toContain('"activity": "idle"');
+    expect(channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled'))).toBe(true);
+  });
+
   it('activates a persisted threshold-zero watch only after start-all launches finish', async () => {
     const port = await freePort();
     writeConfig(`mcp:\n  port: ${String(port)}\nhealth:\n  fleetStallConfirmMs: 0\n`, {

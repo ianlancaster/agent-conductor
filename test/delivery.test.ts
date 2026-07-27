@@ -77,8 +77,29 @@ describe('DeliveryQueue', () => {
       );
     backend.setPaneContent(pane.id, "finished previous turn\n\n› What's on your mind?\n  gpt-5.6 medium · /repo");
 
+    await expect(queue.activityForPane('alpha', pane)).resolves.toBe('idle');
     await expect(queue.deliverOrQueue('alpha', 'the stalled envelope')).resolves.toBe('delivered');
     expect(backend.panes.get(pane.id)?.received).toEqual(['the stalled envelope']);
+  });
+
+  it('classifies a visible Claude composer as idle and hidden composer as working', async () => {
+    runtime.parseInputState = (capture: string) => parseClaudeInputState(capture);
+    backend.setPaneContent(pane.id, 'completed output\n❯ ');
+    await expect(queue.activityForPane('alpha', pane)).resolves.toBe('idle');
+
+    backend.setPaneContent(pane.id, '• Working on the request…');
+    await expect(queue.activityForPane('alpha', pane)).resolves.toBe('working');
+  });
+
+  it('classifies a Codex working pane without a composer as working', async () => {
+    runtime.parseInputState = (capture: string, session?: string) =>
+      new CodexRuntime({ config: { binary: 'codex', toolTimeoutSec: 600 }, baseDir: '/tmp' }).parseInputState(
+        capture,
+        session,
+      );
+    backend.setPaneContent(pane.id, '• Working (2m 15s • esc to interrupt)');
+
+    await expect(queue.activityForPane('alpha', pane)).resolves.toBe('working');
   });
 
   it('self-heals stale runtime metadata before draining a protected message', async () => {

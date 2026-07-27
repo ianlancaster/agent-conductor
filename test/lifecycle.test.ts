@@ -24,6 +24,7 @@ let supervisionRunningStates: boolean[];
 let defaultBypassPermissions: boolean;
 let defaultEfforts: { 'claude-code': string | undefined; 'codex': string | undefined };
 let lifecycleEvents: FakeEventPublisher;
+let recoveredActivity: 'working' | 'idle';
 
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-lc-'));
@@ -43,6 +44,7 @@ beforeEach(() => {
   defaultBypassPermissions = true;
   defaultEfforts = { 'claude-code': undefined, 'codex': undefined };
   lifecycleEvents = new FakeEventPublisher();
+  recoveredActivity = 'idle';
 
   lifecycle = new Lifecycle({
     store,
@@ -80,6 +82,7 @@ beforeEach(() => {
       supervisionResets.push(session);
       supervisionRunningStates.push(states.get(session)?.running === true);
     },
+    activityForPane: async () => recoveredActivity,
     events: lifecycleEvents,
   });
   states.register('alpha', false);
@@ -216,9 +219,19 @@ describe('lifecycle edges', () => {
   it('adopts a surviving pane after a conductor restart', async () => {
     const pane = await backend.createPane('alpha', 'pane');
     backend.panes.get(pane.id)!.sessionActive = true;
-    lifecycle.adopt('alpha', pane);
+    await lifecycle.adopt('alpha', pane);
     expect(lifecycle.getPane('alpha')).toEqual(pane);
     expect(states.get('alpha')?.running).toBe(true);
+    expect(states.get('alpha')?.activity).toBe('idle');
+  });
+
+  it('keeps a surviving pane working when no composer is visible', async () => {
+    recoveredActivity = 'working';
+    const pane = await backend.createPane('alpha', 'pane');
+    backend.panes.get(pane.id)!.sessionActive = true;
+
+    await lifecycle.adopt('alpha', pane);
+
     expect(states.get('alpha')?.activity).toBe('working');
   });
 
@@ -307,6 +320,7 @@ describe('lifecycle edges', () => {
       cause: 'discovered',
       runtime: 'claude-code',
     });
+    expect(states.get('alpha')?.activity).toBe('idle');
   });
 
   it('teardown closes an idle pane left by an ended runtime', async () => {

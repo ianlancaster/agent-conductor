@@ -275,6 +275,7 @@ export class Supervisor {
         if (this.states.get(session)?.activity === 'working') this.health.markTurnActive(session);
         this.sentinel.reset(session);
       },
+      activityForPane: (session, pane) => this.delivery.activityForPane(session, pane),
       onRunning: (session) => {
         void this.recoverPendingMessages(session);
       },
@@ -491,7 +492,7 @@ export class Supervisor {
     try {
       for (const [codename, pane] of await this.backend.rediscover()) {
         if (this.sessions.has(codename)) {
-          this.lifecycle.adopt(codename, pane);
+          await this.lifecycle.adopt(codename, pane);
           void this.retitle(codename);
         }
       }

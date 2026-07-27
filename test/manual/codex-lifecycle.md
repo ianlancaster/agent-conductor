@@ -39,6 +39,9 @@ for a completed or silent turn.
    become `idle` exactly once if no new turn begins.
 4. Submit a second prompt during the debounce. Require the pending idle transition to be cancelled
    and status to remain `working`.
+5. Stop and restart only the disposable Conductor while leaving the Codex pane at its input
+   composer. Require the adopted session to initialize as `idle`. Repeat while a disposable turn is
+   visibly working and require it to initialize as `working`.
 
 ## Compaction lifecycle
 
