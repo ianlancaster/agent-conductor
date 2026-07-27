@@ -18,6 +18,8 @@ import {
   removeConductorInstructions,
   renderHomeAgentsOverride,
   renderNotifyScript,
+  renderProtocolHooks,
+  renderProtocolReminderScript,
   shellQuote,
   tomlString,
 } from './config-gen.js';
@@ -39,7 +41,9 @@ const PROTOCOL_PLACEHOLDER =
   '<!-- conductor protocol placeholder: no protocolPath configured; the conductor supplies the real instructions -->';
 
 const NOTIFY_SCRIPT_NAME = 'notify.sh';
+const PROTOCOL_REMINDER_SCRIPT_NAME = 'protocol-reminder.mjs';
 const AGENTS_OVERRIDE_NAME = 'AGENTS.override.md';
+const HOOKS_NAME = 'hooks.json';
 const AGENTS_NAME = 'AGENTS.md';
 const GIT_TIMEOUT_MS = 5_000;
 const execFileAsync = promisify(execFile);
@@ -325,6 +329,13 @@ export class CodexRuntime implements SessionRuntime {
       Buffer.byteLength(rendered.content, 'utf8') + REPOSITORY_DOC_BUDGET_BYTES + PROJECT_DOC_HEADROOM_BYTES;
     await this.prepareCodexHome(identity, repo, sharedHome, minimumDocBytes);
     await writeFile(path.join(this.codexHomePath(identity), AGENTS_OVERRIDE_NAME), rendered.content);
+    await writeFile(this.protocolReminderScriptPath(identity), renderProtocolReminderScript(protocolText), {
+      mode: 0o755,
+    });
+    await writeFile(
+      path.join(this.codexHomePath(identity), HOOKS_NAME),
+      renderProtocolHooks(`${shellQuote(process.execPath)} ${shellQuote(this.protocolReminderScriptPath(identity))}`),
+    );
     await this.warnForProjectDocLimit(repo, minimumDocBytes);
     await this.cleanupLegacyRepoOverride(repo);
   }
@@ -350,6 +361,7 @@ export class CodexRuntime implements SessionRuntime {
     for (const override of overrides) parts.push('-c', shellQuote(override));
 
     if (opts.bypassPermissions === true) parts.push('--dangerously-bypass-approvals-and-sandbox');
+    if (this.settings.bypassHookTrust === true) parts.push('--dangerously-bypass-hook-trust');
 
     const model = session.model ?? this.settings.defaultModel;
     if (model !== undefined) parts.push('--model', shellQuote(model));
@@ -499,6 +511,10 @@ export class CodexRuntime implements SessionRuntime {
 
   private notifyScriptPath(identity: IdentityEndpoints): string {
     return path.join(identity.configDir, NOTIFY_SCRIPT_NAME);
+  }
+
+  private protocolReminderScriptPath(identity: IdentityEndpoints): string {
+    return path.join(identity.configDir, PROTOCOL_REMINDER_SCRIPT_NAME);
   }
 
   private codexHomePath(identity: IdentityEndpoints): string {

@@ -36,6 +36,12 @@ export interface MessageInsertResult {
   deduplicated: boolean;
 }
 
+/** Content-free direct-message fact used by stall diagnostics. */
+export type RecentMessageActivity = Pick<
+  MessageRow,
+  'id' | 'sender' | 'recipient' | 'status' | 'created_at' | 'delivered_at' | 'cancelled_at'
+>;
+
 export interface HealthLogRow {
   id: number;
   session: string;
@@ -540,6 +546,19 @@ export class Store {
     return this.db
       .prepare("SELECT * FROM messages WHERE type = 'message' AND status = 'pending' ORDER BY id")
       .all() as unknown as MessageRow[];
+  }
+
+  /** Recent direct-message metadata involving one session; message content is deliberately excluded. */
+  getRecentMessageActivity(session: string, limit = 3): RecentMessageActivity[] {
+    return this.db
+      .prepare(
+        `SELECT id, sender, recipient, status, created_at, delivered_at, cancelled_at
+         FROM messages
+         WHERE type = 'message' AND (sender = ? OR recipient = ?)
+         ORDER BY id DESC
+         LIMIT ?`,
+      )
+      .all(session, session, Math.max(0, Math.floor(limit))) as unknown as RecentMessageActivity[];
   }
 
   // ── operator requests ────────────────────────────────────────────────────

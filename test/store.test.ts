@@ -86,6 +86,23 @@ describe('messages', () => {
     expect(otherSender.row.id).not.toBe(first.row.id);
   });
 
+  it('lists recent direct-message metadata without content or broadcasts', () => {
+    const first = store.insertMessage('alpha', 'beta', 'message', 'private first body');
+    store.markMessageDelivered(first);
+    store.insertMessage('alpha', '*', 'broadcast', 'private broadcast body');
+    const latest = store.insertMessage('gamma', 'alpha', 'message', 'private latest body');
+
+    const activity = store.getRecentMessageActivity('alpha', 2);
+    expect(activity.map((row) => row.id)).toEqual([latest, first]);
+    expect(activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sender: 'gamma', recipient: 'alpha', status: 'pending' }),
+        expect.objectContaining({ sender: 'alpha', recipient: 'beta', status: 'delivered' }),
+      ]),
+    );
+    expect(JSON.stringify(activity)).not.toContain('private');
+  });
+
   it('lets an explicit idempotent retry revive a queue cancelled by restart', () => {
     const first = store.insertDirectMessage('alpha', 'beta', 'first attempt', 'key-1');
     expect(store.cancelPendingLocalMessagesOnRestart()).toHaveLength(1);

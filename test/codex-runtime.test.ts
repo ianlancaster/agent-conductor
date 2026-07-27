@@ -17,6 +17,8 @@ import {
   renderAgentsOverride,
   renderHomeAgentsOverride,
   renderNotifyScript,
+  renderProtocolHooks,
+  renderProtocolReminderScript,
   shellQuote,
   tomlString,
 } from '../src/runtimes/codex/config-gen.js';
@@ -98,6 +100,18 @@ describe('config generation', () => {
     expect(script).toContain('--data "$payload"');
     expect(script).toContain("'http://127.0.0.1:3456/events/sample'");
     expect(script).toContain('curl -fsS');
+  });
+
+  it('renders a compact-only SessionStart hook that re-injects the protocol', () => {
+    const script = renderProtocolReminderScript('Use send_to_session for READY signals.');
+    const hooks = JSON.parse(renderProtocolHooks("'/usr/bin/node' '/cfg/protocol-reminder.mjs'")) as {
+      hooks: { SessionStart: { matcher: string; hooks: { command: string }[] }[] };
+    };
+    expect(script).toContain('hookEventName');
+    expect(script).toContain('Use send_to_session for READY signals.');
+    expect(hooks.hooks.SessionStart[0]?.matcher).toBe('^compact$');
+    expect(hooks.hooks.SessionStart[0]?.hooks[0]?.command).toContain('protocol-reminder.mjs');
+    expect(JSON.stringify(hooks)).not.toContain('PostCompact');
   });
 
   it('renders AGENTS.override.md embedding the existing AGENTS.md before the protocol', () => {
@@ -290,8 +304,26 @@ describe('prepare', () => {
     const override = await readFile(path.join(configDir, 'codex-home', 'AGENTS.override.md'), 'utf8');
     expect(override).toContain(GENERATED_MARKER);
     expect(override).toContain('conductor protocol placeholder');
+    const hooks = await readFile(path.join(configDir, 'codex-home', 'hooks.json'), 'utf8');
+    expect(hooks).toContain('^compact$');
+    const reminder = await readFile(path.join(configDir, 'protocol-reminder.mjs'), 'utf8');
+    expect(reminder).toContain('conductor protocol placeholder');
+    const reminderOutput = JSON.parse(
+      execFileSync(process.execPath, [path.join(configDir, 'protocol-reminder.mjs')], { encoding: 'utf8' }),
+    ) as { hookSpecificOutput: { hookEventName: unknown; additionalContext: string } };
+    expect(reminderOutput.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    expect(reminderOutput.hookSpecificOutput.additionalContext).toContain('conductor protocol placeholder');
     await expect(readFile(path.join(repoDir, 'AGENTS.override.md'), 'utf8')).rejects.toThrow();
     await expect(readFile(path.join(repoDir, '.gitignore'), 'utf8')).rejects.toThrow();
+  });
+
+  it('bypasses hook trust only when the fleet explicitly opts in', () => {
+    const safe = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+    const trusted = new CodexRuntime({ config: { ...SETTINGS, bypassHookTrust: true }, baseDir: workDir });
+    const session = makeSession();
+    const identity = makeIdentity(configDir);
+    expect(safe.buildLaunchCommand(session, identity, {})).not.toContain('--dangerously-bypass-hook-trust');
+    expect(trusted.buildLaunchCommand(session, identity, {})).toContain('--dangerously-bypass-hook-trust');
   });
 
   it('inherits a non-empty global override before protocol and session instructions', async () => {

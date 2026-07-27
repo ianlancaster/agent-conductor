@@ -115,6 +115,10 @@ runtimes:
     availableEfforts: [none, minimal, low, medium, high, xhigh, max, ultra]
     toolTimeoutSec: 600 # Codex default is 60s — too low for long conductor tools
     bareUi: true # bare-bones panes: no startup update prompt (it BLOCKS spawned panes), analytics, tips, animations, or terminal-title writes. Set false for stock Codex behavior.
+    # Conductor writes a compact-only SessionStart hook that restores its protocol after Codex compaction.
+    # Non-managed hooks require review through /hooks. For unattended fleets only, this trusts EVERY hook
+    # Codex discovers from the shared config, repository, and plugins; enable only after vetting all sources.
+    bypassHookTrust: false
 
 channels:
   telegram:

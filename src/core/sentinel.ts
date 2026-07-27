@@ -5,6 +5,7 @@ import type { StallInfo } from './health.js';
 import { contentSimilarity, fleetStallEnvelope, stallEnvelope, truncate } from './utils.js';
 import type { PaneRef, StallKind } from './types.js';
 import type { ConductorEventPublisher } from '../events/types.js';
+import type { RecentMessageActivity } from '../store/index.js';
 
 const SENTINEL_DOWN_WARN_INTERVAL_MS = 10 * 60 * 1000;
 
@@ -31,6 +32,7 @@ export interface SentinelDeps {
   deliver(session: string, text: string): Promise<unknown>;
   notifyOperator(text: string): Promise<unknown>;
   logEvent(session: string, event: string, detail?: string): void;
+  recentMessages?(session: string, limit: number): readonly RecentMessageActivity[];
   initialFleetWatchEnabled?: boolean;
   initialSessions?: Iterable<string>;
   onFleetWatchChanged?(enabled: boolean): void;
@@ -176,8 +178,11 @@ export class StallSentinelRouter {
     const sentinel = this.sentinel;
     if (sentinel === undefined) {
       const summary = info.reason !== undefined ? `: ${truncate(info.reason, 120)}` : '';
+      const communications = this.recentCommunications(session);
       this.deps.logEvent(session, 'stall_reported', `${kind} → operator`);
-      await this.deps.notifyOperator(`⚠️ ${session} stalled (${kind})${summary}`);
+      await this.deps.notifyOperator(
+        `⚠️ ${session} stalled (${kind})${summary}${communications.length > 0 ? `\nRecent conductor messages:\n${communications.join('\n')}` : ''}`,
+      );
       this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'reported-to-operator' });
       return;
     }
@@ -201,7 +206,15 @@ export class StallSentinelRouter {
     const lastMessage =
       (await this.readTranscript(session, info.transcriptPath)) ?? info.reason ?? '(no last message available)';
     this.deps.logEvent(session, 'stall_routed', `${kind} → ${sentinel}`);
-    await this.deps.deliver(sentinel, stallEnvelope(session, kind, `last: ${truncate(lastMessage, 400)}`));
+    const communications = this.recentCommunications(session);
+    await this.deps.deliver(
+      sentinel,
+      stallEnvelope(
+        session,
+        kind,
+        `last: ${truncate(lastMessage, 400)}${communications.length > 0 ? `\nrecent conductor messages:\n${communications.join('\n')}` : ''}`,
+      ),
+    );
     this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'routed' });
   }
 
@@ -290,5 +303,14 @@ export class StallSentinelRouter {
     } catch {
       return undefined;
     }
+  }
+
+  private recentCommunications(session: string): string[] {
+    return (this.deps.recentMessages?.(session, 3) ?? []).map((message) => {
+      const direction =
+        message.sender === session ? `outbound to ${message.recipient}` : `inbound from ${message.sender}`;
+      const timestamp = message.delivered_at ?? message.cancelled_at ?? message.created_at;
+      return `- #${String(message.id)} ${direction} ${message.status} at ${timestamp}`;
+    });
   }
 }

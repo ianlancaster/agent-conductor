@@ -14,6 +14,15 @@ let pausedSessions: Set<string>;
 let activeSessions: Set<string>;
 let panes: Map<string, string>;
 let events: FakeEventPublisher;
+let recentMessages: {
+  id: number;
+  sender: string;
+  recipient: string;
+  status: 'pending' | 'delivered' | 'cancelled';
+  created_at: string;
+  delivered_at: string | null;
+  cancelled_at: string | null;
+}[];
 
 function makeRouter(
   sentinelCodename: string | undefined,
@@ -46,6 +55,7 @@ function makeRouter(
       operatorMessages.push(text);
     },
     logEvent: () => undefined,
+    recentMessages: () => recentMessages,
     initialSessions: ['alpha', 'beta', 'watch'],
     events,
   });
@@ -61,6 +71,7 @@ beforeEach(async () => {
   activeSessions = new Set(['alpha', 'beta', 'watch']);
   panes = new Map();
   events = new FakeEventPublisher();
+  recentMessages = [];
   const alphaPane = await backend.createPane('alpha', 'pane');
   panes.set('alpha', alphaPane.id);
   backend.setPaneContent(alphaPane.id, 'some terminal output\nlast line');
@@ -84,6 +95,34 @@ describe('stall routing', () => {
     // No follow-up tool calls required: the message IS the whole surface.
     expect(delivered[0]?.text).not.toContain('get_stall_queue');
     expect(delivered[0]?.text).not.toContain('resolve_stall');
+  });
+
+  it('adds a bounded content-free communication ledger to the stall payload', async () => {
+    recentMessages = [
+      {
+        id: 42,
+        sender: 'alpha',
+        recipient: 'beta',
+        status: 'delivered',
+        created_at: '2026-07-26 12:00:00',
+        delivered_at: '2026-07-26 12:00:01',
+        cancelled_at: null,
+      },
+      {
+        id: 41,
+        sender: 'beta',
+        recipient: 'alpha',
+        status: 'cancelled',
+        created_at: '2026-07-26 11:59:00',
+        delivered_at: null,
+        cancelled_at: '2026-07-26 11:59:02',
+      },
+    ];
+    await router.handleStall('alpha', 'idle', { reason: 'waiting' });
+
+    expect(delivered[0]?.text).toContain('recent conductor messages:');
+    expect(delivered[0]?.text).toContain('#42 outbound to beta delivered at 2026-07-26 12:00:01');
+    expect(delivered[0]?.text).toContain('#41 inbound from beta cancelled at 2026-07-26 11:59:02');
   });
 
   it('falls back to the stall reason, then a placeholder, when no transcript is available', async () => {

@@ -26,6 +26,13 @@ export interface StartOptions {
   headless?: boolean;
 }
 
+export interface ProcessObservation {
+  /** Foreground agent runtime truth; null means terminal-backend inspection failed. */
+  active: boolean | null;
+  /** ISO timestamp for the most recent process-state determination. */
+  observedAt: string;
+}
+
 export interface SpawnOptions {
   path?: string;
   model?: string;
@@ -86,11 +93,16 @@ export class Lifecycle {
   private readonly sessions = new Map<string, string>();
   /** In-flight start per codename — serializes concurrent starts so we never open two panes for one session. */
   private readonly starting = new Map<string, Promise<string>>();
+  private readonly processObservations = new Map<string, ProcessObservation>();
 
   constructor(private readonly deps: LifecycleDeps) {}
 
   getPane(session: string): PaneRef | undefined {
     return this.panes.get(session);
+  }
+
+  processObservation(session: string): ProcessObservation | undefined {
+    return this.processObservations.get(session);
   }
 
   /** Runtime supervising the current run, falling back to the session's configured default. */
@@ -133,15 +145,20 @@ export class Lifecycle {
 
       const paneAlive = await this.safePaneAlive(pane);
       if (paneAlive === false) {
+        this.observeProcess(target, false);
         if (this.deps.states.get(target)?.running === true) {
           log().info('lifecycle', `${target}: pane ${pane.id} ended — marking stopped`);
         }
         this.clearSession(target, 'pane-missing');
         continue;
       }
-      if (paneAlive === undefined) continue;
+      if (paneAlive === undefined) {
+        this.observeProcess(target, null);
+        continue;
+      }
 
       const sessionActive = await this.safeSessionActive(pane);
+      this.observeProcess(target, sessionActive ?? null);
       if (sessionActive === false) {
         if (this.deps.states.get(target)?.running === true) {
           log().info('lifecycle', `${target}: runtime exited in pane ${pane.id} — keeping pane for restart`);
@@ -436,6 +453,9 @@ export class Lifecycle {
     cause: 'requested' | 'runtime-exit' | 'pane-missing' | 'launch-failed',
     keepPane = false,
   ): void {
+    // A completed stop/exit transition is authoritative even when the pane is
+    // removed before the next process-table reconciliation can inspect it.
+    this.observeProcess(codename, false);
     const wasRunning = this.deps.states.get(codename)?.running === true;
     const sessionId = this.sessions.get(codename);
     if (sessionId !== undefined) {
@@ -526,5 +546,9 @@ export class Lifecycle {
       );
       return undefined;
     }
+  }
+
+  private observeProcess(codename: string, active: boolean | null): void {
+    this.processObservations.set(codename, { active, observedAt: new Date().toISOString() });
   }
 }

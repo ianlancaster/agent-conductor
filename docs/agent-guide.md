@@ -282,7 +282,10 @@ Use:
 
 - `list_sessions` for a fleet overview.
 - `get_session_status` for structured status, path, branch, runtime, model, effort, readiness,
-  activity, tag, pause, and auto state.
+  activity, tag, pause, auto state, and the latest foreground-process observation. `processActive`
+  comes from the terminal backend's process inspection after reconciliation; `processObservedAt`
+  says when that check ran. A `null` process value means inspection was inconclusive, not that the
+  runtime was idle.
 - `set_tag` for a short human-readable current-purpose label.
 - `tail_session` only for explicit inspection or communication failure diagnosis.
 
@@ -355,6 +358,13 @@ Worktree practices:
 - Current Codex sessions keep their generated override inside the isolated session home and do not
   dirty the worktree. Fleets upgraded from an earlier release may retain an obsolete
   `AGENTS.override.md` entry in `.gitignore`; remove that ignore line manually when convenient.
+- Codex reads `AGENTS.md` guidance once when a run starts. Conductor also generates a
+  `SessionStart` hook matched to `source=compact` in the isolated session home; after manual or
+  automatic compaction it re-injects the version-matched Conductor protocol as developer context.
+  Codex requires non-managed hooks to be reviewed with `/hooks`. An unattended fleet may set
+  `runtimes.codex.bypassHookTrust: true`, but that CLI switch trusts every hook Codex discovers
+  from the shared config, repository, and enabled plugins—not only Conductor's generated hook.
+  Leave it off unless all those hook sources have been vetted.
 
 A useful full-fleet pattern is:
 
@@ -394,6 +404,11 @@ stop starts the `health.idleConfirmMs` quiet timer. If it expires, Conductor rec
 captures the last assistant message, and—when auto is enabled—routes that evidence to the sentinel.
 The sentinel then decides whether completed work needs no action, an unfinished plan needs a precise
 nudge, or an ambiguous state needs inspection or operator judgment.
+
+Individual stall notifications include up to three recent direct-message facts involving the
+session: receipt id, direction, peer, status, and timestamp. Message bodies and broadcasts are not
+included. This lets the sentinel distinguish “reported and waiting” from “no Conductor signal was
+ever sent” without reading conversation content.
 
 Auto should mean “this session's stall deserves Sentinel assessment,” not “idle is always a defect.”
 A worker waiting at an explicit review or approval gate may correctly remain idle.

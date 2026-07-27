@@ -470,6 +470,28 @@ describe('Supervisor construction', () => {
     expect(supervisor.statusReport()).toContain(`path: ${repo} · branch: main`);
   });
 
+  it('reports freshly reconciled foreground-process truth in detailed status', async () => {
+    writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43391\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const terminal = new FakeTerminalBackend();
+    supervisor = new Supervisor(baseDir, { terminalBackend: terminal });
+    await supervisor.command('/start alpha');
+
+    const running = JSON.parse(await supervisor.command('/status alpha')) as {
+      processActive: unknown;
+      processObservedAt: unknown;
+    };
+    expect(running.processActive).toBe(true);
+    expect(running.processObservedAt).toBeTypeOf('string');
+
+    const pane = terminal.paneFor('alpha');
+    expect(pane).toBeDefined();
+    terminal.endSession([...terminal.panes.entries()].find(([, value]) => value === pane)?.[0] ?? 'missing');
+    const stopped = JSON.parse(await supervisor.command('/status alpha')) as { processActive: unknown };
+    expect(stopped.processActive).toBe(false);
+  });
+
   it('routes operator commands through the shared router', async () => {
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43393\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,

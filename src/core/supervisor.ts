@@ -319,6 +319,7 @@ export class Supervisor {
       logEvent: (session, event, detail) => {
         this.store.logHealthEvent(session, event, detail);
       },
+      recentMessages: (session, limit) => this.store.getRecentMessageActivity(session, limit),
       initialFleetWatchEnabled: fleetWatchEnabled,
       initialSessions: this.sessions.keys(),
       onFleetWatchChanged: (enabled) => {
@@ -592,6 +593,7 @@ export class Supervisor {
         modelFor: (name) => this.displayModelFor(name),
         effortFor: (name) => this.displayEffortFor(name),
         sentinelCodename: () => this.sentinel.sentinelCodename(),
+        processObservation: (name) => this.lifecycle.processObservation(name),
       },
       codename,
       { shepherdRecipient: this.shepherd.recipientSession() },

@@ -127,6 +127,41 @@ export function renderNotifyScript(eventsUrl: string): string {
   ].join('\n');
 }
 
+/** Model-visible reminder injected by the generated SessionStart(source=compact) hook. */
+export function renderProtocolReminderScript(protocolText: string): string {
+  const output = {
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      additionalContext: `Agent Conductor protocol re-injected after context compaction.\n\n${protocolText.trim()}`,
+    },
+  };
+  return [
+    '#!/usr/bin/env node',
+    `// ${GENERATED_MARKER}; do not edit — regenerated on every prepare().`,
+    `process.stdout.write(${JSON.stringify(JSON.stringify(output))});`,
+    '',
+  ].join('\n');
+}
+
+/** User-level hook config inside the isolated CODEX_HOME. */
+export function renderProtocolHooks(command: string): string {
+  return `${JSON.stringify(
+    {
+      description: 'Agent Conductor managed protocol persistence.',
+      hooks: {
+        SessionStart: [
+          {
+            matcher: '^compact$',
+            hooks: [{ type: 'command', command, timeout: 5, statusMessage: 'Restoring Conductor protocol' }],
+          },
+        ],
+      },
+    },
+    null,
+    2,
+  )}\n`;
+}
+
 /** The refreshable conductor-owned section appended to AGENTS.override.md. */
 function renderConductorBlock(protocolText: string, sessionPromptText?: string | null): string {
   const parts = [CONDUCTOR_BLOCK_START, '# Conductor protocol', protocolText.trim()];

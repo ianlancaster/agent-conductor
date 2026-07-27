@@ -126,6 +126,7 @@ beforeEach(() => {
           modelFor: (n) => sessions.get(n)?.model,
           effortFor: (n) => states.get(n)?.effort ?? sessions.get(n)?.effort,
           sentinelCodename: () => sentinel.sentinelCodename(),
+          processObservation: (n) => lifecycle.processObservation(n),
         },
         c,
       ),
@@ -448,6 +449,10 @@ describe('surface contract', () => {
     expect(protocol).toContain('operator explicitly asks you to inspect');
     expect(protocol).toContain('Prefer `get_session_status` for non-invasive liveness checks.');
     expect(protocol).toContain('Peer conversation is event-driven.');
+    expect(protocol).toContain('Reply to that sender through `send_to_session`');
+    expect(protocol).toContain(
+      'a reply, READY signal, handoff, or status update must be an actual Conductor tool call',
+    );
     expect(protocol).toMatch(/end your turn;\s+the response will arrive as a new message and activate your next turn/u);
     expect(protocol).toMatch(/Do not create timers, sleep loops, recurring\s+monitors, scheduled checks/u);
     expect(protocol).toContain('never poll the peer');

@@ -280,6 +280,12 @@ export const supervisorConfigSchema = z
              * (which would clobber the conductor's pane titles).
              */
             bareUi: z.boolean().default(true),
+            /**
+             * Trust every hook discovered by Codex for this managed invocation. Required for
+             * unattended post-compaction protocol re-injection; leave false unless hook sources
+             * in the shared config, repository, and enabled plugins are all trusted.
+             */
+            bypassHookTrust: z.boolean().default(false),
           })
           .strict()
           .default({}),

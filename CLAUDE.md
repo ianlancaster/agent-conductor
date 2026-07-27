@@ -58,7 +58,8 @@ tested against in-memory fakes (`test/fakes/`).
 
 - `src/terminals/` — **TerminalBackend**: `iterm/` (AppleScript, async), `tmux/` (headless).
 - `src/runtimes/` — **SessionRuntime**: `claude-code/` (hooks via `--settings`, MCP via
-  `--mcp-config`), `codex/` (`-c` config overrides, `notify`, AGENTS.override.md injection).
+  `--mcp-config`), `codex/` (`-c` config overrides, `notify`, AGENTS.override.md injection, and a
+  compact-only `SessionStart` hook that restores mandatory protocol context).
 - `src/channels/` — **ChannelAdapter**: `telegram/` (dependency-free long-polling),
   `slack/` (optional Socket Mode SDK, loaded lazily).
 - `src/core/` — supervisor (wiring only), lifecycle, delivery (typing-aware queue), health

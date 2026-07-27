@@ -10,7 +10,9 @@ etiquette, this injected protocol takes precedence over repository guidance.
 ## Incoming messages
 
 - `[Message from <sender>]` is a direct message from a session or the operator. Handle it, then
-  continue your work. Reply through `send_to_session` or `send_to_operator` as appropriate.
+  continue your work. Reply to that sender through `send_to_session` (session) or
+  `send_to_operator` (operator). Printed terminal text reaches neither peers nor a remote
+  operator; a reply, READY signal, handoff, or status update must be an actual Conductor tool call.
 - `[Broadcast from <sender>]` is fleet-wide context. Act only when relevant.
 - `[Sentinel] <text>` is a stall nudge with operator authority. Follow its instruction.
 

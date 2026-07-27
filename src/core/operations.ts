@@ -616,7 +616,7 @@ export class ConductorOperations {
       {
         name: 'get_session_status',
         description:
-          'Return detailed status for one session as JSON, including its working-directory path, branch, and Conductor-resolved model and effort.',
+          'Return detailed status for one session as JSON, including its working-directory path, branch, Conductor-resolved model and effort, and a freshly reconciled foreground-process observation.',
         resultDescription: 'Returns the reconciled session status as formatted JSON.',
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty('Session codename') }, ['codename']),

@@ -4,6 +4,7 @@ import type { SessionConfig } from '../config/schema.js';
 import type { SessionState } from './types.js';
 import { currentBranch } from './worktree.js';
 import type { ConductorEventJournalStatus } from '../events/types.js';
+import type { ProcessObservation } from './lifecycle.js';
 
 const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
   working: '🟢',
@@ -26,6 +27,7 @@ export interface StatusDeps {
   modelFor(codename: string): string | undefined;
   effortFor(codename: string): string | undefined;
   sentinelCodename(): string | undefined;
+  processObservation(codename: string): ProcessObservation | undefined;
 }
 
 export type RuntimeSettingDefaults = Record<string, string | undefined>;
@@ -88,6 +90,7 @@ export function statusReport(deps: StatusDeps, codename?: string, markers: Statu
     const state = deps.getState(codename);
     const session = deps.sessions().get(codename);
     if (state === undefined || session === undefined) return `Unknown session: ${codename}`;
+    const process = deps.processObservation(codename);
     return JSON.stringify(
       {
         codename,
@@ -100,6 +103,8 @@ export function statusReport(deps: StatusDeps, codename?: string, markers: Statu
         paused: state.paused,
         tag: state.tag ?? null,
         running: state.running,
+        processActive: process?.active ?? null,
+        processObservedAt: process?.observedAt ?? null,
         ready: state.ready,
         activity: state.activity,
         agentProject: state.isAgentProject,

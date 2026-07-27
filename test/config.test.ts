@@ -61,6 +61,7 @@ describe('loadSupervisorConfig', () => {
     expect(config.runtimes.claudeCode.availableEfforts).toEqual(DEFAULT_CLAUDE_CODE_EFFORTS);
     expect(config.runtimes.claudeCode.defaultEffort).toBeUndefined();
     expect(config.runtimes.codex.toolTimeoutSec).toBe(600);
+    expect(config.runtimes.codex.bypassHookTrust).toBe(false);
     expect(config.runtimes.codex.availableModels).toEqual(DEFAULT_CODEX_MODELS);
     expect(config.runtimes.codex.availableEfforts).toEqual(DEFAULT_CODEX_EFFORTS);
     expect(config.runtimes.codex.defaultEffort).toBeUndefined();
