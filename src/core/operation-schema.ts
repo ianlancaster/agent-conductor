@@ -75,7 +75,7 @@ export function validateOperationInput(
       if (property.minLength !== undefined && value.trim().length < property.minLength) {
         throw new InvalidRequestError(`'${name}' must be a non-empty string`);
       }
-      if (property.maxLength !== undefined && value.length > property.maxLength) {
+      if (property.maxLength !== undefined && [...value].length > property.maxLength) {
         throw new InvalidRequestError(`'${name}' must be at most ${String(property.maxLength)} characters`);
       }
       if (property.enum !== undefined && !property.enum.includes(value)) {
@@ -97,7 +97,7 @@ export function validateOperationInput(
         if (property.items?.minLength !== undefined && item.trim().length < property.items.minLength) {
           throw new InvalidRequestError(`'${name}' items must be non-empty strings`);
         }
-        if (property.items?.maxLength !== undefined && item.trim().length > property.items.maxLength) {
+        if (property.items?.maxLength !== undefined && [...item.trim()].length > property.items.maxLength) {
           throw new InvalidRequestError(
             `'${name}' items must be at most ${String(property.items.maxLength)} characters`,
           );

@@ -448,6 +448,12 @@ describe('mode commands', () => {
     expect(states.getTag('alpha')).toBeUndefined();
   });
 
+  it('returns a recoverable error for an over-limit tag', async () => {
+    await router.route('/tag alpha concise');
+    await expect(router.route(`/tag alpha ${'x'.repeat(51)}`)).resolves.toBe("'tag' must be at most 50 characters");
+    expect(states.getTag('alpha')).toBe('concise');
+  });
+
   it('does not expose the removed focus auto-pause command', async () => {
     expect(await router.route('/autopause on')).toContain('Unknown command');
   });

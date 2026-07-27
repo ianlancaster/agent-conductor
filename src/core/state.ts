@@ -1,7 +1,9 @@
 import type { Store } from '../store/index.js';
-import type { RuntimeName } from '../config/schema.js';
+import { DEFAULT_MAX_TAG_LENGTH, type RuntimeName } from '../config/schema.js';
 import type { Activity, SessionState } from './types.js';
 import type { ConductorEventPublisher } from '../events/types.js';
+import { InvalidRequestError } from './errors.js';
+import { log } from '../logger.js';
 
 /**
  * Per-session state registry. Auto/tag/pause persist to SQLite; session and
@@ -14,6 +16,7 @@ export class SessionStateManager {
     private readonly store: Store,
     private readonly defaultAuto: boolean,
     private readonly events?: ConductorEventPublisher,
+    private readonly maxTagLength = DEFAULT_MAX_TAG_LENGTH,
   ) {}
 
   register(codename: string, isAgentProject: boolean): void {
@@ -23,9 +26,11 @@ export class SessionStateManager {
       return;
     }
     const persisted = this.store.getSessionState(codename);
+    const persistedTag = persisted?.tag ?? undefined;
+    const tag = persistedTag === undefined || [...persistedTag].length <= this.maxTagLength ? persistedTag : undefined;
     this.states.set(codename, {
       auto: persisted?.auto ?? this.defaultAuto,
-      tag: persisted?.tag ?? undefined,
+      tag,
       paused: persisted?.paused ?? false,
       runtime: persisted?.activeRuntime ?? undefined,
       effort: persisted?.activeEffort ?? undefined,
@@ -34,6 +39,13 @@ export class SessionStateManager {
       activity: 'stopped',
       isAgentProject,
     });
+    if (persistedTag !== undefined && tag === undefined) {
+      this.persist(codename);
+      log().warn(
+        'state',
+        `${codename}: cleared a persisted ${String([...persistedTag].length)}-character tag that exceeds supervisor.maxTagLength=${String(this.maxTagLength)}`,
+      );
+    }
   }
 
   deregister(codename: string): void {
@@ -72,8 +84,18 @@ export class SessionStateManager {
     return this.states.get(codename)?.tag;
   }
 
+  tagMaxLength(): number {
+    return this.maxTagLength;
+  }
+
   setTag(codename: string, tag: string | undefined): void {
     const state = this.mustGet(codename);
+    const length = tag === undefined ? 0 : [...tag].length;
+    if (length > this.maxTagLength) {
+      throw new InvalidRequestError(
+        `Tag for ${codename} is ${String(length)} characters; this fleet allows at most ${String(this.maxTagLength)}. Shorten the tag and try again.`,
+      );
+    }
     state.tag = tag;
     this.persist(codename);
   }

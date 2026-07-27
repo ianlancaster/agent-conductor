@@ -50,6 +50,7 @@ describe('ensureFleetScaffold', () => {
     const derived = deriveInstanceDefaults(baseDir);
 
     expect(text).toContain('heartbeatIntervalSeconds: 30');
+    expect(text).toContain('maxTagLength: 50');
     expect(text).toContain('auto: false');
     expect(text).toContain('events:\n  journal:\n    enabled: true');
     expect(text).toContain('telegram:\n    enabled: false');

@@ -246,6 +246,24 @@ describe('surface contract', () => {
     );
   });
 
+  it('advertises and enforces the configured tag limit without mutating state on failure', async () => {
+    const setTag = tool('set_tag');
+    expect(setTag.inputSchema.properties.tag).toMatchObject({
+      type: 'string',
+      maxLength: 50,
+    });
+
+    await expect(setTag.handler({ codename: 'alpha', tag: 'active review' }, 'beta')).resolves.toContain(
+      'active review',
+    );
+    await expect(setTag.handler({ codename: 'alpha', tag: 'x'.repeat(51) }, 'beta')).rejects.toThrow(
+      "'tag' must be at most 50 characters",
+    );
+    expect(states.getTag('alpha')).toBe('active review');
+
+    await expect(setTag.handler({ codename: 'alpha', tag: '🔄'.repeat(50) }, 'beta')).resolves.toContain('🔄');
+  });
+
   it('exposes selectable send_to_operator choices with bounded string-array validation', async () => {
     const send = tool('send_to_operator');
     expect((send.inputSchema.properties as Record<string, unknown>).options).toEqual({

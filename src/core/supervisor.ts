@@ -176,7 +176,12 @@ export class Supervisor {
         });
       },
     });
-    this.states = new SessionStateManager(this.store, this.config.defaults.auto, this.eventBus);
+    this.states = new SessionStateManager(
+      this.store,
+      this.config.defaults.auto,
+      this.eventBus,
+      this.config.supervisor.maxTagLength,
+    );
     const storedSentinel = this.store.getWorkspaceValue<string | null>(SENTINEL_WORKSPACE_KEY);
     const sentinelCodename =
       storedSentinel === undefined ? this.config.sentinel.codename : (storedSentinel ?? undefined);

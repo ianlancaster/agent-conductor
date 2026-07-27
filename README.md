@@ -108,6 +108,7 @@ version-matched reference; these are the commands used most often:
 | Send a message                            | `/tell <session> <message>` · `/broadcast <message>`           |
 | Make free text target one session         | `/talk <session>`                                              |
 | Inspect recent terminal output            | `/tail <session> [lines]`                                      |
+| Set or clear a concise status tag         | `/tag <session> [text]`                                        |
 | Temporarily suspend or restore automation | `/pause <session>` · `/resume <session>`                       |
 | Record an approved runbook condition      | `/runbook adopt <id> --version <v> --topic <topic>`            |
 | Remove a spawned session                  | `/teardown <session> [--delete]`                               |
@@ -155,6 +156,9 @@ For diagnosis, `conductor logs [session]` reads recent persisted health events,
 `conductor validate` checks strict fleet configuration, and `/tail` reads pane output.
 Managed agents can use `list_sessions` and `get_session_status` for structured,
 non-invasive status without scraping peers' terminals.
+Session tags are deliberately concise: `/tag` and `set_tag` reject labels longer than 50
+Unicode characters by default without changing the existing tag. Fleets can change the
+mechanical limit with `supervisor.maxTagLength`; supervisor settings apply after restart.
 
 ## Run autonomous sessions
 

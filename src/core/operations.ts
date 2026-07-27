@@ -478,11 +478,19 @@ export class ConductorOperations {
       },
       {
         name: 'set_tag',
-        description: 'Set or clear a short status label on a session.',
+        description: `Set or clear a session status label (maximum ${String(this.deps.states.tagMaxLength())} characters).`,
         resultDescription: 'Returns the resulting tag state.',
         audiences: BOTH,
         inputSchema: schema(
-          { codename: stringProperty('Session codename'), tag: stringProperty('Status label; omit to clear') },
+          {
+            codename: stringProperty('Session codename'),
+            tag: {
+              ...stringProperty(
+                `Status label; omit to clear (maximum ${String(this.deps.states.tagMaxLength())} characters)`,
+              ),
+              maxLength: this.deps.states.tagMaxLength(),
+            },
+          },
           ['codename'],
         ),
         handler: async (args) => {

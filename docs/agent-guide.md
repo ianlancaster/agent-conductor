@@ -151,6 +151,10 @@ schedules: []
 Important rules:
 
 - Configuration is strict. Unknown or misspelled keys are errors.
+- `supervisor.maxTagLength` is the fleet-wide mechanical status-tag limit (default `50` Unicode
+  characters). Supervisor settings require a restart. Reducing the limit clears incompatible
+  persisted tags as sessions register; new over-limit updates fail visibly and leave the current
+  tag unchanged.
 - Prefer absolute project paths. Relative paths are resolved according to the documented config
   loader rules, not the agent's current shell.
 - Model and effort values are intentional free text. Availability lists are hints, not allowlists.
@@ -292,7 +296,9 @@ Use:
   comes from the terminal backend's process inspection after reconciliation; `processObservedAt`
   says when that check ran. A `null` process value means inspection was inconclusive, not that the
   runtime was idle.
-- `set_tag` for a short human-readable current-purpose label.
+- `set_tag` for a concise human-readable current-purpose label. Its schema advertises the fleet's
+  configured maximum (50 Unicode characters by default); an over-limit update returns a correctable
+  error and preserves the existing tag instead of truncating it.
 - `tail_session` only for explicit inspection or communication failure diagnosis.
 
 Activity labels are mechanical runtime-health states, not judgments about whether an agent's answer
