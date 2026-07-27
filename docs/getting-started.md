@@ -397,13 +397,13 @@ snapshot. Piped or redirected status output is automatically one-shot.
 
 ## Troubleshooting
 
-| Symptom                                                 | Likely cause                                                                            |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `command not found: conductor`                          | Install the GitHub release tarball globally; then confirm its bin directory is on PATH  |
-| `conductor validate` says OK but nothing is configured  | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                        |
-| Pane never launches / hangs on start                    | `claude`/`codex` not on PATH, or bad `repo:` path                                       |
-| Start/continue rejects `systemPromptFile`               | Fix the reported path, permissions, UTF-8 encoding, file type, or 5 KiB size limit      |
-| Codex instructions disappear after compaction           | Review the generated per-session hooks with `/hooks`; do not infer trust from YOLO mode |
-| macOS dialog on first start                             | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)      |
-| Auto session stalls but nothing happens                 | No sentinel configured/running, or the sentinel lacks `systemPromptFile`                |
-| Session replies in its pane but not on a remote channel | Expected — it must use `send_to_operator`; check the protocol prompt is being injected  |
+| Symptom                                                 | Likely cause                                                                                                       |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `command not found: conductor`                          | Install the GitHub release tarball globally; then confirm its bin directory is on PATH                             |
+| `conductor validate` says OK but nothing is configured  | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                                                   |
+| Pane never launches / hangs on start                    | `claude`/`codex` not on PATH, or bad `repo:` path                                                                  |
+| Start/continue rejects `systemPromptFile`               | Fix the reported path, permissions, UTF-8 encoding, file type, or 5 KiB size limit                                 |
+| Codex shows `Hooks need review` or loses instructions   | The fleet opted out with `bypassHookTrust: false`; use `/hooks`, or vet all sources and restore the `true` default |
+| macOS dialog on first start                             | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)                                 |
+| Auto session stalls but nothing happens                 | No sentinel configured/running, or the sentinel lacks `systemPromptFile`                                           |
+| Session replies in its pane but not on a remote channel | Expected — it must use `send_to_operator`; check the protocol prompt is being injected                             |

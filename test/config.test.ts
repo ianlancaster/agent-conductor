@@ -61,7 +61,7 @@ describe('loadSupervisorConfig', () => {
     expect(config.runtimes.claudeCode.availableEfforts).toEqual(DEFAULT_CLAUDE_CODE_EFFORTS);
     expect(config.runtimes.claudeCode.defaultEffort).toBeUndefined();
     expect(config.runtimes.codex.toolTimeoutSec).toBe(600);
-    expect(config.runtimes.codex.bypassHookTrust).toBe(false);
+    expect(config.runtimes.codex.bypassHookTrust).toBe(true);
     expect(config.runtimes.codex.availableModels).toEqual(DEFAULT_CODEX_MODELS);
     expect(config.runtimes.codex.availableEfforts).toEqual(DEFAULT_CODEX_EFFORTS);
     expect(config.runtimes.codex.defaultEffort).toBeUndefined();
@@ -78,6 +78,11 @@ describe('loadSupervisorConfig', () => {
     expect(config.paths.dataDir).toBe('./data');
     expect(config.runbooks.paths).toEqual([]);
     expect(config.events.journal.enabled).toBe(true);
+  });
+
+  it('preserves an explicit opt-out from the Codex hook-trust default', () => {
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'runtimes:\n  codex:\n    bypassHookTrust: false\n');
+    expect(loadSupervisorConfig(baseDir).runtimes.codex.bypassHookTrust).toBe(false);
   });
 
   it('resolves a strict root-level Shepherd config beside supervisor.yaml', () => {

@@ -372,10 +372,10 @@ Worktree practices:
   automatic compaction it restores the exact prepared Conductor protocol and optional session
   instructions as one labelled developer-context payload. The lifecycle relay is a separate,
   best-effort hook, so an unavailable Conductor endpoint cannot suppress local restoration.
-  Codex requires non-managed hooks to be reviewed with `/hooks`. An unattended fleet may set
-  `runtimes.codex.bypassHookTrust: true`, but that CLI switch trusts every hook Codex discovers
-  from the shared config, repository, and enabled plugins—not only Conductor's generated hook.
-  Leave it off unless all those hook sources have been vetted.
+  Managed Codex launches default `runtimes.codex.bypassHookTrust` to `true` so these hooks run
+  without a startup review prompt. That CLI switch trusts every hook Codex discovers from the
+  shared config, repository, and enabled plugins—not only Conductor's generated hook. Set it to
+  `false` and review hooks with `/hooks` when all those sources have not been vetted.
 
 A useful full-fleet pattern is:
 
@@ -439,10 +439,11 @@ Other stall kinds come from mechanical signals:
   `silent`.
 - Codex's generated `notify` command authoritatively reports `agent-turn-complete`. Generated
   `UserPromptSubmit`, `PreCompact`, and compact `SessionStart` hooks add start/compaction evidence.
-  Long reasoning with unchanged pane bytes cannot become a `silent` stall. On Codex configurations
-  with the default `runtimes.codex.bypassHookTrust: false`, approve the generated hooks through
-  `/hooks` regardless of `bypassPermissions`; those are independent security controls. The
-  disposable shakedown in `test/manual/codex-lifecycle.md` verifies this runtime boundary.
+  Long reasoning with unchanged pane bytes cannot become a `silent` stall. The default
+  `runtimes.codex.bypassHookTrust: true` runs all discovered hooks without review. Fleets that set
+  it to `false` must approve the generated hooks through `/hooks` regardless of
+  `bypassPermissions`; those are independent security controls. The disposable shakedown in
+  `test/manual/codex-lifecycle.md` verifies this runtime boundary.
 
 The runtime's visual status line is operator-facing context, not a lifecycle API. Conductor never
 infers turn completion from tokens, elapsed time, spinner text, or a frozen/animated Codex footer.
@@ -898,10 +899,11 @@ valid source does not rewrite a running CLI; start or continue deliberately to p
 snapshot.
 
 Claude Code retains the prepared launch system-prompt layers through compaction without another
-hook. Codex restores them with generated per-session hooks. If Codex loses the layer, open `/hooks`
-and review the generated hooks; approval/sandbox bypass does not imply hook trust. Conductor keeps
-the local restoration output independent from its lifecycle endpoint, so a temporarily unavailable
-Conductor can lose the compact event without removing the restored local context.
+hook. Codex restores them with generated per-session hooks. If a fleet sets
+`runtimes.codex.bypassHookTrust: false`, open `/hooks` and review the generated hooks;
+approval/sandbox bypass does not imply hook trust. Conductor keeps the local restoration output
+independent from its lifecycle endpoint, so a temporarily unavailable Conductor can lose the compact
+event without removing the restored local context.
 
 ### The wrong fleet responds
 

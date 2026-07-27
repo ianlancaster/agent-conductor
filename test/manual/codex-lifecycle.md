@@ -11,17 +11,16 @@ for a completed or silent turn.
 
 1. Build or install the candidate package, create a temporary fleet directory, and run
    `conductor start` there.
-2. Spawn one disposable Codex session with the default `runtimes.codex.bypassHookTrust: false`.
-   Whether `bypassPermissions` is true or false is irrelevant to hook trust. Confirm the generated
-   home contains executable `notify.sh`,
+2. Spawn one disposable Codex session with the default `runtimes.codex.bypassHookTrust: true`.
+   Whether `bypassPermissions` is true or false is irrelevant to hook trust. Confirm Codex does not
+   stop for hook review and the generated home contains executable `notify.sh`,
    `lifecycle-hook.mjs`, and `protocol-reminder.mjs` plus `hooks.json`. Do not edit these files.
-3. In the Codex pane, open `/hooks` and explicitly trust the generated Conductor hooks. A rejected
-   or untrusted hook is a failed lane, not evidence that pane silence should replace lifecycle
-   reporting.
-4. Optionally repeat with `runtimes.codex.bypassHookTrust: true` only after vetting every hook Codex
-   can discover from shared configuration, the repository, and enabled plugins. Confirm unattended
-   lifecycle reporting works without `/hooks`; this broad trust switch is independent of approval
-   and sandbox bypass.
+3. Before using the default lane, vet every hook Codex can discover from shared configuration, the
+   repository, and enabled plugins. Confirm unattended lifecycle reporting works without `/hooks`;
+   this broad trust switch is independent of approval and sandbox bypass.
+4. Repeat with `runtimes.codex.bypassHookTrust: false`. Confirm Codex requires review, then open
+   `/hooks` and explicitly trust the generated Conductor hooks. A rejected or untrusted hook is a
+   failed lane, not evidence that pane silence should replace lifecycle reporting.
 
 ## Turn start and completion
 

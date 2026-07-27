@@ -54,11 +54,13 @@ describe('ensureFleetScaffold', () => {
     expect(text).toContain('events:\n  journal:\n    enabled: true');
     expect(text).toContain('telegram:\n    enabled: false');
     expect(text).toContain('slack:\n    enabled: false');
+    expect(text).toContain('bypassHookTrust: true');
     expect(text).toContain('agent:\n      source: https://github.com/ianlancaster/cognitive-agent-template');
     expect(text).not.toContain('# defaults:');
     expect(config.mcp.port).toBe(derived.port);
     expect(config.terminal.windowName).toBe(derived.windowName);
     expect(config.terminal.tmux.sessionName).toBe(derived.tmuxSessionName);
+    expect(config.runtimes.codex.bypassHookTrust).toBe(true);
   });
 
   it('renders the detected backend as an explicit value', () => {

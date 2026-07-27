@@ -428,8 +428,8 @@ describe('prepare', () => {
     expect(await readFile(reminderPath, 'utf8')).toContain('REFRESHED PRIVATE SESSION');
   });
 
-  it('bypasses hook trust only when the fleet explicitly opts in', () => {
-    const safe = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+  it('adds the hook-trust bypass flag only when configured true', () => {
+    const safe = new CodexRuntime({ config: { ...SETTINGS, bypassHookTrust: false }, baseDir: workDir });
     const trusted = new CodexRuntime({ config: { ...SETTINGS, bypassHookTrust: true }, baseDir: workDir });
     const session = makeSession();
     const identity = makeIdentity(configDir);

@@ -16,8 +16,10 @@ continuation prompt or mutating the working repository.
 3. Start both through the normal Conductor lifecycle. Confirm each private session config directory
    contains `conductor-protocol.md` and `session-instructions.md`, both mode `0600` where supported.
 4. Confirm neither source repository nor its ignore files changed.
-5. For Codex, keep `runtimes.codex.bypassHookTrust: false`, review the generated hooks with `/hooks`,
-   and record whether review was required. Permission bypass and hook trust are separate controls.
+5. For Codex, keep the default `runtimes.codex.bypassHookTrust: true`, confirm no hook-review prompt
+   appears, and verify all shared, repository, and plugin hook sources were vetted. Repeat once with
+   an explicit `false`, review the generated hooks with `/hooks`, and record both lanes. Permission
+   bypass and hook trust are separate controls.
 
 ## Startup and compaction
 

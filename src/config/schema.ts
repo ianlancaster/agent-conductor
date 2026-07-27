@@ -281,11 +281,11 @@ export const supervisorConfigSchema = z
              */
             bareUi: z.boolean().default(true),
             /**
-             * Trust every hook discovered by Codex for this managed invocation. Required for
-             * unattended post-compaction protocol re-injection; leave false unless hook sources
-             * in the shared config, repository, and enabled plugins are all trusted.
+             * Trust every hook discovered by Codex for this managed invocation so generated
+             * lifecycle and post-compaction hooks run unattended. Set false to require manual
+             * review when shared-config, repository, or plugin hook sources are not all trusted.
              */
-            bypassHookTrust: z.boolean().default(false),
+            bypassHookTrust: z.boolean().default(true),
           })
           .strict()
           .default({}),

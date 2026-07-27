@@ -117,9 +117,9 @@ runtimes:
     bareUi: true # bare-bones panes: no startup update prompt (it BLOCKS spawned panes), analytics, tips, animations, or terminal-title writes. Set false for stock Codex behavior.
     # Conductor writes a compact-only SessionStart hook that restores its protocol and optional
     # per-session systemPromptFile after Codex compaction. Session instructions are capped at 5 KiB UTF-8.
-    # Non-managed hooks require review through /hooks. For unattended fleets only, this trusts EVERY hook
-    # Codex discovers from the shared config, repository, and plugins; enable only after vetting all sources.
-    bypassHookTrust: false
+    # Managed launches trust hooks by default so they do not stop for review. This trusts EVERY hook Codex
+    # discovers from the shared config, repository, and plugins; set false to require /hooks review instead.
+    bypassHookTrust: true
 
 channels:
   telegram:
