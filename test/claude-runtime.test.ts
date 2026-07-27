@@ -268,6 +268,21 @@ describe('chrome parsing', () => {
     expect(parseClaudeActivityState(capture)).toBe('working');
   });
 
+  it('recognizes the current Claude pulse row without an interrupt hint', () => {
+    const capture = [
+      'assistant output',
+      '❯',
+      '· Boogieling… (50s · ↓ 2.1k tokens · thinking with xhigh effort)',
+      'Fable 5 | 34% | project',
+    ].join('\n');
+    expect(parseClaudeActivityState(capture)).toBe('working');
+    expect(parseClaudeActivityState('✽ Reading… (2s)')).toBe('working');
+  });
+
+  it('does not mistake a completed Claude duration summary for an active pulse', () => {
+    expect(parseClaudeActivityState('assistant output\n* Baked for 20s\n\n❯')).toBe('idle');
+  });
+
   it('uses only a current composer as idle evidence', () => {
     expect(parseClaudeActivityState('assistant output\n❯ \nshift+tab to cycle')).toBe('idle');
     expect(parseClaudeActivityState('❯ old submitted line\nnew model output')).toBe('unknown');

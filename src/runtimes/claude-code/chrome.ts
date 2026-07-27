@@ -12,7 +12,15 @@ const CHROME_PATTERNS: RegExp[] = [
   /^[\s─│╭╮╰╯├┤┬┴┼═║╔╗╚╝─-╿]*$/,
 ];
 
-const ACTIVE_TURN_PATTERNS: readonly RegExp[] = [/\besc to interrupt\b/iu, /\bctrl\+c to interrupt\b/iu];
+/**
+ * Claude's live pulse row. The verb and pulse glyph animate and are not a
+ * stable API; the row shape is: pulse + verb/ellipsis + parenthesized live
+ * turn metadata. Completed summaries use `* <verb> for <duration>` instead.
+ */
+const ACTIVE_TURN_PATTERNS: readonly RegExp[] = [
+  /^\s*[·✢✳✶✻✽]\s+\S.*(?:…|\.\.\.)\s+\([^)]*\)\s*$/u,
+  /\bctrl\+c to interrupt\b/iu,
+];
 const CONDUCTOR_STATUS_LINE = /\|\s*📁\s+.+\|\s*🌳\s+.+\|\s*🌿\s+/u;
 
 export function stripClaudeChrome(capture: string): string {

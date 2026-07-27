@@ -692,9 +692,7 @@ describe('parseActivityState', () => {
   const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
 
   it('keeps an active turn working even when Codex also renders a composer', () => {
-    const capture = ['• Working (3s • esc to interrupt)', "› What's on your mind?", '  gpt-5.6 medium · /repo'].join(
-      '\n',
-    );
+    const capture = ['• Working (3s)', "› What's on your mind?", '  gpt-5.6 medium · /repo'].join('\n');
     expect(runtime.parseInputState(capture, 'alpha')).toBe('clear');
     expect(runtime.parseActivityState(capture, 'alpha')).toBe('working');
   });
