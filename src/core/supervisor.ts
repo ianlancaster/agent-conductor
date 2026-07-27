@@ -24,6 +24,7 @@ import { PACKAGE_VERSION } from '../version.js';
 import { ConductorEventBus } from '../events/bus.js';
 import { eventJournalDegradedPath } from '../events/journal.js';
 import type { ConductorEventSubscriber } from '../events/types.js';
+import type { ConductorIntegration } from '../integrations/types.js';
 import { configuredRunbookRegistry, type RunbookRegistry } from '../runbooks/registry.js';
 import { CommandRouter } from './commands.js';
 import { DeliveryQueue } from './delivery.js';
@@ -41,6 +42,7 @@ import { SessionStateManager } from './state.js';
 import { formatFleetStatusReport, resolvedSessionEffort, resolvedSessionModel, statusReport } from './status.js';
 import { observePaneActivity } from './activity.js';
 import { ShepherdManager } from './shepherd-manager.js';
+import { IntegrationManager } from './integration-manager.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 const SENTINEL_WORKSPACE_KEY = 'sentinel.codename';
@@ -70,6 +72,8 @@ export interface SupervisorOptions {
   runtimes?: SessionRuntime[];
   /** Live, observation-only event consumers for embedding hosts and plugins. */
   eventSubscribers?: ConductorEventSubscriber[];
+  /** Trusted deterministic background integrations owned by this Supervisor lifecycle. */
+  integrations?: ConductorIntegration[];
 }
 
 /** Thin orchestrator: constructs the modules, wires the seams, owns the loops. */
@@ -96,6 +100,7 @@ export class Supervisor {
   private readonly scheduler: Scheduler;
   private readonly watcher: ConfigWatcher;
   private readonly shepherd: ShepherdManager;
+  private readonly integrations: IntegrationManager;
   private readonly channelCandidates: ChannelAdapter[];
   private readonly channels: ChannelAdapter[] = [];
   private readonly channelFailures = new Map<string, string>();
@@ -297,6 +302,13 @@ export class Supervisor {
       sessions: () => this.sessions,
       startSession: (codename, opts) => this.lifecycle.start(codename, opts),
       events: this.eventBus,
+    });
+    this.integrations = new IntegrationManager({
+      integrations: options.integrations,
+      dataDir,
+      events: this.eventBus,
+      sendToSession: (integrationName, codename, message, idempotencyKey) =>
+        this.messaging.sendIntegrationToSession(integrationName, codename, message, idempotencyKey),
     });
 
     this.operatorRequests = new OperatorRequests({
@@ -557,6 +569,8 @@ export class Supervisor {
       }
     }
 
+    await this.integrations.start();
+
     // Initial registered sessions begin as stopped until surviving panes have
     // been rediscovered and optional start-all launches finish. Channels must
     // also be ready before a threshold-zero alert can be emitted.
@@ -577,8 +591,9 @@ export class Supervisor {
     this.scheduler.stop();
     this.health.stop();
     this.sentinel.stop();
-    this.delivery.stop();
+    await this.integrations.stop();
     await this.shepherd.stop();
+    this.delivery.stop();
     const stoppedChannels = this.channels.splice(0);
     const stopResults = await Promise.allSettled(stoppedChannels.map((channel) => channel.stop()));
     for (const [index, result] of stopResults.entries()) {
@@ -625,12 +640,18 @@ export class Supervisor {
       fleetWatchActive: this.sentinel.isFleetWatchEnabled(),
       shepherdOnline: shepherd.state === 'healthy',
       eventJournal: this.eventBus.journalStatus(),
+      integrations: this.integrations.status(),
     });
   }
 
   /** Structured companion status for embedding and tests. */
   shepherdStatus(): ReturnType<ShepherdManager['status']> {
     return this.shepherd.status();
+  }
+
+  /** Structured status for trusted embedding integrations. */
+  integrationStatus(): ReturnType<IntegrationManager['status']> {
+    return this.integrations.status();
   }
 
   private async tail(codename: string, lines: number): Promise<string> {

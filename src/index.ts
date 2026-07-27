@@ -1,5 +1,6 @@
 export { Supervisor } from './core/supervisor.js';
 export type { SupervisorOptions } from './core/supervisor.js';
+export type { MessageReceipt } from './core/messaging.js';
 export type { RuntimeName, SessionConfig, SpawnTemplate, SupervisorConfig } from './config/schema.js';
 export type { PaneRef, Placement } from './core/types.js';
 export { CONDUCTOR_EVENT_TYPES } from './events/types.js';
@@ -9,6 +10,16 @@ export type {
   ConductorEventSubscriber,
   ConductorEventType,
 } from './events/types.js';
+export { INTEGRATION_NAME_PATTERN } from './integrations/types.js';
+export type {
+  ConductorIntegration,
+  ConductorIntegrationContext,
+  IntegrationDeliveryOptions,
+  IntegrationHealthState,
+  IntegrationHealthUpdate,
+  IntegrationState,
+  IntegrationStatus,
+} from './integrations/types.js';
 export type {
   ResolvedRunbook,
   RunbookDiagnostic,

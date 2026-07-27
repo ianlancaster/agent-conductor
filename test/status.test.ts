@@ -91,6 +91,32 @@ describe('formatFleetStatusReport', () => {
       'Event journal DEGRADED — exported history is incomplete (2 failure(s) this run). Run conductor doctor.',
     );
   });
+
+  it('renders configured integration health after the roster and omits it otherwise', () => {
+    const status = formatFleetStatusReport('No sessions configured.', {
+      fleetWatchActive: false,
+      shepherdOnline: false,
+      integrations: [
+        {
+          name: 'water-cooler',
+          sender: 'integration:water-cooler',
+          state: 'degraded',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          detail: 'remote fetch unavailable',
+        },
+      ],
+    });
+    expect(status).toBe(
+      'Agent Conductor Status\n\nNo sessions configured.\n\nIntegrations:\n  water-cooler · 🟡 degraded · remote fetch unavailable',
+    );
+    expect(
+      formatFleetStatusReport('No sessions configured.', {
+        fleetWatchActive: false,
+        shepherdOnline: false,
+        integrations: [],
+      }),
+    ).not.toContain('Integrations:');
+  });
 });
 
 describe('resolvedSessionModel', () => {

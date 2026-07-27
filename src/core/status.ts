@@ -4,6 +4,7 @@ import type { SessionConfig } from '../config/schema.js';
 import type { SessionState } from './types.js';
 import { currentBranch } from './worktree.js';
 import type { ConductorEventJournalStatus } from '../events/types.js';
+import type { IntegrationStatus } from '../integrations/types.js';
 import type { ProcessObservation } from './lifecycle.js';
 
 const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
@@ -154,9 +155,11 @@ export function formatFleetStatusReport(
     fleetWatchActive: boolean;
     shepherdOnline: boolean;
     eventJournal?: ConductorEventJournalStatus;
+    integrations?: readonly IntegrationStatus[];
   },
 ): string {
   const heading = `Agent Conductor Status${options.fleetWatchActive ? ' 🔄' : ''}`;
+  const integrations = options.integrations ?? [];
   return [
     heading,
     ...(options.shepherdOnline ? [PR_SHEPHERD_ONLINE_STATUS] : []),
@@ -167,5 +170,24 @@ export function formatFleetStatusReport(
       : []),
     '',
     report,
+    ...(integrations.length === 0
+      ? []
+      : [
+          '',
+          'Integrations:',
+          ...integrations.map((integration) => {
+            const marker =
+              integration.state === 'healthy'
+                ? '🟢'
+                : integration.state === 'failed'
+                  ? '🔴'
+                  : integration.state === 'stopped'
+                    ? '⚪'
+                    : '🟡';
+            const detail =
+              integration.state !== 'healthy' && integration.detail !== undefined ? ` · ${integration.detail}` : '';
+            return `  ${integration.name} · ${marker} ${integration.state}${detail}`;
+          }),
+        ]),
   ].join('\n');
 }

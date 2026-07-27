@@ -9,6 +9,11 @@ host constructs subscribers, owns their configuration and secrets, and passes th
 `SupervisorOptions.eventSubscribers`. The stock `conductor` CLI does not load arbitrary modules
 from fleet YAML.
 
+Use `ConductorIntegration` instead when trusted in-process deterministic work also needs
+Supervisor lifecycle, protected session delivery, a durable state namespace, or health reporting.
+Its optional `onEvent` uses this same observation-only delivery contract; it does not gain event
+publication or control authority.
+
 ```js
 import { Supervisor } from 'agent-conductor';
 
@@ -56,6 +61,12 @@ The stream is deliberately live and best-effort:
   contract.
 - The relationship is one-way: subscribers observe facts. Conductor never reads a result from a
   subscriber, and subscribers cannot inject events or alter the control path through this API.
+
+An integration's event subscription begins only after its `start()` succeeds and is detached
+before its `stop()` runs. Detach discards waiting events; an already executing callback may
+finish, but the integration's aborted context refuses any new protected delivery. Events that
+occurred before successful startup remain intentionally absent, so integrations must reconcile
+their authoritative provider cursor when they start.
 
 The first-party local journal is deliberately separate from subscriber delivery. When
 `events.journal.enabled` is true (the default), Conductor synchronously stores each envelope before

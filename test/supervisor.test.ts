@@ -11,6 +11,10 @@ import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 import { FakeEventSubscriber } from './fakes/fake-subscriber.js';
 import { FakeChannel } from './fakes/fake-channel.js';
+import type { ConductorIntegration, ConductorIntegrationContext } from '../src/integrations/types.js';
+import { DeliveryQueue } from '../src/core/delivery.js';
+import { ShepherdManager } from '../src/core/shepherd-manager.js';
+import { ConductorMcpServer } from '../src/mcp/server.js';
 
 let baseDir: string;
 let supervisor: Supervisor | undefined;
@@ -61,6 +65,148 @@ afterEach(async () => {
  * of at runtime. No terminal/network side effects before start().
  */
 describe('Supervisor construction', () => {
+  it('runs a healthy integration with protected identity and reports it even with an empty roster', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {});
+    let context: ConductorIntegrationContext | undefined;
+    const integration: ConductorIntegration = {
+      name: 'water-cooler',
+      start: (value) => {
+        context = value;
+        value.reportHealth({ state: 'healthy' });
+      },
+      stop: () => undefined,
+    };
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      integrations: [integration],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start();
+    expect(context?.stateDir).toBe(join(baseDir, 'data', 'integrations', 'water-cooler'));
+    expect(supervisor.integrationStatus()).toMatchObject([
+      {
+        name: 'water-cooler',
+        sender: 'integration:water-cooler',
+        state: 'healthy',
+      },
+    ]);
+    expect(supervisor.statusReport()).toContain(
+      'No sessions configured.\n\nIntegrations:\n  water-cooler · 🟢 healthy',
+    );
+  });
+
+  it('isolates integration startup failure from core readiness', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {});
+    const stop = vi.fn();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      integrations: [
+        {
+          name: 'broken',
+          start: () => {
+            throw new Error('provider unavailable');
+          },
+          stop,
+        },
+      ],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await expect(supervisor.start()).resolves.toBeUndefined();
+    await expect(fetch(`http://127.0.0.1:${String(port)}/health`)).resolves.toMatchObject({ ok: true });
+    expect(supervisor.integrationStatus()).toMatchObject([
+      { name: 'broken', state: 'failed', detail: 'Integration failed to start.' },
+    ]);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('delivers from an integration after start-all through the protected queue', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\nruntime: claude-code\n`,
+    });
+    const terminal = new FakeTerminalBackend();
+    const integration: ConductorIntegration = {
+      name: 'water-cooler',
+      start: async (context) => {
+        const receipt = await context.sendToSession('alpha', 'bulletins changed', {
+          idempotencyKey: 'repo:old:new',
+        });
+        expect(receipt.status).toBe('delivered');
+        context.reportHealth({ state: 'healthy' });
+      },
+      stop: () => undefined,
+    };
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      runtimes: [new FakeRuntime()],
+      integrations: [integration],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start({ startAll: true });
+    expect(terminal.paneFor('alpha')?.received).toEqual(['[Integration: water-cooler] bulletins changed']);
+  });
+
+  it('aborts integrations and stops Shepherd before protected delivery and MCP teardown', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {});
+    const order: string[] = [];
+    let context: ConductorIntegrationContext | undefined;
+    const originalShepherdStop = ShepherdManager.prototype.stop;
+    const originalDeliveryStop = DeliveryQueue.prototype.stop;
+    const originalMcpStop = ConductorMcpServer.prototype.stop;
+    const shepherdStop = vi.spyOn(ShepherdManager.prototype, 'stop').mockImplementation(async function () {
+      order.push('shepherd');
+      await originalShepherdStop.call(this);
+    });
+    const deliveryStop = vi.spyOn(DeliveryQueue.prototype, 'stop').mockImplementation(function () {
+      order.push('delivery');
+      originalDeliveryStop.call(this);
+    });
+    const mcpStop = vi.spyOn(ConductorMcpServer.prototype, 'stop').mockImplementation(async function () {
+      order.push('mcp');
+      await originalMcpStop.call(this);
+    });
+    try {
+      supervisor = new Supervisor(baseDir, {
+        terminalBackend: new FakeTerminalBackend(),
+        integrations: [
+          {
+            name: 'watcher',
+            start: (value) => {
+              context = value;
+              value.reportHealth({ state: 'healthy' });
+            },
+            stop: () => {
+              expect(context?.signal.aborted).toBe(true);
+              order.push('integration');
+            },
+          },
+        ],
+        includeConfiguredChannels: false,
+        env: {},
+      });
+      await supervisor.start();
+      await supervisor.stop();
+      supervisor = undefined;
+
+      expect(order.indexOf('integration')).toBeLessThan(order.indexOf('shepherd'));
+      expect(order.indexOf('shepherd')).toBeLessThan(order.indexOf('delivery'));
+      expect(order.indexOf('shepherd')).toBeLessThan(order.indexOf('mcp'));
+    } finally {
+      shepherdStop.mockRestore();
+      deliveryStop.mockRestore();
+      mcpStop.mockRestore();
+    }
+  });
+
   it('serves a dynamic fleet runbook topic through the real MCP HTTP surface', async () => {
     const port = await freePort();
     writeConfig(`mcp:\n  port: ${String(port)}\n`, {});

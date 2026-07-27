@@ -105,6 +105,10 @@ fleets out of the repository unless they are intentionally generic and committed
 - Implement `TerminalBackend` for a terminal emulator or multiplexer.
 - Implement `ConductorEventSubscriber` when an embedding plugin needs to observe typed fleet facts
   without polling. It is not a control surface; actions still use canonical operations.
+- Implement `ConductorIntegration` when a trusted embedding host needs deterministic background
+  work plus protected, mechanically identified session delivery. Integrations own timers and
+  durable cursors under their assigned state directory; they do not receive operator authority,
+  raw terminal access, the Conductor store, or general operations.
 
 The local console is a native `/cmd` and `/feed` client, not a `ChannelAdapter`. See the
 extension taxonomy in [CLAUDE.md](CLAUDE.md#extension-taxonomy) before introducing a new
@@ -113,6 +117,12 @@ abstraction.
 Keep transport-specific behavior behind its seam. Adapters may parse, authenticate, format,
 retry, and translate service capabilities; they must not duplicate lifecycle, messaging,
 state, or authorization policy from the core.
+
+Background integrations are trusted in-process extensions, not sandboxed plugins. The stock CLI
+does not import modules named in fleet YAML. The host constructs and configures them explicitly,
+and configuration changes require a host restart. Keep deterministic provider policy in the
+external package while using Conductor only for lifecycle, protected delivery, health, and the
+durable namespace.
 
 Outbound channel messages are semantic: `ChannelMessage.actions` carry display labels and
 canonical operator commands. Adapters with native controls may render them as buttons;

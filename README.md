@@ -260,18 +260,19 @@ workflow tradeoffs, and source links.
 
 ## Feature map
 
-| Capability          | What it provides                                                                         | Learn more                                                                                           |
-| ------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Session lifecycle   | Spawn, start, continue, stop, pause, resume, and tear down agents                        | [Lifecycle and status](docs/agent-guide.md#session-lifecycle-placement-models-and-status)            |
-| Claude Code + Codex | Runtime overrides, model and effort selection, isolated runtime configuration            | [Getting Started](docs/getting-started.md#step-1--one-hand-driven-session-the-shakedown)             |
-| Agent messaging     | Direct messages, broadcasts, operator messages, delivery receipts, and cancellation      | [Communication and receipts](docs/agent-guide.md#communication-receipts-and-operator-escalation)     |
-| Parallel workspaces | Empty sessions, registered Git templates, and linked Git worktrees                       | [Worktrees and templates](docs/agent-guide.md#worktrees-templates-and-full-fleet-workspace-patterns) |
-| Shareable runbooks  | Versioned local workflow knowledge built from ordinary primitives                        | [Authoring and sharing runbooks](guides/runbooks.md)                                                 |
-| Stall supervision   | Per-session auto mode, a normal agent acting as sentinel, and fleet-wide stall detection | [Supervision](docs/agent-guide.md#auto-mode-sentinels-fleet-watch-and-escalation-policy)             |
-| Recurring work      | Cron schedules that prompt managed sessions using normal lifecycle behavior              | [Scheduling](docs/agent-guide.md#cron-schedules-and-recurring-agent-work)                            |
-| Operator access     | Local console, one-shot commands, live status, Telegram, Slack, and adapter APIs         | [Operator channels](docs/agent-guide.md#operator-console-telegram-slack-and-injected-channels)       |
-| Plugin events       | Typed live observations plus a local content-free event journal and JSONL export         | [Event subscribers](guides/event-subscribers.md)                                                     |
-| PR Shepherd         | Optional GitHub PR polling and policy-driven coordination                                | [PR Shepherd V2](docs/pr-shepherd.md)                                                                |
+| Capability          | What it provides                                                                          | Learn more                                                                                           |
+| ------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Session lifecycle   | Spawn, start, continue, stop, pause, resume, and tear down agents                         | [Lifecycle and status](docs/agent-guide.md#session-lifecycle-placement-models-and-status)            |
+| Claude Code + Codex | Runtime overrides, model and effort selection, isolated runtime configuration             | [Getting Started](docs/getting-started.md#step-1--one-hand-driven-session-the-shakedown)             |
+| Agent messaging     | Direct messages, broadcasts, operator messages, delivery receipts, and cancellation       | [Communication and receipts](docs/agent-guide.md#communication-receipts-and-operator-escalation)     |
+| Parallel workspaces | Empty sessions, registered Git templates, and linked Git worktrees                        | [Worktrees and templates](docs/agent-guide.md#worktrees-templates-and-full-fleet-workspace-patterns) |
+| Shareable runbooks  | Versioned local workflow knowledge built from ordinary primitives                         | [Authoring and sharing runbooks](guides/runbooks.md)                                                 |
+| Stall supervision   | Per-session auto mode, a normal agent acting as sentinel, and fleet-wide stall detection  | [Supervision](docs/agent-guide.md#auto-mode-sentinels-fleet-watch-and-escalation-policy)             |
+| Recurring work      | Cron schedules that prompt managed sessions using normal lifecycle behavior               | [Scheduling](docs/agent-guide.md#cron-schedules-and-recurring-agent-work)                            |
+| Operator access     | Local console, one-shot commands, live status, Telegram, Slack, and adapter APIs          | [Operator channels](docs/agent-guide.md#operator-console-telegram-slack-and-injected-channels)       |
+| Plugin events       | Typed live observations plus a local content-free event journal and JSONL export          | [Event subscribers](guides/event-subscribers.md)                                                     |
+| Background services | Trusted injected integrations with protected delivery, durable state, and truthful health | [External integrations](guides/external-adapters.md#background-integrations)                         |
+| PR Shepherd         | Optional GitHub PR polling and policy-driven coordination                                 | [PR Shepherd V2](docs/pr-shepherd.md)                                                                |
 
 All operator interfaces use the same command language, and all managed agents receive
 the same runtime-neutral MCP operations. Run `/help` in the operator console for the
@@ -339,6 +340,23 @@ control path. Delivery is live, ordered, best-effort, and failure-isolated; sequ
 restarts and dropped events detectable so consumers can reconcile through existing pull surfaces.
 See the [event subscriber contract](guides/event-subscribers.md) for the exported TypeScript API,
 event catalog, privacy boundary, and delivery semantics.
+
+### Background integrations
+
+Embedding hosts can inject `ConductorIntegration` implementations for deterministic work that
+should not wake a model on every poll: repository watchers, CI monitors, ticket synchronizers,
+calendars, and similar services. Conductor owns bounded lifecycle, cancellation, health, a
+namespaced durable state directory, and mechanically identified protected delivery:
+
+```text
+[Integration: water-cooler] Peer bulletins changed on origin/main…
+```
+
+The integration owns timers, provider credentials, reconciliation, overlap policy, and cursor
+schema. It receives no operator authority, raw terminal access, fleet store, secrets, or general
+control operations. Integrations are trusted in-process code constructed explicitly by an
+embedding host; the stock CLI deliberately does not import packages named in fleet YAML. See the
+[external integration contract](guides/external-adapters.md#background-integrations).
 
 ### PR Shepherd
 
@@ -409,8 +427,8 @@ Optional integrations:
 
 Extending or contributing:
 
-- [External adapters and embedding](guides/external-adapters.md) — operator channels,
-  event subscribers, terminal backends, and experimental runtime adapters.
+- [External adapters and embedding](guides/external-adapters.md) — background integrations,
+  operator channels, event subscribers, terminal backends, and experimental runtime adapters.
 - [Event subscribers](guides/event-subscribers.md) — typed plugin events, ordering, failure
   isolation, compatibility, and privacy guarantees.
 - [Contributing](CONTRIBUTING.md) — product bar, tests, documentation, and completion

@@ -24,6 +24,7 @@ compose:
 - **Workspaces:** empty directories, configured Git templates, and linked Git worktrees.
 - **Operator channels:** the local console plus optional Telegram, Slack, or injected adapters.
 - **Plugin events:** typed, metadata-only observations for injected integration subscribers.
+- **Background integrations:** trusted injected services with protected delivery and durable state.
 - **PR Shepherd:** a separate opt-in GitHub polling service that can notify a coordinator through
   Conductor.
 - **Status lines:** optional Claude Code and Codex footer configuration for runtime and repository
@@ -779,6 +780,8 @@ Choose the narrowest extension seam:
 - `ChannelAdapter`: an external operator transport.
 - `SessionRuntime`: a new agent CLI.
 - `TerminalBackend`: a new pane/process host.
+- `ConductorEventSubscriber`: live, observation-only metadata.
+- `ConductorIntegration`: trusted deterministic background coordination with protected delivery.
 - Control-surface adapter: another rendering of canonical `ConductorOperations`.
 
 An adapter translates environment-specific mechanics. It must not fork core policy.
@@ -812,6 +815,21 @@ are experimental during beta. See `guides/external-adapters.md` and
 An injected `TerminalBackend` is supported through `SupervisorOptions.terminalBackend`. The
 built-in backend classes are not public yet because their constructors still require private
 Conductor persistence; do not deep-import them from `dist/`.
+
+Use `ConductorIntegration` when deterministic polling or synchronization should run without
+waking a model on every no-op interval. The host injects it through
+`SupervisorOptions.integrations`; Conductor supplies cancellation, truthful health, an owner-only
+durable state namespace, optional best-effort events, and protected idempotent delivery rendered
+as `[Integration: <name>]`. The integration owns timers, overlap prevention, provider
+credentials, reconciliation, and cursor schema. Events are hints rather than replayable truth.
+Advance a cursor only after a delivered or deduplicated-delivered receipt, using an immutable
+change identity as the retry key. This is at-least-once processing: pane delivery is not proof the
+model completed the work.
+
+Integrations are trusted in-process code, not sandboxed plugins. They receive no operator
+authority, raw terminal, fleet store, environment, lifecycle commands, or event publication.
+The embedding host owns construction and configuration; the stock CLI never imports executable
+packages from fleet YAML. See `guides/external-adapters.md#background-integrations`.
 
 For a new control primitive, add one canonical `ConductorOperations` definition and then audit
 every applicable surface: MCP, operator commands and help, adapters, schema, examples, prompts,

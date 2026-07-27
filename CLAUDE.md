@@ -96,6 +96,11 @@ that owns the environment-specific behavior:
 - **Event subscriber** (`ConductorEventSubscriber`) — observes typed, metadata-only facts from
   owning core modules. It is live, best-effort, failure-isolated, and one-way; it must never become
   control flow or an inbound event path.
+- **Background integration** (`ConductorIntegration`) — runs trusted deterministic coordination
+  beside the Supervisor. It receives only protected idempotent session delivery, an abort signal,
+  a durable namespaced state directory, health reporting, and optional best-effort events. It does
+  not receive operator authority, raw terminals, the fleet store, secrets, or canonical operations.
+  The embedding host owns construction and configuration; fleet YAML never names executable code.
 
 Built-in channels ship in this package and may discover opt-in configuration outside the
 core. External channels are ordinary `ChannelAdapter` instances injected through
@@ -144,6 +149,11 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
   update the discriminated union and vocabulary contract test, and preserve the privacy and
   non-blocking guarantees in `guides/event-subscribers.md`. Do not turn existing control-flow
   callbacks into event consumers.
+- **New external background integration**: implement `ConductorIntegration`, register timers or
+  loops during `start`, honor the supplied abort signal, report truthful health, and keep cursors
+  atomically under the supplied `stateDir`. Use stable immutable change identities for protected
+  delivery deduplication. Inject it through `SupervisorOptions.integrations`; do not export
+  `ConductorOperations`, add executable YAML imports, or make observation-only events authoritative.
 
 ### Change-completeness checklist
 

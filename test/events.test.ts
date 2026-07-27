@@ -168,6 +168,61 @@ describe('ConductorEventBus', () => {
       () => new ConductorEventBus('fleet', [{ name: 'missing-handler' } as unknown as ConductorEventSubscriber]),
     ).toThrow('must define onEvent(event)');
   });
+
+  it('dynamically subscribes without shadowing existing names and releases the exact registration', async () => {
+    const staticEvents: ConductorEvent[] = [];
+    const dynamicEvents: ConductorEvent[] = [];
+    const bus = new ConductorEventBus('fleet', [subscriber('static', staticEvents)]);
+
+    expect(() => bus.subscribe(subscriber('static', dynamicEvents))).toThrow(
+      "Duplicate event subscriber name 'static'",
+    );
+    const unsubscribe = bus.subscribe(subscriber('integration:watcher', dynamicEvents));
+    expect(() => bus.subscribe(subscriber('integration:watcher', []))).toThrow(
+      "Duplicate event subscriber name 'integration:watcher'",
+    );
+
+    bus.emit({ type: 'session.ready', session: 'alpha' });
+    await until(() => dynamicEvents.length === 1);
+    unsubscribe();
+    unsubscribe();
+    bus.emit({ type: 'session.ready', session: 'beta' });
+    await until(() => staticEvents.length === 2);
+    expect(dynamicEvents.map((event) => event.seq)).toEqual([1]);
+
+    const replacement: ConductorEvent[] = [];
+    bus.subscribe(subscriber('integration:watcher', replacement));
+    bus.emit({ type: 'session.ready', session: 'gamma' });
+    await until(() => replacement.length === 1);
+    expect(replacement[0]?.seq).toBe(3);
+  });
+
+  it('drops waiting work after unsubscribe while allowing the in-flight callback to finish', async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const received: number[] = [];
+    const bus = new ConductorEventBus('fleet');
+    const unsubscribe = bus.subscribe({
+      name: 'integration:watcher',
+      onEvent: async (event) => {
+        received.push(event.seq);
+        if (event.seq === 1) await gate;
+      },
+    });
+
+    bus.emit({ type: 'session.ready', session: 'one' });
+    bus.emit({ type: 'session.ready', session: 'two' });
+    await until(() => received.length === 1);
+    unsubscribe();
+    bus.emit({ type: 'session.ready', session: 'three' });
+    release?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(received).toEqual([1]);
+  });
 });
 
 function subscriber(name: string, events: ConductorEvent[]): ConductorEventSubscriber {

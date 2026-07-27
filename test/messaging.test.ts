@@ -91,6 +91,85 @@ describe('Messaging delivery receipts', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] once']);
   });
 
+  it('mints integration identity on the narrow path without trusting a normal sender prefix', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const events = new FakeEventPublisher();
+    const messaging = makeMessaging(makeQueue(new FakeRuntime(), pane.id), events);
+
+    const integration = await messaging.sendIntegrationToSession('water-cooler', 'beta', 'changed', 'commit-a');
+    const ordinary = await messaging.sendToSession('integration:spoof', 'beta', 'ordinary', 'commit-b');
+
+    expect(integration).toMatchObject({ status: 'delivered', deduplicated: false });
+    expect(ordinary).toMatchObject({ status: 'delivered', deduplicated: false });
+    expect(backend.panes.get(pane.id)?.received).toEqual([
+      '[Integration: water-cooler] changed',
+      '[Message from integration:spoof] ordinary',
+    ]);
+    expect(store.getMessage(integration.messageId)?.sender).toBe('integration:water-cooler');
+    expect(events.events).toContainEqual({
+      type: 'message.created',
+      receiptId: integration.messageId,
+      sender: 'integration:water-cooler',
+      recipient: 'beta',
+      byteCount: 7,
+    });
+  });
+
+  it('revives a restart-cancelled integration delivery with the same identity and envelope', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const blocked = new FakeRuntime();
+    blocked.inputState = 'draft';
+    const firstQueue = makeQueue(blocked, pane.id);
+    const first = makeMessaging(firstQueue);
+
+    expect(await first.sendIntegrationToSession('water-cooler', 'beta', 'first attempt', 'repo:one:two')).toMatchObject(
+      { status: 'queued' },
+    );
+    firstQueue.stop();
+    expect(store.cancelPendingLocalMessagesOnRestart()).toHaveLength(1);
+
+    const restarted = makeMessaging(makeQueue(new FakeRuntime(), pane.id));
+    expect(await restarted.sendIntegrationToSession('water-cooler', 'beta', 'retry', 'repo:one:two')).toEqual({
+      messageId: 1,
+      recipient: 'beta',
+      status: 'delivered',
+      deduplicated: false,
+    });
+    expect(backend.panes.get(pane.id)?.received).toEqual(['[Integration: water-cooler] retry']);
+  });
+
+  it('keeps persisted integration content authoritative across a pending same-key retry', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    const runtime = new FakeRuntime();
+    const queue = makeQueue(runtime, pane.id);
+    const messaging = makeMessaging(queue);
+
+    expect(await messaging.sendIntegrationToSession('water-cooler', 'beta', 'original', 'repo:one:two')).toEqual({
+      messageId: 1,
+      recipient: 'beta',
+      status: 'queued',
+      deduplicated: false,
+    });
+    expect(await messaging.sendIntegrationToSession('water-cooler', 'beta', 'changed retry', 'repo:one:two')).toEqual({
+      messageId: 1,
+      recipient: 'beta',
+      status: 'queued',
+      deduplicated: true,
+    });
+    expect(store.getMessage(1)?.content).toBe('original');
+
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    await messaging.recoverPendingMessages('beta');
+
+    expect(backend.panes.get(pane.id)?.received).toEqual(['[Integration: water-cooler] original']);
+    expect(store.getMessage(1)).toMatchObject({ content: 'original', status: 'delivered' });
+  });
+
   it('emits content-free direct-message lifecycle facts and excludes broadcasts', async () => {
     const pane = await backend.createPane('beta', 'pane');
     states.setSession('beta', pane.id);

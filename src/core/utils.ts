@@ -25,6 +25,10 @@ export function messageEnvelope(from: string, message: string): string {
   return `[Message from ${from}] ${message}`;
 }
 
+export function integrationEnvelope(name: string, message: string): string {
+  return `[Integration: ${name}] ${message}`;
+}
+
 export function broadcastEnvelope(from: string, message: string): string {
   return `[Broadcast from ${from}] ${message}`;
 }

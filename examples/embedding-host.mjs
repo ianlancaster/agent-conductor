@@ -30,9 +30,27 @@ const eventLog = {
     process.stdout.write(`[event ${event.id}] ${event.type}\n`);
   },
 };
+const backgroundIntegration = {
+  name: 'example-background',
+  context: undefined,
+  start(context) {
+    this.context = context;
+    context.reportHealth({ state: 'healthy' });
+  },
+  stop() {
+    this.context = undefined;
+  },
+  onEvent(event) {
+    if (event.type === 'session.activity.changed') {
+      // Real integrations should coalesce this hint and reconcile outside the callback.
+      process.stdout.write(`[integration hint ${event.id}] ${event.session} is ${event.activity}\n`);
+    }
+  },
+};
 const supervisor = new Supervisor(fleetDir, {
   channels: [channel],
   eventSubscribers: [eventLog],
+  integrations: [backgroundIntegration],
   includeConfiguredChannels: false,
 });
 

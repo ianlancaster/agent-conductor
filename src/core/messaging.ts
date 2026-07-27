@@ -3,7 +3,7 @@ import type { MessageRow, Store } from '../store/index.js';
 import type { SessionConfig } from '../config/schema.js';
 import type { DeliveryQueue, DeliveryResult } from './delivery.js';
 import type { SessionStateManager } from './state.js';
-import { broadcastEnvelope, messageEnvelope } from './utils.js';
+import { broadcastEnvelope, integrationEnvelope, messageEnvelope } from './utils.js';
 import { InvalidRequestError } from './errors.js';
 import type { ConductorEventPublisher } from '../events/types.js';
 
@@ -35,24 +35,56 @@ export class Messaging {
   private readonly scheduled = new Set<number>();
   /** Initial-prompt launches have crossed the cancellation boundary. */
   private readonly startingDelivery = new Set<number>();
+  /** Trusted envelopes for current-run pending messages with non-session presentation. */
+  private readonly pendingEnvelopes = new Map<number, string>();
 
   constructor(private readonly deps: MessagingDeps) {}
 
   async sendToSession(from: string, target: string, message: string, idempotencyKey?: string): Promise<MessageReceipt> {
+    return this.sendProtected(from, target, message, (content) => messageEnvelope(from, content), idempotencyKey);
+  }
+
+  /** Narrow trusted path used only by IntegrationManager. */
+  async sendIntegrationToSession(
+    integrationName: string,
+    target: string,
+    message: string,
+    idempotencyKey: string,
+  ): Promise<MessageReceipt> {
+    return this.sendProtected(
+      `integration:${integrationName}`,
+      target,
+      message,
+      (content) => integrationEnvelope(integrationName, content),
+      idempotencyKey,
+    );
+  }
+
+  private async sendProtected(
+    from: string,
+    target: string,
+    message: string,
+    envelopeFor: (persistedContent: string) => string,
+    idempotencyKey?: string,
+  ): Promise<MessageReceipt> {
     if (idempotencyKey !== undefined) {
       const existing = this.deps.store.getDirectMessageByIdempotencyKey(from, idempotencyKey);
       if (
         existing !== undefined &&
         !(existing.status === 'cancelled' && existing.flush_skip_reason === 'conductor-restarted')
       ) {
+        if (existing.status === 'pending') {
+          this.pendingEnvelopes.set(existing.id, envelopeFor(existing.content));
+        }
         return this.receipt(existing, true);
       }
     }
     if (!this.deps.sessions().has(target)) throw new InvalidRequestError(`Unknown session: ${target}`);
     if (target === from) throw new InvalidRequestError('Cannot send a message to yourself.');
-    const envelope = messageEnvelope(from, message);
     const inserted = this.deps.store.insertDirectMessage(from, target, message, idempotencyKey);
     const id = inserted.row.id;
+    const envelope = envelopeFor(inserted.row.content);
+    if (inserted.row.status === 'pending') this.pendingEnvelopes.set(id, envelope);
 
     if (inserted.deduplicated) {
       return this.receipt(inserted.row, true);
@@ -114,7 +146,11 @@ export class Messaging {
       if (this.scheduled.has(row.id)) continue;
       if (!this.deps.sessions().has(row.recipient)) continue;
       if (this.deps.states.get(row.recipient)?.running !== true) continue;
-      await this.schedule(row.id, row.recipient, messageEnvelope(row.sender, row.content));
+      await this.schedule(
+        row.id,
+        row.recipient,
+        this.pendingEnvelopes.get(row.id) ?? messageEnvelope(row.sender, row.content),
+      );
     }
     await this.deps.delivery.drainNow();
   }
@@ -165,6 +201,7 @@ export class Messaging {
         : `Message #${String(id)} could not be cancelled.`;
     }
     this.scheduled.delete(id);
+    this.pendingEnvelopes.delete(id);
     this.deps.events?.emit({
       type: 'message.cancelled',
       receiptId: id,
@@ -186,9 +223,13 @@ export class Messaging {
         onDelivered: () => {
           this.markDelivered(id);
           this.scheduled.delete(id);
+          this.pendingEnvelopes.delete(id);
         },
       });
-      if (result === 'no-pane' || result === 'cancelled') this.scheduled.delete(id);
+      if (result === 'no-pane' || result === 'cancelled') {
+        this.scheduled.delete(id);
+        if (result === 'cancelled') this.pendingEnvelopes.delete(id);
+      }
       return result;
     } catch (error) {
       this.scheduled.delete(id);
@@ -197,6 +238,7 @@ export class Messaging {
   }
 
   private markDelivered(id: number): void {
+    this.pendingEnvelopes.delete(id);
     if (!this.deps.store.markMessageDelivered(id)) return;
     const row = this.deps.store.getMessage(id);
     if (row === undefined) return;

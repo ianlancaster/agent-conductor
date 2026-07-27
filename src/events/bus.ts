@@ -17,6 +17,7 @@ interface SubscriberState {
   subscriber: ConductorEventSubscriber;
   queue: ConductorEvent[];
   draining: boolean;
+  active: boolean;
   lastOverflowWarningAt: number;
 }
 
@@ -37,7 +38,7 @@ export class ConductorEventBus implements ConductorEventPublisher {
   readonly conductorInstanceId: string;
   private seq = 0;
   private readonly queueLimit: number;
-  private readonly subscribers: SubscriberState[];
+  private readonly subscribers = new Map<string, SubscriberState>();
   private readonly journal: ConductorEventJournal | undefined;
   private journalDegraded: boolean;
   private journalFailureCount = 0;
@@ -59,22 +60,40 @@ export class ConductorEventBus implements ConductorEventPublisher {
       throw new Error('Event subscriber queue limit must be a positive integer.');
     }
 
-    const names = new Set<string>();
-    this.subscribers = subscribers.map((subscriber) => {
-      if (typeof subscriber.name !== 'string') {
-        throw new Error('Event subscriber names must be strings.');
-      }
-      const name = subscriber.name.trim();
-      if (name.length === 0 || name !== subscriber.name) {
-        throw new Error('Event subscriber names must be non-empty and have no surrounding whitespace.');
-      }
-      if (names.has(name)) throw new Error(`Duplicate event subscriber name '${name}'.`);
-      if (typeof subscriber.onEvent !== 'function') {
-        throw new Error(`Event subscriber '${name}' must define onEvent(event).`);
-      }
-      names.add(name);
-      return { subscriber, queue: [], draining: false, lastOverflowWarningAt: 0 };
-    });
+    for (const subscriber of subscribers) this.subscribe(subscriber);
+  }
+
+  /**
+   * Attach a live subscriber and return an exact, idempotent detach closure.
+   * Detaching drops queued work. A callback already in progress may finish,
+   * but its queue will not continue draining afterward.
+   */
+  subscribe(subscriber: ConductorEventSubscriber): () => void {
+    if (typeof subscriber.name !== 'string') {
+      throw new Error('Event subscriber names must be strings.');
+    }
+    const name = subscriber.name.trim();
+    if (name.length === 0 || name !== subscriber.name) {
+      throw new Error('Event subscriber names must be non-empty and have no surrounding whitespace.');
+    }
+    if (this.subscribers.has(name)) throw new Error(`Duplicate event subscriber name '${name}'.`);
+    if (typeof subscriber.onEvent !== 'function') {
+      throw new Error(`Event subscriber '${name}' must define onEvent(event).`);
+    }
+    const state: SubscriberState = {
+      subscriber,
+      queue: [],
+      draining: false,
+      active: true,
+      lastOverflowWarningAt: 0,
+    };
+    this.subscribers.set(name, state);
+    return () => {
+      if (!state.active) return;
+      state.active = false;
+      state.queue.length = 0;
+      if (this.subscribers.get(name) === state) this.subscribers.delete(name);
+    };
   }
 
   emit(input: ConductorEventInput): ConductorEvent {
@@ -118,7 +137,8 @@ export class ConductorEventBus implements ConductorEventPublisher {
       }
     }
 
-    for (const state of this.subscribers) {
+    for (const state of this.subscribers.values()) {
+      if (!state.active) continue;
       if (state.queue.length >= this.queueLimit) {
         state.queue.shift();
         const now = Date.now();
@@ -146,13 +166,13 @@ export class ConductorEventBus implements ConductorEventPublisher {
   }
 
   private scheduleDrain(state: SubscriberState): void {
-    if (state.draining) return;
+    if (!state.active || state.draining) return;
     state.draining = true;
     queueMicrotask(() => void this.drain(state));
   }
 
   private async drain(state: SubscriberState): Promise<void> {
-    while (state.queue.length > 0) {
+    while (state.active && state.queue.length > 0) {
       const event = state.queue.shift();
       if (event === undefined) continue;
       try {
@@ -164,9 +184,10 @@ export class ConductorEventBus implements ConductorEventPublisher {
         );
       }
     }
+    if (!state.active) state.queue.length = 0;
     state.draining = false;
     // An event can arrive after the loop observes empty but before draining is
     // cleared. Recheck so that event cannot be stranded.
-    if (state.queue.length > 0) this.scheduleDrain(state);
+    if (state.active && state.queue.length > 0) this.scheduleDrain(state);
   }
 }
