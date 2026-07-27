@@ -957,7 +957,7 @@ describe('Supervisor construction', () => {
     terminal.panes.get(codexPane.id)!.sessionActive = true;
     terminal.setPaneContent(
       claudePane.id,
-      ['assistant output', '❯', '· Boogieling… (50s · ↓ 2.1k tokens · thinking with xhigh effort)'].join('\n'),
+      ['long active response', 'more active response', '❯', 'Press up to edit queued messages'].join('\n'),
     );
     terminal.setPaneContent(
       codexPane.id,

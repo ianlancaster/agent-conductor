@@ -19,6 +19,7 @@ const CHROME_PATTERNS: RegExp[] = [
  */
 const ACTIVE_TURN_PATTERNS: readonly RegExp[] = [
   /^\s*[·✢✳✶✻✽]\s+\S.*(?:…|\.\.\.)\s+\([^)]*\)\s*$/u,
+  /^\s*Press up to edit queued messages\s*$/iu,
   /\bctrl\+c to interrupt\b/iu,
 ];
 const CONDUCTOR_STATUS_LINE = /\|\s*📁\s+.+\|\s*🌳\s+.+\|\s*🌿\s+/u;

@@ -283,6 +283,17 @@ describe('chrome parsing', () => {
     expect(parseClaudeActivityState('assistant output\n* Baked for 20s\n\n❯')).toBe('idle');
   });
 
+  it('keeps a turn working when queued input pushes the pulse row out of the capture', () => {
+    const capture = [
+      'a long final response whose activity row is no longer visible',
+      'more response output',
+      '❯',
+      'Press up to edit queued messages',
+      'Fable 5 | 38% | project',
+    ].join('\n');
+    expect(parseClaudeActivityState(capture)).toBe('working');
+  });
+
   it('uses only a current composer as idle evidence', () => {
     expect(parseClaudeActivityState('assistant output\n❯ \nshift+tab to cycle')).toBe('idle');
     expect(parseClaudeActivityState('❯ old submitted line\nnew model output')).toBe('unknown');
