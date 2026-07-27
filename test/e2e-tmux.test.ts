@@ -422,7 +422,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
     it('marks sessions stopped when their panes died while the conductor was down', async () => {
       // Operator closes the whole tmux window/terminal: panes die with it.
       // A restarted conductor must reconcile the persisted "running" state to
-      // stopped — not report ghosts as working/stalled.
+      // stopped — not report ghosts as working or idle.
       await supervisor.start();
       await supervisor.command('/start alpha');
       expect(supervisor.statusReport()).toContain('alpha - CC · 🟢 working');

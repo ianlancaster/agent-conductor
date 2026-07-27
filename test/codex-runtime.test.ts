@@ -16,6 +16,7 @@ import {
   readProjectDocMaxBytes,
   renderAgentsOverride,
   renderHomeAgentsOverride,
+  renderLifecycleHookScript,
   renderNotifyScript,
   renderProtocolHooks,
   renderProtocolReminderScript,
@@ -102,16 +103,28 @@ describe('config generation', () => {
     expect(script).toContain('curl -fsS');
   });
 
-  it('renders a compact-only SessionStart hook that re-injects the protocol', () => {
+  it('renders lifecycle hooks for prompt start and compaction plus compact protocol restoration', () => {
     const script = renderProtocolReminderScript('Use send_to_session for READY signals.');
-    const hooks = JSON.parse(renderProtocolHooks("'/usr/bin/node' '/cfg/protocol-reminder.mjs'")) as {
-      hooks: { SessionStart: { matcher: string; hooks: { command: string }[] }[] };
+    const hooks = JSON.parse(
+      renderProtocolHooks("'/usr/bin/node' '/cfg/protocol-reminder.mjs'", "'/usr/bin/node' '/cfg/lifecycle-hook.mjs'"),
+    ) as {
+      hooks: Record<string, { matcher?: string; hooks: { command: string }[] }[]>;
     };
     expect(script).toContain('hookEventName');
     expect(script).toContain('Use send_to_session for READY signals.');
     expect(hooks.hooks.SessionStart[0]?.matcher).toBe('^compact$');
     expect(hooks.hooks.SessionStart[0]?.hooks[0]?.command).toContain('protocol-reminder.mjs');
+    expect(hooks.hooks.UserPromptSubmit[0]?.hooks[0]?.command).toContain('lifecycle-hook.mjs');
+    expect(hooks.hooks.PreCompact[0]?.hooks[0]?.command).toContain('lifecycle-hook.mjs');
     expect(JSON.stringify(hooks)).not.toContain('PostCompact');
+  });
+
+  it('renders a lifecycle relay that forwards hook stdin without exposing it on stdout', () => {
+    const script = renderLifecycleHookScript('http://127.0.0.1:3456/events/sample');
+    expect(script).toContain("execFileSync('curl'");
+    expect(script).toContain("'--data-binary', '@-'");
+    expect(script).toContain('http://127.0.0.1:3456/events/sample');
+    expect(script).not.toContain('process.stdout.write');
   });
 
   it('renders AGENTS.override.md embedding the existing AGENTS.md before the protocol', () => {
@@ -306,6 +319,20 @@ describe('prepare', () => {
     expect(override).toContain('conductor protocol placeholder');
     const hooks = await readFile(path.join(configDir, 'codex-home', 'hooks.json'), 'utf8');
     expect(hooks).toContain('^compact$');
+    expect(hooks).toContain('UserPromptSubmit');
+    expect(hooks).toContain('PreCompact');
+    const lifecycleHookPath = path.join(configDir, 'lifecycle-hook.mjs');
+    const lifecycleHook = await readFile(lifecycleHookPath, 'utf8');
+    expect(lifecycleHook).toContain('http://127.0.0.1:3456/events/sample');
+    const fakeBin = path.join(workDir, 'fake-bin');
+    const relayedPayload = path.join(workDir, 'relayed-hook.json');
+    await mkdir(fakeBin);
+    await writeFile(path.join(fakeBin, 'curl'), '#!/bin/sh\ncat > "$HOOK_CAPTURE_PATH"\n', { mode: 0o755 });
+    execFileSync(process.execPath, [lifecycleHookPath], {
+      input: '{"hook_event_name":"UserPromptSubmit"}',
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}`, HOOK_CAPTURE_PATH: relayedPayload },
+    });
+    expect(await readFile(relayedPayload, 'utf8')).toBe('{"hook_event_name":"UserPromptSubmit"}');
     const reminder = await readFile(path.join(configDir, 'protocol-reminder.mjs'), 'utf8');
     expect(reminder).toContain('conductor protocol placeholder');
     const reminderOutput = JSON.parse(
@@ -488,12 +515,31 @@ describe('parseEvent', () => {
       'input-messages': ['Run tests'],
       'last-assistant-message': 'All tests passed',
     });
-    expect(event).toEqual({ type: 'stop', reason: 'All tests passed', transcriptPath: undefined });
+    expect(event).toEqual({
+      type: 'stop',
+      turnId: 'abc123',
+      reason: 'All tests passed',
+      transcriptPath: undefined,
+    });
+  });
+
+  it('maps trusted lifecycle-hook payloads to prompt start, compaction, and compact restart', () => {
+    expect(runtime.parseEvent({ hook_event_name: 'UserPromptSubmit', turn_id: 'turn-1' })).toEqual({
+      type: 'turn-start',
+      turnId: 'turn-1',
+    });
+    expect(runtime.parseEvent({ hook_event_name: 'PreCompact', transcript_path: '/tmp/rollout.jsonl' })).toEqual({
+      type: 'compaction',
+      transcriptPath: '/tmp/rollout.jsonl',
+    });
+    expect(runtime.parseEvent({ hook_event_name: 'SessionStart', source: 'compact' })).toEqual({
+      type: 'session-start',
+    });
   });
 
   it('tolerates a missing last-assistant-message', () => {
     const event = runtime.parseEvent({ 'type': 'agent-turn-complete', 'turn-id': 'abc123' });
-    expect(event).toEqual({ type: 'stop', reason: undefined, transcriptPath: undefined });
+    expect(event).toEqual({ type: 'stop', turnId: 'abc123', reason: undefined, transcriptPath: undefined });
   });
 
   it('returns null for unknown event types and malformed bodies', () => {

@@ -45,6 +45,30 @@ describe('DeliveryQueue', () => {
     expect(deliveryEvents).toEqual(['alpha']);
   });
 
+  it('captures the lifecycle boundary before submission and commits it before delivery callbacks', async () => {
+    const order: string[] = [];
+    const submitIfUnchanged = backend.submitIfUnchanged.bind(backend);
+    backend.submitIfUnchanged = async (...args) => {
+      order.push('backend-submit');
+      return submitIfUnchanged(...args);
+    };
+    queue.stop();
+    queue = new DeliveryQueue({
+      backend,
+      runtimeFor: () => runtime,
+      getPane: () => pane,
+      onSubmitting: () => {
+        order.push('submitting');
+        return () => order.push('submitted');
+      },
+      onDelivered: () => order.push('delivered'),
+      config: CONFIG,
+    });
+
+    await expect(queue.deliverOrQueue('alpha', 'hello')).resolves.toBe('delivered');
+    expect(order).toEqual(['submitting', 'backend-submit', 'submitted', 'delivered']);
+  });
+
   it("delivers to Codex's plain-text idle placeholder on iTerm", async () => {
     runtime.parseInputState = (capture: string, session?: string) =>
       new CodexRuntime({ config: { binary: 'codex', toolTimeoutSec: 600 }, baseDir: '/tmp' }).parseInputState(

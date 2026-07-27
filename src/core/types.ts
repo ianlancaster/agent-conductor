@@ -2,7 +2,8 @@ import type { RuntimeName } from '../config/schema.js';
 
 export type Placement = 'pane' | 'tab' | 'window';
 
-export type Activity = 'working' | 'idle' | 'stalled' | 'stopped';
+/** Mechanical session activity. Stall causes remain events, not durable activity states. */
+export type Activity = 'working' | 'idle' | 'stopped';
 
 /** A handle to a terminal pane, owned by a specific backend. */
 export interface PaneRef {
@@ -39,6 +40,8 @@ export type RuntimeEventType = 'turn-start' | 'stop' | 'notification' | 'compact
 export interface RuntimeEvent {
   session: string;
   type: RuntimeEventType;
+  /** Runtime-owned identity used to reject stale, out-of-order completion events. */
+  turnId?: string;
   reason?: string;
   transcriptPath?: string;
   receivedAt: number;

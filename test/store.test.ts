@@ -163,7 +163,20 @@ describe('event journal', () => {
     const dir = mkdtempSync(join(tmpdir(), 'conductor-events-migration-'));
     const dbPath = join(dir, 'conductor.db');
     const legacy = openSqliteDatabase(dbPath);
-    legacy.exec('CREATE TABLE legacy_fact (value TEXT); PRAGMA user_version = 8;');
+    legacy.exec(`
+      CREATE TABLE legacy_fact (value TEXT);
+      CREATE TABLE session_state (
+        session TEXT PRIMARY KEY,
+        auto INTEGER NOT NULL DEFAULT 0,
+        tag TEXT,
+        is_paused INTEGER NOT NULL DEFAULT 0,
+        activity TEXT NOT NULL DEFAULT 'stopped',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        active_runtime TEXT,
+        active_effort TEXT
+      );
+      PRAGMA user_version = 8;
+    `);
     legacy.close();
 
     const migrated = new Store(dbPath);
@@ -348,6 +361,34 @@ describe('session state', () => {
       'active_runtime',
       'active_effort',
     ]);
+  });
+
+  it('normalizes the retired stalled activity when opening the preceding beta schema', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conductor-activity-migration-'));
+    const dbPath = join(dir, 'conductor.db');
+    const seeded = new Store(dbPath);
+    seeded.upsertSessionState({
+      session: 'alpha',
+      auto: false,
+      tag: null,
+      paused: false,
+      activeRuntime: 'codex',
+      activeEffort: null,
+      activity: 'idle',
+    });
+    seeded.close();
+
+    const legacy = openSqliteDatabase(dbPath);
+    const versionRow = legacy.prepare('PRAGMA user_version').get() as { user_version: number };
+    const currentVersion = versionRow.user_version;
+    legacy.exec("UPDATE session_state SET activity = 'stalled' WHERE session = 'alpha'");
+    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 1)}`);
+    legacy.close();
+
+    const migrated = new Store(dbPath);
+    expect(migrated.getSessionState('alpha')?.activity).toBe('idle');
+    migrated.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

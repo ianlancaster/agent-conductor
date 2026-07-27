@@ -14,7 +14,7 @@ Each stall arrives as one self-contained message:
 
 Fleet watch may also send:
 
-    [Fleet Stall] sessions=<comma-separated codenames> all-stalled-for=<seconds>s Investigate immediately.
+    [Fleet Stall] sessions=<comma-separated codenames> all-nonworking-for=<seconds>s Investigate immediately.
 
 Treat a fleet stall as higher priority than an individual idle report: inspect the
 listed sessions, restart coordination where possible, and contact the operator if
@@ -38,7 +38,7 @@ For each one:
      with the session name and your question.
 
 The conductor handles all bookkeeping itself: session activity states
-(working/stalled/idle) are not yours to manage, and repeat stalls with the same
+(working/idle/stopped) are not yours to manage, and repeat stalls with the same
 pane content are deduplicated before they reach you.
 
 ## Judging stall kinds

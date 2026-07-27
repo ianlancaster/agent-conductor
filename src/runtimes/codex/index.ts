@@ -17,6 +17,7 @@ import {
   readProjectDocMaxBytes,
   removeConductorInstructions,
   renderHomeAgentsOverride,
+  renderLifecycleHookScript,
   renderNotifyScript,
   renderProtocolHooks,
   renderProtocolReminderScript,
@@ -41,6 +42,7 @@ const PROTOCOL_PLACEHOLDER =
   '<!-- conductor protocol placeholder: no protocolPath configured; the conductor supplies the real instructions -->';
 
 const NOTIFY_SCRIPT_NAME = 'notify.sh';
+const LIFECYCLE_HOOK_SCRIPT_NAME = 'lifecycle-hook.mjs';
 const PROTOCOL_REMINDER_SCRIPT_NAME = 'protocol-reminder.mjs';
 const AGENTS_OVERRIDE_NAME = 'AGENTS.override.md';
 const HOOKS_NAME = 'hooks.json';
@@ -292,7 +294,12 @@ function visibleInputBlock(capture: string): string | null {
  */
 export class CodexRuntime implements SessionRuntime {
   readonly name = 'codex';
-  readonly capabilities: RuntimeCapabilities = { lifecycleEvents: true, contextProbe: false, styledCapture: true };
+  readonly capabilities: RuntimeCapabilities = {
+    lifecycleEvents: true,
+    authoritativeTurnCompletion: true,
+    contextProbe: false,
+    styledCapture: true,
+  };
 
   private readonly settings: CodexRuntimeSettings;
   private readonly baseDir: string;
@@ -329,12 +336,22 @@ export class CodexRuntime implements SessionRuntime {
       Buffer.byteLength(rendered.content, 'utf8') + REPOSITORY_DOC_BUDGET_BYTES + PROJECT_DOC_HEADROOM_BYTES;
     await this.prepareCodexHome(identity, repo, sharedHome, minimumDocBytes);
     await writeFile(path.join(this.codexHomePath(identity), AGENTS_OVERRIDE_NAME), rendered.content);
-    await writeFile(this.protocolReminderScriptPath(identity), renderProtocolReminderScript(protocolText), {
+    await writeFile(this.lifecycleHookScriptPath(identity), renderLifecycleHookScript(identity.eventsUrl), {
       mode: 0o755,
     });
     await writeFile(
+      this.protocolReminderScriptPath(identity),
+      renderProtocolReminderScript(protocolText, identity.eventsUrl),
+      {
+        mode: 0o755,
+      },
+    );
+    await writeFile(
       path.join(this.codexHomePath(identity), HOOKS_NAME),
-      renderProtocolHooks(`${shellQuote(process.execPath)} ${shellQuote(this.protocolReminderScriptPath(identity))}`),
+      renderProtocolHooks(
+        `${shellQuote(process.execPath)} ${shellQuote(this.protocolReminderScriptPath(identity))}`,
+        `${shellQuote(process.execPath)} ${shellQuote(this.lifecycleHookScriptPath(identity))}`,
+      ),
     );
     await this.warnForProjectDocLimit(repo, minimumDocBytes);
     await this.cleanupLegacyRepoOverride(repo);
@@ -465,11 +482,25 @@ export class CodexRuntime implements SessionRuntime {
    * It maps to a normalized `stop`; anything else is unrecognized.
    */
   parseEvent(body: unknown): Omit<RuntimeEvent, 'session' | 'receivedAt'> | null {
+    const hook = asRecord(body);
+    const hookName = hook === null ? undefined : stringField(hook, 'hook_event_name');
+    if (hookName === 'UserPromptSubmit') {
+      return { type: 'turn-start', turnId: stringField(hook ?? {}, 'turn_id', 'turn-id') };
+    }
+    if (hookName === 'PreCompact') {
+      return {
+        type: 'compaction',
+        transcriptPath: stringField(hook ?? {}, 'transcript_path'),
+      };
+    }
+    if (hookName === 'SessionStart') return { type: 'session-start' };
+
     const payload = parseNotifyPayload(body);
     if (payload === null) return null;
     if (payload.type !== 'agent-turn-complete') return null;
     return {
       type: 'stop',
+      turnId: stringField(payload.record, 'turn-id', 'turn_id'),
       reason: stringField(payload.record, 'last-assistant-message', 'last_assistant_message'),
       transcriptPath: stringField(payload.record, 'transcript-path', 'transcript_path', 'rollout-path'),
     };
@@ -515,6 +546,10 @@ export class CodexRuntime implements SessionRuntime {
 
   private protocolReminderScriptPath(identity: IdentityEndpoints): string {
     return path.join(identity.configDir, PROTOCOL_REMINDER_SCRIPT_NAME);
+  }
+
+  private lifecycleHookScriptPath(identity: IdentityEndpoints): string {
+    return path.join(identity.configDir, LIFECYCLE_HOOK_SCRIPT_NAME);
   }
 
   private codexHomePath(identity: IdentityEndpoints): string {

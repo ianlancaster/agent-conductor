@@ -9,7 +9,6 @@ import type { ProcessObservation } from './lifecycle.js';
 const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
   working: '🟢',
   idle: '🟡',
-  stalled: '🟠',
   stopped: '⚪',
 };
 

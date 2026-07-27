@@ -166,14 +166,16 @@ describe('agent documentation', () => {
 
     const lifecycle = JSON.parse(await documentation().read('lifecycle')) as { content: string };
     expect(lifecycle.content).toContain('`idle`:');
-    expect(lifecycle.content).toContain('`stalled`:');
+    expect(lifecycle.content).not.toContain('- `stalled`:');
     expect(lifecycle.content).toContain('`health.idleConfirmMs`');
 
     const supervision = JSON.parse(await documentation().read('supervision')) as { content: string };
     expect(supervision.content).toContain('does not semantically decide');
     expect(supervision.content).toContain('`blocked` immediately');
     expect(supervision.content).toContain('`silent`');
-    expect(supervision.content).toContain('Codex currently reports completed turns');
+    expect(supervision.content).toContain("Codex's generated `notify` command authoritatively reports");
+    expect(supervision.content).toContain('authoritative turn-completion');
+    expect(supervision.content).toContain('no watched session is `working`');
 
     const events = JSON.parse(await documentation().read('event-subscribers')) as { content: string };
     expect(events.content).toContain('`ConductorEventSubscriber`');

@@ -99,7 +99,7 @@ beforeEach(() => {
     getPane: (a) => lifecycle.getPane(a),
     isAuto: (a) => states.isAuto(a),
     isPaused: (a) => states.isPaused(a),
-    isRunning: (a) => states.get(a)?.running === true,
+    activityFor: (a) => states.get(a)?.activity,
     isActive: (a) => states.get(a)?.running === true,
     deliver: async () => 'delivered',
     notifyOperator: async () => undefined,

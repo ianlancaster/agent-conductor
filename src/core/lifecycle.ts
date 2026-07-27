@@ -127,6 +127,7 @@ export class Lifecycle {
       // A surviving pane's runtime was already up before we restarted.
       this.deps.states.setReady(codename);
       this.deps.states.setActivity(codename, 'working');
+      this.deps.supervisionReset(codename);
       this.deps.onRunning?.(codename);
       log().info('lifecycle', `${codename}: adopted surviving pane ${pane.id}`);
     }
@@ -472,7 +473,7 @@ export class Lifecycle {
       this.deps.events?.emit({ type: 'session.stopped', session: codename, cause });
     }
     // Publish stopped state before reevaluating supervision so fleet watch
-    // cannot retain this registration as an active member. Reset also cancels
+    // cannot retain this registration as a working member. Reset also cancels
     // armed idle/stall timers that could otherwise fire after teardown.
     this.deps.supervisionReset(codename);
   }
@@ -486,6 +487,7 @@ export class Lifecycle {
     this.emitStarted(codename, 'discovered');
     this.deps.states.setReady(codename);
     this.deps.states.setActivity(codename, 'working');
+    this.deps.supervisionReset(codename);
     this.deps.onRunning?.(codename);
   }
 

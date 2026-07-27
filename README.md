@@ -162,8 +162,9 @@ Autonomy is composed from three small controls:
    [sentinel instructions](prompts/sentinel.md).
 2. `/auto <session>` toggles stall routing for one worker. Auto off is the normal
    hand-driven state; auto on routes that worker's stalls to the sentinel.
-3. `/fleet-watch` toggles fleet-wide darkness detection. It watches every active registered
-   session except the sentinel and follows roster and process changes automatically.
+3. `/fleet-watch` toggles fleet-wide darkness detection. It watches every registered session
+   except the sentinel and follows roster and activity changes automatically. Stopped sessions
+   count as non-working rather than disappearing from the fleet.
 
 The guided onboarding assistant can configure the sentinel safely. The underlying session
 configuration is intentionally ordinary:
@@ -193,15 +194,17 @@ hot-reload. Then start and designate the sentinel before enabling autonomous wor
 ```
 
 Auto and fleet watch are independent. Auto routes an individual session's stalls. Fleet
-watch alerts only when every eligible fleet member remains stalled for the configured
-confirmation interval—15 seconds by default—and requires at least two eligible sessions.
+watch alerts when no registered non-sentinel session is working for the configured
+confirmation interval—15 seconds by default. A one-session fleet is valid; an empty fleet
+does not alert.
 Both settings survive Conductor restarts. `/pause` suppresses schedules and stall routing
 temporarily without changing a session's saved auto setting; `/resume` restores them.
 
 ### What the stall sentinel does
 
 Conductor mechanically identifies evidence such as an ended turn that stayed quiet, a
-permission/input block, context compaction, or a silent unchanged pane. It does not decide
+permission/input block, context compaction, or—in runtimes without authoritative completion
+events—a silent unchanged pane. It does not decide
 whether that state is actually a problem and it never calls an LLM itself.
 
 The sentinel receives a self-contained `[Stall]` or `[Fleet Stall]` message and decides what

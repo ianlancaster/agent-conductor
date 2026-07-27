@@ -1,6 +1,9 @@
 import type { RuntimeName } from '../config/schema.js';
 import type { Activity } from '../core/types.js';
 
+/** Kept only so schema-v1 journals produced before the activity simplification remain representable. */
+export type EventActivity = Activity | 'stalled';
+
 export const CONDUCTOR_EVENT_TYPES = [
   'session.registered',
   'session.deregistered',
@@ -66,8 +69,8 @@ export type ConductorEvent = ConductorEventEnvelope &
     | {
         readonly type: 'session.activity.changed';
         readonly session: string;
-        readonly previous: Activity;
-        readonly activity: Activity;
+        readonly previous: EventActivity;
+        readonly activity: EventActivity;
       }
     | {
         readonly type: 'stall';

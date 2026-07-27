@@ -3,7 +3,7 @@ import type { SessionRuntime } from '../runtimes/types.js';
 import type { TerminalBackend } from '../terminals/types.js';
 import type { StallInfo } from './health.js';
 import { contentSimilarity, fleetStallEnvelope, stallEnvelope, truncate } from './utils.js';
-import type { PaneRef, StallKind } from './types.js';
+import type { Activity, PaneRef, StallKind } from './types.js';
 import type { ConductorEventPublisher } from '../events/types.js';
 import type { RecentMessageActivity } from '../store/index.js';
 
@@ -26,8 +26,8 @@ export interface SentinelDeps {
   getPane(session: string): PaneRef | undefined;
   isAuto(session: string): boolean;
   isPaused(session: string): boolean;
-  /** Synchronous process state used to keep intentionally stopped registrations out of fleet watch. */
-  isRunning(session: string): boolean;
+  /** Canonical activity for every registered session; stopped sessions remain fleet members. */
+  activityFor(session: string): Activity | undefined;
   isActive(session: string): boolean | Promise<boolean>;
   deliver(session: string, text: string): Promise<unknown>;
   notifyOperator(text: string): Promise<unknown>;
@@ -46,17 +46,17 @@ export interface SentinelDeps {
  * send_to_operator to ask; doing nothing dismisses). There is no queue and no
  * sentinel-only tool surface. The conductor's only judgments are mechanical:
  * auto gating, dedup suppression, and undeliverable-stall alerts. Session
- * activity state (working/stalled/…) is the health monitor's bookkeeping —
+ * activity state (working/idle/stopped) is the health monitor's bookkeeping —
  * fully decoupled from anything the sentinel does.
  */
 export class StallSentinelRouter {
   private readonly lastRouted = new Map<string, { capture: string; at: number }>();
   private lastSentinelDownWarnAt = 0;
   private sentinel: string | undefined;
-  private readonly stalledSessions = new Set<string>();
   private registeredSessions: Set<string>;
   private fleetWatchEnabled: boolean;
-  private fleetAllStalledAt: number | undefined;
+  private fleetWatchActive = false;
+  private fleetAllNonWorkingAt: number | undefined;
   private fleetNotified = false;
   private fleetTimer: NodeJS.Timeout | undefined;
 
@@ -64,6 +64,13 @@ export class StallSentinelRouter {
     this.sentinel = deps.config.sentinelCodename;
     this.registeredSessions = new Set(deps.initialSessions ?? []);
     this.fleetWatchEnabled = deps.initialFleetWatchEnabled ?? false;
+  }
+
+  /** Begin evaluation only after startup pane rediscovery reconciles the roster. */
+  activateFleetWatch(): void {
+    if (this.fleetWatchActive) return;
+    this.fleetWatchActive = true;
+    this.resetFleetConfirmation();
     this.evaluateFleetWatch();
   }
 
@@ -80,11 +87,15 @@ export class StallSentinelRouter {
 
   /** A new run must not inherit duplicate suppression from the previous run. */
   reset(session: string): void {
-    this.lastRouted.delete(session);
-    this.noteWorking(session);
-    if (this.isSentinel(session)) this.lastSentinelDownWarnAt = 0;
+    this.resetRouting(session);
     this.resetFleetConfirmation();
     this.evaluateFleetWatch();
+  }
+
+  /** Mode changes affect individual routing only; fleet-watch timing is independent. */
+  resetRouting(session: string): void {
+    this.lastRouted.delete(session);
+    if (this.isSentinel(session)) this.lastSentinelDownWarnAt = 0;
   }
 
   isSentinel(caller: string): boolean {
@@ -107,18 +118,16 @@ export class StallSentinelRouter {
     const next = new Set(sessions);
     if (setsEqual(this.registeredSessions, next)) return;
     this.registeredSessions = next;
-    for (const session of [...this.stalledSessions]) {
-      if (!next.has(session)) this.stalledSessions.delete(session);
-    }
     this.resetFleetConfirmation();
     this.evaluateFleetWatch();
   }
 
   /** Any successfully submitted work clears fleet-stall state and rearms affected watches. */
   noteWorking(session: string): void {
-    if (!this.stalledSessions.delete(session)) return;
     if (!this.fleetMembers().includes(session)) return;
+    if (this.fleetAllNonWorkingAt === undefined && !this.fleetNotified) return;
     this.resetFleetConfirmation();
+    this.evaluateFleetWatch();
   }
 
   async handleStall(session: string, kind: StallKind, info: StallInfo): Promise<void> {
@@ -138,11 +147,8 @@ export class StallSentinelRouter {
     // that contract; it is not part of the public stall vocabulary.
     if (kind === 'session-end') return;
 
-    // A second completed turn is proof the session worked between stalls even
-    // when its runtime has no turn-start event (Codex). Treat it as a recovery
-    // boundary before recording the new stall.
-    if (this.stalledSessions.has(session)) this.noteWorking(session);
-    this.stalledSessions.add(session);
+    // The supervisor publishes the non-working activity before routing this
+    // causal evidence, so fleet watch evaluates the canonical current state.
     this.evaluateFleetWatch();
 
     // Pause is the temporary override and therefore wins when auto is also off.
@@ -220,18 +226,30 @@ export class StallSentinelRouter {
 
   stop(): void {
     if (this.fleetTimer !== undefined) clearTimeout(this.fleetTimer);
+    this.fleetWatchActive = false;
   }
 
   private fleetMembers(): string[] {
-    return [...this.registeredSessions].filter((session) => !this.isSentinel(session) && this.deps.isRunning(session));
+    return [...this.registeredSessions].filter((session) => !this.isSentinel(session));
+  }
+
+  private allFleetMembersNonWorking(sessions: readonly string[]): boolean {
+    return sessions.length > 0 && sessions.every((session) => this.deps.activityFor(session) !== 'working');
   }
 
   private evaluateFleetWatch(): void {
-    if (!this.fleetWatchEnabled || this.fleetNotified || this.fleetAllStalledAt !== undefined) return;
+    if (
+      !this.fleetWatchActive ||
+      !this.fleetWatchEnabled ||
+      this.fleetNotified ||
+      this.fleetAllNonWorkingAt !== undefined
+    ) {
+      return;
+    }
     const sessions = this.fleetMembers();
-    if (sessions.length < 2 || !sessions.every((session) => this.stalledSessions.has(session))) return;
+    if (!this.allFleetMembersNonWorking(sessions)) return;
 
-    this.fleetAllStalledAt = Date.now();
+    this.fleetAllNonWorkingAt = Date.now();
     if (this.deps.config.fleetStallThresholdSeconds <= 0) {
       void this.reportFleetStall();
       return;
@@ -239,8 +257,8 @@ export class StallSentinelRouter {
     this.fleetTimer = setTimeout(() => {
       this.fleetTimer = undefined;
       const currentSessions = this.fleetMembers();
-      if (currentSessions.length < 2 || !currentSessions.every((session) => this.stalledSessions.has(session))) {
-        this.fleetAllStalledAt = undefined;
+      if (!this.allFleetMembersNonWorking(currentSessions)) {
+        this.fleetAllNonWorkingAt = undefined;
         return;
       }
       void this.reportFleetStall();
@@ -251,18 +269,18 @@ export class StallSentinelRouter {
   private resetFleetConfirmation(): void {
     if (this.fleetTimer !== undefined) clearTimeout(this.fleetTimer);
     this.fleetTimer = undefined;
-    this.fleetAllStalledAt = undefined;
+    this.fleetAllNonWorkingAt = undefined;
     this.fleetNotified = false;
   }
 
   private async reportFleetStall(): Promise<void> {
     const sessions = this.fleetMembers();
-    if (this.fleetNotified || sessions.length < 2 || !sessions.every((session) => this.stalledSessions.has(session))) {
+    if (!this.fleetWatchActive || this.fleetNotified || !this.allFleetMembersNonWorking(sessions)) {
       return;
     }
     this.fleetNotified = true;
     const thresholdSeconds = this.deps.config.fleetStallThresholdSeconds;
-    const detail = `all stalled for ${String(thresholdSeconds)}s: ${sessions.join(', ')}`;
+    const detail = `all non-working for ${String(thresholdSeconds)}s: ${sessions.join(', ')}`;
     this.deps.logEvent('fleet', 'fleet_stall', detail);
 
     const sentinel = this.sentinel;

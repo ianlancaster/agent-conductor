@@ -292,18 +292,16 @@ Use:
 Activity labels are mechanical runtime-health states, not judgments about whether an agent's answer
 was good or its task is complete:
 
-- `working`: a turn started or the fallback watchdog observed changing pane output.
+- `working`: a turn started, Conductor submitted work, or the watchdog observed changing pane output.
 - `idle`: the runtime reported a normal completed turn and no new lifecycle event arrived during
-  `health.idleConfirmMs` (15 seconds by default). The process remains alive and is normally waiting
-  at its prompt.
-- `stalled`: Conductor received a non-idle stall signal (`blocked` or `compaction`) or the fallback
-  watchdog found a `silent`, unchanged pane. The process may still be alive, but the condition may
-  need inspection.
+  `health.idleConfirmMs` (15 seconds by default), or Conductor received other non-working evidence.
+  The process remains alive. Whether the evidence is actionable is the sentinel's decision.
 - `stopped`: no active runtime process is available for that registered session.
 
-A later turn, visible work, or lifecycle restart returns an idle or stalled session to `working`.
-The `activity` field intentionally collapses the actionable stall kinds into `stalled`; health logs
-and sentinel events retain the more specific kind.
+A later turn, visible work, or lifecycle restart returns an idle session to `working`. `blocked`,
+`compaction`, `silent`, and normal turn completion remain causal kinds in health logs and stall
+events; they are deliberately not separate activity states. Older schema-v1 event journals may
+contain the retired `stalled` activity value, which current state migration normalizes to `idle`.
 
 Optional richer terminal footers are installed with:
 
@@ -417,11 +415,18 @@ Other stall kinds come from mechanical signals:
 
 - Claude Code `Notification` hooks become `blocked` immediately.
 - Claude Code `PreCompact` hooks become `compaction` immediately.
-- Missing or stale lifecycle events enable the pane-diff fallback; an unchanged capture for
-  `health.stallBeatsThreshold` checks becomes `silent`.
-- Codex currently reports completed turns but not the same blocked/compaction lifecycle events as
-  Claude Code, so its unusual stuck states rely more heavily on the fallback watchdog and sentinel
-  inspection.
+- Runtimes without authoritative turn-completion events use the pane-diff fallback after
+  `health.eventSilenceMs`; an unchanged capture for `health.stallBeatsThreshold` checks becomes
+  `silent`.
+- Codex's generated `notify` command authoritatively reports `agent-turn-complete`. Generated
+  `UserPromptSubmit`, `PreCompact`, and compact `SessionStart` hooks add start/compaction evidence.
+  Long reasoning with unchanged pane bytes cannot become a `silent` stall. On Codex configurations
+  with the default `runtimes.codex.bypassHookTrust: false`, approve the generated hooks through
+  `/hooks` regardless of `bypassPermissions`; those are independent security controls. The
+  disposable shakedown in `test/manual/codex-lifecycle.md` verifies this runtime boundary.
+
+The runtime's visual status line is operator-facing context, not a lifecycle API. Conductor never
+infers turn completion from tokens, elapsed time, spinner text, or a frozen/animated Codex footer.
 
 `toggle_auto` controls per-session routing, while `set_sentinel` selects the destination and
 `toggle_fleet_watch` enables or disables campaign-level escalation. These operations do not change
@@ -459,15 +464,16 @@ can overwrite an operator draft and must never be used as a routine nudge.
 routing without changing the configured auto state. Use it for maintenance, intentional waiting,
 or operator review; `resume_session` restores the prior behavior.
 
-Fleet watch detects campaign-level failure when individual stalls are normal but the entire active
-fleet being stalled together requires attention. `toggle_fleet_watch` is a single fleet-level boolean.
-When enabled, it watches every active registered session except the sentinel and follows roster and
-process changes automatically. Stopped registrations are not eligible. After all eligible sessions
-remain stalled for `health.fleetStallConfirmMs` (15
+Fleet watch detects campaign-level darkness when individual idle states are normal but no worker is
+making progress. `toggle_fleet_watch` is a single fleet-level boolean. When enabled, it watches every
+registered session except the sentinel and follows roster and activity changes automatically.
+Stopped registrations remain members and count as non-working. After no watched session is `working`
+for `health.fleetStallConfirmMs` (15
 seconds by default), Conductor sends one fleet alert to the sentinel, or directly to the operator
-if no sentinel exists. With fewer than two eligible sessions the setting remains enabled but does
-not alert. Recovery, roster changes, sentinel changes, and process restarts reset the confirmation
-cycle without changing the persisted toggle.
+if no sentinel exists. One watched session is sufficient; an empty watched roster does not alert.
+Startup evaluation begins only after surviving panes have been rediscovered, so provisional stopped
+state cannot produce a false alert. Recovery, roster changes, sentinel changes, and process restarts
+reset the confirmation cycle without changing the persisted toggle.
 
 <!-- conductor-topic:scheduling -->
 

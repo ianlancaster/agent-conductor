@@ -134,13 +134,13 @@ export const supervisorConfigSchema = z
         stallBeatsThreshold: z.number().int().positive().default(2),
         /** Quiet period after a runtime `stop` event before it becomes an idle stall. */
         idleConfirmMs: z.number().int().nonnegative().default(15_000),
-        /** Confirmation period after every watched session has stalled. */
+        /** Confirmation period after every registered non-sentinel session becomes non-working. */
         fleetStallConfirmMs: z.number().int().nonnegative().default(15_000),
         /** Window in which similar stalls are suppressed as duplicates. */
         suppressWindowMs: z.number().int().positive().default(300_000),
         /** Content similarity (0..1) above which a repeat stall is suppressed. */
         suppressSimilarity: z.number().min(0).max(1).default(0.8),
-        /** With lifecycle events flowing, how stale events must be before pane-diffing kicks in. */
+        /** Quiet period before pane-silence fallback for runtimes without authoritative completion events. */
         eventSilenceMs: z.number().int().positive().default(120_000),
       })
       .strict()

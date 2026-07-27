@@ -62,6 +62,14 @@ export interface DeliveryDeps {
   onRuntimeObserved?(session: string): void;
   /** A non-primary parser uniquely recognized the live runtime's composer. */
   onRuntimeDetected?(session: string, runtimeName: string): void;
+  /**
+   * Called at the last safe boundary before terminal submission. The returned
+   * callback is committed only after the backend confirms that it submitted
+   * the text. This lets lifecycle tracking distinguish a turn-start hook that
+   * races ahead of the terminal acknowledgement without treating a rejected
+   * compare-and-submit as new work.
+   */
+  onSubmitting?(session: string): (() => void) | undefined;
   /** Called only after text has actually been submitted to a live runtime pane. */
   onDelivered?(session: string): void;
   config: {
@@ -333,13 +341,46 @@ export class DeliveryQueue {
     observation: TypingObservation,
   ): Promise<DeliverySkipReason | null> {
     if (observation.token !== undefined && this.deps.backend.submitIfUnchanged !== undefined) {
-      return (await this.deps.backend.submitIfUnchanged(pane, text, observation.token)) ? null : 'pane-changed';
+      const confirmSubmission = this.prepareSubmission(session);
+      if (!(await this.deps.backend.submitIfUnchanged(pane, text, observation.token))) return 'pane-changed';
+      this.confirmSubmission(session, confirmSubmission);
+      return null;
     }
 
     const confirmation = await this.typingState(session, pane);
     if (confirmation.state !== 'clear') return confirmation.skipReason ?? 'pane-changed';
+    const confirmSubmission = this.prepareSubmission(session);
     await this.deps.backend.run(pane, text);
+    this.confirmSubmission(session, confirmSubmission);
     return null;
+  }
+
+  private prepareSubmission(session: string): (() => void) | undefined {
+    try {
+      return this.deps.onSubmitting?.(session);
+    } catch (err) {
+      // Lifecycle observation must never prevent delivery at an otherwise-safe
+      // composer boundary.
+      log().error(
+        'delivery',
+        `${session}: pre-submit observer failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
+  }
+
+  private confirmSubmission(session: string, confirm: (() => void) | undefined): void {
+    if (confirm === undefined) return;
+    try {
+      confirm();
+    } catch (err) {
+      // The terminal write already succeeded. Never turn an observation error
+      // into a queued retry that would duplicate the submitted message.
+      log().error(
+        'delivery',
+        `${session}: submission observer failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   private async safeIsAlive(pane: PaneRef): Promise<boolean> {

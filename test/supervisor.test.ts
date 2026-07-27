@@ -15,6 +15,28 @@ import { FakeChannel } from './fakes/fake-channel.js';
 let baseDir: string;
 let supervisor: Supervisor | undefined;
 
+class StrictStartChannel implements ChannelAdapter {
+  readonly name = 'strict-start';
+  readonly sent: ChannelMessage[] = [];
+  started = false;
+
+  start(_handlers: ChannelHandlers): Promise<void> {
+    this.started = true;
+    return Promise.resolve();
+  }
+
+  send(message: ChannelMessage): Promise<void> {
+    if (!this.started) throw new Error('notification sent before channel startup completed');
+    this.sent.push(message);
+    return Promise.resolve();
+  }
+
+  stop(): Promise<void> {
+    this.started = false;
+    return Promise.resolve();
+  }
+}
+
 function writeConfig(supervisorYaml: string, sessions: Record<string, string>): void {
   mkdirSync(join(baseDir, 'config', 'sessions'), { recursive: true });
   writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), supervisorYaml);
@@ -647,6 +669,81 @@ describe('Supervisor construction', () => {
     expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status 🔄\n/);
     await supervisor.command('/fleet-watch');
     expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status\n/);
+  });
+
+  it('reconciles surviving panes before a persisted threshold-zero fleet watch evaluates', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\nhealth:\n  fleetStallConfirmMs: 0\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const store = new Store(join(baseDir, 'data', 'conductor.db'));
+    store.setWorkspaceValue('sentinel.fleetWatchEnabled', true);
+    store.close();
+    const terminal = new FakeTerminalBackend();
+    const survivingPane = await terminal.createPane('alpha', 'pane', baseDir);
+    terminal.panes.get(survivingPane.id)!.sessionActive = true;
+    terminal.survivors.set('alpha', survivingPane);
+    const channel = new StrictStartChannel();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      channels: [channel],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start();
+    expect(channel.started).toBe(true);
+    expect(supervisor.statusReport('alpha')).toContain('"activity": "working"');
+    expect(channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled'))).toBe(false);
+
+    expect(await supervisor.command('/stop alpha')).toBe('alpha stopped.');
+    await until(() => channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled')));
+  });
+
+  it('activates a persisted threshold-zero watch only after start-all launches finish', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\nhealth:\n  fleetStallConfirmMs: 0\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const store = new Store(join(baseDir, 'data', 'conductor.db'));
+    store.setWorkspaceValue('sentinel.fleetWatchEnabled', true);
+    store.close();
+    const channel = new StrictStartChannel();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      runtimes: [new FakeRuntime('claude-code')],
+      channels: [channel],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start({ startAll: true });
+
+    expect(channel.started).toBe(true);
+    expect(supervisor.statusReport('alpha')).toContain('"activity": "working"');
+    expect(channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled'))).toBe(false);
+  });
+
+  it('routes a threshold-zero stopped-roster alert only after channels are ready', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\nhealth:\n  fleetStallConfirmMs: 0\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const store = new Store(join(baseDir, 'data', 'conductor.db'));
+    store.setWorkspaceValue('sentinel.fleetWatchEnabled', true);
+    store.close();
+    const channel = new StrictStartChannel();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      channels: [channel],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start();
+    await until(() => channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled')));
+
+    expect(channel.started).toBe(true);
   });
 
   it('groups marker-file repos under the Agents header in status', () => {

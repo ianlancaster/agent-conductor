@@ -65,11 +65,11 @@ mcp:
 health:
   captureLines: 40
   idleConfirmMs: 15000 # quiet period after a Stop event before it becomes an idle stall
-  fleetStallConfirmMs: 300000 # after every member of a fleet watch stalls; default 5 minutes
+  fleetStallConfirmMs: 15000 # after no registered non-sentinel session is working; default 15 seconds
   stallBeatsThreshold: 2 # fallback watchdog: unchanged heartbeats before a silent stall
   suppressWindowMs: 300000
   suppressSimilarity: 0.8
-  eventSilenceMs: 120000 # wait this long without lifecycle events before pane-diff fallback begins
+  eventSilenceMs: 120000 # pane-silence fallback delay for runtimes without authoritative completion
 
 messaging:
   queueDrainMs: 2000 # how often held messages retry; also the release latency after input clears

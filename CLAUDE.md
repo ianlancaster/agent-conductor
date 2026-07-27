@@ -58,8 +58,8 @@ tested against in-memory fakes (`test/fakes/`).
 
 - `src/terminals/` — **TerminalBackend**: `iterm/` (AppleScript, async), `tmux/` (headless).
 - `src/runtimes/` — **SessionRuntime**: `claude-code/` (hooks via `--settings`, MCP via
-  `--mcp-config`), `codex/` (`-c` config overrides, `notify`, AGENTS.override.md injection, and a
-  compact-only `SessionStart` hook that restores mandatory protocol context).
+  `--mcp-config`), `codex/` (`-c` config overrides, authoritative completion via `notify`, generated
+  prompt/compaction lifecycle hooks, and isolated-home AGENTS.override.md injection).
 - `src/channels/` — **ChannelAdapter**: `telegram/` (dependency-free long-polling),
   `slack/` (optional Socket Mode SDK, loaded lazily).
 - `src/core/` — supervisor (wiring only), lifecycle, delivery (typing-aware queue), health
@@ -110,9 +110,11 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
 3. **Auto is one boolean, not an autonomy framework.** Auto off is the implicit hand-driven
    state. `/auto` toggles stall routing. Pause is a separate temporary flag that suppresses
    schedules and stall routing without changing the auto setting.
-4. **Health is event-driven first.** Runtime hooks POST to `/events/<codename>`; pane
-   diffing is only the fallback watchdog (`eventSilenceMs`). Don't add pane-scraping
-   heuristics to core — runtime-specific parsing belongs in the runtime adapter.
+4. **Health is event-driven first.** Runtime hooks POST to `/events/<codename>`. Claude Code and
+   Codex have authoritative turn-completion signals, so pane changes are positive work evidence
+   but pane silence can never end their turns. Pane-silence fallback (`eventSilenceMs`) is only for
+   runtimes that explicitly lack authoritative completion. Don't add pane-scraping heuristics to
+   core — runtime-specific parsing belongs in the runtime adapter.
 5. **All strings into AppleScript go through the escaping helper**; all tmux invocations
    are execFile arg arrays, never shell strings.
 6. **Async only in backends** — no execSync in request/heartbeat paths.

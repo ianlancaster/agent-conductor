@@ -130,6 +130,9 @@ paths, or arbitrary runtime reason strings.
 The `stall` dispositions are `routed`, `suppressed`, `reported-to-operator`, `sentinel-down`,
 `ignored-auto-off`, and `ignored-paused`. Pause takes precedence when a session is both paused and
 has auto disabled. The sentinel's own ordinary idle periods intentionally emit no stall event.
+New `session.activity.changed` events use only `working`, `idle`, and `stopped`. Schema-v1 journals
+written by earlier beta builds may contain the retired `stalled` value; consumers should normalize
+that legacy value to `idle` while reading historical exports.
 
 At startup, Conductor emits the complete `session.registered(cause=startup)` roster before any
 surviving-pane `session.started(cause=adopt)` events. Activity and ready events follow the started

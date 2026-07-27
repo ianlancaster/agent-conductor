@@ -55,8 +55,9 @@ afterEach(() => {
 function event(
   type: 'turn-start' | 'stop' | 'notification' | 'compaction' | 'session-start' | 'session-end',
   reason?: string,
+  turnId?: string,
 ): void {
-  monitor.handleEvent({ session: 'alpha', type, reason, receivedAt: Date.now() });
+  monitor.handleEvent({ session: 'alpha', type, reason, turnId, receivedAt: Date.now() });
 }
 
 describe('event-driven signals', () => {
@@ -75,6 +76,48 @@ describe('event-driven signals', () => {
     expect(stalls).toEqual([]);
   });
 
+  it('ignores an out-of-order completion for an older runtime turn', () => {
+    event('turn-start', undefined, 'turn-1');
+    event('turn-start', undefined, 'turn-2');
+    event('stop', 'older done', 'turn-1');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs * 2);
+    expect(stalls).toEqual([]);
+
+    event('stop', 'current done', 'turn-2');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'current done' }]);
+  });
+
+  it('rejects a stale identified completion while newer conductor-submitted work awaits its turn id', () => {
+    event('turn-start', undefined, 'turn-1');
+    monitor.markTurnActive('alpha');
+    event('stop', 'older done', 'turn-1');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs * 2);
+    expect(stalls).toEqual([]);
+  });
+
+  it('preserves a turn id reported between submission and terminal acknowledgement', () => {
+    event('turn-start', undefined, 'turn-1');
+    const boundary = monitor.captureTurnBoundary();
+    event('turn-start', undefined, 'turn-2');
+    monitor.markTurnActive('alpha', boundary);
+
+    event('stop', 'current done', 'turn-2');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'current done' }]);
+  });
+
+  it('does not resurrect a turn completed before terminal acknowledgement', () => {
+    const boundary = monitor.captureTurnBoundary();
+    event('turn-start', undefined, 'turn-2');
+    event('stop', 'fast turn done', 'turn-2');
+
+    expect(monitor.markTurnActive('alpha', boundary)).toBe(false);
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'fast turn done' }]);
+    expect(working).toEqual(['alpha']);
+  });
+
   it('marks direct operator input as working and cancels a stale idle transition', () => {
     event('stop');
     vi.advanceTimersByTime(CONFIG.idleConfirmMs / 2);
@@ -84,14 +127,59 @@ describe('event-driven signals', () => {
     expect(working).toEqual(['alpha']);
   });
 
+  it('uses an authoritative turn-start as positive work evidence during the idle debounce', async () => {
+    backend.setPaneContent(paneId, 'completed output');
+    await monitor.heartbeat(); // establish the idle pane baseline
+    event('stop');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs / 2);
+    event('turn-start');
+    backend.setPaneContent(paneId, 'new operator prompt\n• Working');
+    await monitor.heartbeat();
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs * 2);
+
+    expect(working).toEqual(['alpha']);
+    expect(stalls).toEqual([]);
+  });
+
+  it('does not mistake a final pane redraw after authoritative completion for a new turn', async () => {
+    backend.setPaneContent(paneId, 'last assistant text');
+    await monitor.heartbeat();
+    event('stop', 'done');
+    backend.setPaneContent(paneId, 'last assistant text\n› prompt');
+    await monitor.heartbeat();
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+
+    expect(working).toEqual([]);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'done' }]);
+  });
+
   it('raises blocked stalls immediately on notification events', () => {
     event('notification', 'needs permission');
     expect(stalls).toEqual([{ session: 'alpha', kind: 'blocked', reason: 'needs permission' }]);
   });
 
+  it('returns an interrupted authoritative turn to working when pane output resumes', async () => {
+    backend.setPaneContent(paneId, 'permission prompt');
+    await monitor.heartbeat();
+    event('turn-start', undefined, 'turn-1');
+    event('notification', 'needs permission', 'turn-1');
+    backend.setPaneContent(paneId, 'permission accepted\ncontinuing');
+    await monitor.heartbeat();
+    event('stop', 'done', 'turn-1');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+
+    expect(working).toEqual(['alpha', 'alpha']);
+    expect(stalls).toEqual([
+      { session: 'alpha', kind: 'blocked', reason: 'needs permission' },
+      { session: 'alpha', kind: 'idle', reason: 'done' },
+    ]);
+  });
+
   it('raises compaction stalls immediately', () => {
     event('compaction');
     expect(stalls[0]?.kind).toBe('compaction');
+    event('session-start');
+    expect(working).toEqual(['alpha']);
   });
 
   it('does not treat a runtime session boundary as process death', () => {
@@ -106,17 +194,32 @@ describe('fallback pane-diff watchdog', () => {
     expect(observed).toEqual(['alpha']);
   });
 
-  it('skips pane-diffing while events are flowing', async () => {
+  it('never converts an authoritative active turn into a silent stall', async () => {
     event('session-start');
     backend.setPaneContent(paneId, 'unchanged');
+    vi.advanceTimersByTime(CONFIG.eventSilenceMs * 3);
+    await monitor.heartbeat();
     await monitor.heartbeat();
     await monitor.heartbeat();
     await monitor.heartbeat();
     expect(stalls).toEqual([]);
   });
 
-  it('raises a silent stall when events go quiet and the pane freezes', async () => {
-    event('session-start');
+  it('never promotes an authoritative completed turn from idle to silent', async () => {
+    event('stop', 'done');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'done' }]);
+    backend.setPaneContent(paneId, 'completed output');
+    vi.advanceTimersByTime(CONFIG.eventSilenceMs * 3);
+    await monitor.heartbeat();
+    await monitor.heartbeat();
+    await monitor.heartbeat();
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'done' }]);
+  });
+
+  it('raises a silent stall only for a runtime without authoritative completion', async () => {
+    runtime.capabilities.authoritativeTurnCompletion = false;
+    monitor.markTurnActive('alpha');
     vi.advanceTimersByTime(CONFIG.eventSilenceMs + 1);
     backend.setPaneContent(paneId, 'frozen output');
     await monitor.heartbeat(); // snapshot
@@ -130,11 +233,13 @@ describe('fallback pane-diff watchdog', () => {
 
   it('ignores changing runtime chrome when deciding whether a pane is frozen', async () => {
     runtime.capabilities.lifecycleEvents = false;
+    runtime.capabilities.authoritativeTurnCompletion = false;
     const codex = new CodexRuntime({ config: { binary: 'codex', toolTimeoutSec: 600 }, baseDir: '/tmp' });
     runtime.stripChrome = (capture) => codex.stripChrome(capture);
 
     backend.setPaneContent(paneId, 'Waiting for background terminal\n• Working (1m 00s • esc to interrupt)');
     await monitor.heartbeat(); // normalized snapshot
+    vi.advanceTimersByTime(CONFIG.eventSilenceMs + 1);
     backend.setPaneContent(paneId, 'Waiting for background terminal\n• Working (1m 30s • esc to interrupt)');
     await monitor.heartbeat(); // beat 1: only chrome changed
     backend.setPaneContent(paneId, 'Waiting for background terminal\n• Working (2m 00s • esc to interrupt)');
@@ -147,6 +252,7 @@ describe('fallback pane-diff watchdog', () => {
   it('resets the counter when pane content changes', async () => {
     const silent = new FakeRuntime();
     silent.capabilities.lifecycleEvents = false;
+    silent.capabilities.authoritativeTurnCompletion = false;
     monitor = new HealthMonitor({
       config: CONFIG,
       backend,
@@ -161,6 +267,7 @@ describe('fallback pane-diff watchdog', () => {
     });
     backend.setPaneContent(paneId, 'a');
     await monitor.heartbeat();
+    vi.advanceTimersByTime(CONFIG.eventSilenceMs + 1);
     await monitor.heartbeat();
     backend.setPaneContent(paneId, 'b');
     await monitor.heartbeat();

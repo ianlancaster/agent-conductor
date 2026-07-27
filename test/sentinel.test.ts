@@ -3,6 +3,7 @@ import { StallSentinelRouter } from '../src/core/sentinel.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
+import type { Activity } from '../src/core/types.js';
 
 let backend: FakeTerminalBackend;
 let runtime: FakeRuntime;
@@ -12,6 +13,7 @@ let operatorMessages: string[];
 let autoSessions: Set<string>;
 let pausedSessions: Set<string>;
 let activeSessions: Set<string>;
+let activities: Map<string, Activity>;
 let panes: Map<string, string>;
 let events: FakeEventPublisher;
 let recentMessages: {
@@ -45,7 +47,7 @@ function makeRouter(
     },
     isAuto: (session) => autoSessions.has(session),
     isPaused: (session) => pausedSessions.has(session),
-    isRunning: (session) => activeSessions.has(session),
+    activityFor: (session) => activities.get(session),
     isActive,
     deliver: async (session, text) => {
       delivered.push({ session, text });
@@ -69,6 +71,11 @@ beforeEach(async () => {
   autoSessions = new Set(['alpha', 'beta', 'watch']);
   pausedSessions = new Set();
   activeSessions = new Set(['alpha', 'beta', 'watch']);
+  activities = new Map([
+    ['alpha', 'working'],
+    ['beta', 'working'],
+    ['watch', 'idle'],
+  ]);
   panes = new Map();
   events = new FakeEventPublisher();
   recentMessages = [];
@@ -76,6 +83,7 @@ beforeEach(async () => {
   panes.set('alpha', alphaPane.id);
   backend.setPaneContent(alphaPane.id, 'some terminal output\nlast line');
   router = makeRouter('watch');
+  router.activateFleetWatch();
 });
 
 afterEach(() => {
@@ -265,35 +273,58 @@ describe('isSentinel', () => {
 });
 
 describe('fleet stall watch', () => {
-  it('routes one fleet alert only after every non-sentinel session has stalled', async () => {
+  it('routes one fleet alert only after every non-sentinel session is non-working', async () => {
     expect(router.toggleFleetWatch()).toBe(true);
 
+    activities.set('alpha', 'idle');
     await router.handleStall('alpha', 'idle', {});
     expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
 
+    activities.set('beta', 'idle');
     await router.handleStall('beta', 'idle', {});
     await Promise.resolve();
     const fleet = delivered.filter((item) => item.text.startsWith('[Fleet Stall]'));
     expect(fleet).toHaveLength(1);
     expect(fleet[0]).toEqual({
       session: 'watch',
-      text: '[Fleet Stall] sessions=alpha,beta all-stalled-for=0s Investigate immediately.',
+      text: '[Fleet Stall] sessions=alpha,beta all-nonworking-for=0s Investigate immediately.',
     });
   });
 
   it('cancels confirmation when one member recovers, then rearms for a later fleet stall', async () => {
     vi.useFakeTimers();
     router = makeRouter('watch', undefined, 30);
+    router.activateFleetWatch();
     router.toggleFleetWatch();
+    activities.set('alpha', 'idle');
     await router.handleStall('alpha', 'idle', {});
+    activities.set('beta', 'idle');
     await router.handleStall('beta', 'idle', {});
 
+    activities.set('alpha', 'working');
     router.noteWorking('alpha');
     await vi.advanceTimersByTimeAsync(30_000);
     expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
 
+    activities.set('alpha', 'idle');
     await router.handleStall('alpha', 'idle', {});
     await vi.advanceTimersByTimeAsync(30_000);
+    expect(delivered.filter((item) => item.text.startsWith('[Fleet Stall]'))).toHaveLength(1);
+  });
+
+  it('does not restart fleet confirmation when auto or pause routing policy changes', async () => {
+    vi.useFakeTimers();
+    router = makeRouter('watch', undefined, 30);
+    router.activateFleetWatch();
+    router.toggleFleetWatch();
+    activities.set('alpha', 'idle');
+    activities.set('beta', 'stopped');
+    await router.handleStall('alpha', 'idle', {});
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    router.resetRouting('alpha'); // canonical auto/pause operations use this path
+    await vi.advanceTimersByTimeAsync(20_000);
+
     expect(delivered.filter((item) => item.text.startsWith('[Fleet Stall]'))).toHaveLength(1);
   });
 
@@ -312,7 +343,7 @@ describe('fleet stall watch', () => {
       getPane: () => undefined,
       isAuto: () => false,
       isPaused: () => false,
-      isRunning: (session) => activeSessions.has(session),
+      activityFor: (session) => activities.get(session),
       isActive: () => true,
       deliver: async () => undefined,
       notifyOperator: async () => undefined,
@@ -329,9 +360,12 @@ describe('fleet stall watch', () => {
 
   it('tracks registered membership automatically', async () => {
     activeSessions.add('gamma');
+    activities.set('gamma', 'working');
     router.setRegisteredSessions(['alpha', 'beta', 'gamma', 'watch']);
     router.toggleFleetWatch();
+    activities.set('alpha', 'idle');
     await router.handleStall('alpha', 'idle', {});
+    activities.set('beta', 'idle');
     await router.handleStall('beta', 'idle', {});
     expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
 
@@ -342,26 +376,39 @@ describe('fleet stall watch', () => {
     expect(router.isFleetWatchEnabled()).toBe(true);
   });
 
-  it('ignores stopped registrations and keeps watching the active fleet', async () => {
-    activeSessions.delete('beta');
+  it('counts stopped registrations as non-working fleet members', async () => {
+    activities.set('beta', 'stopped');
     activeSessions.add('gamma');
+    activities.set('gamma', 'working');
     router.setRegisteredSessions(['alpha', 'beta', 'gamma', 'watch']);
     router.toggleFleetWatch();
 
+    activities.set('alpha', 'idle');
     await router.handleStall('alpha', 'idle', {});
     expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
 
+    activities.set('gamma', 'idle');
     await router.handleStall('gamma', 'idle', {});
     await Promise.resolve();
 
     const fleet = delivered.filter((item) => item.text.startsWith('[Fleet Stall]'));
     expect(fleet).toHaveLength(1);
-    expect(fleet[0]?.text).toContain('sessions=alpha,gamma');
-    expect(fleet[0]?.text).not.toContain('beta');
+    expect(fleet[0]?.text).toContain('sessions=alpha,beta,gamma');
   });
 
-  it('stays enabled without alerting when fewer than two sessions are eligible', async () => {
+  it('alerts for a single registered non-sentinel session', async () => {
     router.setRegisteredSessions(['alpha', 'watch']);
+    router.toggleFleetWatch();
+    activities.set('alpha', 'stopped');
+    router.reset('alpha');
+    await Promise.resolve();
+
+    expect(router.isFleetWatchEnabled()).toBe(true);
+    expect(delivered.filter((item) => item.text.startsWith('[Fleet Stall]'))).toHaveLength(1);
+  });
+
+  it('stays enabled without alerting when no non-sentinel sessions are registered', async () => {
+    router.setRegisteredSessions(['watch']);
     router.toggleFleetWatch();
     await router.handleStall('alpha', 'idle', {});
 
@@ -369,10 +416,56 @@ describe('fleet stall watch', () => {
     expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
   });
 
+  it('does not evaluate a persisted threshold-zero watch until startup reconciliation activates it', async () => {
+    activities.set('alpha', 'stopped');
+    activities.set('beta', 'stopped');
+    router.stop();
+    router = new StallSentinelRouter({
+      config: {
+        captureLines: 40,
+        suppressWindowMs: 300_000,
+        suppressSimilarity: 0.8,
+        sentinelCodename: 'watch',
+        fleetStallThresholdSeconds: 0,
+      },
+      backend,
+      runtimeFor: () => runtime,
+      getPane: () => undefined,
+      isAuto: () => false,
+      isPaused: () => false,
+      activityFor: (session) => activities.get(session),
+      isActive: () => true,
+      deliver: async (session, text) => delivered.push({ session, text }),
+      notifyOperator: async (text) => operatorMessages.push(text),
+      logEvent: () => undefined,
+      initialFleetWatchEnabled: true,
+      initialSessions: ['alpha', 'beta', 'watch'],
+    });
+
+    await Promise.resolve();
+    expect(delivered).toEqual([]);
+    router.activateFleetWatch();
+    await Promise.resolve();
+    expect(delivered.filter((item) => item.text.startsWith('[Fleet Stall]'))).toHaveLength(1);
+  });
+
+  it('ignores auto and pause settings when evaluating fleet-wide non-working state', async () => {
+    autoSessions.clear();
+    pausedSessions.add('alpha');
+    activities.set('alpha', 'idle');
+    activities.set('beta', 'stopped');
+    router.toggleFleetWatch();
+    await Promise.resolve();
+
+    expect(delivered.filter((item) => item.text.startsWith('[Fleet Stall]'))).toHaveLength(1);
+  });
+
   it('excludes whichever session is currently designated sentinel', async () => {
     router.toggleFleetWatch();
     router.setSentinel('alpha');
+    activities.set('beta', 'idle');
     await router.handleStall('beta', 'idle', {});
+    activities.set('watch', 'idle');
     await router.handleStall('watch', 'idle', {});
     await Promise.resolve();
 

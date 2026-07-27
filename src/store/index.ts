@@ -98,6 +98,14 @@ export interface NewRunbookAdoption {
   sessionRoles: readonly RunbookAdoptionSessionRole[];
 }
 
+function normalizedActivity(value: string): Activity {
+  if (value === 'working' || value === 'idle' || value === 'stopped') return value;
+  // `stalled` was a pre-beta presentation state. The causal stall kind lives
+  // in health/event history; mechanically, a live non-working session is idle.
+  if (value === 'stalled') return 'idle';
+  return 'stopped';
+}
+
 /** Versioned migrations. Append only — never edit an existing entry (post first release). */
 const MIGRATIONS: string[] = [
   `
@@ -264,6 +272,9 @@ const MIGRATIONS: string[] = [
     closed_at TEXT
   );
   CREATE INDEX idx_runbook_adoptions_status ON runbook_adoptions(status, created_at);
+  `,
+  `
+  UPDATE session_state SET activity = 'idle' WHERE activity = 'stalled';
   `,
 ];
 
@@ -667,7 +678,7 @@ export class Store {
           is_paused: number;
           active_runtime: RuntimeName | null;
           active_effort: string | null;
-          activity: Activity;
+          activity: string;
         }
       | undefined;
     if (!row) return undefined;
@@ -678,7 +689,7 @@ export class Store {
       paused: row.is_paused === 1,
       activeRuntime: row.active_runtime,
       activeEffort: row.active_effort,
-      activity: row.activity,
+      activity: normalizedActivity(row.activity),
     };
   }
 

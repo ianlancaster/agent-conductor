@@ -227,10 +227,13 @@ export class Supervisor {
       onRuntimeDetected: (session, runtimeName) => {
         this.correctActiveRuntime(session, runtimeName);
       },
-      onDelivered: (session) => {
-        if (this.states.get(session)?.running === true) this.states.setActivity(session, 'working');
-        this.health.reset(session);
-        this.sentinel.noteWorking(session);
+      onSubmitting: (session) => {
+        const boundary = this.health.captureTurnBoundary();
+        return () => {
+          if (!this.health.markTurnActive(session, boundary)) return;
+          if (this.states.get(session)?.running === true) this.states.setActivity(session, 'working');
+          this.sentinel.noteWorking(session);
+        };
       },
       config: this.config.messaging,
     });
@@ -269,6 +272,7 @@ export class Supervisor {
       },
       supervisionReset: (session) => {
         this.health.reset(session);
+        if (this.states.get(session)?.activity === 'working') this.health.markTurnActive(session);
         this.sentinel.reset(session);
       },
       onRunning: (session) => {
@@ -306,7 +310,7 @@ export class Supervisor {
       getPane: (session) => this.lifecycle.getPane(session),
       isAuto: (session) => this.states.isAuto(session),
       isPaused: (session) => this.states.isPaused(session),
-      isRunning: (session) => this.states.get(session)?.running === true,
+      activityFor: (session) => this.states.get(session)?.activity,
       isActive: async (session) => {
         // State can lag behind reality after a runtime conversation boundary
         // (notably Claude /clear). Route against authoritative terminal-process
@@ -338,7 +342,9 @@ export class Supervisor {
         if (this.markRuntimeObserved(session)) void this.delivery.drainNow();
       },
       onStall: (session, kind, info) => {
-        this.states.setActivity(session, kind === 'idle' ? 'idle' : 'stalled');
+        // A stall kind is causal evidence for the sentinel, not a separate
+        // mechanical activity state. A live runtime that is not working is idle.
+        this.states.setActivity(session, 'idle');
         void this.sentinel.handleStall(session, kind, info);
       },
       onWorking: (session) => {
@@ -507,7 +513,6 @@ export class Supervisor {
       // persisted state alone rather than declaring live sessions dead.
       log().warn('supervisor', `Pane rediscovery failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-
     try {
       await this.connectChannels();
       // /health is the CLI's readiness signal. Expose it only after every
@@ -540,6 +545,11 @@ export class Supervisor {
         }
       }
     }
+
+    // Initial registered sessions begin as stopped until surviving panes have
+    // been rediscovered and optional start-all launches finish. Channels must
+    // also be ready before a threshold-zero alert can be emitted.
+    this.sentinel.activateFleetWatch();
 
     // The sentinel is optional extra functionality — never nag about its
     // absence. A configured-but-missing codename IS a config error, though.

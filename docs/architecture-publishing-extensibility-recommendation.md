@@ -53,8 +53,9 @@ The current implementation already has the essential shape:
 
 - Claude uses `--append-system-prompt-file` for the Conductor protocol and optional per-session
   instructions (`src/runtimes/claude-code/index.ts`).
-- Codex currently writes a marker-managed repository-root `AGENTS.override.md`
-  (`src/runtimes/codex/index.ts` and `src/runtimes/codex/config-gen.ts`).
+- Codex writes a marker-managed `AGENTS.override.md` inside each session's isolated `CODEX_HOME`,
+  leaving the repository root untouched (`src/runtimes/codex/index.ts` and
+  `src/runtimes/codex/config-gen.ts`).
 - `get_conductor_docs` lazily serves topics from the documentation shipped with the running package
   (`src/core/documentation.ts`).
 

@@ -10,6 +10,7 @@
  *   (https://developers.openai.com/codex/config-reference, /codex/mcp)
  * - notify: array<string> command; Codex appends the event JSON as the final
  *   argv argument (https://developers.openai.com/codex/config-reference)
+ * - lifecycle hooks and hook payloads (https://developers.openai.com/codex/hooks)
  * - approvals/sandbox: `approval_policy` / `sandbox_mode` config keys and the
  *   `--dangerously-bypass-approvals-and-sandbox` flag
  *   (https://developers.openai.com/codex/cli/reference)
@@ -127,8 +128,32 @@ export function renderNotifyScript(eventsUrl: string): string {
   ].join('\n');
 }
 
+const hookRelayProgram = (eventsUrl: string, maxSeconds = 4): string => `
+let hookInput = '';
+for await (const chunk of process.stdin) hookInput += chunk;
+try {
+  execFileSync('curl', ['-fsS', '-m', ${JSON.stringify(String(maxSeconds))}, '-X', 'POST', '-H', 'Content-Type: application/json', '--data-binary', '@-', ${JSON.stringify(eventsUrl)}], {
+    input: hookInput,
+    stdio: ['pipe', 'ignore', 'ignore'],
+  });
+} catch {
+  // Lifecycle reporting is best-effort and must never break the Codex turn.
+}
+`;
+
+/** Relay supported Codex lifecycle-hook input to the session's mechanical events endpoint. */
+export function renderLifecycleHookScript(eventsUrl: string): string {
+  return [
+    '#!/usr/bin/env node',
+    "import { execFileSync } from 'node:child_process';",
+    `// ${GENERATED_MARKER}; do not edit — regenerated on every prepare().`,
+    hookRelayProgram(eventsUrl).trim(),
+    '',
+  ].join('\n');
+}
+
 /** Model-visible reminder injected by the generated SessionStart(source=compact) hook. */
-export function renderProtocolReminderScript(protocolText: string): string {
+export function renderProtocolReminderScript(protocolText: string, eventsUrl?: string): string {
   const output = {
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
@@ -137,22 +162,42 @@ export function renderProtocolReminderScript(protocolText: string): string {
   };
   return [
     '#!/usr/bin/env node',
+    ...(eventsUrl === undefined ? [] : ["import { execFileSync } from 'node:child_process';"]),
     `// ${GENERATED_MARKER}; do not edit — regenerated on every prepare().`,
+    // Protocol restoration must retain headroom inside the five-second hook
+    // timeout even when the local Conductor endpoint is unavailable.
+    ...(eventsUrl === undefined ? [] : [hookRelayProgram(eventsUrl, 1).trim()]),
     `process.stdout.write(${JSON.stringify(JSON.stringify(output))});`,
     '',
   ].join('\n');
 }
 
 /** User-level hook config inside the isolated CODEX_HOME. */
-export function renderProtocolHooks(command: string): string {
+export function renderProtocolHooks(reminderCommand: string, lifecycleCommand?: string): string {
   return `${JSON.stringify(
     {
       description: 'Agent Conductor managed protocol persistence.',
       hooks: {
+        ...(lifecycleCommand === undefined
+          ? {}
+          : {
+              UserPromptSubmit: [
+                {
+                  hooks: [{ type: 'command', command: lifecycleCommand, timeout: 5 }],
+                },
+              ],
+              PreCompact: [
+                {
+                  hooks: [{ type: 'command', command: lifecycleCommand, timeout: 5 }],
+                },
+              ],
+            }),
         SessionStart: [
           {
             matcher: '^compact$',
-            hooks: [{ type: 'command', command, timeout: 5, statusMessage: 'Restoring Conductor protocol' }],
+            hooks: [
+              { type: 'command', command: reminderCommand, timeout: 5, statusMessage: 'Restoring Conductor protocol' },
+            ],
           },
         ],
       },

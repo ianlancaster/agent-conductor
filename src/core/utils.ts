@@ -38,7 +38,7 @@ export function stallEnvelope(session: string, kind: string, detail: string): st
 }
 
 export function fleetStallEnvelope(sessions: readonly string[], seconds: number): string {
-  return `[Fleet Stall] sessions=${sessions.join(',')} all-stalled-for=${seconds}s Investigate immediately.`;
+  return `[Fleet Stall] sessions=${sessions.join(',')} all-nonworking-for=${seconds}s Investigate immediately.`;
 }
 
 export function truncate(text: string, max: number): string {

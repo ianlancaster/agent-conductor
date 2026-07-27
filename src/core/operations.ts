@@ -424,7 +424,7 @@ export class ConductorOperations {
         handler: (args, actor) =>
           this.forTargets(args, actor, 'toggle auto for', (codename) => {
             const auto = this.deps.states.toggleAuto(codename);
-            this.deps.sentinel.reset(codename);
+            this.deps.sentinel.resetRouting(codename);
             return Promise.resolve(`${codename}: auto ${auto ? 'on' : 'off'}`);
           }),
       },
@@ -437,7 +437,7 @@ export class ConductorOperations {
         handler: (args, actor) =>
           this.forTargets(args, actor, 'pause', (codename) => {
             const paused = this.deps.states.pause(codename);
-            if (paused) this.deps.sentinel.reset(codename);
+            if (paused) this.deps.sentinel.resetRouting(codename);
             return Promise.resolve(paused ? `${codename}: paused` : `${codename}: already paused`);
           }),
       },
@@ -450,7 +450,7 @@ export class ConductorOperations {
         handler: (args, actor) =>
           this.forTargets(args, actor, 'resume', (codename) => {
             const resumed = this.deps.states.resume(codename);
-            if (resumed) this.deps.sentinel.reset(codename);
+            if (resumed) this.deps.sentinel.resetRouting(codename);
             return Promise.resolve(resumed ? `${codename}: resumed` : `${codename}: not paused`);
           }),
       },
@@ -470,7 +470,7 @@ export class ConductorOperations {
       },
       {
         name: 'toggle_fleet_watch',
-        description: 'Toggle stall detection for all active registered sessions, excluding the sentinel.',
+        description: 'Toggle detection of all registered non-sentinel sessions being non-working.',
         resultDescription: 'Returns whether fleet watch is now on or off.',
         audiences: BOTH,
         inputSchema: schema(),

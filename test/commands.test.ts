@@ -141,7 +141,7 @@ beforeEach(() => {
     getPane: (codename) => lifecycle.getPane(codename),
     isAuto: (codename) => states.isAuto(codename),
     isPaused: (codename) => states.isPaused(codename),
-    isRunning: (codename) => states.get(codename)?.running === true,
+    activityFor: (codename) => states.get(codename)?.activity,
     isActive: (codename) => states.get(codename)?.running === true,
     deliver: (codename, text) => delivery.deliverOrQueue(codename, text),
     notifyOperator: async () => undefined,
