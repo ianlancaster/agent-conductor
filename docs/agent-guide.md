@@ -416,7 +416,10 @@ A worker waiting at an explicit review or approval gate may correctly remain idl
 Other stall kinds come from mechanical signals:
 
 - Claude Code `Notification` hooks become `blocked` immediately.
-- Claude Code `PreCompact` hooks become `compaction` immediately.
+- Claude Code and Codex `PreCompact` hooks begin compaction tracking. A matching compact
+  `SessionStart` begins the normal `health.idleConfirmMs` confirmation; Conductor emits
+  `compaction` only if the runtime-owned composer parser then proves that the session is waiting at
+  a prompt. A turn that resumes automatically remains `working`.
 - Runtimes without authoritative turn-completion events use the pane-diff fallback after
   `health.eventSilenceMs`; an unchanged capture for `health.stallBeatsThreshold` checks becomes
   `silent`.

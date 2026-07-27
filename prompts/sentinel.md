@@ -38,8 +38,8 @@ For each one:
      with the session name and your question.
 
 The conductor handles all bookkeeping itself: session activity states
-(working/idle/stopped) are not yours to manage, and repeat stalls with the same
-pane content are deduplicated before they reach you.
+(working/idle/stopped) are not yours to manage, and repeat stalls of the same kind with the same
+pane content are deduplicated before they reach you. A different stall kind is new evidence.
 
 ## Judging stall kinds
 
@@ -49,8 +49,9 @@ pane content are deduplicated before they reach you.
   (`tail_session`). A protected message cannot answer a runtime menu when its normal
   composer is unavailable. If fleet policy explicitly authorizes the exact response and
   the pane proves it safe, raw `type_in_pane` may answer it; otherwise ask the operator.
-- `compaction` — context was compacted. Nudge the session to re-read its objective
-  and continue where it left off.
+- `compaction` — context was compacted and the runtime is now waiting at its composer. Decide
+  whether work remains; when it does, nudge the session to re-read its objective and continue where
+  it left off. Conductor deliberately does not inject a generic `continue` itself.
 - `silent` — pane frozen with no events. Check whether it is really wedged
   (`tail_session`); nudge, or tell the operator if the session looks dead.
 

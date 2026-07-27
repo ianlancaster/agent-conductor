@@ -342,6 +342,7 @@ export class Supervisor {
       onRuntimeObserved: (session) => {
         if (this.markRuntimeObserved(session)) void this.delivery.drainNow();
       },
+      activityForPane: (session, pane) => this.delivery.activityForPane(session, pane),
       onStall: (session, kind, info) => {
         // A stall kind is causal evidence for the sentinel, not a separate
         // mechanical activity state. A live runtime that is not working is idle.

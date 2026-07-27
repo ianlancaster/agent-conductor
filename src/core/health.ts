@@ -21,6 +21,8 @@ export interface HealthDeps {
   getActiveSessions(): string[];
   /** A live foreground process proves launch completed even before a runtime hook fires. */
   onRuntimeObserved?(session: string): void;
+  /** Runtime-owned composer evidence used to confirm a post-compaction prompt. */
+  activityForPane(session: string, pane: PaneRef): Promise<'working' | 'idle'>;
   onStall(session: string, kind: StallKind, info: StallInfo): void;
   onWorking(session: string): void;
   onSessionEnd(session: string): void;
@@ -33,7 +35,8 @@ export interface HealthDeps {
  * Primary signal: runtime lifecycle events (Claude hooks, Codex notify).
  *  - `stop` starts a quiet timer; if nothing else arrives it becomes an idle stall.
  *  - `notification` = blocked on a decision — immediate stall.
- *  - `compaction` = immediate stall (the sentinel re-orients the session).
+ *  - `compaction` records the start; compact completion becomes a stall only
+ *    after the runtime's composer confirms that the session is waiting.
  * Fallback: only runtimes without authoritative turn completion may turn an
  * unchanged pane into a `silent` stall. For authoritative runtimes, pane
  * changes are positive work evidence but pane silence proves nothing.
@@ -50,6 +53,7 @@ export class HealthMonitor {
   private readonly lastCapture = new Map<string, string>();
   private readonly stillBeats = new Map<string, number>();
   private readonly silentNotified = new Set<string>();
+  private readonly pendingCompactions = new Map<string, StallInfo>();
   private heartbeatInFlight = false;
 
   constructor(private readonly deps: HealthDeps) {}
@@ -100,8 +104,25 @@ export class HealthMonitor {
         return;
       case 'compaction':
         this.turnPhases.set(session, 'interrupted');
-        this.deps.onStall(session, 'compaction', { transcriptPath: event.transcriptPath });
+        this.pendingCompactions.set(session, { transcriptPath: event.transcriptPath });
         return;
+      case 'compaction-complete': {
+        const info = this.pendingCompactions.get(session) ?? {};
+        this.reset(session);
+        this.lastActivityAt.set(session, event.receivedAt);
+        this.turnPhases.set(session, 'interrupted');
+        if (this.deps.config.idleConfirmMs <= 0) {
+          void this.confirmCompactionIdle(session, info);
+          return;
+        }
+        const timer = setTimeout(() => {
+          this.idleTimers.delete(session);
+          void this.confirmCompactionIdle(session, info);
+        }, this.deps.config.idleConfirmMs);
+        timer.unref();
+        this.idleTimers.set(session, timer);
+        return;
+      }
       case 'session-end':
         this.deps.logEvent(session, 'session_end', event.reason);
         this.reset(session);
@@ -154,6 +175,7 @@ export class HealthMonitor {
     this.lastCapture.delete(session);
     this.stillBeats.delete(session);
     this.silentNotified.delete(session);
+    this.pendingCompactions.delete(session);
   }
 
   /** Capture the runtime-event boundary immediately before terminal submission. */
@@ -269,6 +291,30 @@ export class HealthMonitor {
     if (timer !== undefined) {
       clearTimeout(timer);
       this.idleTimers.delete(session);
+    }
+  }
+
+  private async confirmCompactionIdle(session: string, info: StallInfo): Promise<void> {
+    if (this.turnPhases.get(session) !== 'interrupted') return;
+    const pane = this.deps.getPane(session);
+    if (pane === undefined) return;
+    try {
+      const activity = await this.deps.activityForPane(session, pane);
+      // Composer capture is asynchronous. A newer runtime event wins if it
+      // arrived while the pane was being inspected.
+      if (this.turnPhases.get(session) !== 'interrupted') return;
+      if (activity === 'idle') {
+        this.turnPhases.set(session, 'complete');
+        this.deps.onStall(session, 'compaction', info);
+        return;
+      }
+      this.turnPhases.set(session, 'active');
+      this.deps.onWorking(session);
+    } catch (err) {
+      log().warn(
+        'health',
+        `${session}: post-compaction composer check failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 }

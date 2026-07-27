@@ -143,6 +143,9 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     const record = body as Record<string, unknown>;
     const hookEvent = record.hook_event_name;
     if (typeof hookEvent !== 'string') return null;
+    if (hookEvent === 'SessionStart' && record.source === 'compact') {
+      return { type: 'compaction-complete' };
+    }
     const type = EVENT_MAP[hookEvent];
     if (type === undefined) return null;
     return {

@@ -50,7 +50,7 @@ export interface SentinelDeps {
  * fully decoupled from anything the sentinel does.
  */
 export class StallSentinelRouter {
-  private readonly lastRouted = new Map<string, { capture: string; at: number }>();
+  private readonly lastRouted = new Map<string, { capture: string; kind: StallKind; at: number }>();
   private lastSentinelDownWarnAt = 0;
   private sentinel: string | undefined;
   private registeredSessions: Set<string>;
@@ -167,7 +167,7 @@ export class StallSentinelRouter {
 
     const last = this.lastRouted.get(session);
     if (
-      last !== undefined &&
+      last?.kind === kind &&
       Date.now() - last.at < this.deps.config.suppressWindowMs &&
       contentSimilarity(capture, last.capture) > this.deps.config.suppressSimilarity
     ) {
@@ -176,7 +176,7 @@ export class StallSentinelRouter {
       return;
     }
 
-    this.lastRouted.set(session, { capture, at: Date.now() });
+    this.lastRouted.set(session, { capture, kind, at: Date.now() });
 
     // No sentinel is a perfectly fine setup: the stall goes straight to the
     // operator as a plain report — no queue (nothing would drain it), no

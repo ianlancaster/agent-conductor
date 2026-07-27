@@ -47,9 +47,12 @@ for a completed or silent turn.
 
 1. In the disposable session, trigger Codex compaction through its supported command or by reaching
    the test runtime's compaction boundary.
-2. Require `PreCompact` to appear as causal `compaction` evidence and compact `SessionStart` to mark
-   the resumed turn `working` while restoring the managed Conductor protocol context.
-3. Complete one post-compaction turn and require the normal notify-to-idle sequence again.
+2. Require `PreCompact` to begin tracking without routing a stall while compaction is still active.
+   Require compact `SessionStart` to restore the managed Conductor protocol context.
+3. If Codex resumes work without showing its composer, require the session to remain `working` and
+   emit no compaction stall. If it returns to a visible composer, require one `compaction` stall only
+   after `health.idleConfirmMs`; the Sentinel may nudge it, but Conductor must not type directly.
+4. Complete one post-compaction turn and require the normal notify-to-idle sequence again.
 
 ## Evidence and cleanup
 

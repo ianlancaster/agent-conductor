@@ -533,6 +533,9 @@ describe('parseEvent', () => {
       transcriptPath: '/tmp/rollout.jsonl',
     });
     expect(runtime.parseEvent({ hook_event_name: 'SessionStart', source: 'compact' })).toEqual({
+      type: 'compaction-complete',
+    });
+    expect(runtime.parseEvent({ hook_event_name: 'SessionStart', source: 'startup' })).toEqual({
       type: 'session-start',
     });
   });

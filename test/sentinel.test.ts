@@ -205,6 +205,17 @@ describe('stall routing', () => {
     });
   });
 
+  it('never suppresses a new stall kind merely because pane content is similar', async () => {
+    await router.handleStall('alpha', 'idle', {});
+    await router.handleStall('alpha', 'compaction', {});
+
+    expect(delivered).toHaveLength(2);
+    expect(delivered[1]?.text).toContain('kind=compaction');
+    expect(events.events).not.toContainEqual(
+      expect.objectContaining({ type: 'stall', kind: 'compaction', disposition: 'suppressed' }),
+    );
+  });
+
   it('does not carry duplicate suppression across session runs', async () => {
     await router.handleStall('alpha', 'idle', {});
     router.reset('alpha');

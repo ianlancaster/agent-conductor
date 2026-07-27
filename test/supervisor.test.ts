@@ -153,6 +153,42 @@ describe('Supervisor construction', () => {
     expect(subscriber.events.filter((event) => event.type === 'session.activity.changed')).toHaveLength(1);
   });
 
+  it('routes an idle post-compaction prompt to supervision without typing into the worker', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\nhealth:\n  idleConfirmMs: 0\ndefaults:\n  auto: true\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const terminal = new FakeTerminalBackend();
+    const pane = await terminal.createPane('alpha', 'pane', baseDir);
+    terminal.panes.get(pane.id)!.sessionActive = true;
+    terminal.setPaneContent(pane.id, 'compaction complete\n❯ ');
+    terminal.survivors.set('alpha', pane);
+    const channel = new StrictStartChannel();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      channels: [channel],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+
+    const postEvent = async (body: unknown): Promise<void> => {
+      await fetch(`http://127.0.0.1:${String(port)}/events/alpha`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    };
+    await postEvent({ hook_event_name: 'PreCompact', transcript_path: '/tmp/transcript.jsonl' });
+    expect(channel.sent).toEqual([]);
+
+    await postEvent({ hook_event_name: 'SessionStart', source: 'compact' });
+    await until(() => channel.sent.some((message) => message.text.includes('stalled (compaction)')));
+
+    expect(supervisor.statusReport('alpha')).toContain('"activity": "idle"');
+    expect(terminal.panes.get(pane.id)?.received).toEqual([]);
+  });
+
   it('reports journal degradation while lifecycle and live subscribers continue', async () => {
     const port = await freePort();
     writeConfig(`mcp:\n  port: ${String(port)}\n`, {

@@ -207,6 +207,11 @@ permission/input block, context compaction, or—in runtimes without authoritati
 events—a silent unchanged pane. It does not decide
 whether that state is actually a problem and it never calls an LLM itself.
 
+For compaction, Conductor waits for the runtime's compact-complete event and confirms that a
+composer is actually visible before routing the stall. It never types a generic `continue` into
+the worker. The sentinel decides whether the compacted session should resume and can supply the
+fleet-specific reorientation prompt when it should.
+
 The sentinel receives a self-contained `[Stall]` or `[Fleet Stall]` message and decides what
 to do. It can inspect structured status or recent pane output, send one precise nudge, ask
 the operator through `send_to_operator`, or deliberately do nothing when the agent really

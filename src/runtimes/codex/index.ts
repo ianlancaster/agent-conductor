@@ -493,7 +493,9 @@ export class CodexRuntime implements SessionRuntime {
         transcriptPath: stringField(hook ?? {}, 'transcript_path'),
       };
     }
-    if (hookName === 'SessionStart') return { type: 'session-start' };
+    if (hookName === 'SessionStart') {
+      return { type: hook?.source === 'compact' ? 'compaction-complete' : 'session-start' };
+    }
 
     const payload = parseNotifyPayload(body);
     if (payload === null) return null;

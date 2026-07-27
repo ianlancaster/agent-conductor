@@ -21,6 +21,7 @@ let sessionEnds: string[];
 let working: string[];
 let observed: string[];
 let paneId: string;
+let paneActivity: 'working' | 'idle';
 
 beforeEach(async () => {
   vi.useFakeTimers();
@@ -33,6 +34,7 @@ beforeEach(async () => {
   sessionEnds = [];
   working = [];
   observed = [];
+  paneActivity = 'idle';
   monitor = new HealthMonitor({
     config: CONFIG,
     backend,
@@ -40,6 +42,7 @@ beforeEach(async () => {
     getPane: (session) => (session === 'alpha' ? { backend: 'fake', id: paneId } : undefined),
     getActiveSessions: () => ['alpha'],
     onRuntimeObserved: (session) => observed.push(session),
+    activityForPane: async () => paneActivity,
     onStall: (session, kind, info) => stalls.push({ session, kind, reason: info.reason }),
     onWorking: (session) => working.push(session),
     onSessionEnd: (session) => sessionEnds.push(session),
@@ -53,7 +56,7 @@ afterEach(() => {
 });
 
 function event(
-  type: 'turn-start' | 'stop' | 'notification' | 'compaction' | 'session-start' | 'session-end',
+  type: 'turn-start' | 'stop' | 'notification' | 'compaction' | 'compaction-complete' | 'session-start' | 'session-end',
   reason?: string,
   turnId?: string,
 ): void {
@@ -175,10 +178,37 @@ describe('event-driven signals', () => {
     ]);
   });
 
-  it('raises compaction stalls immediately', () => {
+  it('routes compaction only after the completed runtime returns to an idle composer', async () => {
     event('compaction');
-    expect(stalls[0]?.kind).toBe('compaction');
-    event('session-start');
+    expect(stalls).toEqual([]);
+
+    event('compaction-complete');
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
+
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'compaction', reason: undefined }]);
+    expect(working).toEqual([]);
+  });
+
+  it('keeps an automatically compacted turn working when no composer is visible', async () => {
+    paneActivity = 'working';
+    event('compaction');
+    event('compaction-complete');
+
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
+
+    expect(stalls).toEqual([]);
+    expect(working).toEqual(['alpha']);
+  });
+
+  it('cancels post-compaction routing when a new turn starts during confirmation', async () => {
+    event('compaction');
+    event('compaction-complete');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs / 2);
+    event('turn-start');
+
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs * 2);
+
+    expect(stalls).toEqual([]);
     expect(working).toEqual(['alpha']);
   });
 
@@ -260,6 +290,7 @@ describe('fallback pane-diff watchdog', () => {
       getPane: () => ({ backend: 'fake', id: paneId }),
       getActiveSessions: () => ['alpha'],
       onRuntimeObserved: (session) => observed.push(session),
+      activityForPane: async () => paneActivity,
       onStall: (session, kind, info) => stalls.push({ session, kind, reason: info.reason }),
       onWorking: (session) => working.push(session),
       onSessionEnd: (session) => sessionEnds.push(session),

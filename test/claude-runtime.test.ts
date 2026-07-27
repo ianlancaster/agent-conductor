@@ -211,6 +211,10 @@ describe('parseEvent', () => {
       'notification',
     );
     expect(runtime.parseEvent({ hook_event_name: 'PreCompact' })?.type).toBe('compaction');
+    expect(runtime.parseEvent({ hook_event_name: 'SessionStart', source: 'compact' })?.type).toBe(
+      'compaction-complete',
+    );
+    expect(runtime.parseEvent({ hook_event_name: 'SessionStart', source: 'startup' })?.type).toBe('session-start');
     expect(runtime.parseEvent({ hook_event_name: 'UserPromptSubmit' })?.type).toBe('turn-start');
     expect(runtime.parseEvent({ hook_event_name: 'SessionEnd' })?.type).toBe('session-end');
     expect(runtime.parseEvent({ hook_event_name: 'Whatever' })).toBeNull();
