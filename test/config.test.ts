@@ -18,6 +18,7 @@ import {
   DEFAULT_CLAUDE_CODE_MODELS,
   DEFAULT_CODEX_EFFORTS,
   DEFAULT_CODEX_MODELS,
+  DEFAULT_MAX_TAG_LENGTH,
   DEFAULT_SPAWN_TEMPLATES,
 } from '../src/config/schema.js';
 
@@ -48,6 +49,7 @@ describe('loadSupervisorConfig', () => {
   it('applies full defaults when no config file exists', () => {
     const config = loadSupervisorConfig(baseDir);
     expect(config.supervisor.heartbeatIntervalSeconds).toBe(30);
+    expect(config.supervisor.maxTagLength).toBe(DEFAULT_MAX_TAG_LENGTH);
     expect(config.mcp.host).toBe('127.0.0.1');
     expect(config.health.captureLines).toBe(40);
     expect(config.messaging.queueDrainMs).toBe(2000);
@@ -123,6 +125,17 @@ describe('loadSupervisorConfig', () => {
 
     writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'runbooks:\n  enabled: true\n');
     expect(() => loadSupervisorConfig(baseDir)).toThrow(/runbooks/);
+  });
+
+  it('accepts a positive fleet-wide tag limit and rejects invalid limits', () => {
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'supervisor:\n  maxTagLength: 24\n');
+    expect(loadSupervisorConfig(baseDir).supervisor.maxTagLength).toBe(24);
+
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'supervisor:\n  maxTagLength: 0\n');
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/maxTagLength/);
+
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'supervisor:\n  maxTagLength: 2.5\n');
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/maxTagLength/);
   });
 
   it('allows the durable event journal to be disabled without accepting extra knobs', () => {

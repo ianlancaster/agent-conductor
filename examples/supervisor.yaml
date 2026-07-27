@@ -4,6 +4,7 @@
 supervisor:
   heartbeatIntervalSeconds: 30
   logLevel: info
+  maxTagLength: 50 # hard limit for session status tags; over-limit updates fail instead of truncating
 
 paths:
   dataDir: ./.conductor/data

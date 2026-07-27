@@ -563,6 +563,17 @@ describe('Supervisor construction', () => {
     expect(supervisor.statusReport('alpha')).toContain('"auto": true');
   });
 
+  it('wires the configured tag limit through the canonical command surface', async () => {
+    writeConfig('supervisor:\n  maxTagLength: 5\nterminal:\n  backend: tmux\nmcp:\n  port: 43392\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    supervisor = new Supervisor(baseDir);
+
+    await expect(supervisor.command('/tag alpha short')).resolves.toContain('short');
+    await expect(supervisor.command('/tag alpha longer')).resolves.toBe("'tag' must be at most 5 characters");
+    expect(supervisor.statusReport('alpha')).toContain('"tag": "short"');
+  });
+
   it('persists session state across supervisor instances (single SQLite store)', async () => {
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43394\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,

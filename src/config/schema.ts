@@ -26,6 +26,8 @@ export const DEFAULT_SPAWN_TEMPLATES = {
   },
 } as const;
 
+export const DEFAULT_MAX_TAG_LENGTH = 50;
+
 const stringHints = (defaults: readonly string[]) => z.array(z.string().trim().min(1)).default([...defaults]);
 /** Codenames become URL path segments, filenames, and tmux targets — keep them boring. */
 export const CODENAME_PATTERN = /^[a-z0-9][a-z0-9-_]*$/i;
@@ -89,6 +91,8 @@ export const supervisorConfigSchema = z
       .object({
         heartbeatIntervalSeconds: z.number().int().positive().default(30),
         logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+        /** Maximum Unicode characters accepted for a session status tag. */
+        maxTagLength: z.number().int().positive().default(DEFAULT_MAX_TAG_LENGTH),
       })
       .strict()
       .default({}),

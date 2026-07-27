@@ -79,6 +79,9 @@ Everything is relative to the fleet directory. Run `conductor` from inside it, o
 `supervisor.yaml` configures the whole fleet: terminal backend, defaults, channels, health policy, and
 runtime hints. It is not tied to the agent you want to message. Each managed agent has its own YAML file
 under `.conductor/config/sessions/`; `repo:` in that file selects the project directory where it works.
+The fleet-wide `supervisor.maxTagLength` setting defaults to `50`. Both the operator `/tag` command and
+the managed-agent `set_tag` operation reject longer status labels without truncating or replacing the
+current tag; change the setting only when the fleet genuinely needs a different concise-label budget.
 
 ### Existing root-level fleets
 
