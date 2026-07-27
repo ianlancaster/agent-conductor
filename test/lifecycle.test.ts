@@ -83,7 +83,7 @@ beforeEach(() => {
       supervisionResets.push(session);
       supervisionRunningStates.push(states.get(session)?.running === true);
     },
-    activityForPane: async () => recoveredActivity,
+    observeActivity: async () => recoveredActivity,
     events: lifecycleEvents,
   });
   states.register('alpha', false);

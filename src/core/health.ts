@@ -23,8 +23,8 @@ export interface HealthDeps {
   getActiveSessions(): string[];
   /** A live foreground process proves launch completed even before a runtime hook fires. */
   onRuntimeObserved?(session: string): void;
-  /** Runtime-owned composer evidence used to reconcile best-effort lifecycle hooks. */
-  activityForPane(session: string, pane: PaneRef): Promise<PaneActivityEvidence>;
+  /** Runtime-owned execution evidence used to reconcile best-effort lifecycle hooks. */
+  observeActivity(session: string, pane: PaneRef): Promise<PaneActivityEvidence>;
   onStall(session: string, kind: StallKind, info: StallInfo): void;
   onWorking(session: string): void;
   onSessionEnd(session: string): void;
@@ -38,11 +38,12 @@ export interface HealthDeps {
  *  - `stop` starts a quiet timer; if nothing else arrives it becomes an idle stall.
  *  - `notification` = blocked on a decision — immediate stall.
  *  - `compaction` records the start; compact completion becomes a stall only
- *    after the runtime's composer confirms that the session is waiting.
- * Reconciliation: supported runtimes continuously classify their own visible
- * composer. A visible composer confirms idle; a successfully captured hidden
- * composer confirms working. This repairs missed/out-of-order best-effort hook
- * delivery without mistaking pane silence for turn completion.
+ *    after the runtime confirms that the session is waiting.
+ * Reconciliation: supported runtimes continuously classify execution evidence
+ * independently from input readiness. Active-turn chrome takes precedence over
+ * a visible composer because both supported runtimes can accept steering or
+ * queued input while a turn is running. This repairs missed/out-of-order
+ * best-effort hook delivery without mistaking pane silence for turn completion.
  * Fallback: only runtimes without authoritative turn completion may turn an
  * unchanged pane into a `silent` stall.
  */
@@ -52,7 +53,7 @@ export class HealthMonitor {
   private readonly activeTurnIds = new Map<string, Set<string>>();
   /** Newer work was submitted before its runtime-owned turn id arrived. */
   private readonly pendingTurnIds = new Set<string>();
-  /** Invalidates an asynchronous composer observation when a newer event wins. */
+  /** Invalidates an asynchronous activity observation when a newer event wins. */
   private readonly eventSequences = new Map<string, number>();
   /** Ensures a slower, older pane capture cannot overwrite newer evidence. */
   private readonly observationSequences = new Map<string, number>();
@@ -241,7 +242,7 @@ export class HealthMonitor {
   }
 
   /**
-   * Repair working/idle state from the runtime's own visible composer.
+   * Repair working/idle state from runtime-owned execution evidence.
    * This is safe to call from both the heartbeat and an on-demand status
    * reconciliation. Unknown capture evidence deliberately changes nothing.
    */
@@ -251,7 +252,7 @@ export class HealthMonitor {
     const eventSequence = this.eventSequences.get(session) ?? 0;
     const observationSequence = (this.observationSequences.get(session) ?? 0) + 1;
     this.observationSequences.set(session, observationSequence);
-    const activity = await this.deps.activityForPane(session, pane);
+    const activity = await this.deps.observeActivity(session, pane);
     if (
       (this.eventSequences.get(session) ?? 0) !== eventSequence ||
       this.observationSequences.get(session) !== observationSequence ||
@@ -399,8 +400,8 @@ export class HealthMonitor {
     const pane = this.deps.getPane(session);
     if (pane === undefined) return;
     try {
-      const activity = await this.deps.activityForPane(session, pane);
-      // Composer capture is asynchronous. A newer runtime event wins if it
+      const activity = await this.deps.observeActivity(session, pane);
+      // Pane observation is asynchronous. A newer runtime event wins if it
       // arrived while the pane was being inspected.
       if (this.turnPhases.get(session) !== 'interrupted') return;
       if (activity === 'idle') {
@@ -416,7 +417,7 @@ export class HealthMonitor {
     } catch (err) {
       log().warn(
         'health',
-        `${session}: post-compaction composer check failed: ${err instanceof Error ? err.message : String(err)}`,
+        `${session}: post-compaction activity check failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

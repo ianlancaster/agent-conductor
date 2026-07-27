@@ -82,8 +82,8 @@ export interface LifecycleDeps {
   reloadSessions(teardownSession?: string): void;
   /** Reset per-run health and stall-routing tracking on lifecycle boundaries. */
   supervisionReset(session: string): void;
-  /** Resolve working/idle from the runtime's visible composer at recovery boundaries. */
-  activityForPane?(session: string, pane: PaneRef): Promise<PaneActivityEvidence>;
+  /** Resolve working/idle from runtime-owned execution evidence at recovery boundaries. */
+  observeActivity?(session: string, pane: PaneRef): Promise<PaneActivityEvidence>;
   /** Reconcile live activity after terminal-process liveness is confirmed. */
   reconcileActivity?(session: string, pane: PaneRef): Promise<void>;
   /** Notify orchestration that a live pane is available for this run's queued delivery. */
@@ -499,7 +499,7 @@ export class Lifecycle {
   }
 
   private async recoveredActivity(codename: string, pane: PaneRef): Promise<'working' | 'idle'> {
-    const evidence = await this.deps.activityForPane?.(codename, pane);
+    const evidence = await this.deps.observeActivity?.(codename, pane);
     if (evidence === 'idle' || evidence === 'working') return evidence;
     return this.deps.states.get(codename)?.activity === 'idle' ? 'idle' : 'working';
   }

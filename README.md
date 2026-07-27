@@ -156,9 +156,10 @@ For diagnosis, `conductor logs [session]` reads recent persisted health events,
 `conductor validate` checks strict fleet configuration, and `/tail` reads pane output.
 Managed agents can use `list_sessions` and `get_session_status` for structured,
 non-invasive status without scraping peers' terminals.
-Status reconciliation uses each runtime's own composer parser to repair missed lifecycle hooks in
-both directions: a visible composer is idle, a captured hidden composer is working, and a failed
-capture preserves the previous state rather than guessing.
+Status reconciliation uses each runtime's own activity parser to repair missed lifecycle hooks in
+both directions. It is deliberately separate from protected-delivery input detection: Claude Code
+and Codex can expose a composer while a turn is still running, so active-turn evidence wins over
+composer visibility. An inconclusive capture preserves the previous state rather than guessing.
 Session tags are deliberately concise: `/tag` and `set_tag` reject labels longer than 50
 Unicode characters by default without changing the existing tag. Fleets can change the
 mechanical limit with `supervisor.maxTagLength`; supervisor settings apply after restart.

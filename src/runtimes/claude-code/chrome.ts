@@ -1,3 +1,4 @@
+import type { PaneActivityEvidence } from '../../core/types.js';
 import type { InputState } from '../types.js';
 
 /** Claude Code TUI chrome patterns — lines stripped from pane captures before judgment. */
@@ -10,6 +11,9 @@ const CHROME_PATTERNS: RegExp[] = [
   /^\s*[❯›>$%]\s*$/,
   /^[\s─│╭╮╰╯├┤┬┴┼═║╔╗╚╝─-╿]*$/,
 ];
+
+const ACTIVE_TURN_PATTERNS: readonly RegExp[] = [/\besc to interrupt\b/iu, /\bctrl\+c to interrupt\b/iu];
+const CONDUCTOR_STATUS_LINE = /\|\s*📁\s+.+\|\s*🌳\s+.+\|\s*🌿\s+/u;
 
 export function stripClaudeChrome(capture: string): string {
   const lines = capture.split('\n');
@@ -45,4 +49,32 @@ export function parseClaudeInputState(capture: string): InputState {
     return afterGlyph.length === 0 ? 'clear' : 'draft';
   }
   return null;
+}
+
+/**
+ * Classify Claude's execution state independently from input readiness. Claude
+ * can keep a composer visible while a turn is executing, so its interrupt
+ * chrome wins over every composer observation. Without an active-turn marker,
+ * a composer is idle evidence only when no substantive output follows it.
+ */
+export function parseClaudeActivityState(capture: string): PaneActivityEvidence {
+  const lines = capture.split('\n');
+  if (lines.some((line) => ACTIVE_TURN_PATTERNS.some((pattern) => pattern.test(line)))) return 'working';
+
+  let promptIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if ((lines[index] ?? '').includes('❯')) {
+      promptIndex = index;
+      break;
+    }
+  }
+  if (promptIndex < 0) return 'unknown';
+  const trailing = lines.slice(promptIndex + 1);
+  const onlyComposerChromeFollows = trailing.every(
+    (line) =>
+      line.trim().length === 0 ||
+      CHROME_PATTERNS.some((pattern) => pattern.test(line)) ||
+      CONDUCTOR_STATUS_LINE.test(line),
+  );
+  return onlyComposerChromeFollows ? 'idle' : 'unknown';
 }

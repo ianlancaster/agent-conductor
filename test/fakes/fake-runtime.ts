@@ -1,5 +1,5 @@
 import type { SessionConfig } from '../../src/config/schema.js';
-import type { RuntimeEvent } from '../../src/core/types.js';
+import type { PaneActivityEvidence, RuntimeEvent } from '../../src/core/types.js';
 import type {
   SessionRuntime,
   IdentityEndpoints,
@@ -31,6 +31,8 @@ export class FakeRuntime implements SessionRuntime {
   readonly launches: { session: SessionConfig; opts: LaunchOptions }[] = [];
   /** Controls parseInputState; set to 'draft' to simulate occupied input. */
   inputState: InputState = 'clear';
+  /** Controls execution-state observation independently from input readiness. */
+  activityState: PaneActivityEvidence = 'unknown';
   readonly transcripts = new Map<string, string>();
 
   constructor(readonly name = 'fake') {}
@@ -49,6 +51,10 @@ export class FakeRuntime implements SessionRuntime {
 
   parseInputState(_capture: string): InputState {
     return this.inputState;
+  }
+
+  parseActivityState(_capture: string): PaneActivityEvidence {
+    return this.activityState;
   }
 
   stripChrome(capture: string): string {

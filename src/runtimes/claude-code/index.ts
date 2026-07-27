@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
-import type { RuntimeEvent } from '../../core/types.js';
+import type { PaneActivityEvidence, RuntimeEvent } from '../../core/types.js';
 import { shellQuote } from '../../core/shell.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
 import {
@@ -11,7 +11,7 @@ import {
   PROTOCOL_SNAPSHOT_NAME,
   SESSION_INSTRUCTIONS_SNAPSHOT_NAME,
 } from '../instructions.js';
-import { parseClaudeInputState, stripClaudeChrome } from './chrome.js';
+import { parseClaudeActivityState, parseClaudeInputState, stripClaudeChrome } from './chrome.js';
 import { readLastAssistantMessage } from './transcript.js';
 
 type ClaudeCodeConfig = SupervisorConfig['runtimes']['claudeCode'];
@@ -149,6 +149,10 @@ export class ClaudeCodeRuntime implements SessionRuntime {
 
   parseInputState(capture: string): InputState {
     return parseClaudeInputState(capture);
+  }
+
+  parseActivityState(capture: string): PaneActivityEvidence {
+    return parseClaudeActivityState(capture);
   }
 
   stripChrome(capture: string): string {

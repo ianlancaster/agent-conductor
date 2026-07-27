@@ -1,4 +1,4 @@
-import type { RuntimeEvent } from '../core/types.js';
+import type { PaneActivityEvidence, RuntimeEvent } from '../core/types.js';
 import type { SessionConfig } from '../config/schema.js';
 
 export interface RuntimeCapabilities {
@@ -71,6 +71,13 @@ export interface SessionRuntime {
    * session's composer ghost text).
    */
   parseInputState(capture: string, session?: string): InputState;
+
+  /**
+   * Classify whether the runtime is executing a turn. This must use positive
+   * runtime execution/idle evidence and must not equate a visible composer
+   * with idleness when the runtime can accept queued or steering input.
+   */
+  parseActivityState?(capture: string, session?: string): PaneActivityEvidence;
 
   /**
    * Resolve a visually ambiguous input state with runtime-owned external

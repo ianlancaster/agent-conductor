@@ -304,19 +304,20 @@ Use:
 Activity labels are mechanical runtime-health states, not judgments about whether an agent's answer
 was good or its task is complete:
 
-- `working`: a turn started, Conductor submitted work, or the runtime-owned composer parser
-  confirmed that the composer is hidden while the runtime process remains active.
-- `idle`: the runtime reported a normal completed turn, or its composer parser confirmed a visible
-  clear or occupied composer, and no new work evidence arrived during `health.idleConfirmMs`
+- `working`: a turn started, Conductor submitted work, or the runtime-owned activity parser found
+  positive evidence that a turn is executing.
+- `idle`: the runtime reported a normal completed turn, or its activity parser found positive idle
+  evidence, and no new work evidence arrived during `health.idleConfirmMs`
   (15 seconds by default). The process remains alive. Whether the evidence is actionable is the
   sentinel's decision.
 - `stopped`: no active runtime process is available for that registered session.
 
-A later turn or hidden-composer evidence returns an idle session to `working`. The heartbeat,
-on-demand status operations, and restart recovery all use the same parser as protected delivery:
-a visible clear or occupied composer is `idle`; a successfully captured hidden composer is
-`working`; a capture/runtime failure is unknown and preserves the prior activity. This continuous
-reconciliation repairs missed or out-of-order best-effort lifecycle hooks. `blocked`,
+A later turn or positive execution evidence returns an idle session to `working`. The heartbeat,
+on-demand status operations, and restart recovery use a runtime activity parser that is separate
+from protected-delivery input detection. Both supported runtimes can show a composer while a turn
+is active, so their active-turn chrome takes precedence over composer visibility. A capture/runtime
+failure is unknown and preserves the prior activity. This continuous reconciliation repairs missed
+or out-of-order best-effort lifecycle hooks. `blocked`,
 `compaction`, `silent`, and normal turn completion remain causal kinds in health logs and stall
 events; they are deliberately not separate activity states. Older schema-v1 event journals may
 contain the retired `stalled` activity value, which current state migration normalizes to `idle`.
@@ -442,7 +443,7 @@ Other stall kinds come from mechanical signals:
 - Claude Code `Notification` hooks become `blocked` immediately.
 - Claude Code and Codex `PreCompact` hooks begin compaction tracking. A matching compact
   `SessionStart` begins the normal `health.idleConfirmMs` confirmation; Conductor emits
-  `compaction` only if the runtime-owned composer parser then proves that the session is waiting at
+  `compaction` only if the runtime-owned activity parser then proves that the session is waiting at
   a prompt. A turn that resumes automatically remains `working`.
 - Runtimes without authoritative turn-completion events use the pane-diff fallback after
   `health.eventSilenceMs`; an unchanged capture for `health.stallBeatsThreshold` checks becomes

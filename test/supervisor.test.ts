@@ -552,7 +552,7 @@ describe('Supervisor construction', () => {
 
   it('repairs stale activity in both directions during an on-demand status reconciliation', async () => {
     const runtime = new FakeRuntime('claude-code');
-    runtime.inputState = null;
+    runtime.activityState = 'working';
     writeConfig('health:\n  idleConfirmMs: 0\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
     });
@@ -566,10 +566,10 @@ describe('Supervisor construction', () => {
     await supervisor.command('/start alpha');
     expect(supervisor.statusReport('alpha')).toContain('"activity": "working"');
 
-    runtime.inputState = 'clear';
+    runtime.activityState = 'idle';
     expect(await supervisor.command('/status alpha')).toContain('"activity": "idle"');
 
-    runtime.inputState = null;
+    runtime.activityState = 'working';
     expect(await supervisor.command('/status alpha')).toContain('"activity": "working"');
   });
 
@@ -796,6 +796,39 @@ describe('Supervisor construction', () => {
     expect(channel.started).toBe(true);
     expect(supervisor.statusReport('alpha')).toContain('"activity": "idle"');
     expect(channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled'))).toBe(true);
+  });
+
+  it('does not classify active surviving runtimes as idle merely because their composers are visible', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      claude: `codename: claude\nrepo: ${baseDir}\nruntime: claude-code\n`,
+      codex: `codename: codex\nrepo: ${baseDir}\nruntime: codex\n`,
+    });
+    const terminal = new FakeTerminalBackend();
+    const claudePane = await terminal.createPane('claude', 'pane', baseDir);
+    const codexPane = await terminal.createPane('codex', 'pane', baseDir);
+    terminal.panes.get(claudePane.id)!.sessionActive = true;
+    terminal.panes.get(codexPane.id)!.sessionActive = true;
+    terminal.setPaneContent(
+      claudePane.id,
+      ['assistant output', '❯ queued follow-up', '✻ Thinking deeply… (esc to interrupt)'].join('\n'),
+    );
+    terminal.setPaneContent(
+      codexPane.id,
+      ['• Working (3s • esc to interrupt)', "› What's on your mind?", '  gpt-5.6 medium · /repo'].join('\n'),
+    );
+    terminal.survivors.set('claude', claudePane);
+    terminal.survivors.set('codex', codexPane);
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start();
+
+    expect(supervisor.statusReport('claude')).toContain('"activity": "working"');
+    expect(supervisor.statusReport('codex')).toContain('"activity": "working"');
   });
 
   it('activates a persisted threshold-zero watch only after start-all launches finish', async () => {

@@ -5,7 +5,7 @@ export type Placement = 'pane' | 'tab' | 'window';
 /** Mechanical session activity. Stall causes remain events, not durable activity states. */
 export type Activity = 'working' | 'idle' | 'stopped';
 
-/** Runtime-owned evidence about whether a live pane is accepting input. */
+/** Runtime-owned evidence about whether a live runtime is executing a turn. */
 export type PaneActivityEvidence = 'working' | 'idle' | 'unknown';
 
 /** A handle to a terminal pane, owned by a specific backend. */

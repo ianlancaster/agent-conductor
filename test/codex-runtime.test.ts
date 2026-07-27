@@ -688,6 +688,23 @@ describe('parseInputState', () => {
   });
 });
 
+describe('parseActivityState', () => {
+  const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
+
+  it('keeps an active turn working even when Codex also renders a composer', () => {
+    const capture = ['• Working (3s • esc to interrupt)', "› What's on your mind?", '  gpt-5.6 medium · /repo'].join(
+      '\n',
+    );
+    expect(runtime.parseInputState(capture, 'alpha')).toBe('clear');
+    expect(runtime.parseActivityState(capture, 'alpha')).toBe('working');
+  });
+
+  it('reports idle only from a visible composer without execution evidence', () => {
+    expect(runtime.parseActivityState("completed output\n› What's on your mind?", 'alpha')).toBe('idle');
+    expect(runtime.parseActivityState('output without runtime chrome', 'alpha')).toBe('unknown');
+  });
+});
+
 describe('parseInputState — styled captures (tmux -e)', () => {
   // Byte-for-byte from a live `tmux capture-pane -e` of Codex 0.144.x:
   // composer glyph is bold, transcript glyph bold+dim, ghost hint dim.

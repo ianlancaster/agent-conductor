@@ -39,6 +39,7 @@ import { RunbookAdoptions } from './runbook-adoptions.js';
 import { StallSentinelRouter } from './sentinel.js';
 import { SessionStateManager } from './state.js';
 import { formatFleetStatusReport, resolvedSessionEffort, resolvedSessionModel, statusReport } from './status.js';
+import { observePaneActivity } from './activity.js';
 import { ShepherdManager } from './shepherd-manager.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
@@ -280,7 +281,8 @@ export class Supervisor {
         if (this.states.get(session)?.activity === 'working') this.health.markTurnActive(session);
         this.sentinel.reset(session);
       },
-      activityForPane: (session, pane) => this.delivery.activityForPane(session, pane),
+      observeActivity: (session, pane) =>
+        observePaneActivity(this.backend, this.runtimeFor(session), session, pane, this.config.health.captureLines),
       reconcileActivity: (session, pane) => this.health.reconcileActivity(session, pane),
       onRunning: (session) => {
         void this.recoverPendingMessages(session);
@@ -348,7 +350,8 @@ export class Supervisor {
       onRuntimeObserved: (session) => {
         if (this.markRuntimeObserved(session)) void this.delivery.drainNow();
       },
-      activityForPane: (session, pane) => this.delivery.activityForPane(session, pane),
+      observeActivity: (session, pane) =>
+        observePaneActivity(this.backend, this.runtimeFor(session), session, pane, this.config.health.captureLines),
       onStall: (session, kind, info) => {
         // A stall kind is causal evidence for the sentinel, not a separate
         // mechanical activity state. A live runtime that is not working is idle.

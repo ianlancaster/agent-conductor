@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
-import type { RuntimeEvent } from '../../core/types.js';
+import type { PaneActivityEvidence, RuntimeEvent } from '../../core/types.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
 import { prepareInstructionLayers, writeAtomicFile } from '../instructions.js';
 import { log } from '../../logger.js';
@@ -419,6 +419,14 @@ export class CodexRuntime implements SessionRuntime {
     return capture.includes('\u001b[')
       ? this.parseStyledInputState(capture)
       : this.parsePlainInputState(capture, session);
+  }
+
+  parseActivityState(capture: string, session?: string): PaneActivityEvidence {
+    // Codex deliberately keeps its composer available for steering while the
+    // current turn runs. The spinner/interrupt row is execution evidence and
+    // therefore takes precedence over a visible clear or occupied composer.
+    if (/^\s*[•▌·]?\s*Working\b.*esc to interrupt/imu.test(capture)) return 'working' as const;
+    return this.parseInputState(capture, session) === null ? ('unknown' as const) : ('idle' as const);
   }
 
   private parseStyledInputState(capture: string): InputState {

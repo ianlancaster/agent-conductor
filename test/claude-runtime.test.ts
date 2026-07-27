@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { supervisorConfigSchema, type SessionConfig } from '../src/config/schema.js';
 import { ClaudeCodeRuntime, seedFolderTrust } from '../src/runtimes/claude-code/index.js';
-import { parseClaudeInputState, stripClaudeChrome } from '../src/runtimes/claude-code/chrome.js';
+import {
+  parseClaudeActivityState,
+  parseClaudeInputState,
+  stripClaudeChrome,
+} from '../src/runtimes/claude-code/chrome.js';
 import type { IdentityEndpoints } from '../src/runtimes/types.js';
 
 const defaults = supervisorConfigSchema.parse({});
@@ -256,6 +260,20 @@ describe('chrome parsing', () => {
 
   it('uses the LAST prompt line in the capture', () => {
     expect(parseClaudeInputState('❯ old submitted line\noutput\n❯ ')).toBe('clear');
+  });
+
+  it('keeps an active turn working even when Claude also renders a composer', () => {
+    const capture = ['assistant output', '❯ queued follow-up', '✻ Thinking deeply… (esc to interrupt)'].join('\n');
+    expect(parseClaudeInputState(capture)).toBe('draft');
+    expect(parseClaudeActivityState(capture)).toBe('working');
+  });
+
+  it('uses only a current composer as idle evidence', () => {
+    expect(parseClaudeActivityState('assistant output\n❯ \nshift+tab to cycle')).toBe('idle');
+    expect(parseClaudeActivityState('❯ old submitted line\nnew model output')).toBe('unknown');
+    expect(
+      parseClaudeActivityState('assistant output\n❯ \nOpus | 42% | $1.24 | 📁 project | 🌳 no worktree | 🌿 main'),
+    ).toBe('idle');
   });
 
   it('treats every non-empty composer as a draft, including suggestion-shaped text', () => {

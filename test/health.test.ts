@@ -44,7 +44,7 @@ beforeEach(async () => {
     getPane: (session) => (session === 'alpha' ? { backend: 'fake', id: paneId } : undefined),
     getActiveSessions: () => ['alpha'],
     onRuntimeObserved: (session) => observed.push(session),
-    activityForPane: async () => paneActivity,
+    observeActivity: async () => paneActivity,
     onStall: (session, kind, info) => {
       stalls.push({ session, kind, reason: info.reason });
       if (info.detectedAt !== undefined) stallDetections.push(info.detectedAt);
@@ -344,7 +344,7 @@ describe('fallback pane-diff watchdog', () => {
       getPane: () => ({ backend: 'fake', id: paneId }),
       getActiveSessions: () => ['alpha'],
       onRuntimeObserved: (session) => observed.push(session),
-      activityForPane: async () => paneActivity,
+      observeActivity: async () => paneActivity,
       onStall: (session, kind, info) => stalls.push({ session, kind, reason: info.reason }),
       onWorking: (session) => working.push(session),
       onSessionEnd: (session) => sessionEnds.push(session),

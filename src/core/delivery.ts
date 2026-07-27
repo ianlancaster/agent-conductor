@@ -1,7 +1,7 @@
 import { log } from '../logger.js';
 import type { InputState, SessionRuntime } from '../runtimes/types.js';
 import type { TerminalBackend } from '../terminals/types.js';
-import type { PaneActivityEvidence, PaneRef } from './types.js';
+import type { PaneRef } from './types.js';
 
 export type DeliveryResult = 'delivered' | 'queued' | 'cancelled' | 'no-pane';
 
@@ -157,18 +157,6 @@ export class DeliveryQueue {
 
   pendingCount(session: string): number {
     return this.queues.get(session)?.length ?? 0;
-  }
-
-  /**
-   * Classify a live pane through the same runtime-owned composer signal that
-   * protects message delivery. A visible clear OR occupied composer means the
-   * runtime is idle; a successfully captured hidden composer means working.
-   * Capture/runtime failures are unknown and must not change health state.
-   */
-  async activityForPane(session: string, pane: PaneRef): Promise<PaneActivityEvidence> {
-    const observation = await this.typingState(session, pane);
-    if (observation.inputState === 'clear' || observation.inputState === 'draft') return 'idle';
-    return observation.inputState === null ? 'working' : 'unknown';
   }
 
   /** Cancel a durable message while it is assessing or waiting in memory. */
