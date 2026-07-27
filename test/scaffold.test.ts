@@ -195,6 +195,7 @@ describe('conductor start initialization', () => {
     expect(exitCode).toBe(1);
     expect(stderr).toContain('`conductor start` only opens a console that owns and stops its conductor');
     expect(stderr).toContain('Use `conductor console` for a non-owning attachment');
+    expect(stderr).toContain('run `conductor kill`');
   });
 
   it('does not expose the removed init command', () => {
@@ -207,6 +208,7 @@ describe('conductor start initialization', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).not.toMatch(/^\s+init(?:\s|$)/m);
     expect(result.stdout).toContain('Initialize missing fleet files');
+    expect(result.stdout).toMatch(/^\s+kill\s+/m);
   });
 
   it('fails startup preflight before creating a hidden conductor child', () => {

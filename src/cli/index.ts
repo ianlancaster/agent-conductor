@@ -18,6 +18,7 @@ import { initializeRunbook, validateRunbookPath } from '../runbooks/authoring.js
 import { installDaemon, uninstallDaemon } from './daemon.js';
 import { formatPreflight, preflightFailures, runPreflight } from './doctor.js';
 import { subscribeFeed } from './feed.js';
+import { killFleetConductor } from './kill.js';
 import { ensureFleetScaffold, renderOnboardingCommands } from './scaffold.js';
 import { DEFAULT_STATUS_INTERVAL, parseStatusInterval, runStatusDashboard } from './live-status.js';
 import { configureStatusLines } from './statusline.js';
@@ -260,7 +261,7 @@ program
       const base = `http://${config.mcp.host}:${config.mcp.port}`;
       if (await conductorUp(base)) {
         throw new Error(
-          'A conductor is already running for this fleet. `conductor start` only opens a console that owns and stops its conductor. Use `conductor console` for a non-owning attachment, or stop the existing conductor before starting again.',
+          'A conductor is already running for this fleet. `conductor start` only opens a console that owns and stops its conductor. Use `conductor console` for a non-owning attachment. If the owning console is gone, run `conductor kill` before starting again.',
         );
       }
     }
@@ -317,7 +318,7 @@ program
     // This console owns the conductor it spawned: when the console dies (exit,
     // Ctrl-C, terminal closed), take the conductor down with it.
     const killChild = (): void => {
-      if (childPid === undefined) return;
+      if (childPid === undefined || child.exitCode !== null || child.signalCode !== null) return;
       try {
         process.kill(childPid, 'SIGTERM');
       } catch {
@@ -342,6 +343,16 @@ program
     const results = await runPreflight(baseDir());
     process.stdout.write(`${formatPreflight(results)}\n`);
     if (preflightFailures(results).length > 0) process.exitCode = 1;
+  });
+
+program
+  .command('kill')
+  .description('Stop the Conductor process owned by this fleet, leaving session panes running')
+  .action(async () => {
+    const config = loadSupervisorConfig(baseDir());
+    const dataDir = resolveFleetDataDir(baseDir(), config.paths.dataDir);
+    const result = await killFleetConductor(baseDir(), join(dataDir, 'conductor.lock'));
+    process.stdout.write(`${result.message}\n`);
   });
 
 program

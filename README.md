@@ -74,7 +74,9 @@ automation, remote channels, or other optional features.
 Run `conductor doctor` whenever you want an actionable environment and configuration
 check. The console opened by `conductor start` owns its Conductor process, so `Ctrl+C`
 stops it. Use `conductor console` only when you intentionally want an additional,
-non-owning console.
+non-owning console. If a crashed or forcibly closed owning console leaves its process behind,
+run `conductor kill` from the fleet directory; it stops only that fleet's recorded Conductor and
+leaves all session panes running.
 
 For the full walkthrough, including what the generated files mean, continue with
 [Getting Started](docs/getting-started.md).

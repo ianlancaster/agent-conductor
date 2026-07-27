@@ -148,7 +148,11 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    visibly instead; `conductor console` attaches an extra console from elsewhere).
    The console opened by `conductor start` owns its Conductor, so `Ctrl+C` or closing that console
    stops the core. If a core is already running, `conductor start` refuses to attach; use
-   `conductor console` only when a deliberately non-owning additional console is wanted.
+   `conductor console` only when a deliberately non-owning additional console is wanted. If the
+   owning console is already gone but its core survived, run `conductor kill` from this fleet
+   directory. It uses the fleet ownership lock, verifies the process before signaling it, and
+   leaves session panes running. A launchd/systemd-managed Conductor is expected to restart after
+   an ordinary process signal; use `conductor daemon uninstall` to take that service down.
 
    `/tell` delivers your message into the session's pane. The session replies **in its own
    pane** unless it uses `send_to_operator`; that tool sends its reply to every connected

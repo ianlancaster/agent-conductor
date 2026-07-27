@@ -112,7 +112,7 @@ export class Supervisor {
     const dataDir = resolveFleetDataDir(baseDir, this.config.paths.dataDir);
     const fleetPaths = resolveFleetPaths(baseDir);
     initLogger({ level: this.config.supervisor.logLevel, filePath: join(dataDir, 'conductor.log') });
-    this.lock = new FleetLock(join(dataDir, 'conductor.lock'));
+    this.lock = new FleetLock(join(dataDir, 'conductor.lock'), process.pid, baseDir);
     const configuredChannels =
       (options.includeConfiguredChannels ?? true)
         ? buildConfiguredChannels(this.config, this.env)

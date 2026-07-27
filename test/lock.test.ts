@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -26,9 +26,18 @@ function deadPid(): number {
 
 describe('FleetLock', () => {
   it('acquires, writes its pid, and releases', () => {
-    const lock = new FleetLock(lockPath);
+    const lock = new FleetLock(lockPath, process.pid, dir);
     lock.acquire();
-    expect((JSON.parse(readFileSync(lockPath, 'utf8')) as { pid: number }).pid).toBe(process.pid);
+    const owner = JSON.parse(readFileSync(lockPath, 'utf8')) as {
+      pid: number;
+      fleetDir: string;
+      processStartToken: string;
+    };
+    expect(owner).toMatchObject({
+      pid: process.pid,
+      fleetDir: dir,
+    });
+    expect(owner.processStartToken).toEqual(expect.any(String));
     lock.release();
     expect(existsSync(lockPath)).toBe(false);
   });
@@ -50,6 +59,22 @@ describe('FleetLock', () => {
     const lock = new FleetLock(lockPath);
     lock.acquire(); // must not throw
     expect((JSON.parse(readFileSync(lockPath, 'utf8')) as { pid: number }).pid).toBe(process.pid);
+    lock.release();
+  });
+
+  it('reclaims a lock whose pid has been reused by a different process', () => {
+    mkdirSync(join(dir, 'data'), { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: '2026-07-27T00:00:00.000Z',
+        processStartToken: 'not-this-process',
+      }),
+    );
+    const lock = new FleetLock(lockPath, process.pid + 1_000_000, dir);
+    lock.acquire();
+    expect((JSON.parse(readFileSync(lockPath, 'utf8')) as { pid: number }).pid).toBe(process.pid + 1_000_000);
     lock.release();
   });
 

@@ -162,6 +162,8 @@ describe('agent documentation', () => {
     expect(operator.content).toContain('default refresh interval is 15 seconds');
     expect(operator.content).toContain('conductor logs [session]');
     expect(operator.content).toContain('conductor validate');
+    expect(operator.content).toContain('conductor kill');
+    expect(operator.content).toContain('ownership lock');
     expect(operator.content).toContain('conductor daemon install');
 
     const lifecycle = JSON.parse(await documentation().read('lifecycle')) as { content: string };

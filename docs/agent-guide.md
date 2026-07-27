@@ -554,6 +554,9 @@ Other local maintenance commands remain outside the operator command router:
 
 - `conductor logs [session]` reads recent persisted health events without requiring a live process.
 - `conductor validate` checks supervisor and session configuration.
+- `conductor kill` stops the process named by the current fleet's ownership lock, escalating from
+  graceful termination only when necessary. It leaves every managed session pane running and
+  refuses to signal a live PID that does not match this fleet's Conductor process.
 - `conductor daemon install` and `conductor daemon uninstall` manage the user-level launchd or
   systemd service.
 - `conductor statusline` configures optional runtime footers; it does not show fleet status.
@@ -882,6 +885,17 @@ conductor -C /path/to/fleet status
 ```
 
 Use the `fleetDir` returned by `get_conductor_docs`, not the session repository path.
+
+### Start says a Conductor is already running after its console closed
+
+Run `conductor kill` from the fleet directory, or pass the fleet explicitly with
+`conductor -C /path/to/fleet kill`. The command reads that fleet's ownership lock, rejects a
+mismatched or recycled PID, sends `SIGTERM`, and uses `SIGKILL` only if the recorded process does
+not exit within the bounded grace period. Session panes remain running. A missing process is
+treated as already stopped and its stale lock is removed.
+
+Do not use `kill` as a daemon lifecycle command. launchd and systemd may restart the process by
+design; use `conductor daemon uninstall` when the fleet is service-managed.
 
 ### A message remains queued
 
