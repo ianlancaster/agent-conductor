@@ -425,7 +425,7 @@ export class CodexRuntime implements SessionRuntime {
     // Codex deliberately keeps its composer available for steering while the
     // current turn runs. The spinner/interrupt row is execution evidence and
     // therefore takes precedence over a visible clear or occupied composer.
-    if (/^\s*[•▌·]?\s*Working\b.*esc to interrupt/imu.test(capture)) return 'working' as const;
+    if (/^\s*[•▌·]?\s*Working\s*\(/imu.test(capture)) return 'working' as const;
     return this.parseInputState(capture, session) === null ? ('unknown' as const) : ('idle' as const);
   }
 

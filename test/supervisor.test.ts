@@ -957,11 +957,11 @@ describe('Supervisor construction', () => {
     terminal.panes.get(codexPane.id)!.sessionActive = true;
     terminal.setPaneContent(
       claudePane.id,
-      ['assistant output', '❯ queued follow-up', '✻ Thinking deeply… (esc to interrupt)'].join('\n'),
+      ['assistant output', '❯', '· Boogieling… (50s · ↓ 2.1k tokens · thinking with xhigh effort)'].join('\n'),
     );
     terminal.setPaneContent(
       codexPane.id,
-      ['• Working (3s • esc to interrupt)', "› What's on your mind?", '  gpt-5.6 medium · /repo'].join('\n'),
+      ['• Working (3s)', "› What's on your mind?", '  gpt-5.6 medium · /repo'].join('\n'),
     );
     terminal.survivors.set('claude', claudePane);
     terminal.survivors.set('codex', codexPane);
