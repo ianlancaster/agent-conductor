@@ -112,21 +112,14 @@ describe('Slack rendering', () => {
 });
 
 describe('SlackAdapter scripted transport', () => {
-  it('starts through auth, DM derivation, socket hello, and one safe greeting', async () => {
+  it('starts through auth, DM derivation, and socket hello without posting a greeting', async () => {
     const fake = makeClients();
     const adapter = makeAdapter(fake);
     await adapter.start(noopHandlers());
 
     expect(fake.socket.startCount).toBe(1);
     expect(fake.web.openCalls).toEqual([{ users: 'U1' }]);
-    expect(fake.web.posts).toEqual([
-      {
-        channel: 'D1',
-        text: 'Conductor connected to this private App Home conversation. Only the configured Slack operator can operate the configured fleet.',
-        unfurl_links: false,
-        unfurl_media: false,
-      },
-    ]);
+    expect(fake.web.posts).toEqual([]);
     expect(JSON.stringify(fake.web.posts)).not.toContain('xapp-test');
     await adapter.stop();
     expect(fake.socket.disconnectCount).toBe(1);
@@ -267,18 +260,20 @@ describe('SlackAdapter scripted transport', () => {
     },
   );
 
-  it('sanitizes a transient startup-greeting failure and reports retry guidance', async () => {
+  it('sanitizes outbound notification failures', async () => {
     const fake = makeClients();
+    const adapter = makeAdapter(fake);
+    await adapter.start(noopHandlers());
     fake.web.chat.postMessage = async () => {
       throw Object.assign(new Error('operator text and xoxb-secret'), {
         code: 'slack_webapi_rate_limited_error',
         retryAfter: 2,
       });
     };
-    const adapter = makeAdapter(fake);
-    const failure = adapter.start(noopHandlers());
-    await expect(failure).rejects.toThrow(/slack_webapi_rate_limited_error.*startup may be retried/);
+    const failure = adapter.send({ text: 'notification content' });
+    await expect(failure).rejects.toThrow(/Slack chat\.postMessage failed \(slack_webapi_rate_limited_error\)/);
     await expect(failure).rejects.not.toThrow(/operator text|xoxb-secret/);
+    await adapter.stop();
   });
 
   it('identifies the startup step when a non-coded response is malformed', async () => {
@@ -324,6 +319,7 @@ describe('SlackAdapter scripted transport', () => {
     await adapter.stop();
     await adapter.stop();
     await adapter.start(handlers);
+    expect(fake.web.posts).toEqual([]);
     fake.socket.emit(messageRequest('after-restart', 'once'));
     await until(() => handled.length === 1);
     expect(handled).toEqual(['once']);
@@ -382,7 +378,7 @@ describe('SlackAdapter scripted transport', () => {
     fake.web.posts.length = 0;
     await adapter.send({ text: 'x'.repeat(3001), actions: [{ label: 'Yes', command: '/respond 1 1' }] });
     expect(fake.web.posts).toHaveLength(2);
-    expect(sleeps).toEqual([1000, 1000]);
+    expect(sleeps).toEqual([1000]);
     expect(fake.web.posts[0]?.blocks).toBeUndefined();
     expect(fake.web.posts[1]?.blocks).toBeDefined();
     await adapter.stop();

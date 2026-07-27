@@ -41,8 +41,7 @@ not match the configured operator. It reveals no fleet information in response.
 > actions nondeterministically and without an error.
 
 For a multi-fleet workspace, make `display_information.name` and `bot_user.display_name` identify the
-fleet. That makes each private App Home conversation, startup greeting, and notification visibly
-attributable.
+fleet. That makes each private App Home conversation and notification visibly attributable.
 
 ## 2. Create the Slack app from a manifest
 
@@ -176,13 +175,9 @@ service with `KeepAlive` on macOS or a systemd user service with `Restart=on-fai
 fleets recover from ordinary boot-time network races. Apply equivalent restart policy if you maintain a
 custom service definition.
 
-The configured operator should receive one short startup greeting after the bot token is validated, the
-operator DM is resolved, outbound posting is verified, and Socket Mode is connected. The greeting is sent
-once per Conductor process start, not after ordinary Socket Mode reconnects.
-
-If the greeting reaches the wrong person, disable Slack immediately and correct
-`CONDUCTOR_SLACK_OPERATOR_USER_ID`. If the intended operator receives nothing, inspect startup logs before
-trusting the integration with notifications.
+Startup validates the bot token, resolves the configured operator DM, and connects Socket Mode without
+posting a Slack message. Inspect startup logs to confirm the connection, then verify inbound commands and
+outbound notifications explicitly before trusting the integration.
 
 In Slack, open **Apps > Agent Conductor > Messages**, then try:
 

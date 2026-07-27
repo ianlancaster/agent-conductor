@@ -11,8 +11,6 @@ const STARTUP_TIMEOUT_MS = 45_000;
 const DEDUP_LIMIT = 500;
 const SEND_INTERVAL_MS = 1_000;
 const STOP_GRACE_MS = 5_000;
-const STARTUP_GREETING =
-  'Conductor connected to this private App Home conversation. Only the configured Slack operator can operate the configured fleet.';
 
 export interface SlackAdapterConfig {
   appToken: string;
@@ -124,10 +122,6 @@ export class SlackAdapter implements ChannelAdapter {
     clients.socket.on('slack_event', this.socketListener);
     await startupStep('Socket Mode connection', async () => {
       await clients.socket.start();
-      this.requireGeneration(generation);
-    });
-    await startupStep('startup greeting', async () => {
-      await this.post({ text: STARTUP_GREETING });
       this.requireGeneration(generation);
     });
     this.accepting = true;
