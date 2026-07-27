@@ -9,6 +9,10 @@ import type { RecentMessageActivity } from '../store/index.js';
 
 const SENTINEL_DOWN_WARN_INTERVAL_MS = 10 * 60 * 1000;
 
+function normalizeTimestamp(timestamp: string): string {
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u.test(timestamp) ? `${timestamp.replace(' ', 'T')}.000Z` : timestamp;
+}
+
 function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return a.size === b.size && [...a].every((item) => b.has(item));
 }
@@ -131,6 +135,7 @@ export class StallSentinelRouter {
   }
 
   async handleStall(session: string, kind: StallKind, info: StallInfo): Promise<void> {
+    const detectedAt = info.detectedAt ?? new Date().toISOString();
     this.deps.logEvent(session, `stall_${kind}`, info.reason);
 
     // The sentinel spends its life idle between stalls — that is its normal
@@ -153,12 +158,12 @@ export class StallSentinelRouter {
 
     // Pause is the temporary override and therefore wins when auto is also off.
     if (this.deps.isPaused(session)) {
-      this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'ignored-paused' });
+      this.deps.events?.emit({ type: 'stall', session, kind, detectedAt, disposition: 'ignored-paused' });
       log().debug('sentinel', `${session}: ${kind} stall ignored (session is paused)`);
       return;
     }
     if (!this.deps.isAuto(session)) {
-      this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'ignored-auto-off' });
+      this.deps.events?.emit({ type: 'stall', session, kind, detectedAt, disposition: 'ignored-auto-off' });
       log().debug('sentinel', `${session}: ${kind} stall ignored (auto is off)`);
       return;
     }
@@ -172,7 +177,7 @@ export class StallSentinelRouter {
       contentSimilarity(capture, last.capture) > this.deps.config.suppressSimilarity
     ) {
       this.deps.logEvent(session, 'stall_suppressed', `similar ${kind} stall within window`);
-      this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'suppressed' });
+      this.deps.events?.emit({ type: 'stall', session, kind, detectedAt, disposition: 'suppressed' });
       return;
     }
 
@@ -187,9 +192,9 @@ export class StallSentinelRouter {
       const communications = this.recentCommunications(session);
       this.deps.logEvent(session, 'stall_reported', `${kind} → operator`);
       await this.deps.notifyOperator(
-        `⚠️ ${session} stalled (${kind})${summary}${communications.length > 0 ? `\nRecent conductor messages:\n${communications.join('\n')}` : ''}`,
+        `⚠️ ${session} stalled (${kind}) at ${detectedAt}${summary}${communications.length > 0 ? `\nRecent conductor messages:\n${communications.join('\n')}` : ''}`,
       );
-      this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'reported-to-operator' });
+      this.deps.events?.emit({ type: 'stall', session, kind, detectedAt, disposition: 'reported-to-operator' });
       return;
     }
 
@@ -199,9 +204,11 @@ export class StallSentinelRouter {
       const now = Date.now();
       if (now - this.lastSentinelDownWarnAt > SENTINEL_DOWN_WARN_INTERVAL_MS) {
         this.lastSentinelDownWarnAt = now;
-        await this.deps.notifyOperator(`⚠️ ${session} stalled (${kind}) but sentinel ${sentinel} is not running.`);
+        await this.deps.notifyOperator(
+          `⚠️ ${session} stalled (${kind}) at ${detectedAt} but sentinel ${sentinel} is not running.`,
+        );
       }
-      this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'sentinel-down' });
+      this.deps.events?.emit({ type: 'stall', session, kind, detectedAt, disposition: 'sentinel-down' });
       return;
     }
 
@@ -218,10 +225,11 @@ export class StallSentinelRouter {
       stallEnvelope(
         session,
         kind,
+        detectedAt,
         `last: ${truncate(lastMessage, 400)}${communications.length > 0 ? `\nrecent conductor messages:\n${communications.join('\n')}` : ''}`,
       ),
     );
-    this.deps.events?.emit({ type: 'stall', session, kind, disposition: 'routed' });
+    this.deps.events?.emit({ type: 'stall', session, kind, detectedAt, disposition: 'routed' });
   }
 
   stop(): void {
@@ -279,25 +287,26 @@ export class StallSentinelRouter {
       return;
     }
     this.fleetNotified = true;
+    const detectedAt = new Date().toISOString();
     const thresholdSeconds = this.deps.config.fleetStallThresholdSeconds;
     const detail = `all non-working for ${String(thresholdSeconds)}s: ${sessions.join(', ')}`;
     this.deps.logEvent('fleet', 'fleet_stall', detail);
 
     const sentinel = this.sentinel;
     if (sentinel === undefined) {
-      await this.deps.notifyOperator(`🚨 Fleet stalled: ${sessions.join(', ')}.`);
-      this.deps.events?.emit({ type: 'fleet.stalled', sessions, disposition: 'reported-to-operator' });
+      await this.deps.notifyOperator(`🚨 Fleet stalled at ${detectedAt}: ${sessions.join(', ')}.`);
+      this.deps.events?.emit({ type: 'fleet.stalled', sessions, detectedAt, disposition: 'reported-to-operator' });
       return;
     }
     if (!(await this.deps.isActive(sentinel))) {
       await this.deps.notifyOperator(
-        `🚨 Fleet stalled (${sessions.join(', ')}) but sentinel ${sentinel} is not running.`,
+        `🚨 Fleet stalled at ${detectedAt} (${sessions.join(', ')}) but sentinel ${sentinel} is not running.`,
       );
-      this.deps.events?.emit({ type: 'fleet.stalled', sessions, disposition: 'sentinel-down' });
+      this.deps.events?.emit({ type: 'fleet.stalled', sessions, detectedAt, disposition: 'sentinel-down' });
       return;
     }
-    await this.deps.deliver(sentinel, fleetStallEnvelope(sessions, thresholdSeconds));
-    this.deps.events?.emit({ type: 'fleet.stalled', sessions, disposition: 'routed' });
+    await this.deps.deliver(sentinel, fleetStallEnvelope(sessions, thresholdSeconds, detectedAt));
+    this.deps.events?.emit({ type: 'fleet.stalled', sessions, detectedAt, disposition: 'routed' });
   }
 
   private async captureStripped(session: string): Promise<string> {
@@ -328,7 +337,7 @@ export class StallSentinelRouter {
       const direction =
         message.sender === session ? `outbound to ${message.recipient}` : `inbound from ${message.sender}`;
       const timestamp = message.delivered_at ?? message.cancelled_at ?? message.created_at;
-      return `- #${String(message.id)} ${direction} ${message.status} at ${timestamp}`;
+      return `- #${String(message.id)} ${direction} ${message.status} at ${normalizeTimestamp(timestamp)}`;
     });
   }
 }

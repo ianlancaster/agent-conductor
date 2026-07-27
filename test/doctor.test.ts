@@ -61,6 +61,30 @@ describe('conductor doctor', () => {
     expect(formatPreflight(results)).toContain('✓ Event journal: enabled; no recorded write failures');
   });
 
+  it('reports a healthy iTerm backend without a recurring first-use permission warning', async () => {
+    writeFileSync(
+      join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
+      'terminal:\n  backend: iterm\nruntimes:\n  claudeCode:\n    binary: claude\n',
+    );
+    const results = await runPreflight(
+      baseDir,
+      dependencies({
+        platform: 'darwin',
+        command: (name) => ({
+          ok: ['claude', 'codex', 'git', 'curl', 'osascript', 'open'].includes(name),
+          stdout: `${name} test`,
+        }),
+      }),
+    );
+
+    expect(results).toContainEqual({
+      level: 'pass',
+      label: 'iTerm backend',
+      detail: 'iTerm2 and AppleScript are available',
+    });
+    expect(results.some((item) => item.label === 'iTerm automation')).toBe(false);
+  });
+
   it('warns when a previous journal write failure made the exported history incomplete', async () => {
     const dataDir = join(baseDir, '.conductor', 'data');
     mkdirSync(dataDir, { recursive: true });

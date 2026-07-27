@@ -19,7 +19,7 @@ import { installDaemon, uninstallDaemon } from './daemon.js';
 import { formatPreflight, preflightFailures, runPreflight } from './doctor.js';
 import { subscribeFeed } from './feed.js';
 import { killFleetConductor } from './kill.js';
-import { ensureFleetScaffold, renderOnboardingCommands } from './scaffold.js';
+import { ensureFleetScaffold } from './scaffold.js';
 import { DEFAULT_STATUS_INTERVAL, parseStatusInterval, runStatusDashboard } from './live-status.js';
 import { configureStatusLines } from './statusline.js';
 import { formatTerminalReply } from './terminal-format.js';
@@ -249,8 +249,6 @@ program
     if (created.length > 0) {
       log('Initialized missing fleet files:');
       for (const file of created) log(`  ${file}`);
-      log('\nFirst-session onboarding:');
-      log(renderOnboardingCommands());
     }
 
     // Ownership takes precedence over host prerequisites. `start` must never

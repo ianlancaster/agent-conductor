@@ -26,26 +26,26 @@ tarball. Both binary versions must equal the asset version.
 ## Lane A — Claude Code onboarding in iTerm2
 
 1. Create and enter a new empty directory: `FLEET="$(mktemp -d)" && cd "$FLEET"`.
-2. Run `conductor doctor`. Require no failures; the iTerm automation warning is expected before
-   first use.
-3. Run `conductor start`. Require the copy-once scaffold list, exactly one first-session onboarding
-   block, and the `conductor>` prompt in the same terminal. Do not use another fleet.
-4. Run the printed `/spawn onboarding-helper` command, move to the agent pane Conductor opens, and
-   paste the printed onboarding brief directly into the assistant.
+2. Read the iTerm2 Automation-permission note in `docs/getting-started.md`, then run
+   `conductor doctor` and require no failures.
+3. Run `conductor start`. Require the scaffold list and the `conductor>` prompt in the same
+   terminal. Require no onboarding promotion or platform-permission reminder in routine CLI output.
+4. Follow the README quick start: run `/spawn onboarding-helper`, move to the agent pane Conductor
+   opens, and paste the documented onboarding brief directly into the assistant.
 5. Require the Claude Code session to call `get_conductor_docs`, read `onboarding` and
    `fleet-configuration`, identify the authoritative disposable paths, and ask one decision at a
    time. Confirm it does not expose `.env` values or enable optional automation without approval.
 6. Approve only a minimal hand-driven setup. Require clean `conductor validate` and
    `conductor doctor`, a message round trip, status, stop, and continue.
 7. Stop with Ctrl-C. Require the Conductor process to end. Run `conductor start` again and require
-   that the first-session onboarding block is not printed a second time.
+   clean, concise startup output.
 8. Delete only the disposable fleet after recording evidence.
 
 ## Lane B — Codex onboarding
 
 1. Create a second disposable fleet and run `conductor start`.
-2. Run the printed Codex variant: `/spawn onboarding-helper -r codex`.
-3. Move to the agent pane Conductor opens and paste the printed onboarding brief directly into the
+2. Run the documented Codex variant: `/spawn onboarding-helper -r codex`.
+3. Move to the agent pane Conductor opens and paste the README's onboarding brief directly into the
    assistant.
 4. Require the same handbook discovery, one-decision interview, secret handling, manual-session
    shakedown, validation, doctor, status, stop, and continue evidence as Lane A.

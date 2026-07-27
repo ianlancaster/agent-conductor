@@ -6,6 +6,8 @@ import type { PaneRef, RuntimeEvent, StallKind } from './types.js';
 export interface StallInfo {
   reason?: string;
   transcriptPath?: string;
+  /** ISO-8601 instant when Conductor mechanically classified the stall. */
+  detectedAt?: string;
 }
 
 export interface HealthDeps {
@@ -86,13 +88,13 @@ export class HealthMonitor {
         this.activeTurnIds.delete(session);
         const info: StallInfo = { reason: event.reason, transcriptPath: event.transcriptPath };
         if (this.deps.config.idleConfirmMs <= 0) {
-          this.deps.onStall(session, 'idle', info);
+          this.reportStall(session, 'idle', info);
           return;
         }
         const timer = setTimeout(() => {
           this.idleTimers.delete(session);
           if (this.turnPhases.get(session) !== 'complete') return;
-          this.deps.onStall(session, 'idle', info);
+          this.reportStall(session, 'idle', info);
         }, this.deps.config.idleConfirmMs);
         timer.unref();
         this.idleTimers.set(session, timer);
@@ -100,7 +102,7 @@ export class HealthMonitor {
       }
       case 'notification':
         this.turnPhases.set(session, 'interrupted');
-        this.deps.onStall(session, 'blocked', { reason: event.reason, transcriptPath: event.transcriptPath });
+        this.reportStall(session, 'blocked', { reason: event.reason, transcriptPath: event.transcriptPath });
         return;
       case 'compaction':
         this.turnPhases.set(session, 'interrupted');
@@ -282,7 +284,7 @@ export class HealthMonitor {
     if (beats >= this.deps.config.stallBeatsThreshold && !this.silentNotified.has(session)) {
       this.silentNotified.add(session);
       this.turnPhases.set(session, 'complete');
-      this.deps.onStall(session, 'silent', {});
+      this.reportStall(session, 'silent', {});
     }
   }
 
@@ -305,7 +307,7 @@ export class HealthMonitor {
       if (this.turnPhases.get(session) !== 'interrupted') return;
       if (activity === 'idle') {
         this.turnPhases.set(session, 'complete');
-        this.deps.onStall(session, 'compaction', info);
+        this.reportStall(session, 'compaction', info);
         return;
       }
       this.turnPhases.set(session, 'active');
@@ -316,5 +318,9 @@ export class HealthMonitor {
         `${session}: post-compaction composer check failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  private reportStall(session: string, kind: StallKind, info: StallInfo): void {
+    this.deps.onStall(session, kind, { ...info, detectedAt: new Date().toISOString() });
   }
 }

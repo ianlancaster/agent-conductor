@@ -33,12 +33,12 @@ export function conductorEnvelope(message: string): string {
   return `[Message from conductor] ${message}`;
 }
 
-export function stallEnvelope(session: string, kind: string, detail: string): string {
-  return `[Stall] session=${session} kind=${kind} ${detail}`;
+export function stallEnvelope(session: string, kind: string, detectedAt: string, detail: string): string {
+  return `[Stall] session=${session} kind=${kind} detected-at=${detectedAt} ${detail}`;
 }
 
-export function fleetStallEnvelope(sessions: readonly string[], seconds: number): string {
-  return `[Fleet Stall] sessions=${sessions.join(',')} all-nonworking-for=${seconds}s Investigate immediately.`;
+export function fleetStallEnvelope(sessions: readonly string[], seconds: number, detectedAt: string): string {
+  return `[Fleet Stall] sessions=${sessions.join(',')} all-nonworking-for=${seconds}s detected-at=${detectedAt} Investigate immediately.`;
 }
 
 export function truncate(text: string, max: number): string {

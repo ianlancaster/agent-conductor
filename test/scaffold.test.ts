@@ -4,12 +4,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  ensureFleetScaffold,
-  ONBOARDING_PROMPT,
-  renderOnboardingCommands,
-  renderSupervisorConfig,
-} from '../src/cli/scaffold.js';
+import { ensureFleetScaffold, renderSupervisorConfig } from '../src/cli/scaffold.js';
 import { deriveInstanceDefaults } from '../src/config/instance.js';
 import { loadSupervisorConfig, validateConfig } from '../src/config/loader.js';
 
@@ -107,16 +102,6 @@ describe('ensureFleetScaffold', () => {
     expect(ensureFleetScaffold(baseDir)).toEqual([]);
   });
 
-  it('renders a working first-session command and version-matched onboarding brief', () => {
-    const commands = renderOnboardingCommands();
-    expect(commands).toContain('/spawn onboarding-helper');
-    expect(commands).toContain('/spawn onboarding-helper -r codex');
-    expect(commands).toContain('paste this prompt directly');
-    expect(commands).toContain(ONBOARDING_PROMPT);
-    expect(commands).not.toContain('/tell');
-    expect(commands).toContain('get_conductor_docs');
-  });
-
   it('fills missing files in a legacy root-level fleet without migrating it implicitly', () => {
     const supervisorFile = join(baseDir, 'config', 'supervisor.yaml');
     mkdirSync(join(baseDir, 'config'), { recursive: true });
@@ -140,18 +125,30 @@ describe('conductor start initialization', () => {
       ['--import', 'tsx', join(process.cwd(), 'src', 'cli', 'index.ts'), '-C', baseDir, 'start', '--foreground'],
       {
         env: { ...process.env, TMUX: 'conductor-scaffold-test' },
-        stdio: 'ignore',
+        stdio: ['ignore', 'pipe', 'ignore'],
       },
     );
+    let stdout = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
 
     try {
       const environmentFile = join(baseDir, '.conductor', '.env');
       const deadline = Date.now() + 5_000;
-      while (!existsSync(environmentFile) && child.exitCode === null && Date.now() < deadline) {
+      while (
+        (!existsSync(environmentFile) || !stdout.includes('Initialized missing fleet files:')) &&
+        child.exitCode === null &&
+        Date.now() < deadline
+      ) {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       expect(existsSync(environmentFile)).toBe(true);
       expect(existsSync(join(baseDir, '.conductor', 'config', 'supervisor.yaml'))).toBe(true);
+      expect(stdout).toContain('Initialized missing fleet files:');
+      expect(stdout).not.toContain('First-session onboarding');
+      expect(stdout).not.toContain('iTerm automation');
     } finally {
       child.kill('SIGTERM');
       await new Promise<void>((resolve) => {

@@ -17,6 +17,7 @@ let backend: FakeTerminalBackend;
 let runtime: FakeRuntime;
 let monitor: HealthMonitor;
 let stalls: Recorded[];
+let stallDetections: string[];
 let sessionEnds: string[];
 let working: string[];
 let observed: string[];
@@ -31,6 +32,7 @@ beforeEach(async () => {
   paneId = pane.id;
   backend.panes.get(paneId)!.sessionActive = true;
   stalls = [];
+  stallDetections = [];
   sessionEnds = [];
   working = [];
   observed = [];
@@ -43,7 +45,10 @@ beforeEach(async () => {
     getActiveSessions: () => ['alpha'],
     onRuntimeObserved: (session) => observed.push(session),
     activityForPane: async () => paneActivity,
-    onStall: (session, kind, info) => stalls.push({ session, kind, reason: info.reason }),
+    onStall: (session, kind, info) => {
+      stalls.push({ session, kind, reason: info.reason });
+      if (info.detectedAt !== undefined) stallDetections.push(info.detectedAt);
+    },
     onWorking: (session) => working.push(session),
     onSessionEnd: (session) => sessionEnds.push(session),
     logEvent: () => undefined,
@@ -65,10 +70,12 @@ function event(
 
 describe('event-driven signals', () => {
   it('turns a stop event into an idle stall after the quiet period without losing its message', () => {
+    vi.setSystemTime(new Date('2026-07-27T07:00:00.000Z'));
     event('stop', 'All tests passed.');
     expect(stalls).toEqual([]);
     vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
     expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'All tests passed.' }]);
+    expect(stallDetections).toEqual(['2026-07-27T07:00:15.000Z']);
   });
 
   it('cancels the idle timer when another event arrives (session got new work)', () => {

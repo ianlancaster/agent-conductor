@@ -215,11 +215,13 @@ the worker. The sentinel decides whether the compacted session should resume and
 fleet-specific reorientation prompt when it should.
 
 The sentinel receives a self-contained `[Stall]` or `[Fleet Stall]` message and decides what
-to do. It can inspect structured status or recent pane output, send one precise nudge, ask
-the operator through `send_to_operator`, or deliberately do nothing when the agent really
-finished. Fleet-specific rules—what is safe to retry, what requires approval, and when to
-escalate—belong in the sentinel's instructions rather than in Conductor core. If no sentinel
-is configured, Conductor sends stall alerts directly to the operator.
+to do. Each alert includes the ISO-8601 UTC time Conductor classified the stall; recent direct-message
+facts use the same timestamp format so the sentinel can compare communication to the stall boundary.
+It can inspect structured status or recent pane output, send one precise nudge, ask the operator
+through `send_to_operator`, or deliberately do nothing when the agent really finished.
+Fleet-specific rules—what is safe to retry, what requires approval, and when to escalate—belong in
+the sentinel's instructions rather than in Conductor core. If no sentinel is configured, Conductor
+sends stall alerts directly to the operator.
 
 ## Is Agent Conductor the right tool?
 

@@ -76,12 +76,16 @@ export type ConductorEvent = ConductorEventEnvelope &
         readonly type: 'stall';
         readonly session: string;
         readonly kind: 'idle' | 'blocked' | 'compaction' | 'silent';
+        /** Mechanical classification time; may precede occurredAt when routing performs async work. */
+        readonly detectedAt: string;
         readonly disposition:
           'routed' | 'suppressed' | 'reported-to-operator' | 'sentinel-down' | 'ignored-auto-off' | 'ignored-paused';
       }
     | {
         readonly type: 'fleet.stalled';
         readonly sessions: readonly string[];
+        /** Mechanical fleet-stall classification time. */
+        readonly detectedAt: string;
         readonly disposition: 'routed' | 'reported-to-operator' | 'sentinel-down';
       }
     | {

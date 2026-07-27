@@ -405,10 +405,13 @@ captures the last assistant message, and—when auto is enabled—routes that ev
 The sentinel then decides whether completed work needs no action, an unfinished plan needs a precise
 nudge, or an ambiguous state needs inspection or operator judgment.
 
-Individual stall notifications include up to three recent direct-message facts involving the
-session: receipt id, direction, peer, status, and timestamp. Message bodies and broadcasts are not
-included. This lets the sentinel distinguish “reported and waiting” from “no Conductor signal was
-ever sent” without reading conversation content.
+Individual stall notifications include `detected-at`, the ISO-8601 UTC instant when Conductor
+mechanically classified the condition after any confirmation delay. They also include up to three
+recent direct-message facts involving the session: receipt id, direction, peer, status, and an
+explicit ISO-8601 UTC timestamp. Message bodies and broadcasts are not included. This lets the
+sentinel compare communication to the stall boundary and distinguish “reported and waiting” from
+“no Conductor signal was ever sent” without reading conversation content. Fleet-stall notifications
+carry the same `detected-at` field.
 
 Auto should mean “this session's stall deserves Sentinel assessment,” not “idle is always a defect.”
 A worker waiting at an explicit review or approval gate may correctly remain idle.
@@ -807,7 +810,7 @@ Every `ConductorEvent` has `schemaVersion`, `id`, `seq`, `occurredAt`,
 `conductorInstanceId`, `fleetId`, and a discriminating `type`. The supported vocabulary covers:
 
 - session registration, deregistration, start, readiness, stop, and activity transitions;
-- individual stall and fleet-stall dispositions;
+- individual stall and fleet-stall dispositions with their mechanical detection times;
 - schedule outcomes;
 - selectable operator-request creation and resolution;
 - direct-message creation, delivery, and cancellation;

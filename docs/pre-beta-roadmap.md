@@ -286,7 +286,8 @@ conduct a safe, informed onboarding interview using the version-matched Conducto
 - Add `onboarding` to `CONDUCTOR_DOC_TOPICS` and `docs/agent-guide.md`.
 - Add a `conductor doctor` command backed by reusable preflight checks.
 - Run blocking preflight checks automatically from `conductor start`.
-- Print a copyable first-agent onboarding prompt after initial scaffolding.
+- Keep the copyable first-agent onboarding prompt in the README and getting-started documentation;
+  routine CLI startup output remains operational rather than promotional.
 - Rewrite the README and getting-started path around the packed-package experience.
 - Integrate PR Shepherd setup into the onboarding flow.
 - Document the existing Claude Code auto-memory override alongside other runtime preferences.
@@ -316,7 +317,8 @@ and finish with evidence rather than a generic success statement.
 
 ### Suggested first-agent prompt
 
-`conductor start` should print this only when it creates the initial fleet scaffold:
+The README and getting-started guide should present this copyable prompt; `conductor start` should
+not print it:
 
 > Help me onboard this Conductor fleet. First call `get_conductor_docs` without a topic, then read
 > `onboarding` and `fleet-configuration`. Interview me one decision at a time, explain the safe
@@ -350,7 +352,8 @@ reject a valid fleet merely because an unused optional adapter is unavailable.
 ### Acceptance gate
 
 - Documentation-topic completeness tests include `onboarding`.
-- A fresh fleet prints the onboarding prompt once; routine restarts stay quiet.
+- A fresh fleet prints only created scaffold paths; onboarding guidance remains easy to copy from
+  documentation and routine restarts stay quiet.
 - The copyable spawn command and prompt create a working first-session flow.
 - Doctor tests cover success and each blocker with platform-appropriate remediation.
 - Start fails before creating an orphan child when a blocking preflight fails.
@@ -518,11 +521,11 @@ This ledger is intentionally empty at roadmap creation. Each trunk should add it
 plan, changeset, commit, pushed ref, local-link verification, and certification evidence when it
 closes.
 
-| Trunk                          | Status                | Plan        | Changeset                 | Commit    | Verification                                                |
-| ------------------------------ | --------------------- | ----------- | ------------------------- | --------- | ----------------------------------------------------------- |
-| 1. Codex instruction transport | Certification pending | Implemented | `calm-codex-homes`        | `a9694dc` | Automated gate green; disposable live-Codex matrix pending  |
-| 2. Consumer extension contract | Complete              | Implemented | `open-runtime-seams`      | `5a44acb` | Packed TypeScript/import consumer green                     |
-| 3. Mandatory protocol boundary | Complete              | Implemented | `lean-conductor-protocol` | `f70985b` | 3.2 KB; invariant, schema, and full-gate tests green        |
-| 4. Onboarding and diagnostics  | Complete              | Implemented | `bright-onboarding-path`  | `40575cd` | Doctor blocker matrix and copy-once onboarding tests green  |
-| 5. Package and GitHub release  | Complete              | Implemented | `clean-github-beta`       | `4b33212` | npm/pnpm/Yarn packed installs and consumer smoke green      |
-| 6. Cohort certification        | Operator test ready   | Implemented | —                         | —         | Automated rows green; disposable runtime/iTerm lanes remain |
+| Trunk                          | Status                | Plan        | Changeset                 | Commit    | Verification                                                 |
+| ------------------------------ | --------------------- | ----------- | ------------------------- | --------- | ------------------------------------------------------------ |
+| 1. Codex instruction transport | Certification pending | Implemented | `calm-codex-homes`        | `a9694dc` | Automated gate green; disposable live-Codex matrix pending   |
+| 2. Consumer extension contract | Complete              | Implemented | `open-runtime-seams`      | `5a44acb` | Packed TypeScript/import consumer green                      |
+| 3. Mandatory protocol boundary | Complete              | Implemented | `lean-conductor-protocol` | `f70985b` | 3.2 KB; invariant, schema, and full-gate tests green         |
+| 4. Onboarding and diagnostics  | Complete              | Implemented | `bright-onboarding-path`  | `40575cd` | Doctor blocker matrix and documentation-led onboarding green |
+| 5. Package and GitHub release  | Complete              | Implemented | `clean-github-beta`       | `4b33212` | npm/pnpm/Yarn packed installs and consumer smoke green       |
+| 6. Cohort certification        | Operator test ready   | Implemented | —                         | —         | Automated rows green; disposable runtime/iTerm lanes remain  |

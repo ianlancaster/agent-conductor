@@ -113,8 +113,8 @@ paths, or arbitrary runtime reason strings.
 | `session.ready`             | `session`; emitted once when a run is first proven ready                          |
 | `session.stopped`           | `session`; `cause: requested \| runtime-exit \| pane-missing \| launch-failed`    |
 | `session.activity.changed`  | `session`; `previous`; `activity`; transition-only                                |
-| `stall`                     | `session`; `kind`; mechanical `disposition`                                       |
-| `fleet.stalled`             | `sessions`; `disposition: routed \| reported-to-operator \| sentinel-down`        |
+| `stall`                     | `session`; `kind`; `detectedAt`; mechanical `disposition`                         |
+| `fleet.stalled`             | `sessions`; `detectedAt`; routed/operator/sentinel-down `disposition`             |
 | `schedule`                  | `session`; `label`; `outcome: fired \| fired-fresh \| deferred-paused \| failed`  |
 | `operator.request.created`  | `session`; `requestId`; `optionCount`                                             |
 | `operator.request.resolved` | `session`; `requestId`; one-based `selectedOption`                                |
@@ -131,7 +131,9 @@ The `stall` dispositions are `routed`, `suppressed`, `reported-to-operator`, `se
 `ignored-auto-off`, and `ignored-paused`. Pause takes precedence when a session is both paused and
 has auto disabled. A `compaction` stall is emitted only after compact completion and a debounced,
 runtime-owned composer check proves that the session is waiting; automatically resumed work emits
-no compaction stall. The sentinel's own ordinary idle periods intentionally emit no stall event.
+no compaction stall. `detectedAt` is the classification instant after that confirmation; the
+envelope's `occurredAt` is the later event-emission instant and may differ while routing performs
+asynchronous checks. The sentinel's own ordinary idle periods intentionally emit no stall event.
 New `session.activity.changed` events use only `working`, `idle`, and `stopped`. Schema-v1 journals
 written by earlier beta builds may contain the retired `stalled` value; consumers should normalize
 that legacy value to `idle` while reading historical exports.

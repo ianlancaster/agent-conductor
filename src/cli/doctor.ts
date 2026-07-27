@@ -198,15 +198,6 @@ export async function runPreflight(
             'iTerm2 on macOS with osascript is required; or select terminal.backend: tmux',
           ),
     );
-    if (deps.platform === 'darwin' && osascript && iterm) {
-      results.push(
-        result(
-          'warn',
-          'iTerm automation',
-          'macOS may ask permission on first launch; allow your terminal to control iTerm2',
-        ),
-      );
-    }
   }
 
   for (const command of ['git', 'curl']) {

@@ -21,7 +21,7 @@
 | Extensibility  | PASS   | Packed external TypeScript/import consumer using only package exports                     |
 | PR Shepherd    | PASS   | Engine, service, singleton, sinks, direct/queue policy, and profile suites                |
 | Package        | PASS   | 271-entry allowlist; npm, pnpm, and Yarn Classic global installs; aligned binary versions |
-| Fresh scaffold | PASS   | Packed doctor/start, copy-once onboarding prompt, no orphan child on preflight failure    |
+| Fresh scaffold | PASS   | Packed doctor/start, concise scaffold output, no orphan child on preflight failure        |
 
 ## Operator-owned evidence
 

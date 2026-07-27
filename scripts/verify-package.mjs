@@ -116,7 +116,10 @@ try {
   const fleetEnv = { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}`, TMUX: 'package-test' };
   run(conductor, ['-C', fleet, 'doctor'], { env: fleetEnv });
   const startOutput = run(conductor, ['-C', fleet, 'start'], { env: fleetEnv, input: '' });
-  if (!startOutput.includes('First-session onboarding')) throw new Error('fresh start omitted onboarding prompt');
+  if (!startOutput.includes('Initialized missing fleet files:')) throw new Error('fresh start omitted scaffold output');
+  if (startOutput.includes('First-session onboarding') || startOutput.includes('iTerm automation')) {
+    throw new Error('fresh start included documentation-owned onboarding or permission guidance');
+  }
   if (!existsSync(join(fleet, '.conductor', 'config', 'supervisor.yaml'))) {
     throw new Error('fresh start did not create the fleet scaffold');
   }

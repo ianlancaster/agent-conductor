@@ -94,12 +94,24 @@ afterEach(() => {
 describe('stall routing', () => {
   it('routes a stall as ONE self-contained message with the truncated last message', async () => {
     runtime.transcripts.set('/tmp/transcript.jsonl', 'I finished the refactor.');
-    await router.handleStall('alpha', 'idle', { transcriptPath: '/tmp/transcript.jsonl' });
+    await router.handleStall('alpha', 'idle', {
+      transcriptPath: '/tmp/transcript.jsonl',
+      detectedAt: '2026-07-27T07:03:08.123Z',
+    });
 
     expect(delivered.length).toBe(1);
     expect(delivered[0]?.session).toBe('watch');
-    expect(delivered[0]?.text).toContain('[Stall] session=alpha kind=idle');
+    expect(delivered[0]?.text).toContain('[Stall] session=alpha kind=idle detected-at=2026-07-27T07:03:08.123Z');
     expect(delivered[0]?.text).toContain('I finished the refactor.');
+    expect(events.events).toContainEqual(
+      expect.objectContaining({
+        type: 'stall',
+        session: 'alpha',
+        kind: 'idle',
+        detectedAt: '2026-07-27T07:03:08.123Z',
+        disposition: 'routed',
+      }),
+    );
     // No follow-up tool calls required: the message IS the whole surface.
     expect(delivered[0]?.text).not.toContain('get_stall_queue');
     expect(delivered[0]?.text).not.toContain('resolve_stall');
@@ -129,8 +141,8 @@ describe('stall routing', () => {
     await router.handleStall('alpha', 'idle', { reason: 'waiting' });
 
     expect(delivered[0]?.text).toContain('recent conductor messages:');
-    expect(delivered[0]?.text).toContain('#42 outbound to beta delivered at 2026-07-26 12:00:01');
-    expect(delivered[0]?.text).toContain('#41 inbound from beta cancelled at 2026-07-26 11:59:02');
+    expect(delivered[0]?.text).toContain('#42 outbound to beta delivered at 2026-07-26T12:00:01.000Z');
+    expect(delivered[0]?.text).toContain('#41 inbound from beta cancelled at 2026-07-26T11:59:02.000Z');
   });
 
   it('falls back to the stall reason, then a placeholder, when no transcript is available', async () => {
@@ -152,36 +164,42 @@ describe('stall routing', () => {
     autoSessions.delete('alpha');
     await router.handleStall('alpha', 'idle', {});
     expect(delivered).toEqual([]);
-    expect(events.events).toContainEqual({
-      type: 'stall',
-      session: 'alpha',
-      kind: 'idle',
-      disposition: 'ignored-auto-off',
-    });
+    expect(events.events).toContainEqual(
+      expect.objectContaining({
+        type: 'stall',
+        session: 'alpha',
+        kind: 'idle',
+        disposition: 'ignored-auto-off',
+      }),
+    );
   });
 
   it('ignores stalls while paused', async () => {
     pausedSessions.add('alpha');
     await router.handleStall('alpha', 'idle', {});
     expect(delivered).toEqual([]);
-    expect(events.events).toContainEqual({
-      type: 'stall',
-      session: 'alpha',
-      kind: 'idle',
-      disposition: 'ignored-paused',
-    });
+    expect(events.events).toContainEqual(
+      expect.objectContaining({
+        type: 'stall',
+        session: 'alpha',
+        kind: 'idle',
+        disposition: 'ignored-paused',
+      }),
+    );
   });
 
   it('reports paused as the mechanical reason when pause and auto-off both apply', async () => {
     pausedSessions.add('alpha');
     autoSessions.delete('alpha');
     await router.handleStall('alpha', 'idle', {});
-    expect(events.events).toContainEqual({
-      type: 'stall',
-      session: 'alpha',
-      kind: 'idle',
-      disposition: 'ignored-paused',
-    });
+    expect(events.events).toContainEqual(
+      expect.objectContaining({
+        type: 'stall',
+        session: 'alpha',
+        kind: 'idle',
+        disposition: 'ignored-paused',
+      }),
+    );
     expect(events.events).not.toContainEqual(expect.objectContaining({ disposition: 'ignored-auto-off' }));
   });
 
@@ -197,12 +215,14 @@ describe('stall routing', () => {
     await router.handleStall('alpha', 'idle', {});
     await router.handleStall('alpha', 'idle', {});
     expect(delivered.length).toBe(1);
-    expect(events.events).toContainEqual({
-      type: 'stall',
-      session: 'alpha',
-      kind: 'idle',
-      disposition: 'suppressed',
-    });
+    expect(events.events).toContainEqual(
+      expect.objectContaining({
+        type: 'stall',
+        session: 'alpha',
+        kind: 'idle',
+        disposition: 'suppressed',
+      }),
+    );
   });
 
   it('never suppresses a new stall kind merely because pane content is similar', async () => {
@@ -225,9 +245,12 @@ describe('stall routing', () => {
 
   it('reports stalls plainly to the operator when no sentinel is configured', async () => {
     router = makeRouter(undefined);
-    await router.handleStall('alpha', 'blocked', { reason: 'permission prompt' });
+    await router.handleStall('alpha', 'blocked', {
+      reason: 'permission prompt',
+      detectedAt: '2026-07-27T07:03:08.123Z',
+    });
     expect(operatorMessages.length).toBe(1);
-    expect(operatorMessages[0]).toContain('alpha stalled (blocked)');
+    expect(operatorMessages[0]).toContain('alpha stalled (blocked) at 2026-07-27T07:03:08.123Z');
     expect(operatorMessages[0]).toContain('permission prompt');
     // No preaching about configuring one.
     expect(operatorMessages[0]).not.toContain('sentinel');
@@ -296,10 +319,10 @@ describe('fleet stall watch', () => {
     await Promise.resolve();
     const fleet = delivered.filter((item) => item.text.startsWith('[Fleet Stall]'));
     expect(fleet).toHaveLength(1);
-    expect(fleet[0]).toEqual({
-      session: 'watch',
-      text: '[Fleet Stall] sessions=alpha,beta all-nonworking-for=0s Investigate immediately.',
-    });
+    expect(fleet[0]?.session).toBe('watch');
+    expect(fleet[0]?.text).toMatch(
+      /^\[Fleet Stall\] sessions=alpha,beta all-nonworking-for=0s detected-at=\d{4}-\d{2}-\d{2}T.*Z Investigate immediately\.$/u,
+    );
   });
 
   it('cancels confirmation when one member recovers, then rearms for a later fleet stall', async () => {

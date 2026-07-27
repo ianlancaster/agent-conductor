@@ -17,10 +17,10 @@ mkdir ~/fleet && cd ~/fleet
 conductor start
 ```
 
-Before launch, `conductor start` runs the same blocking checks as `conductor doctor`. The first start
-also prints a pane-driven onboarding flow. At the new `conductor>` prompt, run
-`/spawn onboarding-helper` for Claude Code or `/spawn onboarding-helper -r codex` for Codex. Move to
-the agent pane Conductor opens and paste the printed onboarding brief directly into the assistant.
+Before launch, `conductor start` runs the same blocking checks as `conductor doctor`. At the new
+`conductor>` prompt, run `/spawn onboarding-helper` for Claude Code or
+`/spawn onboarding-helper -r codex` for Codex. Move to the agent pane Conductor opens and paste the
+onboarding brief from the [README quick start](../README.md#quick-start) directly into the assistant.
 The agent will interview you one decision at a time and will keep optional automation off until one
 hand-driven session works. It can then offer the live runbook catalog. To request the built-in
 baseline directly, say: “Show me the runbook catalog and help me configure Engineering Management
@@ -33,9 +33,12 @@ Run the diagnostic report directly at any time:
 conductor doctor
 ```
 
-Failures block startup and include remediation. Warnings identify optional or first-use concerns,
-such as an unselected runtime, iTerm automation permission, or daemon installation from a source
-checkout.
+Failures block startup and include remediation. Warnings identify actionable configuration or
+environment concerns, such as an unselected runtime or daemon installation from a source checkout.
+
+When using the iTerm2 backend, macOS may request Automation permission the first time your terminal
+controls iTerm2. Grant that permission in the system prompt or in Privacy & Security settings. This
+first-use platform behavior is documented here; routine CLI output does not repeat it.
 
 The first start creates every missing fleet scaffold file automatically, then opens the operator console.
 Existing configuration and secrets are never overwritten. A new `supervisor.yaml` records the complete
@@ -223,8 +226,10 @@ because the sentinel is not running.)
    ```
 
    When `alpha` finishes a turn or gets stuck, the conductor sends the sentinel ONE
-   `[Stall]` message carrying the session, the stall kind, and the (truncated) last
-   message alpha stalled on. The sentinel acts with ordinary tools: `tail_session` to
+   `[Stall]` message carrying the session, the stall kind, the ISO-8601 UTC classification time,
+   and the (truncated) last message alpha stalled on. Recent direct-message facts use the same
+   time format so the sentinel can compare them to the stall boundary. The sentinel acts with
+   ordinary tools: `tail_session` to
    look deeper, `send_to_session` to nudge, `send_to_operator` to ask you — or does
    nothing if the stall is fine. Watch both panes to see it happen. `conductor logs
 alpha` shows the `stall_routed` trail.
