@@ -320,7 +320,7 @@ export class ConductorOperations {
               items: { type: 'string', minLength: 1 },
             },
             systemPromptFile: stringProperty(
-              'Role or policy instructions appended after the mandatory Conductor protocol',
+              'Durable role or policy instructions (max 5 KiB UTF-8), applied after the mandatory Conductor protocol at start/continue and retained across compaction',
             ),
             template: {
               ...stringProperty(

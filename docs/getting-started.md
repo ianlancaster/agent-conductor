@@ -12,6 +12,12 @@ Managed Claude Code and Codex sessions receive a small mandatory protocol plus t
 authoritative configuration paths, so an agent can help operate or maintain Conductor without
 preloading the full [managed-agent handbook](agent-guide.md).
 
+An optional session `systemPromptFile` adds durable role or policy instructions after that
+protocol. Conductor validates and privately snapshots at most 5 KiB of UTF-8 content on each start
+or continue. Claude Code retains its launch system-prompt layers across compaction; Codex restores
+the same prepared layers through its compact-only `SessionStart` hook. Neither path types a
+continuation prompt or writes instruction files into the working repository.
+
 ```bash
 mkdir ~/fleet && cd ~/fleet
 conductor start
@@ -313,7 +319,8 @@ primitive, not an approval or execution queue.
   and starts it; then `/tell scratch investigate X` gives it work. `/teardown scratch
 --delete` reverses it. Every common flag has a short alias (`-r` runtime, `-m` model, `-e` effort,
   `-d` path, `-t` template, `-w` worktree, `-b` branch, `-a` additional directory, `-D` delete;
-  placement `-P`/`-T`/`-W`) — `/help` lists them. `--system-prompt` attaches a role prompt.
+  placement `-P`/`-T`/`-W`) — `/help` lists them. `--system-prompt` attaches a durable role prompt
+  (maximum 5 KiB UTF-8) that is refreshed on start/continue and retained across compaction.
   `--runtime codex` spawns a Codex session instead of Claude Code; `--runtime cc` is shorthand
   for `--runtime claude-code` on spawn, start, and continue commands.
 - **Template sessions**: `/spawn researcher --template agent` clones a registered Git source,
@@ -354,7 +361,9 @@ primitive, not an approval or execution queue.
 - **Codex sessions**: set `runtime: codex`. Before every start or continue, the conductor
   generates `AGENTS.override.md` inside that session's isolated `CODEX_HOME`. The generated file
   inherits the active global Codex instructions, then adds the Conductor protocol and optional
-  session prompt. Repository instruction files still load through Codex normally; Conductor does
+  session prompt. Its compact-only `SessionStart` hook restores those same prepared protocol and
+  session layers as developer context; a down Conductor endpoint cannot suppress the local
+  restoration output. Repository instruction files still load through Codex normally; Conductor does
   not edit the repository or its `.gitignore`. The session also receives a mechanically scoped
   Conductor MCP endpoint and lifecycle notify hook.
 
@@ -388,11 +397,13 @@ snapshot. Piped or redirected status output is automatically one-shot.
 
 ## Troubleshooting
 
-| Symptom                                                 | Likely cause                                                                           |
-| ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `command not found: conductor`                          | Install the GitHub release tarball globally; then confirm its bin directory is on PATH |
-| `conductor validate` says OK but nothing is configured  | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                       |
-| Pane never launches / hangs on start                    | `claude`/`codex` not on PATH, or bad `repo:` path                                      |
-| macOS dialog on first start                             | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)     |
-| Auto session stalls but nothing happens                 | No sentinel configured/running, or the sentinel lacks `systemPromptFile`               |
-| Session replies in its pane but not on a remote channel | Expected — it must use `send_to_operator`; check the protocol prompt is being injected |
+| Symptom                                                 | Likely cause                                                                            |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `command not found: conductor`                          | Install the GitHub release tarball globally; then confirm its bin directory is on PATH  |
+| `conductor validate` says OK but nothing is configured  | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                        |
+| Pane never launches / hangs on start                    | `claude`/`codex` not on PATH, or bad `repo:` path                                       |
+| Start/continue rejects `systemPromptFile`               | Fix the reported path, permissions, UTF-8 encoding, file type, or 5 KiB size limit      |
+| Codex instructions disappear after compaction           | Review the generated per-session hooks with `/hooks`; do not infer trust from YOLO mode |
+| macOS dialog on first start                             | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)      |
+| Auto session stalls but nothing happens                 | No sentinel configured/running, or the sentinel lacks `systemPromptFile`                |
+| Session replies in its pane but not on a remote channel | Expected — it must use `send_to_operator`; check the protocol prompt is being injected  |

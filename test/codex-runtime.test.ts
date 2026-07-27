@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sessionConfigSchema } from '../src/config/schema.js';
 import type { SessionConfig } from '../src/config/schema.js';
 import type { IdentityEndpoints } from '../src/runtimes/types.js';
+import { MAX_SESSION_INSTRUCTION_BYTES } from '../src/runtimes/instructions.js';
 import { CodexRuntime } from '../src/runtimes/codex/index.js';
 import type { CodexRuntimeSettings } from '../src/runtimes/codex/index.js';
 import {
@@ -103,8 +104,11 @@ describe('config generation', () => {
     expect(script).toContain('curl -fsS');
   });
 
-  it('renders lifecycle hooks for prompt start and compaction plus compact protocol restoration', () => {
-    const script = renderProtocolReminderScript('Use send_to_session for READY signals.');
+  it('renders one compact restoration with distinct protocol/session layers and an independent lifecycle relay', () => {
+    const script = renderProtocolReminderScript(
+      'Use send_to_session for READY signals.\n',
+      'Review every change before reporting.\n',
+    );
     const hooks = JSON.parse(
       renderProtocolHooks("'/usr/bin/node' '/cfg/protocol-reminder.mjs'", "'/usr/bin/node' '/cfg/lifecycle-hook.mjs'"),
     ) as {
@@ -112,11 +116,20 @@ describe('config generation', () => {
     };
     expect(script).toContain('hookEventName');
     expect(script).toContain('Use send_to_session for READY signals.');
+    expect(script).toContain('Review every change before reporting.');
+    expect(script).not.toContain('curl');
     expect(hooks.hooks.SessionStart[0]?.matcher).toBe('^compact$');
     expect(hooks.hooks.SessionStart[0]?.hooks[0]?.command).toContain('protocol-reminder.mjs');
+    expect(hooks.hooks.SessionStart[0]?.hooks[1]?.command).toContain('lifecycle-hook.mjs');
     expect(hooks.hooks.UserPromptSubmit[0]?.hooks[0]?.command).toContain('lifecycle-hook.mjs');
     expect(hooks.hooks.PreCompact[0]?.hooks[0]?.command).toContain('lifecycle-hook.mjs');
     expect(JSON.stringify(hooks)).not.toContain('PostCompact');
+  });
+
+  it('keeps the shipped protocol plus the largest valid session layer inside provider hook limits', async () => {
+    const protocol = await readFile(path.resolve('prompts/conductor-protocol.md'), 'utf8');
+    const largestValidSession = `${'x'.repeat(MAX_SESSION_INSTRUCTION_BYTES - 1)}\n`;
+    expect(() => renderProtocolReminderScript(protocol, largestValidSession)).not.toThrow();
   });
 
   it('renders a lifecycle relay that forwards hook stdin without exposing it on stdout', () => {
@@ -311,10 +324,12 @@ describe('prepare', () => {
 
     const notifyPath = path.join(configDir, 'notify.sh');
     const notifyStat = await stat(notifyPath);
-    expect(notifyStat.mode & 0o100).toBe(0o100);
+    expect(notifyStat.mode & 0o777).toBe(0o700);
     expect(await readFile(notifyPath, 'utf8')).toContain('http://127.0.0.1:3456/events/sample');
 
-    const override = await readFile(path.join(configDir, 'codex-home', 'AGENTS.override.md'), 'utf8');
+    const overridePath = path.join(configDir, 'codex-home', 'AGENTS.override.md');
+    const override = await readFile(overridePath, 'utf8');
+    expect((await stat(overridePath)).mode & 0o777).toBe(0o600);
     expect(override).toContain(GENERATED_MARKER);
     expect(override).toContain('conductor protocol placeholder');
     const hooks = await readFile(path.join(configDir, 'codex-home', 'hooks.json'), 'utf8');
@@ -322,6 +337,7 @@ describe('prepare', () => {
     expect(hooks).toContain('UserPromptSubmit');
     expect(hooks).toContain('PreCompact');
     const lifecycleHookPath = path.join(configDir, 'lifecycle-hook.mjs');
+    expect((await stat(lifecycleHookPath)).mode & 0o777).toBe(0o700);
     const lifecycleHook = await readFile(lifecycleHookPath, 'utf8');
     expect(lifecycleHook).toContain('http://127.0.0.1:3456/events/sample');
     const fakeBin = path.join(workDir, 'fake-bin');
@@ -334,6 +350,7 @@ describe('prepare', () => {
     });
     expect(await readFile(relayedPayload, 'utf8')).toBe('{"hook_event_name":"UserPromptSubmit"}');
     const reminder = await readFile(path.join(configDir, 'protocol-reminder.mjs'), 'utf8');
+    expect((await stat(path.join(configDir, 'protocol-reminder.mjs'))).mode & 0o777).toBe(0o700);
     expect(reminder).toContain('conductor protocol placeholder');
     const reminderOutput = JSON.parse(
       execFileSync(process.execPath, [path.join(configDir, 'protocol-reminder.mjs')], { encoding: 'utf8' }),
@@ -342,6 +359,73 @@ describe('prepare', () => {
     expect(reminderOutput.hookSpecificOutput.additionalContext).toContain('conductor protocol placeholder');
     await expect(readFile(path.join(repoDir, 'AGENTS.override.md'), 'utf8')).rejects.toThrow();
     await expect(readFile(path.join(repoDir, '.gitignore'), 'utf8')).rejects.toThrow();
+  });
+
+  it('restores the prepared session snapshot after compact and refreshes it only on prepare', async () => {
+    const protocolPath = path.join(workDir, 'protocol.md');
+    const promptPath = path.join(workDir, 'session.md');
+    await writeFile(protocolPath, 'PROTOCOL LAYER');
+    await writeFile(promptPath, 'SESSION VERSION ONE');
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir, protocolPath });
+    const configured = makeSession({ repo: repoDir, systemPromptFile: promptPath });
+    await runtime.prepare(configured, makeIdentity(configDir));
+
+    const reminderPath = path.join(configDir, 'protocol-reminder.mjs');
+    const context = (): string => {
+      const output = JSON.parse(execFileSync(process.execPath, [reminderPath], { encoding: 'utf8' })) as {
+        hookSpecificOutput: { additionalContext: string };
+      };
+      return output.hookSpecificOutput.additionalContext;
+    };
+    expect(context()).toContain('PROTOCOL LAYER\n');
+    expect(context()).toContain('SESSION VERSION ONE\n');
+
+    await writeFile(promptPath, 'SESSION VERSION TWO');
+    expect(context()).toContain('SESSION VERSION ONE\n');
+    expect(context()).not.toContain('SESSION VERSION TWO');
+
+    await runtime.prepare(configured, makeIdentity(configDir));
+    expect(context()).toContain('SESSION VERSION TWO\n');
+    expect(context()).not.toContain('SESSION VERSION ONE');
+  });
+
+  it('preserves known-good snapshots when aggregate compact context validation fails', async () => {
+    const protocolPath = path.join(workDir, 'protocol.md');
+    const promptPath = path.join(workDir, 'session.md');
+    await writeFile(protocolPath, 'KNOWN GOOD PROTOCOL');
+    await writeFile(promptPath, 'KNOWN GOOD SESSION');
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir, protocolPath });
+    const configured = makeSession({ repo: repoDir, systemPromptFile: promptPath });
+    await runtime.prepare(configured, makeIdentity(configDir));
+
+    await writeFile(protocolPath, 'x'.repeat(10_001));
+    await expect(runtime.prepare(configured, makeIdentity(configDir))).rejects.toThrow(
+      /compact-restoration context is too large/u,
+    );
+    expect(await readFile(path.join(configDir, 'conductor-protocol.md'), 'utf8')).toBe('KNOWN GOOD PROTOCOL\n');
+    expect(await readFile(path.join(configDir, 'session-instructions.md'), 'utf8')).toBe('KNOWN GOOD SESSION\n');
+  });
+
+  it('atomically replaces legacy context files with restrictive permissions', async () => {
+    const protocolPath = path.join(workDir, 'protocol.md');
+    const promptPath = path.join(workDir, 'session.md');
+    await writeFile(protocolPath, 'PRIVATE PROTOCOL');
+    await writeFile(promptPath, 'PRIVATE SESSION');
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir, protocolPath });
+    const configured = makeSession({ repo: repoDir, systemPromptFile: promptPath });
+    await runtime.prepare(configured, makeIdentity(configDir));
+
+    const overridePath = path.join(configDir, 'codex-home', 'AGENTS.override.md');
+    const reminderPath = path.join(configDir, 'protocol-reminder.mjs');
+    await chmod(overridePath, 0o644);
+    await chmod(reminderPath, 0o755);
+    await writeFile(promptPath, 'REFRESHED PRIVATE SESSION');
+    await runtime.prepare(configured, makeIdentity(configDir));
+
+    expect((await stat(overridePath)).mode & 0o777).toBe(0o600);
+    expect((await stat(reminderPath)).mode & 0o777).toBe(0o700);
+    expect(await readFile(overridePath, 'utf8')).toContain('REFRESHED PRIVATE SESSION');
+    expect(await readFile(reminderPath, 'utf8')).toContain('REFRESHED PRIVATE SESSION');
   });
 
   it('bypasses hook trust only when the fleet explicitly opts in', () => {

@@ -6,6 +6,11 @@ import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import type { RuntimeEvent } from '../../core/types.js';
 import { shellQuote } from '../../core/shell.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
+import {
+  prepareInstructionLayers,
+  PROTOCOL_SNAPSHOT_NAME,
+  SESSION_INSTRUCTIONS_SNAPSHOT_NAME,
+} from '../instructions.js';
 import { parseClaudeInputState, stripClaudeChrome } from './chrome.js';
 import { readLastAssistantMessage } from './transcript.js';
 
@@ -84,6 +89,15 @@ export class ClaudeCodeRuntime implements SessionRuntime {
 
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
     await mkdir(identity.configDir, { recursive: true });
+    const protocolText =
+      this.protocolPath !== undefined && existsSync(this.protocolPath)
+        ? await readFile(this.protocolPath, 'utf8')
+        : undefined;
+    await prepareInstructionLayers({
+      configDir: identity.configDir,
+      protocolText,
+      sessionSourcePath: session.systemPromptFile,
+    });
     await writeFile(this.mcpConfigPath(identity), `${JSON.stringify(this.buildMcpConfig(identity), null, 2)}\n`);
     await writeFile(this.hooksSettingsPath(identity), `${JSON.stringify(this.buildHookSettings(identity), null, 2)}\n`);
     await seedFolderTrust(this.claudeJsonPath, session.repo);
@@ -115,12 +129,15 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     flags.push('--settings', shellQuote(this.hooksSettingsPath(identity)));
     // Conductor protocol first (all sessions), then any per-session instructions
     // (e.g. the sentinel prompt). Claude Code allows repeated appends.
-    const promptFile = this.systemPromptPath();
+    const promptFile = this.systemPromptPath(identity);
     if (promptFile !== undefined) {
       flags.push('--append-system-prompt-file', shellQuote(promptFile));
     }
-    if (session.systemPromptFile !== undefined && existsSync(session.systemPromptFile)) {
-      flags.push('--append-system-prompt-file', shellQuote(session.systemPromptFile));
+    if (session.systemPromptFile !== undefined) {
+      flags.push(
+        '--append-system-prompt-file',
+        shellQuote(join(identity.configDir, SESSION_INSTRUCTIONS_SNAPSHOT_NAME)),
+      );
     }
 
     const claude = `${this.config.binary} ${flags.join(' ')}`;
@@ -184,9 +201,9 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     };
   }
 
-  private systemPromptPath(): string | undefined {
-    const path = this.protocolPath;
-    return path !== undefined && existsSync(path) ? path : undefined;
+  private systemPromptPath(identity: IdentityEndpoints): string | undefined {
+    const path = join(identity.configDir, PROTOCOL_SNAPSHOT_NAME);
+    return existsSync(path) ? path : undefined;
   }
 
   private mcpConfigPath(identity: IdentityEndpoints): string {

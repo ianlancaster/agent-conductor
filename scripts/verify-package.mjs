@@ -176,6 +176,30 @@ try {
     resolve('node_modules/@types'),
     join(consumer, 'index.ts'),
   ]);
+  const runtimeFixture = join(scratch, 'runtime-fixture');
+  mkdirSync(runtimeFixture);
+  const fixtureProtocol = join(runtimeFixture, 'protocol.md');
+  const fixtureInstructions = join(runtimeFixture, 'instructions.md');
+  writeFileSync(fixtureProtocol, 'PACKAGED PROTOCOL\n');
+  writeFileSync(fixtureInstructions, 'PACKAGED SESSION INSTRUCTIONS\n');
+  writeFileSync(
+    join(consumer, 'runtime-check.mjs'),
+    `import { CodexRuntime } from 'agent-conductor';\n` +
+      `import { readFile, stat } from 'node:fs/promises';\n` +
+      `import { join } from 'node:path';\n` +
+      `const root = process.argv[2];\n` +
+      `const runtime = new CodexRuntime({ config: { binary: 'codex', toolTimeoutSec: 600 }, baseDir: root, protocolPath: join(root, 'protocol.md') });\n` +
+      `await runtime.prepare({ codename: 'packed', repo: root, runtime: 'codex', additionalDirs: [], systemPromptFile: join(root, 'instructions.md'), schedules: [] }, { mcpUrl: 'http://127.0.0.1:1/mcp/packed', eventsUrl: 'http://127.0.0.1:1/events/packed', configDir: join(root, 'config') });\n` +
+      `if ((await readFile(join(root, 'config', 'session-instructions.md'), 'utf8')) !== 'PACKAGED SESSION INSTRUCTIONS\\n') throw new Error('packed runtime did not snapshot session instructions');\n` +
+      `if (((await stat(join(root, 'config', 'session-instructions.md'))).mode & 0o777) !== 0o600) throw new Error('packed runtime snapshot permissions are not private');\n` +
+      `const reminder = await readFile(join(root, 'config', 'protocol-reminder.mjs'), 'utf8');\n` +
+      `if (!reminder.includes('PACKAGED SESSION INSTRUCTIONS')) throw new Error('packed runtime compact hook omitted session instructions');\n`,
+  );
+  const isolatedCodexHome = join(scratch, 'shared-codex-home');
+  mkdirSync(isolatedCodexHome);
+  run(process.execPath, [join(consumer, 'runtime-check.mjs'), runtimeFixture], {
+    env: { ...process.env, CODEX_HOME: isolatedCodexHome },
+  });
   run(
     process.execPath,
     [

@@ -142,6 +142,15 @@ preserves turn-zero delivery, refreshes on resume, restores global guidance and 
 instruction discovery, and prevents two sessions in one repository from racing over a shared
 override file.
 
+Durable session instructions strengthen that transport without changing the repository boundary.
+On every start or continue, Conductor validates at most 5 KiB of UTF-8 session instructions and
+atomically prepares private protocol and session snapshots in the session's generated config
+directory. Claude Code launches from those snapshots and relies on its supported compaction reuse
+of system-prompt layers. Codex uses the same exact prepared layers at launch and restores them once
+through its compact-only `SessionStart` hook. Source edits do not hot-rewrite a live process; they
+activate only on a deliberate start or continue. The compact hook produces local context without
+terminal input and independently of the best-effort Conductor lifecycle relay.
+
 The migration requires a one-release cleanup pass for existing repository overrides, an explicit
 fleet-protocol precedence statement, and a byte-limit guard that can bound inherited global
 guidance but never truncate the Conductor protocol or session prompt. The detailed implementation

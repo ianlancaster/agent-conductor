@@ -181,7 +181,11 @@ systemPromptFile: ./.conductor/prompts/sentinel.md
 
 Copy [prompts/sentinel.md](prompts/sentinel.md) into `.conductor/prompts/sentinel.md`, or
 have the onboarding assistant do it using the authoritative fleet paths. Session files
-hot-reload. Then start and designate the sentinel before enabling autonomous workers:
+hot-reload. `systemPromptFile` is a private, per-session instruction layer (maximum 5 KiB
+UTF-8): Conductor validates and snapshots it on each start or continue, applies it after the
+mandatory protocol, and retains it across Claude Code and Codex compaction without typing into
+the pane or modifying the repository. Source edits take effect on the next start or continue.
+Then start and designate the sentinel before enabling autonomous workers:
 
 ```text
 /start watch
@@ -272,8 +276,10 @@ schemas directly.
 
 `/spawn` can create an empty workspace, clone a registered Git template with `--template`,
 or create a linked Git worktree with `--worktree` and `--branch`. Repeatable `--add-dir`
-flags expose shared records outside the workspace, and `--system-prompt` attaches a role
-script without writing generated instructions into the worktree. `/teardown --delete`
+flags expose shared records outside the workspace, and `--system-prompt` attaches a durable,
+5 KiB role script without writing generated instructions into the worktree. Missing, unreadable,
+non-file, invalid UTF-8, or oversized instruction sources fail the start visibly rather than being
+silently skipped. `/teardown --delete`
 removes only safe, Conductor-owned directories and refuses dirty worktrees. Session YAML
 can also define Croner-compatible `schedules`; an inactive session starts with the prompt,
 while an active session receives it through the normal protected delivery path.

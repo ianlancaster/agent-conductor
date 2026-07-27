@@ -117,16 +117,18 @@ describe('buildLaunchCommand', () => {
     expect(command).toContain(`--effort 'future-level'`);
   });
 
-  it('appends a per-session systemPromptFile after the conductor protocol when it exists', () => {
+  it('launches from the private prepared instruction snapshot, never the mutable source path', () => {
     const promptFile = join(configDir, 'sentinel.md');
     writeFileSync(promptFile, '# be the sentinel');
     const command = runtime.buildLaunchCommand({ ...session, systemPromptFile: promptFile }, identity, {});
-    expect(command).toContain(`--append-system-prompt-file '${promptFile}'`);
+    expect(command).toContain(`--append-system-prompt-file '${join(configDir, 'session-instructions.md')}'`);
+    expect(command).not.toContain(promptFile);
   });
 
-  it('skips a per-session systemPromptFile that does not exist', () => {
+  it('does not silently append a configured source path before preparation', () => {
     const command = runtime.buildLaunchCommand({ ...session, systemPromptFile: '/nope/missing.md' }, identity, {});
     expect(command).not.toContain('/nope/missing.md');
+    expect(command).toContain(join(configDir, 'session-instructions.md'));
   });
 
   it('uses -c for continuation and never pipes a prompt into it', () => {
@@ -197,6 +199,29 @@ describe('prepare', () => {
       spinnerTipsEnabled?: boolean;
     };
     expect(settings.spinnerTipsEnabled).toBeUndefined();
+  });
+
+  it('snapshots protocol then session instructions and fails visibly for a missing configured source', async () => {
+    const protocolPath = join(configDir, 'source-protocol.md');
+    const sessionPath = join(configDir, 'source-session.md');
+    writeFileSync(protocolPath, 'PROTOCOL SOURCE');
+    writeFileSync(sessionPath, 'SESSION SOURCE');
+    const custom = new ClaudeCodeRuntime({
+      config: defaults.runtimes.claudeCode,
+      protocolPath,
+      claudeJsonPath: join(configDir, '.claude.json'),
+    });
+    const configured = { ...session, systemPromptFile: sessionPath };
+    await custom.prepare(configured, identity);
+
+    expect(readFileSync(join(configDir, 'conductor-protocol.md'), 'utf8')).toBe('PROTOCOL SOURCE\n');
+    expect(readFileSync(join(configDir, 'session-instructions.md'), 'utf8')).toBe('SESSION SOURCE\n');
+    const command = custom.buildLaunchCommand(configured, identity, {});
+    expect(command.indexOf('conductor-protocol.md')).toBeLessThan(command.indexOf('session-instructions.md'));
+
+    await expect(
+      custom.prepare({ ...session, systemPromptFile: join(configDir, 'missing.md') }, identity),
+    ).rejects.toThrow(/Could not read session instructions/u);
   });
 });
 

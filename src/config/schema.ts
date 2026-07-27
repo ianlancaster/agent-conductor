@@ -74,11 +74,11 @@ export const sessionConfigSchema = z
     effort: z.string().min(1).optional(),
     additionalDirs: z.array(z.string()).default([]),
     /**
-     * Per-session instructions appended to this session's system prompt, on top of the
-     * conductor protocol every session receives. Point the sentinel at the shipped
-     * sentinel prompt here. Absolute, or resolved relative to the config dir.
+     * Per-session durable role instructions, appended after the conductor protocol and
+     * retained across runtime compaction. Maximum 5 KiB UTF-8. Absolute, or resolved
+     * relative to the fleet root.
      */
-    systemPromptFile: z.string().optional(),
+    systemPromptFile: z.string().trim().min(1).optional(),
     schedules: z.array(scheduleEntrySchema).default([]),
   })
   .strict();

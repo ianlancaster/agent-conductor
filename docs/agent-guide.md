@@ -154,8 +154,13 @@ Important rules:
 - Prefer absolute project paths. Relative paths are resolved according to the documented config
   loader rules, not the agent's current shell.
 - Model and effort values are intentional free text. Availability lists are hints, not allowlists.
-- A session's `systemPromptFile` is appended after the mandatory Conductor protocol. Use it for a
-  role such as sentinel policy, not to replace identity or safety rules.
+- A session's `systemPromptFile` is appended after the mandatory Conductor protocol and retained
+  across Claude Code and Codex compaction. It is capped at 5 KiB UTF-8, validated and privately
+  snapshotted on start/continue, and never written into the working repository. Missing,
+  unreadable, non-file, malformed, or oversized sources fail preparation visibly. Source edits do
+  not change a running process; start or continue to activate a new snapshot. Relative paths
+  resolve from the fleet root. Use this layer for a role such as sentinel policy, not to replace
+  identity or safety rules.
 - Secrets belong in `.conductor/.env`, never supervisor or session YAML. The environment file may
   contain channel credentials; never print, quote, summarize, or message its values.
 - `defaults.bypassPermissions` controls the fleet launch default, and a session's
@@ -274,8 +279,9 @@ the detached fleet session. Operator-only `/summon` and `/banish` move supported
 of view without stopping them.
 
 Spawn can also set repeatable `additionalDirs` for runtime access outside the workspace and a
-`systemPromptFile` for role instructions appended after the mandatory protocol. The operator
-command equivalents are `--add-dir`/`-a` and `--system-prompt`. These primitives support shared
+`systemPromptFile` for durable role instructions appended after the mandatory protocol. The operator
+command equivalents are `--add-dir`/`-a` and `--system-prompt`; the 5 KiB UTF-8 source is validated
+and snapshotted on start/continue. These primitives support shared
 records and role policy without writing generated instructions into disposable worktrees.
 
 Use:
@@ -358,9 +364,14 @@ Worktree practices:
 - Current Codex sessions keep their generated override inside the isolated session home and do not
   dirty the worktree. Fleets upgraded from an earlier release may retain an obsolete
   `AGENTS.override.md` entry in `.gitignore`; remove that ignore line manually when convenient.
+- Claude Code receives the prepared protocol and optional session layer through its supported
+  launch system-prompt files. Claude Code's compaction contract retains those system-prompt layers;
+  Conductor does not add a second reinjection hook that would duplicate them.
 - Codex reads `AGENTS.md` guidance once when a run starts. Conductor also generates a
   `SessionStart` hook matched to `source=compact` in the isolated session home; after manual or
-  automatic compaction it re-injects the version-matched Conductor protocol as developer context.
+  automatic compaction it restores the exact prepared Conductor protocol and optional session
+  instructions as one labelled developer-context payload. The lifecycle relay is a separate,
+  best-effort hook, so an unavailable Conductor endpoint cannot suppress local restoration.
   Codex requires non-managed hooks to be reviewed with `/hooks`. An unattended fleet may set
   `runtimes.codex.bypassHookTrust: true`, but that CLI switch trusts every hook Codex discovers
   from the shared config, repository, and enabled plugins—not only Conductor's generated hook.
@@ -877,6 +888,20 @@ pnpm add --global .
 ```
 
 A running process still holds its old code until deliberately restarted.
+
+### Session instructions fail preparation or disappear after compaction
+
+A configured `systemPromptFile` must resolve to a readable regular UTF-8 file no larger than 5 KiB.
+Start and continue reject invalid sources before launching the runtime and never print their
+content. Correct the reported path, permissions, encoding, file type, or size, then retry. Editing a
+valid source does not rewrite a running CLI; start or continue deliberately to prepare the new
+snapshot.
+
+Claude Code retains the prepared launch system-prompt layers through compaction without another
+hook. Codex restores them with generated per-session hooks. If Codex loses the layer, open `/hooks`
+and review the generated hooks; approval/sandbox bypass does not imply hook trust. Conductor keeps
+the local restoration output independent from its lifecycle endpoint, so a temporarily unavailable
+Conductor can lose the compact event without removing the restored local context.
 
 ### The wrong fleet responds
 

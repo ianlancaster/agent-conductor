@@ -342,7 +342,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       details: [
         `    -r/--runtime ${runtimeChoices} · -m/--model <model> · -e/--effort <level>`,
         '    -d/--path <dir> · -t/--template <name> · -w/--worktree <repo> · -b/--branch <name>',
-        '    -a/--add-dir <dir> (repeatable) · --system-prompt <file>',
+        '    -a/--add-dir <dir> (repeatable) · --system-prompt <file> (durable across compaction; max 5 KiB)',
         '    --bypass-permissions · --require-permissions',
       ],
       invoke: (args, actor) => invoke('spawn_session', parseSpawn(args), actor),

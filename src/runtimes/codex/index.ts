@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import type { RuntimeEvent } from '../../core/types.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
+import { prepareInstructionLayers, writeAtomicFile } from '../instructions.js';
 import { log } from '../../logger.js';
 import {
   GENERATED_MARKER,
@@ -317,15 +318,25 @@ export class CodexRuntime implements SessionRuntime {
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
     const repo = this.resolvePath(session.repo);
     await mkdir(identity.configDir, { recursive: true });
-    await writeFile(this.notifyScriptPath(identity), renderNotifyScript(identity.eventsUrl), { mode: 0o755 });
     const protocolText = await this.readProtocolText();
-    const sessionPromptText =
-      session.systemPromptFile !== undefined
-        ? await this.readIfExists(this.resolvePath(session.systemPromptFile))
-        : null;
+    let reminderScript: string | undefined;
+    const preparedInstructions = await prepareInstructionLayers({
+      configDir: identity.configDir,
+      protocolText,
+      sessionSourcePath:
+        session.systemPromptFile === undefined ? undefined : this.resolvePath(session.systemPromptFile),
+      validate: (layers) => {
+        reminderScript = renderProtocolReminderScript(
+          layers.protocol?.content ?? protocolText,
+          layers.session?.content ?? null,
+        );
+      },
+    });
+    const preparedProtocolText = preparedInstructions.protocol?.content ?? protocolText;
+    const sessionPromptText = preparedInstructions.session?.content ?? null;
     const sharedHome = this.sharedCodexHome();
     const inheritedGuidance = await this.readActiveGlobalGuidance(sharedHome);
-    const rendered = renderHomeAgentsOverride(inheritedGuidance, protocolText, sessionPromptText);
+    const rendered = renderHomeAgentsOverride(inheritedGuidance, preparedProtocolText, sessionPromptText);
     if (rendered.inheritedGuidanceTruncated) {
       log().warn(
         'codex',
@@ -335,16 +346,14 @@ export class CodexRuntime implements SessionRuntime {
     const minimumDocBytes =
       Buffer.byteLength(rendered.content, 'utf8') + REPOSITORY_DOC_BUDGET_BYTES + PROJECT_DOC_HEADROOM_BYTES;
     await this.prepareCodexHome(identity, repo, sharedHome, minimumDocBytes);
-    await writeFile(path.join(this.codexHomePath(identity), AGENTS_OVERRIDE_NAME), rendered.content);
-    await writeFile(this.lifecycleHookScriptPath(identity), renderLifecycleHookScript(identity.eventsUrl), {
-      mode: 0o755,
-    });
-    await writeFile(
+    await writeAtomicFile(this.notifyScriptPath(identity), renderNotifyScript(identity.eventsUrl), 0o700);
+    const homeOverridePath = path.join(this.codexHomePath(identity), AGENTS_OVERRIDE_NAME);
+    await writeAtomicFile(homeOverridePath, rendered.content, 0o600);
+    await writeAtomicFile(this.lifecycleHookScriptPath(identity), renderLifecycleHookScript(identity.eventsUrl), 0o700);
+    await writeAtomicFile(
       this.protocolReminderScriptPath(identity),
-      renderProtocolReminderScript(protocolText, identity.eventsUrl),
-      {
-        mode: 0o755,
-      },
+      reminderScript ?? renderProtocolReminderScript(preparedProtocolText, sessionPromptText),
+      0o700,
     );
     await writeFile(
       path.join(this.codexHomePath(identity), HOOKS_NAME),

@@ -1,3 +1,5 @@
+import { assertHookContextFits } from '../instructions.js';
+
 /**
  * Pure generators for the Codex CLI per-session configuration.
  *
@@ -153,20 +155,25 @@ export function renderLifecycleHookScript(eventsUrl: string): string {
 }
 
 /** Model-visible reminder injected by the generated SessionStart(source=compact) hook. */
-export function renderProtocolReminderScript(protocolText: string, eventsUrl?: string): string {
+export function renderProtocolReminderScript(protocolText: string, sessionPromptText?: string | null): string {
+  const labelledLayers = [
+    '# Conductor protocol',
+    protocolText,
+    ...(sessionPromptText === undefined || sessionPromptText === null
+      ? []
+      : ['# Session instructions', sessionPromptText]),
+  ].join('\n');
+  const additionalContext = `Agent Conductor instructions restored after context compaction.\n\n${labelledLayers}`;
+  assertHookContextFits(additionalContext);
   const output = {
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext: `Agent Conductor protocol re-injected after context compaction.\n\n${protocolText.trim()}`,
+      additionalContext,
     },
   };
   return [
     '#!/usr/bin/env node',
-    ...(eventsUrl === undefined ? [] : ["import { execFileSync } from 'node:child_process';"]),
     `// ${GENERATED_MARKER}; do not edit — regenerated on every prepare().`,
-    // Protocol restoration must retain headroom inside the five-second hook
-    // timeout even when the local Conductor endpoint is unavailable.
-    ...(eventsUrl === undefined ? [] : [hookRelayProgram(eventsUrl, 1).trim()]),
     `process.stdout.write(${JSON.stringify(JSON.stringify(output))});`,
     '',
   ].join('\n');
@@ -196,7 +203,13 @@ export function renderProtocolHooks(reminderCommand: string, lifecycleCommand?: 
           {
             matcher: '^compact$',
             hooks: [
-              { type: 'command', command: reminderCommand, timeout: 5, statusMessage: 'Restoring Conductor protocol' },
+              {
+                type: 'command',
+                command: reminderCommand,
+                timeout: 5,
+                statusMessage: 'Restoring Conductor instructions',
+              },
+              ...(lifecycleCommand === undefined ? [] : [{ type: 'command', command: lifecycleCommand, timeout: 5 }]),
             ],
           },
         ],
@@ -209,12 +222,13 @@ export function renderProtocolHooks(reminderCommand: string, lifecycleCommand?: 
 
 /** The refreshable conductor-owned section appended to AGENTS.override.md. */
 function renderConductorBlock(protocolText: string, sessionPromptText?: string | null): string {
-  const parts = [CONDUCTOR_BLOCK_START, '# Conductor protocol', protocolText.trim()];
-  if (sessionPromptText !== undefined && sessionPromptText !== null && sessionPromptText.trim().length > 0) {
-    parts.push('# Session instructions', sessionPromptText.trim());
+  let content = `${CONDUCTOR_BLOCK_START}\n\n# Conductor protocol\n\n${protocolText}`;
+  if (!content.endsWith('\n')) content += '\n';
+  if (sessionPromptText !== undefined && sessionPromptText !== null) {
+    content += `\n# Session instructions\n\n${sessionPromptText}`;
+    if (!content.endsWith('\n')) content += '\n';
   }
-  parts.push(CONDUCTOR_BLOCK_END);
-  return parts.join('\n\n');
+  return `${content}\n${CONDUCTOR_BLOCK_END}`;
 }
 
 function truncateUtf8(text: string, maxBytes: number): string {
