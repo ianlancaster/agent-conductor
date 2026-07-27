@@ -281,6 +281,7 @@ export class Supervisor {
         this.sentinel.reset(session);
       },
       activityForPane: (session, pane) => this.delivery.activityForPane(session, pane),
+      reconcileActivity: (session, pane) => this.health.reconcileActivity(session, pane),
       onRunning: (session) => {
         void this.recoverPendingMessages(session);
       },

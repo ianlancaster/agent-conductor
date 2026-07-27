@@ -110,15 +110,17 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
 3. **Auto is one boolean, not an autonomy framework.** Auto off is the implicit hand-driven
    state. `/auto` toggles stall routing. Pause is a separate temporary flag that suppresses
    schedules and stall routing without changing the auto setting.
-4. **Health is event-driven first.** Runtime hooks POST to `/events/<codename>`. Claude Code and
-   Codex have authoritative turn-completion signals, so pane changes are positive work evidence
-   but pane silence can never end their turns. Pane-silence fallback (`eventSilenceMs`) is only for
-   runtimes that explicitly lack authoritative completion. A `PreCompact` hook begins compaction;
-   only the matching compact-complete hook plus a visible composer can produce compaction-stall
-   evidence. On restart/recovery, the same runtime-owned composer parser that protects delivery
-   classifies a surviving pane: a visible composer is idle, while absent or uncertain composer
-   evidence remains working. Don't add runtime-specific pane heuristics to core; parsing belongs in
-   the runtime adapter.
+4. **Health is event-driven first and mechanically reconciled.** Runtime hooks POST to
+   `/events/<codename>` as the low-latency signal, but hook delivery is best-effort. For Claude Code
+   and Codex, the watchdog and on-demand status path continuously use the same runtime-owned
+   composer parser that protects delivery: a visible clear or occupied composer is idle, while a
+   successfully captured hidden composer is working. Capture/runtime failures are unknown and
+   never change activity. Idle composer evidence uses `idleConfirmMs` debounce. Pane silence,
+   elapsed time, tokens, and animated chrome never end a turn. Pane-silence fallback
+   (`eventSilenceMs`) is only for runtimes that explicitly lack authoritative completion. A
+   `PreCompact` hook begins compaction; only the matching compact-complete hook plus a visible
+   composer can produce compaction-stall evidence. Don't add runtime-specific pane heuristics to
+   core; parsing belongs in the runtime adapter.
 5. **All strings into AppleScript go through the escaping helper**; all tmux invocations
    are execFile arg arrays, never shell strings.
 6. **Async only in backends** — no execSync in request/heartbeat paths.

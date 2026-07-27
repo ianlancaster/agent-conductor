@@ -1,7 +1,7 @@
 import { log } from '../logger.js';
 import type { SessionRuntime } from '../runtimes/types.js';
 import type { TerminalBackend } from '../terminals/types.js';
-import type { PaneRef, RuntimeEvent, StallKind } from './types.js';
+import type { PaneActivityEvidence, PaneRef, RuntimeEvent, StallKind } from './types.js';
 
 export interface StallInfo {
   reason?: string;
@@ -23,8 +23,8 @@ export interface HealthDeps {
   getActiveSessions(): string[];
   /** A live foreground process proves launch completed even before a runtime hook fires. */
   onRuntimeObserved?(session: string): void;
-  /** Runtime-owned composer evidence used to confirm a post-compaction prompt. */
-  activityForPane(session: string, pane: PaneRef): Promise<'working' | 'idle'>;
+  /** Runtime-owned composer evidence used to reconcile best-effort lifecycle hooks. */
+  activityForPane(session: string, pane: PaneRef): Promise<PaneActivityEvidence>;
   onStall(session: string, kind: StallKind, info: StallInfo): void;
   onWorking(session: string): void;
   onSessionEnd(session: string): void;
@@ -39,15 +39,25 @@ export interface HealthDeps {
  *  - `notification` = blocked on a decision — immediate stall.
  *  - `compaction` records the start; compact completion becomes a stall only
  *    after the runtime's composer confirms that the session is waiting.
+ * Reconciliation: supported runtimes continuously classify their own visible
+ * composer. A visible composer confirms idle; a successfully captured hidden
+ * composer confirms working. This repairs missed/out-of-order best-effort hook
+ * delivery without mistaking pane silence for turn completion.
  * Fallback: only runtimes without authoritative turn completion may turn an
- * unchanged pane into a `silent` stall. For authoritative runtimes, pane
- * changes are positive work evidence but pane silence proves nothing.
+ * unchanged pane into a `silent` stall.
  */
 export class HealthMonitor {
   private readonly turnPhases = new Map<string, 'active' | 'complete' | 'interrupted'>();
-  /** null means newer work was submitted before its runtime-owned turn id arrived. */
-  private readonly activeTurnIds = new Map<string, string | null>();
+  /** Multiple Codex hook turns may overlap while the root turn owns the pane. */
+  private readonly activeTurnIds = new Map<string, Set<string>>();
+  /** Newer work was submitted before its runtime-owned turn id arrived. */
+  private readonly pendingTurnIds = new Set<string>();
+  /** Invalidates an asynchronous composer observation when a newer event wins. */
+  private readonly eventSequences = new Map<string, number>();
+  /** Ensures a slower, older pane capture cannot overwrite newer evidence. */
+  private readonly observationSequences = new Map<string, number>();
   private readonly latestTurnStartSequence = new Map<string, number>();
+  private readonly latestTurnStartId = new Map<string, string>();
   private readonly latestCompletionSequence = new Map<string, number>();
   private lifecycleSequence = 0;
   private readonly lastActivityAt = new Map<string, number>();
@@ -62,10 +72,21 @@ export class HealthMonitor {
 
   handleEvent(event: RuntimeEvent): void {
     const { session } = event;
-    if (event.type === 'stop' && event.turnId !== undefined && this.activeTurnIds.has(session)) {
-      const activeTurnId = this.activeTurnIds.get(session);
-      if (activeTurnId === null || (activeTurnId !== undefined && activeTurnId !== event.turnId)) {
+    this.bumpEventSequence(session);
+    if (event.type === 'stop' && event.turnId !== undefined) {
+      const activeTurnIds = this.activeTurnIds.get(session);
+      if (this.pendingTurnIds.has(session)) {
+        activeTurnIds?.delete(event.turnId);
         this.deps.logEvent(session, 'stale_turn_completion', 'out-of-order completion ignored');
+        return;
+      }
+      if (activeTurnIds !== undefined && !activeTurnIds.has(event.turnId)) {
+        this.deps.logEvent(session, 'stale_turn_completion', 'out-of-order completion ignored');
+        return;
+      }
+      if (activeTurnIds?.delete(event.turnId) === true && activeTurnIds.size > 0) {
+        this.lastActivityAt.set(session, event.receivedAt);
+        this.deps.logEvent(session, 'nested_turn_completion', 'another runtime turn remains active');
         return;
       }
     }
@@ -73,31 +94,31 @@ export class HealthMonitor {
     this.clearIdleTimer(session);
 
     switch (event.type) {
-      case 'turn-start':
+      case 'turn-start': {
         this.lifecycleSequence += 1;
         this.latestTurnStartSequence.set(session, this.lifecycleSequence);
         this.turnPhases.set(session, 'active');
+        const submittedTurn = this.pendingTurnIds.delete(session);
         if (event.turnId === undefined) this.activeTurnIds.delete(session);
-        else this.activeTurnIds.set(session, event.turnId);
+        else {
+          this.latestTurnStartId.set(session, event.turnId);
+          // A hook following a known Conductor submission names the new root
+          // turn; unmatched ids from the prior prompt cannot remain active.
+          const activeTurnIds = submittedTurn ? new Set<string>() : (this.activeTurnIds.get(session) ?? new Set());
+          activeTurnIds.add(event.turnId);
+          this.activeTurnIds.set(session, activeTurnIds);
+        }
         this.deps.onWorking(session);
         return;
+      }
       case 'stop': {
         this.lifecycleSequence += 1;
         this.latestCompletionSequence.set(session, this.lifecycleSequence);
         this.turnPhases.set(session, 'complete');
         this.activeTurnIds.delete(session);
+        this.pendingTurnIds.delete(session);
         const info: StallInfo = { reason: event.reason, transcriptPath: event.transcriptPath };
-        if (this.deps.config.idleConfirmMs <= 0) {
-          this.reportStall(session, 'idle', info);
-          return;
-        }
-        const timer = setTimeout(() => {
-          this.idleTimers.delete(session);
-          if (this.turnPhases.get(session) !== 'complete') return;
-          this.reportStall(session, 'idle', info);
-        }, this.deps.config.idleConfirmMs);
-        timer.unref();
-        this.idleTimers.set(session, timer);
+        this.scheduleIdleReport(session, 'idle', info);
         return;
       }
       case 'notification':
@@ -171,7 +192,11 @@ export class HealthMonitor {
     this.clearIdleTimer(session);
     this.turnPhases.delete(session);
     this.activeTurnIds.delete(session);
+    this.pendingTurnIds.delete(session);
+    this.eventSequences.delete(session);
+    this.observationSequences.delete(session);
     this.latestTurnStartSequence.delete(session);
+    this.latestTurnStartId.delete(session);
     this.latestCompletionSequence.delete(session);
     this.lastActivityAt.set(session, Date.now());
     this.lastCapture.delete(session);
@@ -202,9 +227,67 @@ export class HealthMonitor {
     // A fast runtime hook may arrive before the terminal backend acknowledges
     // the write. Preserve that new runtime-owned id; otherwise invalidate any
     // prior id until the submitted turn reports its own start.
-    if (!turnStartedAfterSubmissionBegan) this.activeTurnIds.set(session, null);
+    if (!turnStartedAfterSubmissionBegan) {
+      this.pendingTurnIds.add(session);
+    } else {
+      // A start hook that raced ahead of this Conductor submission identifies
+      // the new root turn. Any older unmatched ids cannot still own the pane.
+      const latestTurnId = this.latestTurnStartId.get(session);
+      if (latestTurnId !== undefined) this.activeTurnIds.set(session, new Set([latestTurnId]));
+    }
+    this.bumpEventSequence(session);
     this.recordWorking(session);
     return true;
+  }
+
+  /**
+   * Repair working/idle state from the runtime's own visible composer.
+   * This is safe to call from both the heartbeat and an on-demand status
+   * reconciliation. Unknown capture evidence deliberately changes nothing.
+   */
+  async reconcileActivity(session: string, pane: PaneRef): Promise<void> {
+    const runtime = this.deps.runtimeFor(session);
+    if (runtime?.capabilities.authoritativeTurnCompletion !== true) return;
+    const eventSequence = this.eventSequences.get(session) ?? 0;
+    const observationSequence = (this.observationSequences.get(session) ?? 0) + 1;
+    this.observationSequences.set(session, observationSequence);
+    const activity = await this.deps.activityForPane(session, pane);
+    if (
+      (this.eventSequences.get(session) ?? 0) !== eventSequence ||
+      this.observationSequences.get(session) !== observationSequence ||
+      activity === 'unknown'
+    )
+      return;
+
+    if (activity === 'working') {
+      this.pendingCompactions.delete(session);
+      this.recordWorking(session);
+      this.deps.onWorking(session);
+      return;
+    }
+
+    if (this.turnPhases.get(session) === 'interrupted') {
+      const compaction = this.pendingCompactions.get(session);
+      if (compaction !== undefined) {
+        // The compaction-complete path already owns this confirmation timer.
+        // If it has not fired yet, let it preserve the original debounce.
+        if (this.idleTimers.has(session)) return;
+        this.pendingCompactions.delete(session);
+        this.turnPhases.set(session, 'complete');
+        this.activeTurnIds.delete(session);
+        this.pendingTurnIds.delete(session);
+        this.scheduleIdleReport(session, 'compaction', compaction);
+      }
+      return;
+    }
+    if (this.turnPhases.get(session) === 'complete') return;
+
+    // A missed completion hook must not strand a visibly idle runtime in
+    // working forever. Apply the same debounce as an ordinary stop event.
+    this.turnPhases.set(session, 'complete');
+    this.activeTurnIds.delete(session);
+    this.pendingTurnIds.delete(session);
+    this.scheduleIdleReport(session, 'idle', {});
   }
 
   private recordWorking(session: string): void {
@@ -238,6 +321,10 @@ export class HealthMonitor {
     this.deps.onRuntimeObserved?.(session);
 
     const runtime = this.deps.runtimeFor(session);
+    if (runtime?.capabilities.authoritativeTurnCompletion === true) {
+      await this.reconcileActivity(session, pane);
+      return;
+    }
     const rawCapture = await this.deps.backend.capture(pane, this.deps.config.captureLines);
     // Runtime chrome is not evidence of work. In particular, Codex redraws its
     // elapsed timer and background-terminal counter while a dead internal
@@ -251,10 +338,7 @@ export class HealthMonitor {
       this.silentNotified.delete(session);
       // The first capture is only a baseline; a subsequent visible change is
       // evidence of work for runtimes without a turn-start event.
-      if (
-        previousCapture !== undefined &&
-        (runtime?.capabilities.authoritativeTurnCompletion !== true || this.turnPhases.get(session) !== 'complete')
-      ) {
+      if (previousCapture !== undefined) {
         const wasActive = this.turnPhases.get(session) === 'active';
         // Resumed output after an interruption belongs to the same runtime
         // turn; unlike a newly submitted Conductor message, it must preserve
@@ -266,11 +350,6 @@ export class HealthMonitor {
       }
       return;
     }
-
-    // A runtime that positively reports turn completion owns this decision.
-    // Unchanged terminal bytes can never prove that its active turn ended or
-    // stalled; choosing otherwise creates false stalls during long reasoning.
-    if (runtime?.capabilities.authoritativeTurnCompletion === true) return;
 
     const lastActivity = this.lastActivityAt.get(session);
     if (lastActivity === undefined) {
@@ -296,6 +375,25 @@ export class HealthMonitor {
     }
   }
 
+  private scheduleIdleReport(session: string, kind: 'idle' | 'compaction', info: StallInfo): void {
+    if (this.deps.config.idleConfirmMs <= 0) {
+      this.reportStall(session, kind, info);
+      return;
+    }
+    if (this.idleTimers.has(session)) return;
+    const timer = setTimeout(() => {
+      this.idleTimers.delete(session);
+      if (this.turnPhases.get(session) !== 'complete') return;
+      this.reportStall(session, kind, info);
+    }, this.deps.config.idleConfirmMs);
+    timer.unref();
+    this.idleTimers.set(session, timer);
+  }
+
+  private bumpEventSequence(session: string): void {
+    this.eventSequences.set(session, (this.eventSequences.get(session) ?? 0) + 1);
+  }
+
   private async confirmCompactionIdle(session: string, info: StallInfo): Promise<void> {
     if (this.turnPhases.get(session) !== 'interrupted') return;
     const pane = this.deps.getPane(session);
@@ -306,10 +404,13 @@ export class HealthMonitor {
       // arrived while the pane was being inspected.
       if (this.turnPhases.get(session) !== 'interrupted') return;
       if (activity === 'idle') {
+        this.pendingCompactions.delete(session);
         this.turnPhases.set(session, 'complete');
         this.reportStall(session, 'compaction', info);
         return;
       }
+      if (activity === 'unknown') return;
+      this.pendingCompactions.delete(session);
       this.turnPhases.set(session, 'active');
       this.deps.onWorking(session);
     } catch (err) {

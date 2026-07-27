@@ -102,6 +102,14 @@ describe('DeliveryQueue', () => {
     await expect(queue.activityForPane('alpha', pane)).resolves.toBe('working');
   });
 
+  it('keeps capture failure unknown instead of inventing working evidence', async () => {
+    backend.captureForDelivery = async () => {
+      throw new Error('capture unavailable');
+    };
+
+    await expect(queue.activityForPane('alpha', pane)).resolves.toBe('unknown');
+  });
+
   it('self-heals stale runtime metadata before draining a protected message', async () => {
     const recordedClaude = new FakeRuntime('claude-code');
     recordedClaude.inputState = null;

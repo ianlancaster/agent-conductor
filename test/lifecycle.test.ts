@@ -6,6 +6,7 @@ import { loadSessionConfigs } from '../src/config/loader.js';
 import type { SessionConfig } from '../src/config/schema.js';
 import { Lifecycle } from '../src/core/lifecycle.js';
 import { SessionStateManager } from '../src/core/state.js';
+import type { PaneActivityEvidence } from '../src/core/types.js';
 import { Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
@@ -24,7 +25,7 @@ let supervisionRunningStates: boolean[];
 let defaultBypassPermissions: boolean;
 let defaultEfforts: { 'claude-code': string | undefined; 'codex': string | undefined };
 let lifecycleEvents: FakeEventPublisher;
-let recoveredActivity: 'working' | 'idle';
+let recoveredActivity: PaneActivityEvidence;
 
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-lc-'));
@@ -233,6 +234,17 @@ describe('lifecycle edges', () => {
     await lifecycle.adopt('alpha', pane);
 
     expect(states.get('alpha')?.activity).toBe('working');
+  });
+
+  it('preserves prior activity when recovery capture is inconclusive', async () => {
+    states.setActivity('alpha', 'idle');
+    recoveredActivity = 'unknown';
+    const pane = await backend.createPane('alpha', 'pane');
+    backend.panes.get(pane.id)!.sessionActive = true;
+
+    await lifecycle.adopt('alpha', pane);
+
+    expect(states.get('alpha')?.activity).toBe('idle');
   });
 
   it('handles an externally ended session exactly once', async () => {

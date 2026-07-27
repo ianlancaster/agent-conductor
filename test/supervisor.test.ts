@@ -550,6 +550,29 @@ describe('Supervisor construction', () => {
     expect(stopped.processActive).toBe(false);
   });
 
+  it('repairs stale activity in both directions during an on-demand status reconciliation', async () => {
+    const runtime = new FakeRuntime('claude-code');
+    runtime.inputState = null;
+    writeConfig('health:\n  idleConfirmMs: 0\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      runtimes: [runtime],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.command('/start alpha');
+    expect(supervisor.statusReport('alpha')).toContain('"activity": "working"');
+
+    runtime.inputState = 'clear';
+    expect(await supervisor.command('/status alpha')).toContain('"activity": "idle"');
+
+    runtime.inputState = null;
+    expect(await supervisor.command('/status alpha')).toContain('"activity": "working"');
+  });
+
   it('routes operator commands through the shared router', async () => {
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43393\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,

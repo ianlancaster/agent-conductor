@@ -304,15 +304,19 @@ Use:
 Activity labels are mechanical runtime-health states, not judgments about whether an agent's answer
 was good or its task is complete:
 
-- `working`: a turn started, Conductor submitted work, or the watchdog observed changing pane output.
-- `idle`: the runtime reported a normal completed turn and no new lifecycle event arrived during
-  `health.idleConfirmMs` (15 seconds by default), or Conductor received other non-working evidence.
-  The process remains alive. Whether the evidence is actionable is the sentinel's decision.
+- `working`: a turn started, Conductor submitted work, or the runtime-owned composer parser
+  confirmed that the composer is hidden while the runtime process remains active.
+- `idle`: the runtime reported a normal completed turn, or its composer parser confirmed a visible
+  clear or occupied composer, and no new work evidence arrived during `health.idleConfirmMs`
+  (15 seconds by default). The process remains alive. Whether the evidence is actionable is the
+  sentinel's decision.
 - `stopped`: no active runtime process is available for that registered session.
 
-A later turn or visible work returns an idle session to `working`. After a Conductor restart,
-surviving panes are classified through the runtime's composer parser: a visible clear or occupied
-composer is `idle`; a hidden or unclassifiable composer remains `working`. `blocked`,
+A later turn or hidden-composer evidence returns an idle session to `working`. The heartbeat,
+on-demand status operations, and restart recovery all use the same parser as protected delivery:
+a visible clear or occupied composer is `idle`; a successfully captured hidden composer is
+`working`; a capture/runtime failure is unknown and preserves the prior activity. This continuous
+reconciliation repairs missed or out-of-order best-effort lifecycle hooks. `blocked`,
 `compaction`, `silent`, and normal turn completion remain causal kinds in health logs and stall
 events; they are deliberately not separate activity states. Older schema-v1 event journals may
 contain the retired `stalled` activity value, which current state migration normalizes to `idle`.
@@ -445,6 +449,8 @@ Other stall kinds come from mechanical signals:
   `silent`.
 - Codex's generated `notify` command authoritatively reports `agent-turn-complete`. Generated
   `UserPromptSubmit`, `PreCompact`, and compact `SessionStart` hooks add start/compaction evidence.
+  Concurrent Codex root/subagent turn ids are tracked independently, so one nested completion
+  cannot mark a still-working pane idle.
   Long reasoning with unchanged pane bytes cannot become a `silent` stall. The default
   `runtimes.codex.bypassHookTrust: true` runs all discovered hooks without review. Fleets that set
   it to `false` must approve the generated hooks through `/hooks` regardless of

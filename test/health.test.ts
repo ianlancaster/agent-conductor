@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HealthMonitor } from '../src/core/health.js';
-import type { StallKind } from '../src/core/types.js';
+import type { PaneActivityEvidence, StallKind } from '../src/core/types.js';
 import { CodexRuntime } from '../src/runtimes/codex/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
@@ -22,7 +22,7 @@ let sessionEnds: string[];
 let working: string[];
 let observed: string[];
 let paneId: string;
-let paneActivity: 'working' | 'idle';
+let paneActivity: PaneActivityEvidence;
 
 beforeEach(async () => {
   vi.useFakeTimers();
@@ -143,11 +143,12 @@ describe('event-driven signals', () => {
     event('stop');
     vi.advanceTimersByTime(CONFIG.idleConfirmMs / 2);
     event('turn-start');
+    paneActivity = 'working';
     backend.setPaneContent(paneId, 'new operator prompt\n• Working');
     await monitor.heartbeat();
     vi.advanceTimersByTime(CONFIG.idleConfirmMs * 2);
 
-    expect(working).toEqual(['alpha']);
+    expect(working).toEqual(['alpha', 'alpha']);
     expect(stalls).toEqual([]);
   });
 
@@ -173,6 +174,7 @@ describe('event-driven signals', () => {
     await monitor.heartbeat();
     event('turn-start', undefined, 'turn-1');
     event('notification', 'needs permission', 'turn-1');
+    paneActivity = 'working';
     backend.setPaneContent(paneId, 'permission accepted\ncontinuing');
     await monitor.heartbeat();
     event('stop', 'done', 'turn-1');
@@ -217,6 +219,51 @@ describe('event-driven signals', () => {
 
     expect(stalls).toEqual([]);
     expect(working).toEqual(['alpha']);
+  });
+
+  it('repairs a missed completion hook from a visible idle composer after debounce', async () => {
+    event('turn-start', undefined, 'turn-1');
+    paneActivity = 'idle';
+
+    await monitor.heartbeat();
+    expect(stalls).toEqual([]);
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: undefined }]);
+  });
+
+  it('repairs a missed turn-start hook when the composer is hidden', async () => {
+    event('stop', 'previous turn done', 'turn-1');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    expect(stalls).toHaveLength(1);
+
+    paneActivity = 'working';
+    await monitor.heartbeat();
+
+    expect(working).toEqual(['alpha']);
+  });
+
+  it('does not change activity when composer capture is unknown', async () => {
+    event('turn-start', undefined, 'turn-1');
+    paneActivity = 'unknown';
+
+    await monitor.heartbeat();
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs * 2);
+
+    expect(working).toEqual(['alpha']);
+    expect(stalls).toEqual([]);
+  });
+
+  it('keeps the pane working when one of multiple overlapping runtime turns completes', () => {
+    event('turn-start', undefined, 'root-turn');
+    event('turn-start', undefined, 'nested-turn');
+    event('stop', 'nested done', 'nested-turn');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs * 2);
+    expect(stalls).toEqual([]);
+
+    event('stop', 'root done', 'root-turn');
+    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'root done' }]);
   });
 
   it('does not treat a runtime session boundary as process death', () => {

@@ -9,7 +9,7 @@ import type { Store } from '../store/index.js';
 import type { TerminalBackend } from '../terminals/types.js';
 import type { SessionStateManager } from './state.js';
 import { truncate } from './utils.js';
-import type { PaneRef, Placement } from './types.js';
+import type { PaneActivityEvidence, PaneRef, Placement } from './types.js';
 import { materializeWorkspace, type WorkspaceSource } from './workspace.js';
 import { isWorktree, removeWorktree } from './worktree.js';
 import type { ConductorEventPublisher } from '../events/types.js';
@@ -83,7 +83,9 @@ export interface LifecycleDeps {
   /** Reset per-run health and stall-routing tracking on lifecycle boundaries. */
   supervisionReset(session: string): void;
   /** Resolve working/idle from the runtime's visible composer at recovery boundaries. */
-  activityForPane?(session: string, pane: PaneRef): Promise<'working' | 'idle'>;
+  activityForPane?(session: string, pane: PaneRef): Promise<PaneActivityEvidence>;
+  /** Reconcile live activity after terminal-process liveness is confirmed. */
+  reconcileActivity?(session: string, pane: PaneRef): Promise<void>;
   /** Notify orchestration that a live pane is available for this run's queued delivery. */
   onRunning?(session: string): void;
   events?: ConductorEventPublisher;
@@ -167,9 +169,12 @@ export class Lifecycle {
           log().info('lifecycle', `${target}: runtime exited in pane ${pane.id} — keeping pane for restart`);
           this.clearSession(target, 'runtime-exit', true);
         }
-      } else if (sessionActive === true && this.deps.states.get(target)?.running !== true) {
-        await this.markRunning(target, pane);
-        log().info('lifecycle', `${target}: found active runtime in pane ${pane.id}`);
+      } else if (sessionActive === true) {
+        if (this.deps.states.get(target)?.running !== true) {
+          await this.markRunning(target, pane);
+          log().info('lifecycle', `${target}: found active runtime in pane ${pane.id}`);
+        }
+        await this.deps.reconcileActivity?.(target, pane);
       }
     }
   }
@@ -494,7 +499,9 @@ export class Lifecycle {
   }
 
   private async recoveredActivity(codename: string, pane: PaneRef): Promise<'working' | 'idle'> {
-    return (await this.deps.activityForPane?.(codename, pane)) ?? 'working';
+    const evidence = await this.deps.activityForPane?.(codename, pane);
+    if (evidence === 'idle' || evidence === 'working') return evidence;
+    return this.deps.states.get(codename)?.activity === 'idle' ? 'idle' : 'working';
   }
 
   private emitStarted(codename: string, cause: 'start' | 'continue' | 'adopt' | 'discovered'): void {
