@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -123,6 +123,28 @@ describe('Supervisor construction', () => {
       { name: 'broken', state: 'failed', detail: 'Integration failed to start.' },
     ]);
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps direct Supervisor construction injection-only instead of executing configured modules', async () => {
+    const port = await freePort();
+    const marker = join(baseDir, 'configured-import.marker');
+    const modulePath = join(baseDir, 'configured.mjs');
+    writeFileSync(
+      modulePath,
+      `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'imported');\n` +
+        `export default () => ({ name: 'configured', start() {}, stop() {} });\n`,
+    );
+    writeConfig(`mcp:\n  port: ${String(port)}\nintegrations:\n  - module: ${JSON.stringify(modulePath)}\n`, {});
+
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+
+    expect(supervisor.integrationStatus()).toEqual([]);
+    expect(existsSync(marker)).toBe(false);
   });
 
   it('delivers from an integration after start-all through the protected queue', async () => {

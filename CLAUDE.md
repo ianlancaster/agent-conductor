@@ -100,7 +100,9 @@ that owns the environment-specific behavior:
   beside the Supervisor. It receives only protected idempotent session delivery, an abort signal,
   a durable namespaced state directory, health reporting, and optional best-effort events. It does
   not receive operator authority, raw terminals, the fleet store, secrets, or canonical operations.
-  The embedding host owns construction and configuration; fleet YAML never names executable code.
+  Direct hosts may inject instances; the stock foreground CLI may construct them from explicit
+  trusted local file paths in `supervisor.yaml.integrations`. That list is an executable-code
+  authority boundary, not discovery or sandboxing.
 
 Built-in channels ship in this package and may discover opt-in configuration outside the
 core. External channels are ordinary `ChannelAdapter` instances injected through
@@ -152,8 +154,10 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
 - **New external background integration**: implement `ConductorIntegration`, register timers or
   loops during `start`, honor the supplied abort signal, report truthful health, and keep cursors
   atomically under the supplied `stateDir`. Use stable immutable change identities for protected
-  delivery deduplication. Inject it through `SupervisorOptions.integrations`; do not export
-  `ConductorOperations`, add executable YAML imports, or make observation-only events authoritative.
+  delivery deduplication. Inject it through `SupervisorOptions.integrations`, or expose a pure
+  synchronous default factory and register its explicit local file under `integrations`. Do not
+  export `ConductorOperations`, add discovery/manifest machinery, or make observation-only events
+  authoritative.
 
 ### Change-completeness checklist
 

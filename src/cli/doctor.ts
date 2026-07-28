@@ -2,10 +2,11 @@ import { spawnSync } from 'node:child_process';
 import { constants, existsSync, accessSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
-import { loadConfig, validateConfig } from '../config/loader.js';
+import { loadConfig, loadSupervisorConfig, validateConfig } from '../config/loader.js';
 import { resolveFleetDataDir, resolveFleetPaths } from '../config/paths.js';
 import { assertShepherdProfileReady } from '../shepherd/config.js';
 import { eventJournalDegradedPath } from '../events/journal.js';
+import { resolveConfiguredIntegrations } from '../integrations/configured.js';
 
 export type PreflightLevel = 'pass' | 'warn' | 'fail';
 
@@ -119,15 +120,45 @@ export async function runPreflight(
       : result('fail', 'Node.js', `${deps.nodeVersion} is unsupported; install Node 22.13+ (or 23.4+)`),
   );
 
-  const problems = validateConfig(baseDir);
-  if (problems.length > 0) {
-    results.push(result('fail', 'Fleet config', problems.join('; ')));
-    return results;
+  // Classify executable-module filesystem failures separately from ordinary
+  // YAML errors. Resolution/stat is deliberately non-executing.
+  try {
+    const supervisor = loadSupervisorConfig(baseDir);
+    try {
+      resolveConfiguredIntegrations(baseDir, supervisor.integrations);
+      if (supervisor.integrations.length > 0) {
+        results.push(
+          result(
+            'pass',
+            'Configured integrations',
+            `${String(supervisor.integrations.length)} trusted local module(s) available`,
+          ),
+        );
+      }
+    } catch (error) {
+      results.push(result('fail', 'Configured integrations', error instanceof Error ? error.message : String(error)));
+    }
+  } catch {
+    // validateConfig below owns supervisor YAML/schema diagnostics.
   }
 
-  const loaded = loadConfig(baseDir);
+  const problems = validateConfig(baseDir, { configuredIntegrations: false });
+  if (problems.length > 0) {
+    results.push(result('fail', 'Fleet config', problems.join('; ')));
+  }
+
+  let loaded: ReturnType<typeof loadConfig>;
+  try {
+    loaded = loadConfig(baseDir);
+  } catch {
+    // Schema/session errors already have a Fleet config diagnostic and prevent
+    // reliable checks that depend on the loaded fleet.
+    return results;
+  }
   const paths = resolveFleetPaths(baseDir);
-  results.push(result('pass', 'Fleet config', `${loaded.sessions.size} session(s); ${paths.supervisorFile}`));
+  if (problems.length === 0) {
+    results.push(result('pass', 'Fleet config', `${loaded.sessions.size} session(s); ${paths.supervisorFile}`));
+  }
 
   const dataDir = resolveFleetDataDir(baseDir, loaded.supervisor.paths.dataDir);
   for (const [label, path] of [

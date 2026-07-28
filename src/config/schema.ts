@@ -63,6 +63,15 @@ export const spawnTemplateSchema = z
   })
   .strict();
 
+export const configuredIntegrationSchema = z
+  .object({
+    /** Absolute or fleet-root-relative path to one trusted executable ESM module. */
+    module: z.string().trim().min(1, 'integration module must be a non-empty file path'),
+    /** Opaque plugin-owned configuration. Conductor validates only that it is a mapping. */
+    options: z.record(z.unknown()).default({}),
+  })
+  .strict();
+
 export const sessionConfigSchema = z
   .object({
     codename: z.string().min(1).regex(CODENAME_PATTERN, 'codename must be alphanumeric with dashes/underscores'),
@@ -121,6 +130,8 @@ export const supervisorConfigSchema = z
       })
       .strict()
       .default({}),
+    /** Trusted local executable modules loaded only by the stock foreground CLI. */
+    integrations: z.array(configuredIntegrationSchema).default([]),
     mcp: z
       .object({
         /** Default: derived per fleet dir (stable hash into 3456..3955) so multiple conductors don't collide. */
@@ -321,6 +332,7 @@ export type ScheduleEntry = z.infer<typeof scheduleEntrySchema>;
 export type RuntimeName = z.infer<typeof runtimeSchema>;
 export type SessionConfig = z.infer<typeof sessionConfigSchema>;
 export type SpawnTemplate = z.infer<typeof spawnTemplateSchema>;
+export type ConfiguredIntegration = z.infer<typeof configuredIntegrationSchema>;
 
 /** Raw parse output — instance-scoped fields may be absent (loader derives them per fleet dir). */
 export type SupervisorConfigInput = z.infer<typeof supervisorConfigSchema>;

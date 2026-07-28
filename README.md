@@ -343,10 +343,10 @@ event catalog, privacy boundary, and delivery semantics.
 
 ### Background integrations
 
-Embedding hosts can inject `ConductorIntegration` implementations for deterministic work that
-should not wake a model on every poll: repository watchers, CI monitors, ticket synchronizers,
-calendars, and similar services. Conductor owns bounded lifecycle, cancellation, health, a
-namespaced durable state directory, and mechanically identified protected delivery:
+`ConductorIntegration` implementations handle deterministic work that should not wake a model on
+every poll: repository watchers, CI monitors, ticket synchronizers, calendars, and similar
+services. Conductor owns bounded lifecycle, cancellation, health, a namespaced durable state
+directory, and mechanically identified protected delivery:
 
 ```text
 [Integration: water-cooler] Peer bulletins changed on origin/main…
@@ -354,9 +354,23 @@ namespaced durable state directory, and mechanically identified protected delive
 
 The integration owns timers, provider credentials, reconciliation, overlap policy, and cursor
 schema. It receives no operator authority, raw terminal access, fleet store, secrets, or general
-control operations. Integrations are trusted in-process code constructed explicitly by an
-embedding host; the stock CLI deliberately does not import packages named in fleet YAML. See the
-[external integration contract](guides/external-adapters.md#background-integrations).
+control operations.
+
+The stock CLI can load an explicit trusted local ESM file during foreground startup:
+
+```yaml
+integrations:
+  - module: ./integrations/water-cooler/dist/index.js
+    options:
+      targetSession: coordinator
+```
+
+Only a trusted fleet owner may edit this executable-code list. Validation checks that the file
+exists but deliberately never executes it; the foreground process imports it once during
+startup. Relative paths must stay inside the fleet root, options must not contain secrets, and
+module changes require a restart. There is no package discovery, manifest, marketplace, or hot
+reload. Direct embedders may instead inject objects through `SupervisorOptions.integrations`.
+See the [external integration contract](guides/external-adapters.md#background-integrations).
 
 ### PR Shepherd
 

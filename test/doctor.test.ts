@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -101,6 +101,44 @@ describe('conductor doctor', () => {
     writeFileSync(join(baseDir, '.conductor', 'config', 'supervisor.yaml'), 'mcp:\n  port: nope\n');
     const results = await runPreflight(baseDir, dependencies({ nodeVersion: '22.12.0' }));
     expect(preflightFailures(results).map((item) => item.label)).toEqual(['Node.js', 'Fleet config']);
+  });
+
+  it('reports configured integration file failures under a distinct non-executing preflight label', async () => {
+    writeFileSync(
+      join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
+      'terminal:\n  backend: tmux\nintegrations:\n  - module: ./missing-integration.mjs\nrunbooks:\n  paths:\n    - ./missing-runbooks\n',
+    );
+    const missing = await runPreflight(baseDir, dependencies());
+    const failures = preflightFailures(missing);
+    const integrationFailure = failures.find((item) => item.label === 'Configured integrations');
+    const fleetFailure = failures.find((item) => item.label === 'Fleet config');
+    expect(integrationFailure).toMatchObject({ label: 'Configured integrations' });
+    expect(integrationFailure?.detail).toContain('missing-integration.mjs');
+    expect(fleetFailure?.detail).toContain('Configured runbook path does not exist');
+    expect(fleetFailure?.detail).toContain('missing-runbooks');
+    expect(failures).toHaveLength(2);
+    const fleetPort = missing.find((item) => item.label === 'Fleet port');
+    expect(fleetPort).toMatchObject({ level: 'pass' });
+    expect(fleetPort?.detail).toContain('is available');
+
+    const marker = join(baseDir, 'integration-imported.marker');
+    writeFileSync(
+      join(baseDir, 'integration.mjs'),
+      `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'executed');\n` +
+        `export default () => ({ name: 'fixture', start() {}, stop() {} });\n`,
+    );
+    writeFileSync(
+      join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
+      'terminal:\n  backend: tmux\nintegrations:\n  - module: ./integration.mjs\n',
+    );
+    const valid = await runPreflight(baseDir, dependencies());
+    expect(preflightFailures(valid)).toEqual([]);
+    expect(valid).toContainEqual({
+      level: 'pass',
+      label: 'Configured integrations',
+      detail: '1 trusted local module(s) available',
+    });
+    expect(existsSync(marker)).toBe(false);
   });
 
   it('blocks unwritable fleet paths and a missing selected runtime', async () => {

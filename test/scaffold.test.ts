@@ -53,6 +53,7 @@ describe('ensureFleetScaffold', () => {
     expect(text).toContain('maxTagLength: 50');
     expect(text).toContain('auto: false');
     expect(text).toContain('events:\n  journal:\n    enabled: true');
+    expect(text).toContain('integrations: []');
     expect(text).toContain('telegram:\n    enabled: false');
     expect(text).toContain('slack:\n    enabled: false');
     expect(text).toContain('bypassHookTrust: true');
@@ -62,6 +63,7 @@ describe('ensureFleetScaffold', () => {
     expect(config.terminal.windowName).toBe(derived.windowName);
     expect(config.terminal.tmux.sessionName).toBe(derived.tmuxSessionName);
     expect(config.runtimes.codex.bypassHookTrust).toBe(true);
+    expect(config.integrations).toEqual([]);
   });
 
   it('renders the detected backend as an explicit value', () => {
@@ -154,6 +156,67 @@ describe('conductor start initialization', () => {
       expect(stdout).not.toContain('iTerm automation');
     } finally {
       child.kill('SIGTERM');
+      await new Promise<void>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) resolve();
+        else child.once('exit', () => resolve());
+      });
+    }
+  });
+
+  it('loads a fleet-configured integration only in foreground and owns its start/stop lifecycle', async () => {
+    ensureFleetScaffold(baseDir);
+    const integrationDir = join(baseDir, 'integrations');
+    const startedMarker = join(baseDir, 'integration-started.marker');
+    const stoppedMarker = join(baseDir, 'integration-stopped.marker');
+    mkdirSync(integrationDir);
+    writeFileSync(
+      join(integrationDir, 'lifecycle.mjs'),
+      `import { writeFileSync } from 'node:fs';\n` +
+        `export default (input) => {\n` +
+        `  if (!Object.isFrozen(input) || !Object.isFrozen(input.options)) throw new Error('factory input was mutable');\n` +
+        `  if (input.fleetDir !== ${JSON.stringify(baseDir)} || input.options.marker !== 'expected') throw new Error('factory input mismatch');\n` +
+        `  return {\n` +
+        `    name: 'cli-lifecycle-fixture',\n` +
+        `    start(context) { writeFileSync(${JSON.stringify(startedMarker)}, 'started'); context.reportHealth({ state: 'healthy' }); },\n` +
+        `    stop() { writeFileSync(${JSON.stringify(stoppedMarker)}, 'stopped'); },\n` +
+        `  };\n` +
+        `};\n`,
+    );
+    writeFileSync(
+      join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
+      `terminal:\n  backend: tmux\nruntimes:\n  claudeCode:\n    binary: ${JSON.stringify(process.execPath)}\nintegrations:\n  - module: ./integrations/lifecycle.mjs\n    options:\n      marker: expected\n`,
+    );
+
+    const child = spawn(
+      process.execPath,
+      ['--import', 'tsx', join(process.cwd(), 'src', 'cli', 'index.ts'), '-C', baseDir, 'start', '--foreground'],
+      {
+        env: { ...process.env, TMUX: 'conductor-configured-integration-test' },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      },
+    );
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+
+    try {
+      const startedDeadline = Date.now() + 10_000;
+      while (!existsSync(startedMarker) && child.exitCode === null && Date.now() < startedDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(existsSync(startedMarker), stderr).toBe(true);
+      expect(child.exitCode).toBeNull();
+
+      child.kill('SIGTERM');
+      const stoppedDeadline = Date.now() + 10_000;
+      while (!existsSync(stoppedMarker) && child.exitCode === null && Date.now() < stoppedDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(existsSync(stoppedMarker), stderr).toBe(true);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await new Promise<void>((resolve) => {
         if (child.exitCode !== null || child.signalCode !== null) resolve();
         else child.once('exit', () => resolve());

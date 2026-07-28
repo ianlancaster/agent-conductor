@@ -28,8 +28,9 @@ starts the supervisor, and shuts down cleanly on `SIGINT` or `SIGTERM`:
 node examples/embedding-host.mjs /path/to/fleet
 ```
 
-The host process owns construction and secrets for its external extensions. The stock `conductor`
-CLI deliberately does not load arbitrary packages from YAML.
+The host process owns construction and secrets for directly injected extensions. The stock
+`conductor` CLI can also load an explicitly named trusted local integration file; it never
+discovers packages or executable code automatically.
 
 ## Background integrations
 
@@ -130,8 +131,8 @@ event publication.
 
 The integration owns the contents, schema, migrations, locks, and atomic writes below `stateDir`.
 It is durable state, not a cache, and Conductor never deletes it during normal shutdown.
-Provider credentials and package configuration remain in the embedding host's secret/config
-mechanism.
+Provider credentials remain outside supervisor YAML. Direct embedders and configured modules own
+their own provider configuration mechanism.
 
 Events are lossy hints. They begin only after `start()` succeeds, may contain sequence gaps, and
 are detached before `stop()` begins. A callback already in progress may finish, but the aborted
@@ -154,7 +155,60 @@ or successfully launched the target with it; it does not acknowledge that the mo
 the requested work. Require a separate application-level acknowledgement if that distinction
 matters.
 
-### Construction and configuration
+### Fleet-configured construction
+
+`integrations` is a trusted-local-code boundary. Only a trusted fleet owner may edit it: every
+listed module executes in the Conductor process with the same operating-system authority as
+Conductor itself. The narrow `ConductorIntegrationContext` is an API boundary, not a sandbox.
+Never put credentials or other secrets in `options`.
+
+```yaml
+integrations:
+  - module: ./integrations/water-cooler/dist/index.js
+    options:
+      targetSession: coordinator
+      workingCheckout: ./.conductor/data/water-cooler-checkout
+      remoteUrl: https://example.invalid/team/water-cooler.git
+      schedule: '0 9,11,13,15,17 * * 1-5'
+      timeZone: America/Denver
+```
+
+`module` is either an absolute filesystem path or an explicit `./` path contained by the fleet
+root. Bare package names, URLs, `file:` strings, and escaping relative paths are rejected. An
+absolute path is an intentional trusted-owner escape hatch. `conductor validate`, `doctor`, and
+the parent `start` preflight resolve and stat the path but deliberately never import it. The
+foreground Conductor process is the single execution point. Foreground and daemon starts resolve
+the file from the configured fleet root, not the caller's current working directory.
+
+The executable ESM file default-exports one synchronous factory:
+
+```ts
+import type { ConductorIntegrationFactory } from 'agent-conductor';
+
+const createIntegration: ConductorIntegrationFactory = ({ fleetDir, options }) => {
+  return new RepositoryWatcher({
+    fleetDir,
+    options: parseRepositoryWatcherOptions(options),
+  });
+};
+
+export default createIntegration;
+```
+
+The factory receives the resolved `fleetDir` plus a shallow-frozen copy of the opaque `options`
+mapping. Shallow freezing is mutation hygiene, not isolation: copy and validate nested values
+before normalizing them. Conductor invokes factories once per entry, in configuration order.
+Factories must perform pure synchronous construction only—do not start timers, open handles, or
+perform Git/network work there. Put all resource acquisition in `start()`. If a later module
+fails, Supervisor never exists and objects returned by earlier factories do not receive
+`stop()`. Imports, factory errors, thenable returns, and invalid return values fail startup before
+readiness instead of silently omitting a configured service.
+
+Module and options changes require a deliberate Conductor restart. There is no discovery,
+package-name resolution, TypeScript transpilation, hot reload, compatibility manifest, or secret
+system.
+
+### Direct embedding
 
 Inject instances explicitly:
 
@@ -166,9 +220,10 @@ const supervisor = new Supervisor(fleetDir, {
 
 These are trusted in-process extensions, not security-sandboxed plugins. Their packages have the
 same process authority as the embedding host even though the Conductor context is deliberately
-narrow. The host owns dependency resolution, configuration, and secrets; configuration changes
-require a host/Conductor restart in this version. Fleet YAML cannot import executable modules.
-Use `supervisor.integrationStatus()` for the stable structured status snapshot.
+narrow. The host owns dependency resolution, configuration, and secrets. Direct construction
+with `new Supervisor(...)` intentionally does not read or execute `supervisor.yaml.integrations`;
+only the stock foreground CLI loads those configured files. Use `supervisor.integrationStatus()`
+for the stable structured status snapshot.
 
 ## Event subscribers
 

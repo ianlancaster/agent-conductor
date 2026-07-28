@@ -64,3 +64,19 @@ export interface ConductorIntegration {
    */
   onEvent?(event: ConductorEvent): void | Promise<void>;
 }
+
+export interface ConductorIntegrationFactoryInput {
+  /** Resolved fleet root. Use this to resolve plugin-owned relative option paths. */
+  readonly fleetDir: string;
+  /** Shallow-frozen copy of the opaque mapping from supervisor.yaml. */
+  readonly options: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Synchronous, construction-only entry point for one configured integration.
+ *
+ * Factories must not open resources, start timers, or perform I/O. Conductor
+ * invokes every configured factory before Supervisor exists, so a later
+ * factory failure cannot trigger stop() on objects returned earlier.
+ */
+export type ConductorIntegrationFactory = (input: ConductorIntegrationFactoryInput) => ConductorIntegration;

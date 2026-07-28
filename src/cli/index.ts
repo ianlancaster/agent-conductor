@@ -17,6 +17,7 @@ import { configuredRunbookRegistry } from '../runbooks/registry.js';
 import { initializeRunbook, validateRunbookPath } from '../runbooks/authoring.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
 import { formatPreflight, preflightFailures, runPreflight } from './doctor.js';
+import { loadConfiguredIntegrations } from '../integrations/configured.js';
 import { subscribeFeed } from './feed.js';
 import { killFleetConductor } from './kill.js';
 import { ensureFleetScaffold } from './scaffold.js';
@@ -221,7 +222,11 @@ async function runForeground(startAll: boolean): Promise<void> {
 
   setTerminalTitle(`conductor feed — ${basename(baseDir())}`);
 
-  const supervisor = new Supervisor(baseDir());
+  // This is the single configured-code execution boundary. The non-foreground
+  // parent performs only schema/stat preflight before spawning this process.
+  const config = loadSupervisorConfig(baseDir());
+  const integrations = await loadConfiguredIntegrations(baseDir(), config.integrations);
+  const supervisor = new Supervisor(baseDir(), { integrations });
   await supervisor.start({ startAll });
 
   const shutdown = async (): Promise<void> => {

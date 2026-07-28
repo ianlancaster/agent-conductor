@@ -24,7 +24,7 @@ compose:
 - **Workspaces:** empty directories, configured Git templates, and linked Git worktrees.
 - **Operator channels:** the local console plus optional Telegram, Slack, or injected adapters.
 - **Plugin events:** typed, metadata-only observations for injected integration subscribers.
-- **Background integrations:** trusted injected services with protected delivery and durable state.
+- **Background integrations:** trusted local services with protected delivery and durable state.
 - **PR Shepherd:** a separate opt-in GitHub polling service that can notify a coordinator through
   Conductor.
 - **Status lines:** optional Claude Code and Codex footer configuration for runtime and repository
@@ -152,6 +152,9 @@ schedules: []
 Important rules:
 
 - Configuration is strict. Unknown or misspelled keys are errors.
+- `integrations` is the one executable-code exception in supervisor YAML. Keep it `[]` unless a
+  trusted fleet owner deliberately registers a local synchronous factory. Validation checks files
+  without executing them; only foreground startup imports them. Never put secrets in `options`.
 - `supervisor.maxTagLength` is the fleet-wide mechanical status-tag limit (default `50` Unicode
   characters). Supervisor settings require a restart. Reducing the limit clears incompatible
   persisted tags as sessions register; new over-limit updates fail visibly and leave the current
@@ -817,19 +820,25 @@ built-in backend classes are not public yet because their constructors still req
 Conductor persistence; do not deep-import them from `dist/`.
 
 Use `ConductorIntegration` when deterministic polling or synchronization should run without
-waking a model on every no-op interval. The host injects it through
-`SupervisorOptions.integrations`; Conductor supplies cancellation, truthful health, an owner-only
-durable state namespace, optional best-effort events, and protected idempotent delivery rendered
-as `[Integration: <name>]`. The integration owns timers, overlap prevention, provider
-credentials, reconciliation, and cursor schema. Events are hints rather than replayable truth.
-Advance a cursor only after a delivered or deduplicated-delivered receipt, using an immutable
-change identity as the retry key. This is at-least-once processing: pane delivery is not proof the
-model completed the work.
+waking a model on every no-op interval. A host may inject it through
+`SupervisorOptions.integrations`, or the stock foreground CLI may construct it from an explicit
+local file under the root-level `integrations` list in `supervisor.yaml`. Conductor supplies
+cancellation, truthful health, an owner-only durable state namespace, optional best-effort events,
+and protected idempotent delivery rendered as `[Integration: <name>]`. The integration owns
+timers, overlap prevention, provider credentials, reconciliation, and cursor schema. Events are
+hints rather than replayable truth. Advance a cursor only after a delivered or
+deduplicated-delivered receipt, using an immutable change identity as the retry key. This is
+at-least-once processing: pane delivery is not proof the model completed the work.
 
 Integrations are trusted in-process code, not sandboxed plugins. They receive no operator
 authority, raw terminal, fleet store, environment, lifecycle commands, or event publication.
-The embedding host owns construction and configuration; the stock CLI never imports executable
-packages from fleet YAML. See `guides/external-adapters.md#background-integrations`.
+Only a trusted fleet owner may edit the configured module list, and secrets must not appear in its
+opaque options. `validate`, `doctor`, and parent startup preflight inspect files without executing
+them; only foreground startup imports synchronous default factories. Relative file paths stay
+inside the fleet root, absolute paths are an explicit trusted-owner escape hatch, and changes
+require restart. There is no discovery, package-name loading, manifest, sandbox, or hot reload.
+Direct `new Supervisor(...)` callers remain injection-only. See
+`guides/external-adapters.md#background-integrations`.
 
 For a new control primitive, add one canonical `ConductorOperations` definition and then audit
 every applicable surface: MCP, operator commands and help, adapters, schema, examples, prompts,

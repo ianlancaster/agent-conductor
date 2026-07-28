@@ -80,6 +80,7 @@ describe('loadSupervisorConfig', () => {
     expect(config.paths.dataDir).toBe('./data');
     expect(config.runbooks.paths).toEqual([]);
     expect(config.events.journal.enabled).toBe(true);
+    expect(config.integrations).toEqual([]);
   });
 
   it('preserves an explicit opt-out from the Codex hook-trust default', () => {
@@ -144,6 +145,31 @@ describe('loadSupervisorConfig', () => {
 
     writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'events:\n  journal:\n    retentionDays: 30\n');
     expect(() => loadSupervisorConfig(baseDir)).toThrow(/events/);
+  });
+
+  it('accepts only strict configured integration entries with opaque option mappings', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'integrations:\n  - module: ./integrations/water-cooler.mjs\n    options:\n      targetSession: assistant\n      nested:\n        enabled: true\n',
+    );
+    expect(loadSupervisorConfig(baseDir).integrations).toEqual([
+      {
+        module: './integrations/water-cooler.mjs',
+        options: { targetSession: 'assistant', nested: { enabled: true } },
+      },
+    ]);
+
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'integrations:\n  - module: ./integration.mjs\n    options: [not, a, mapping]\n',
+    );
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/integrations/);
+
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'integrations:\n  - module: ./integration.mjs\n    enabled: true\n',
+    );
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/integrations/);
   });
 
   it('rejects malformed template registry entries', () => {

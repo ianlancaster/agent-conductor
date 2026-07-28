@@ -9,6 +9,7 @@ import { resolveFleetPaths } from './paths.js';
 import { sessionConfigSchema, supervisorConfigSchema, type SessionConfig, type SupervisorConfig } from './schema.js';
 import { configuredRunbookRegistry } from '../runbooks/registry.js';
 import { PACKAGE_VERSION } from '../version.js';
+import { resolveConfiguredIntegrations } from '../integrations/configured.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 
@@ -145,12 +146,25 @@ export function loadConfig(baseDir: string, opts: { tolerant?: boolean } = {}): 
   };
 }
 
+export interface ValidateConfigOptions {
+  /** Default true. Doctor validates these separately so it can label file failures distinctly. */
+  configuredIntegrations?: boolean;
+}
+
 /** Validate everything and return human-readable problems (for `conductor validate`). */
-export function validateConfig(baseDir: string): string[] {
+export function validateConfig(baseDir: string, options: ValidateConfigOptions = {}): string[] {
   const problems: string[] = [];
   let defaultRuntime: SessionConfig['runtime'] = 'claude-code';
   try {
-    defaultRuntime = loadSupervisorConfig(baseDir).defaults.runtime;
+    const supervisor = loadSupervisorConfig(baseDir);
+    defaultRuntime = supervisor.defaults.runtime;
+    if (options.configuredIntegrations !== false) {
+      try {
+        resolveConfiguredIntegrations(baseDir, supervisor.integrations);
+      } catch (err) {
+        problems.push(err instanceof Error ? err.message : String(err));
+      }
+    }
   } catch (err) {
     problems.push(err instanceof Error ? err.message : String(err));
   }
