@@ -122,6 +122,37 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual([]);
   });
 
+  it('reports how long a recipient has been unable to receive, and clears on recovery', async () => {
+    // A blocked queue is otherwise invisible: the sender's receipt says pending
+    // and the session reports healthy. The clock starts at the first refusal so
+    // one stuck message is enough — the alarm must not wait for traffic.
+    runtime.blockingPrompt = true;
+    await queue.deliverOrQueue('alpha', 'first', { deliveryId: 1 });
+    const [blocked] = queue.blockedDeliveries();
+    expect(blocked?.session).toBe('alpha');
+    expect(blocked?.skipReason).toBe('prompt-open');
+    expect(blocked?.pending).toBe(1);
+    const since = blocked?.since ?? 0;
+
+    // More traffic behind it does not restart the clock: the harm is elapsed
+    // time with delivery down, not how much has piled up.
+    await queue.deliverOrQueue('alpha', 'second', { deliveryId: 2 });
+    expect(queue.blockedDeliveries()[0]?.since).toBe(since);
+    expect(queue.blockedDeliveries()[0]?.pending).toBe(2);
+
+    runtime.blockingPrompt = false;
+    await queue.drainNow();
+    expect(queue.blockedDeliveries()).toEqual([]);
+  });
+
+  it('tracks ephemeral deliveries that carry no receipt', async () => {
+    // Stall envelopes are exactly these. A sentinel whose envelopes stop
+    // arriving is the case that most needs reporting, and it has no receipt.
+    runtime.blockingPrompt = true;
+    await queue.deliverOrQueue('alpha', '[Stall] session=beta kind=idle');
+    expect(queue.blockedDeliveries()[0]).toMatchObject({ session: 'alpha', pending: 1 });
+  });
+
   it('delivers immediately when the input line is clear', async () => {
     const result = await queue.deliverOrQueue('alpha', 'hello');
     expect(result).toBe('delivered');

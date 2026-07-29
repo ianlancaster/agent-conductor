@@ -514,6 +514,21 @@ the session is the sentinel, that silently ends stall routing for the whole flee
 reach the sentinel as ordinary messages. `stall_routed` in the health log means dispatched to
 delivery, not received.
 
+A queue that cannot drain is reported. When a recipient has been undeliverable for longer than
+`messaging.undeliverableWarnMs` (10 minutes by default), Conductor tells the operator directly — how
+many messages are waiting, for how long, and the skip reason. The sentinel gets a shorter fuse
+(`messaging.sentinelUndeliverableWarnMs`, 2 minutes) and louder wording, because its blocked queue
+means fleet-wide stall routing is undelivered rather than one seat being stuck. The alarm always
+goes to the operator and never through the sentinel: routing an alarm about a dead router through
+that router would reproduce the failure it is reporting. A recovery notice follows when the queue
+drains.
+
+The threshold is elapsed time, not backlog. Backlog measures how busy the fleet is rather than how
+long delivery has been down, and it would trip later the quieter the fleet gets. To verify the alarm
+on a real fleet rather than trusting it: open a selection prompt on a scratch seat, send it a
+message, leave the prompt unanswered, and require the operator alert to arrive. An alarm whose
+failure mode is silence cannot be validated by observing silence.
+
 The runtime's visual status line is operator-facing context, not a lifecycle API. Conductor never
 infers turn completion from tokens, elapsed time, spinner text, or a frozen/animated Codex footer.
 

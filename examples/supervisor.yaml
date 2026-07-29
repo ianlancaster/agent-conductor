@@ -92,6 +92,14 @@ messaging:
   queueMaxAgeMs: 60000
   tailDefaultLines: 30
   tailMaxLines: 500
+  # A recipient that cannot receive is otherwise invisible: the sender's receipt
+  # says pending, the session reports running/ready/idle, and nothing says how
+  # long messages have been piling up. Elapsed time, not backlog — backlog trips
+  # later the quieter the fleet is, which is backwards.
+  undeliverableWarnMs: 600000
+  # The sentinel receives stalls as ordinary messages, so its blocked queue
+  # means fleet-wide stall routing is undelivered. Shorter fuse.
+  sentinelUndeliverableWarnMs: 120000
 
 runtimes:
   claudeCode:

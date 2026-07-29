@@ -45,6 +45,9 @@ import { ShepherdManager } from './shepherd-manager.js';
 import { IntegrationManager } from './integration-manager.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
+
+/** Repeat interval while a queue stays blocked. */
+const UNDELIVERABLE_REWARN_MS = 30 * 60 * 1000;
 const SENTINEL_WORKSPACE_KEY = 'sentinel.codename';
 const FLEET_WATCH_ENABLED_WORKSPACE_KEY = 'sentinel.fleetWatchEnabled';
 const LEGACY_FLEET_WATCHES_WORKSPACE_KEY = 'sentinel.fleetWatches';
@@ -110,6 +113,7 @@ export class Supervisor {
   private readonly supervisorConfigFile: string;
   private supervisorConfigMtimeMs: number | undefined;
   private heartbeatTimer: NodeJS.Timeout | undefined;
+  private readonly undeliverableWarnedAt = new Map<string, number>();
 
   constructor(
     readonly baseDir: string,
@@ -564,6 +568,7 @@ export class Supervisor {
     const heartbeatMs = this.config.supervisor.heartbeatIntervalSeconds * 1000;
     this.heartbeatTimer = setInterval(() => {
       this.checkSupervisorConfigDrift();
+      void this.checkUndeliverableQueues();
       void this.health.heartbeat();
       // The sentinel is excluded from fleet watch by design, so without this it
       // is the one seat nothing observes until a stall needs routing.
@@ -687,6 +692,47 @@ export class Supervisor {
       return `Typed into ${codename}'s pane.`;
     } catch (err) {
       return `Failed to type into ${codename}'s pane: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  /**
+   * Report recipients whose queues have stopped draining. Delivery refusing to
+   * write into an occupied or unclassifiable pane is correct behaviour; doing
+   * so indefinitely without telling anyone is not, and it is how a wedged
+   * sentinel took fleet-wide supervision down for hours while every status
+   * field read healthy.
+   *
+   * Reported straight to the operator, never through the sentinel: routing an
+   * alarm about a dead router through that router would be the same defect.
+   */
+  private async checkUndeliverableQueues(): Promise<void> {
+    const blocked = this.delivery.blockedDeliveries();
+    const blockedSessions = new Set(blocked.map((entry) => entry.session));
+    for (const session of [...this.undeliverableWarnedAt.keys()]) {
+      if (blockedSessions.has(session)) continue;
+      this.undeliverableWarnedAt.delete(session);
+      await this.channelSend({ text: `✅ Delivery to ${session} recovered — its queued messages are draining again.` });
+    }
+
+    const now = Date.now();
+    for (const entry of blocked) {
+      const isSentinel = this.sentinel.sentinelCodename() === entry.session;
+      const threshold = isSentinel
+        ? this.config.messaging.sentinelUndeliverableWarnMs
+        : this.config.messaging.undeliverableWarnMs;
+      const blockedForMs = now - entry.since;
+      if (blockedForMs < threshold) continue;
+      const warnedAt = this.undeliverableWarnedAt.get(entry.session);
+      if (warnedAt !== undefined && now - warnedAt < UNDELIVERABLE_REWARN_MS) continue;
+      this.undeliverableWarnedAt.set(entry.session, now);
+      const minutes = String(Math.floor(blockedForMs / 60_000));
+      const detail = `${String(entry.pending)} message(s) queued, undeliverable for ${minutes} minute(s) (${entry.skipReason})`;
+      this.store.logHealthEvent(entry.session, 'delivery_blocked', detail);
+      await this.channelSend({
+        text: isSentinel
+          ? `🚨 Sentinel ${entry.session} is not accepting messages — ${detail}. Stall routing reaches the sentinel as messages, so fleet-wide stall routing is not being delivered. Check its pane: a session waiting on a prompt cannot receive.`
+          : `⚠️ ${entry.session} is not accepting messages — ${detail}. Its pane is holding a prompt or a draft; nothing will arrive until that clears.`,
+      });
     }
   }
 

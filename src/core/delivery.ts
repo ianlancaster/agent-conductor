@@ -19,6 +19,16 @@ export type DeliverySkipReason =
 
 export type CancellationResult = 'cancelled' | 'in-flight' | 'not-found';
 
+/** A recipient whose queue has not drained since `since`. */
+export interface BlockedDelivery {
+  session: string;
+  /** Epoch ms of the first attempt that could not be delivered. */
+  since: number;
+  /** Why the most recent attempt was refused. */
+  skipReason: DeliverySkipReason;
+  pending: number;
+}
+
 /**
  * What the pane tells us about typing into it right now.
  * - `clear`   — the runtime's input line is visibly and unambiguously empty.
@@ -104,6 +114,12 @@ export class DeliveryQueue {
   private readonly assessing = new Set<number>();
   private readonly cancellationRequested = new Set<number>();
   private readonly delivering = new Set<number>();
+  /**
+   * When each recipient's queue last stopped draining. A queue that cannot be
+   * delivered is invisible on its own: the sender holds a receipt that says
+   * pending, and nothing anywhere says how long that has been true.
+   */
+  private readonly blocked = new Map<string, { since: number; skipReason: DeliverySkipReason }>();
 
   constructor(private readonly deps: DeliveryDeps) {}
 
@@ -161,6 +177,21 @@ export class DeliveryQueue {
 
   pendingCount(session: string): number {
     return this.queues.get(session)?.length ?? 0;
+  }
+
+  /**
+   * Recipients whose queues are not draining, oldest blockage first. Reported
+   * mechanically; what counts as too long, and for whom, is policy that belongs
+   * to the supervisor rather than the transport.
+   */
+  blockedDeliveries(): BlockedDelivery[] {
+    const blocked: BlockedDelivery[] = [];
+    for (const [session, entry] of this.blocked) {
+      const pending = this.pendingCount(session);
+      if (pending === 0) continue;
+      blocked.push({ session, since: entry.since, skipReason: entry.skipReason, pending });
+    }
+    return blocked.sort((left, right) => left.since - right.since);
   }
 
   /** Cancel a durable message while it is assessing or waiting in memory. */
@@ -429,6 +460,14 @@ export class DeliveryQueue {
     receipt: ((skipReason: DeliverySkipReason | null) => void) | undefined,
     skipReason: DeliverySkipReason | null,
   ): void {
+    // Tracked for every attempt, including the ephemeral ones that carry no
+    // receipt — stall envelopes are exactly those, and a sentinel whose
+    // envelopes stop arriving is the case that most needs reporting.
+    if (skipReason === null) this.blocked.delete(session);
+    else {
+      const existing = this.blocked.get(session);
+      this.blocked.set(session, { since: existing?.since ?? Date.now(), skipReason });
+    }
     if (receipt === undefined) return;
     try {
       receipt(skipReason);

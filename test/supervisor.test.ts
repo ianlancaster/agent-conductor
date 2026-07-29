@@ -357,6 +357,46 @@ describe('Supervisor construction', () => {
     expect(terminal.panes.get(pane.id)?.received).toEqual([]);
   });
 
+  it('tells the operator when a sentinel stops accepting messages', async () => {
+    // Shown firing, not assumed: a seat holding a selection prompt cannot
+    // receive, and stall routing reaches the sentinel as ordinary messages — so
+    // a silent backlog there means fleet-wide supervision is down while every
+    // status field still reads healthy.
+    const port = await freePort();
+    writeConfig(
+      `mcp:\n  port: ${String(port)}\nsupervisor:\n  heartbeatIntervalSeconds: 1\nmessaging:\n  sentinelUndeliverableWarnMs: 0\nsentinel:\n  codename: watch\n`,
+      {
+        alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+        watch: `codename: watch\nrepo: ${baseDir}\n`,
+      },
+    );
+    const terminal = new FakeTerminalBackend();
+    const pane = await terminal.createPane('watch', 'pane', baseDir);
+    terminal.panes.get(pane.id)!.sessionActive = true;
+    // Verbatim shape of the frame that wedged a real sentinel.
+    terminal.setPaneContent(pane.id, ['  4. Type something.', 'Enter to select · Esc to cancel', '  ❯ '].join('\n'));
+    terminal.survivors.set('watch', pane);
+    const channel = new StrictStartChannel();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      channels: [channel],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+
+    await supervisor.command('/tell watch a stall you will never see');
+
+    await until(() =>
+      channel.sent.some((message) => message.text.includes('Sentinel watch is not accepting messages')),
+    );
+    const alarm = channel.sent.find((message) => message.text.includes('not accepting messages'))?.text ?? '';
+    expect(alarm).toContain('prompt-open');
+    expect(alarm).toContain('fleet-wide stall routing is not being delivered');
+    // Never typed into the open prompt.
+    expect(terminal.panes.get(pane.id)?.received).toEqual([]);
+  });
+
   it('reports journal degradation while lifecycle and live subscribers continue', async () => {
     const port = await freePort();
     writeConfig(`mcp:\n  port: ${String(port)}\n`, {

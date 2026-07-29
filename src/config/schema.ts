@@ -185,6 +185,18 @@ export const supervisorConfigSchema = z
         queueMaxAgeMs: z.number().int().positive().default(60_000),
         tailDefaultLines: z.number().int().positive().default(30),
         tailMaxLines: z.number().int().positive().default(500),
+        /**
+         * How long a recipient's queue may fail to drain before the operator is
+         * told. Measured as elapsed time rather than backlog: backlog is a proxy
+         * for how busy the fleet is, not for how long delivery has been down,
+         * and it trips later the quieter the fleet gets.
+         */
+        undeliverableWarnMs: z.number().int().nonnegative().default(600_000),
+        /**
+         * The same clock for the sentinel, whose blocked queue means fleet-wide
+         * stall routing is undelivered rather than one seat being stuck.
+         */
+        sentinelUndeliverableWarnMs: z.number().int().nonnegative().default(120_000),
       })
       .strict()
       .default({}),
