@@ -114,6 +114,9 @@ export class Supervisor {
   private supervisorConfigMtimeMs: number | undefined;
   private heartbeatTimer: NodeJS.Timeout | undefined;
   private readonly undeliverableWarnedAt = new Map<string, number>();
+  /** Last inbound operator interaction this run; null until a human acts. */
+  private lastOperatorInteractionAt: string | undefined;
+  private operatorAttached: boolean | undefined;
 
   constructor(
     readonly baseDir: string,
@@ -458,7 +461,10 @@ export class Supervisor {
       onEvent: (session, body) => {
         this.handleRuntimeEvent(session, body);
       },
-      onCommand: (line, interactionId) => this.commands.route(line, `cli:${interactionId}`),
+      onCommand: (line, interactionId) => {
+        this.noteOperatorInteraction();
+        return this.commands.route(line, `cli:${interactionId}`);
+      },
       tools: buildMcpTools(this.operations),
     });
 
@@ -568,6 +574,7 @@ export class Supervisor {
     const heartbeatMs = this.config.supervisor.heartbeatIntervalSeconds * 1000;
     this.heartbeatTimer = setInterval(() => {
       this.checkSupervisorConfigDrift();
+      this.publishOperatorAttachment();
       void this.checkUndeliverableQueues();
       void this.health.heartbeat();
       // The sentinel is excluded from fleet watch by design, so without this it
@@ -576,6 +583,9 @@ export class Supervisor {
     }, heartbeatMs);
     this.heartbeatTimer.unref();
 
+    // Publish the initial attachment state once channels have settled, so the
+    // journal carries a value from boot rather than only from the first change.
+    this.publishOperatorAttachment();
     this.watcher.start(heartbeatMs);
     this.scheduler.rebuild();
     await this.shepherd.start();
@@ -633,6 +643,7 @@ export class Supervisor {
 
   /** Route an operator command line (used by the interactive console). */
   command(line: string): Promise<string> {
+    this.noteOperatorInteraction();
     return this.commands.route(line);
   }
 
@@ -734,6 +745,38 @@ export class Supervisor {
           : `⚠️ ${entry.session} is not accepting messages — ${detail}. Its pane is holding a prompt or a draft; nothing will arrive until that clears.`,
       });
     }
+  }
+
+  /**
+   * Publish whether any operator surface is attached, and when a human last
+   * acted. Whether anyone is listening decides what deferring to a human costs:
+   * with an operator attached an unanswered question is a pause, and unattended
+   * it is a termination with no timeout and no signal.
+   *
+   * Emitted as an observation for host applications and the event journal, and
+   * deliberately NOT readable by managed sessions. A session that could see it
+   * would change its own behaviour on the basis of the measurement, which turns
+   * a recorded condition into an intervention.
+   */
+  private publishOperatorAttachment(): void {
+    const surfaces = [
+      ...(this.mcpServer.feedClientCount() > 0 ? ['console'] : []),
+      ...this.channels.map((channel) => channel.name),
+    ];
+    const attached = surfaces.length > 0;
+    if (this.operatorAttached === attached) return;
+    this.operatorAttached = attached;
+    this.eventBus.emit({
+      type: 'operator.attachment.changed',
+      attached,
+      surfaces,
+      lastInteractionAt: this.lastOperatorInteractionAt ?? null,
+    });
+  }
+
+  /** Any inbound operator action, from any surface. */
+  private noteOperatorInteraction(): void {
+    this.lastOperatorInteractionAt = new Date().toISOString();
   }
 
   private async recoverPendingMessages(codename?: string): Promise<void> {
@@ -870,9 +913,17 @@ export class Supervisor {
     for (const channel of this.channelCandidates) {
       try {
         await channel.start({
-          onCommand: (command, args, context) =>
-            this.commands.route(`/${command} ${args.join(' ')}`.trim(), `${channel.name}:${context.conversationId}`),
-          onFreeText: (text, context) => this.commands.freeText(text, `${channel.name}:${context.conversationId}`),
+          onCommand: (command, args, context) => {
+            this.noteOperatorInteraction();
+            return this.commands.route(
+              `/${command} ${args.join(' ')}`.trim(),
+              `${channel.name}:${context.conversationId}`,
+            );
+          },
+          onFreeText: (text, context) => {
+            this.noteOperatorInteraction();
+            return this.commands.freeText(text, `${channel.name}:${context.conversationId}`);
+          },
         });
         this.channels.push(channel);
         this.channelFailures.delete(channel.name);

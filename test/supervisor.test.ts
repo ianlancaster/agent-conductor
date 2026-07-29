@@ -397,6 +397,32 @@ describe('Supervisor construction', () => {
     expect(terminal.panes.get(pane.id)?.received).toEqual([]);
   });
 
+  it('publishes operator attachment to subscribers without exposing it to sessions', async () => {
+    // Whether a human is listening decides what deferring to one costs. It is a
+    // condition to record, not a fact to hand the subject: a session that could
+    // read it would change its behaviour on the basis of the measurement.
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, { alpha: `codename: alpha\nrepo: ${baseDir}\n` });
+    const subscriber = new FakeEventSubscriber();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      eventSubscribers: [subscriber],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+
+    await until(() => subscriber.events.some((event) => event.type === 'operator.attachment.changed'));
+    const attachment = subscriber.events.find((event) => event.type === 'operator.attachment.changed');
+    expect(attachment).toMatchObject({ attached: false, surfaces: [], lastInteractionAt: null });
+
+    // An operator command is an interaction; the fact stays out of every
+    // session-readable surface.
+    await supervisor.command('/status');
+    expect(supervisor.statusReport()).not.toContain('attach');
+    expect(supervisor.statusReport('alpha')).not.toContain('attach');
+  });
+
   it('reports journal degradation while lifecycle and live subscribers continue', async () => {
     const port = await freePort();
     writeConfig(`mcp:\n  port: ${String(port)}\n`, {

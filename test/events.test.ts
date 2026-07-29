@@ -100,6 +100,7 @@ describe('ConductorEventBus', () => {
       'fleet.stalled',
       'fleet.down',
       'schedule',
+      'operator.attachment.changed',
       'operator.request.created',
       'operator.request.resolved',
       'runbook.adopted',

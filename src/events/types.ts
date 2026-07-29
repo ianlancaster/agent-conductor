@@ -15,6 +15,7 @@ export const CONDUCTOR_EVENT_TYPES = [
   'fleet.stalled',
   'fleet.down',
   'schedule',
+  'operator.attachment.changed',
   'operator.request.created',
   'operator.request.resolved',
   'runbook.adopted',
@@ -96,6 +97,24 @@ export type ConductorEvent = ConductorEventEnvelope &
         /** Mechanical fleet-down classification time. */
         readonly detectedAt: string;
         readonly disposition: 'routed' | 'reported-to-operator' | 'sentinel-down';
+      }
+    | {
+        /**
+         * Whether any operator surface is currently attached — a console on the
+         * SSE feed, or a connected operator channel.
+         *
+         * Deliberately NOT exposed to managed sessions. Whether a human is
+         * listening changes what deferring to one costs, so a session that
+         * could read it would change its own behaviour on the basis of the
+         * measurement. Observable to a host application and to the event
+         * journal; invisible to the subject.
+         */
+        readonly type: 'operator.attachment.changed';
+        readonly attached: boolean;
+        /** Attached operator surfaces by name, e.g. `console`, `telegram`. */
+        readonly surfaces: readonly string[];
+        /** Last inbound operator interaction seen this run, if any. */
+        readonly lastInteractionAt: string | null;
       }
     | {
         readonly type: 'schedule';

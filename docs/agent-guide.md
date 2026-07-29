@@ -514,6 +514,14 @@ the session is the sentinel, that silently ends stall routing for the whole flee
 reach the sentinel as ordinary messages. `stall_routed` in the health log means dispatched to
 delivery, not received.
 
+Whether an operator is attached is published to host applications and the event journal as
+`operator.attachment.changed`, carrying the attached surfaces and the last inbound operator
+interaction. It is deliberately **not** readable by managed sessions. The reason is not secrecy: an
+unanswered question costs a pause when a human is listening and a termination when none is, so a
+session that could read attachment state would change its own behaviour on the basis of the
+measurement — turning a recorded condition into an intervention. Sessions should assume nobody may
+be listening and prefer a decision they can justify over a question that may never be answered.
+
 A queue that cannot drain is reported. When a recipient has been undeliverable for longer than
 `messaging.undeliverableWarnMs` (10 minutes by default), Conductor tells the operator directly — how
 many messages are waiting, for how long, and the skip reason. The sentinel gets a shorter fuse
