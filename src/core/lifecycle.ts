@@ -14,7 +14,29 @@ import { materializeWorkspace, type WorkspaceSource } from './workspace.js';
 import { isWorktree, removeWorktree } from './worktree.js';
 import type { ConductorEventPublisher } from '../events/types.js';
 
-export interface StartOptions {
+/** Mutating lifecycle transitions, which are serialized per session. */
+export type LifecycleOperationKind = 'start' | 'continue' | 'stop' | 'restart' | 'teardown';
+
+/**
+ * The transition currently holding a session's turnstile. Advisory only: it
+ * exists so a second supervisor can SEE that a seat is already being recovered
+ * instead of discovering it by colliding. Two supervisors recovering one seat is
+ * the normal consequence of running auto-routing beside a scheduled backup.
+ */
+export interface LifecycleOperation {
+  kind: LifecycleOperationKind;
+  /** Who asked: a session codename, `operator`, or another mechanical caller. */
+  initiator?: string;
+  /** ISO-8601 instant the transition took the turnstile. */
+  since: string;
+}
+
+/** Attribution for a mutating transition, recorded while it holds the turnstile. */
+export interface LifecycleActionOptions {
+  initiator?: string;
+}
+
+export interface StartOptions extends LifecycleActionOptions {
   prompt?: string;
   placement?: Placement;
   continueSession?: boolean;
@@ -33,7 +55,7 @@ export interface ProcessObservation {
   observedAt: string;
 }
 
-export interface SpawnOptions {
+export interface SpawnOptions extends LifecycleActionOptions {
   path?: string;
   model?: string;
   /** Persisted per-session effort default for the new session. */
@@ -56,6 +78,17 @@ export interface SpawnOptions {
   branch?: string;
   /** Create the pane in the detached fleet session (tmux only). */
   headless?: boolean;
+  /**
+   * Register as a short-lived worker rather than a standing fleet member
+   * (default: true). Standing membership is what fleet watch measures.
+   */
+  ephemeral?: boolean;
+  /**
+   * Declared stall-routing policy for the new session, written into its config.
+   * Omitted leaves the session on the fleet default in force when Conductor
+   * started — which is not the same as the value currently in supervisor.yaml.
+   */
+  auto?: boolean;
 }
 
 export interface LifecycleDeps {
@@ -80,6 +113,13 @@ export interface LifecycleDeps {
   sessionConfigDir: string;
   /** Re-read session configs immediately (after spawn/teardown writes). */
   reloadSessions(teardownSession?: string): void;
+  /**
+   * Pick up session-file edits made since the last poll. A launch reads the
+   * in-memory roster, so an operator who edits YAML and immediately restarts
+   * would otherwise relaunch with the previous configuration and see the edit
+   * silently ignored.
+   */
+  refreshSessions?(): void;
   /** Reset per-run health and stall-routing tracking on lifecycle boundaries. */
   supervisionReset(session: string): void;
   /** Resolve working/idle from runtime-owned execution evidence at recovery boundaries. */
@@ -95,14 +135,65 @@ export interface LifecycleDeps {
 export class Lifecycle {
   private readonly panes = new Map<string, PaneRef>();
   private readonly sessions = new Map<string, string>();
-  /** In-flight start per codename — serializes concurrent starts so we never open two panes for one session. */
+  /** In-flight start per codename — concurrent starts share one result so we never open two panes for one session. */
   private readonly starting = new Map<string, Promise<string>>();
+  /** Tail of each session's serialized transition chain — the turnstile. */
+  private readonly turnstiles = new Map<string, Promise<unknown>>();
+  private readonly operations = new Map<string, LifecycleOperation>();
   private readonly processObservations = new Map<string, ProcessObservation>();
 
   constructor(private readonly deps: LifecycleDeps) {}
 
   getPane(session: string): PaneRef | undefined {
     return this.panes.get(session);
+  }
+
+  /** The transition currently holding this session's turnstile, if any. */
+  operationInFlight(session: string): LifecycleOperation | undefined {
+    return this.operations.get(session);
+  }
+
+  /**
+   * Run one mutating transition with exclusive ownership of a session.
+   *
+   * Serializing start alone is not enough: two supervisors recovering the same
+   * dead seat interleave stop→start with stop→start, so one caller's stop can
+   * kill the pane the other caller's start just opened, and a message can be
+   * dispatched against a process already being torn down. Every transition
+   * queues here, and a failed transition never blocks the next one.
+   */
+  private serialize<T>(
+    session: string,
+    kind: LifecycleOperationKind,
+    initiator: string | undefined,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.turnstiles.get(session) ?? Promise.resolve();
+    const result = previous.then(async () => {
+      const operation: LifecycleOperation = {
+        kind,
+        ...(initiator === undefined ? {} : { initiator }),
+        since: new Date().toISOString(),
+      };
+      this.operations.set(session, operation);
+      try {
+        return await action();
+      } finally {
+        if (this.operations.get(session) === operation) this.operations.delete(session);
+      }
+    });
+    // The chain must survive a rejected transition, and it must not retain a
+    // completed one: an unpruned tail would keep every session's last promise
+    // alive for the process lifetime.
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    const pruned = tail.then(() => {
+      if (this.turnstiles.get(session) === pruned) this.turnstiles.delete(session);
+    });
+    this.turnstiles.set(session, pruned);
+    return result;
   }
 
   processObservation(session: string): ProcessObservation | undefined {
@@ -145,6 +236,10 @@ export class Lifecycle {
   async reconcile(codename?: string): Promise<void> {
     const targets = codename === undefined ? [...this.panes.keys()] : [codename];
     for (const target of targets) {
+      // A transition owns this session's pane and state right now. Reconciling
+      // against a pane that is mid-kill or mid-launch reads a torn frame and
+      // then writes that stale conclusion over the transition's own result.
+      if (this.operations.has(target)) continue;
       const pane = this.panes.get(target);
       if (pane === undefined || !this.deps.states.has(target)) continue;
 
@@ -180,12 +275,15 @@ export class Lifecycle {
   }
 
   start(codename: string, opts: StartOptions = {}): Promise<string> {
-    // Serialize starts for one codename: a cron fire racing an operator /start
+    // Coalesce starts for one codename: a cron fire racing an operator /start
     // (or an auto-start via sendToSession) must not both pass the liveness check
-    // and open two panes for a single identity.
+    // and open two panes for a single identity. Every other transition waits at
+    // the turnstile instead of interleaving with this one.
     const inFlight = this.starting.get(codename);
     if (inFlight !== undefined) return inFlight;
-    const promise = this.startInner(codename, opts).finally(() => {
+    const promise = this.serialize(codename, opts.continueSession === true ? 'continue' : 'start', opts.initiator, () =>
+      this.startInner(codename, opts),
+    ).finally(() => {
       this.starting.delete(codename);
     });
     this.starting.set(codename, promise);
@@ -193,6 +291,8 @@ export class Lifecycle {
   }
 
   private async startInner(codename: string, opts: StartOptions): Promise<string> {
+    // Config edits take effect on the next launch, not on the next poll.
+    this.deps.refreshSessions?.();
     const session = this.deps.sessions().get(codename);
     if (session === undefined) return `Unknown session: ${codename}`;
 
@@ -242,7 +342,7 @@ export class Lifecycle {
     }
 
     await runtime.prepare(launchSession, identity);
-    this.deps.states.register(codename, this.isAgentProject(session));
+    this.deps.states.register(codename, this.isAgentProject(session), session.auto);
 
     const placement = opts.placement ?? this.deps.config.defaultPlacement;
     const createdPane = existingPane === undefined;
@@ -305,7 +405,19 @@ export class Lifecycle {
     return this.start(codename, { ...opts, continueSession: true });
   }
 
-  async stop(codename: string): Promise<string> {
+  stop(codename: string, opts: LifecycleActionOptions = {}): Promise<string> {
+    return this.serialize(codename, 'stop', opts.initiator, () => this.stopInner(codename));
+  }
+
+  /** Stop and restart as ONE transition — nothing may claim the seat in between. */
+  restart(codename: string, opts: StartOptions = {}): Promise<string> {
+    return this.serialize(codename, 'restart', opts.initiator, async () => {
+      await this.stopInner(codename);
+      return this.startInner(codename, opts);
+    });
+  }
+
+  private async stopInner(codename: string): Promise<string> {
     if (!this.deps.states.has(codename)) return `Unknown session: ${codename}`;
     const pane = this.panes.get(codename);
     if (pane !== undefined) {
@@ -318,11 +430,6 @@ export class Lifecycle {
     this.clearSession(codename, 'requested');
     log().info('lifecycle', `${codename}: stopped`);
     return `${codename} stopped.`;
-  }
-
-  async restart(codename: string, opts: StartOptions = {}): Promise<string> {
-    await this.stop(codename);
-    return this.start(codename, opts);
   }
 
   /** Session ended without us stopping it (pane closed, session-end event). */
@@ -385,7 +492,12 @@ export class Lifecycle {
       codename,
       repo: dir,
       runtime: opts.runtime ?? this.deps.config.defaultRuntime,
+      // A session created at runtime is a pod unless the caller says otherwise.
+      // Written explicitly so the distinction is visible in the config a human
+      // later reads and can flip by hand.
+      ephemeral: opts.ephemeral ?? true,
     };
+    if (opts.auto !== undefined) config.auto = opts.auto;
     if (opts.model !== undefined) config.model = opts.model;
     if (opts.effort !== undefined) config.effort = opts.effort;
     if (opts.additionalDirs !== undefined) config.additionalDirs = opts.additionalDirs;
@@ -399,18 +511,24 @@ export class Lifecycle {
       prompt: opts.prompt,
       placement: opts.placement,
       headless: opts.headless,
+      initiator: opts.initiator,
     });
     return `Spawned ${codename} at ${dir}. ${started}`;
   }
 
-  async teardown(codename: string, deleteDir = false): Promise<string> {
+  teardown(codename: string, deleteDir = false, opts: LifecycleActionOptions = {}): Promise<string> {
+    return this.serialize(codename, 'teardown', opts.initiator, () => this.teardownInner(codename, deleteDir));
+  }
+
+  private async teardownInner(codename: string, deleteDir: boolean): Promise<string> {
     const session = this.deps.sessions().get(codename);
     if (session === undefined) return `Unknown session: ${codename}`;
 
     // An ended runtime can leave an idle reusable pane behind. Teardown owns
-    // the whole session registration, so it must close that pane too.
+    // the whole session registration, so it must close that pane too. It
+    // already holds the turnstile, so it stops the session directly.
     if (this.panes.has(codename)) {
-      await this.stop(codename);
+      await this.stopInner(codename);
     }
 
     let dirNote = '';

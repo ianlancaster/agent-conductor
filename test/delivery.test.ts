@@ -38,6 +38,38 @@ afterEach(() => {
 });
 
 describe('DeliveryQueue', () => {
+  it('holds a message while a lifecycle transition owns the session', async () => {
+    // Recovery churn is exactly when a peer's message arrives: the seat looked
+    // dead, someone is restarting it, and the pane in hand belongs to a process
+    // that is already going away.
+    let transitioning = true;
+    queue.stop();
+    const skipReasons: (string | null)[] = [];
+    queue = new DeliveryQueue({
+      backend,
+      runtimeFor: () => runtime,
+      getPane: () => pane,
+      lifecycleBusy: () => transitioning,
+      onDelivered: (session) => deliveryEvents.push(session),
+      config: CONFIG,
+    });
+
+    const result = await queue.deliverOrQueue('alpha', 'hello', {
+      deliveryId: 1,
+      onAttempt: (reason) => skipReasons.push(reason),
+    });
+
+    expect(result).toBe('queued');
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    expect(skipReasons).toEqual(['session-transitioning']);
+
+    // Once the transition releases the seat, the queued message drains normally.
+    transitioning = false;
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['hello']);
+    expect(deliveryEvents).toEqual(['alpha']);
+  });
+
   it('delivers immediately when the input line is clear', async () => {
     const result = await queue.deliverOrQueue('alpha', 'hello');
     expect(result).toBe('delivered');

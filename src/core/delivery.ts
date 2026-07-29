@@ -7,6 +7,7 @@ export type DeliveryResult = 'delivered' | 'queued' | 'cancelled' | 'no-pane';
 
 export type DeliverySkipReason =
   | 'no-pane'
+  | 'session-transitioning'
   | 'pane-not-alive'
   | 'runtime-unavailable'
   | 'capture-failed'
@@ -60,6 +61,8 @@ export interface DeliveryDeps {
    */
   runtimeCandidates?(session: string): readonly SessionRuntime[];
   getPane(session: string): PaneRef | undefined;
+  /** True while a lifecycle transition owns the session's pane (start/stop/restart/teardown). */
+  lifecycleBusy?(session: string): boolean;
   /** Visible runtime input chrome is an independent readiness proof. */
   onRuntimeObserved?(session: string): void;
   /** A non-primary parser uniquely recognized the live runtime's composer. */
@@ -282,6 +285,10 @@ export class DeliveryQueue {
    * runtime composer. Any text, missing chrome, or capture failure blocks.
    */
   private async typingState(session: string, pane: PaneRef): Promise<TypingObservation> {
+    // A pane being killed or launched right now is not a destination. Writing
+    // into it dispatches against a process that is already going away, and the
+    // capture it answers with describes the old run.
+    if (this.deps.lifecycleBusy?.(session) === true) return { state: 'blocked', skipReason: 'session-transitioning' };
     const runtime = this.deps.runtimeFor(session);
     if (runtime === undefined) return { state: 'blocked', skipReason: 'runtime-unavailable' };
     try {

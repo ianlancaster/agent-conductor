@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadSessionConfigs } from '../src/config/loader.js';
+import { ConfigWatcher } from '../src/config/watcher.js';
 import type { SessionConfig } from '../src/config/schema.js';
 import { Lifecycle } from '../src/core/lifecycle.js';
 import { SessionStateManager } from '../src/core/state.js';
@@ -26,6 +27,8 @@ let defaultBypassPermissions: boolean;
 let defaultEfforts: { 'claude-code': string | undefined; 'codex': string | undefined };
 let lifecycleEvents: FakeEventPublisher;
 let recoveredActivity: PaneActivityEvidence;
+let refreshes: number;
+let watcher: ConfigWatcher;
 
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-lc-'));
@@ -46,6 +49,13 @@ beforeEach(() => {
   defaultEfforts = { 'claude-code': undefined, 'codex': undefined };
   lifecycleEvents = new FakeEventPublisher();
   recoveredActivity = 'idle';
+  refreshes = 0;
+  // Mirror production wiring: an on-demand poll reloads only when a session
+  // file actually changed, so tests that mutate the in-memory roster keep it.
+  watcher = new ConfigWatcher(join(baseDir, 'config', 'sessions'));
+  watcher.onChange(() => {
+    sessions = loadSessionConfigs(baseDir, { tolerant: true });
+  });
 
   lifecycle = new Lifecycle({
     store,
@@ -78,6 +88,10 @@ beforeEach(() => {
     reloadSessions: () => {
       sessions = loadSessionConfigs(baseDir, { tolerant: true });
       for (const codename of sessions.keys()) states.register(codename, false);
+    },
+    refreshSessions: () => {
+      refreshes += 1;
+      watcher.checkNow();
     },
     supervisionReset: (session) => {
       supervisionResets.push(session);
@@ -395,6 +409,106 @@ describe('lifecycle edges', () => {
     const alphaPanes = [...backend.panes.values()].filter((p) => p.session === 'alpha' && p.alive);
     expect(alphaPanes.length).toBe(1);
     expect(lifecycle.getPane('alpha')).toBeDefined();
+  });
+
+  it('launches the session file as it is on disk, not as it was at the last poll', async () => {
+    // Config files hot-reload on a timer, but a launch reads the in-memory
+    // roster. An operator who edits YAML and restarts within the poll interval
+    // would otherwise relaunch the previous configuration and be told nothing.
+    writeFileSync(
+      join(baseDir, 'config', 'sessions', 'alpha.yaml'),
+      `codename: alpha\nrepo: ${join(baseDir, 'repos', 'alpha')}\nmodel: edited-after-the-last-poll\n`,
+    );
+
+    await lifecycle.start('alpha');
+
+    expect(refreshes).toBeGreaterThan(0);
+    expect(runtime.launches.at(-1)?.session.model).toBe('edited-after-the-last-poll');
+  });
+
+  it('does not let a second supervisor stop the pane a recovery just opened', async () => {
+    // The configuration Conductor's own docs recommend — auto stall routing plus
+    // a scheduled backup sweep — makes two callers recovering one dead seat a
+    // normal event. Unserialized, the second caller's stop lands inside the
+    // first caller's launch: the recovery reports success while the seat it
+    // just claimed is already dead.
+    await lifecycle.start('alpha');
+    const events: string[] = [];
+    const launched = backend.launch.bind(backend);
+    const killed = backend.kill.bind(backend);
+    backend.launch = async (pane, command) => {
+      events.push(`launch ${pane.id} begin`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const result = await launched(pane, command);
+      events.push(`launch ${pane.id} end`);
+      return result;
+    };
+    backend.kill = async (pane) => {
+      events.push(`kill ${pane.id}`);
+      return killed(pane);
+    };
+
+    const recovering = lifecycle.restart('alpha', { initiator: 'agent-stubbs' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const stopping = lifecycle.stop('alpha', { initiator: 'agent-ford' });
+
+    await expect(recovering).resolves.toBe('alpha started.');
+    await expect(stopping).resolves.toBe('alpha stopped.');
+
+    // The recovery's replacement pane is launched to completion before the
+    // second caller's stop touches it — never killed mid-launch.
+    const replacement = events.find((event) => event.endsWith('begin') && !event.startsWith('launch pane-1'));
+    const replacementPane = replacement?.split(' ')[1] ?? '';
+    expect(events).toEqual([
+      'kill pane-1',
+      `launch ${replacementPane} begin`,
+      `launch ${replacementPane} end`,
+      `kill ${replacementPane}`,
+    ]);
+    expect(states.get('alpha')?.running).toBe(false);
+    expect(lifecycle.operationInFlight('alpha')).toBeUndefined();
+  });
+
+  it('publishes an advisory marker naming the transition and who asked for it', async () => {
+    await lifecycle.start('alpha');
+    let observed: ReturnType<typeof lifecycle.operationInFlight>;
+    backend.kill = async () => {
+      observed = lifecycle.operationInFlight('alpha');
+      await Promise.resolve();
+    };
+
+    await lifecycle.stop('alpha', { initiator: 'agent-stubbs' });
+
+    expect(observed?.kind).toBe('stop');
+    expect(observed?.initiator).toBe('agent-stubbs');
+    expect(observed?.since).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+    // The marker is advisory and must not outlive the transition it describes.
+    expect(lifecycle.operationInFlight('alpha')).toBeUndefined();
+  });
+
+  it('does not let a failed transition wedge the seat for the next caller', async () => {
+    backend.launch = () => Promise.reject(new Error('shell init failed'));
+    await expect(lifecycle.start('alpha')).rejects.toThrow('shell init failed');
+    expect(lifecycle.operationInFlight('alpha')).toBeUndefined();
+
+    backend.launch = async () => undefined;
+    await expect(lifecycle.start('alpha')).resolves.toBe('alpha started.');
+  });
+
+  it('skips reconciliation while a transition owns the session', async () => {
+    // A status or cron liveness check that lands mid-stop reads a torn frame and
+    // then writes that stale conclusion over the transition's own result.
+    await lifecycle.start('alpha');
+    let reconciledDuringStop = false;
+    backend.kill = async () => {
+      await lifecycle.reconcile('alpha');
+      reconciledDuringStop = states.get('alpha')?.running !== true;
+    };
+
+    await lifecycle.stop('alpha');
+
+    expect(reconciledDuringStop).toBe(false);
+    expect(states.get('alpha')?.running).toBe(false);
   });
 
   it('kills the pane if launch setup throws, leaving no orphan (M16)', async () => {
