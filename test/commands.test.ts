@@ -142,6 +142,7 @@ beforeEach(() => {
     isAuto: (codename) => states.isAuto(codename),
     isPaused: (codename) => states.isPaused(codename),
     activityFor: (codename) => states.get(codename)?.activity,
+    isEphemeral: () => false,
     isActive: (codename) => states.get(codename)?.running === true,
     deliver: (codename, text) => delivery.deliverOrQueue(codename, text),
     notifyOperator: async () => undefined,
@@ -477,7 +478,7 @@ describe('mode commands', () => {
   });
 
   it('toggles fleet stall detection', async () => {
-    expect(await router.route('/fleet-watch')).toBe('Fleet watch on.');
+    expect(await router.route('/fleet-watch')).toMatch(/^Fleet watch (armed|on but (INERT|SUPPRESSED))/u);
     expect(await router.route('/fleet-watch')).toBe('Fleet watch off.');
   });
 

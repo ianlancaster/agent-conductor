@@ -5,6 +5,9 @@ runtime: claude-code # default
 # bypassPermissions: false # optional override of defaults.bypassPermissions
 model: claude-opus-4-8 # optional; falls back to runtimes.claudeCode.defaultModel, then the CLI default
 # effort: xhigh # optional; falls back to runtimes.claudeCode.defaultEffort, then the CLI default
+# auto: false # declared stall-routing policy, applied at first registration; /auto still wins live
+# ephemeral: false # default; standing members are what fleet watch measures.
+#                   # spawn_session writes `ephemeral: true` for short-lived pods.
 additionalDirs:
   - ../shared-notes
 schedules:

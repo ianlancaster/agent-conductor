@@ -786,16 +786,19 @@ describe('Supervisor construction', () => {
       beta: `codename: beta\nrepo: ${baseDir}\n`,
     });
     supervisor = new Supervisor(baseDir);
-    expect(await supervisor.command('/fleet-watch')).toBe('Fleet watch on.');
+    // Nothing is running, so the setting persists as ON while the instrument
+    // reports honestly that it cannot currently fire.
+    expect(await supervisor.command('/fleet-watch')).toContain('Fleet watch on but');
     await supervisor.stop();
 
     supervisor = new Supervisor(baseDir);
-    expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status 🔄\n/);
+    expect(supervisor.statusReport()).toContain('Fleet watch on but');
     expect(await supervisor.command('/fleet-watch')).toBe('Fleet watch off.');
     await supervisor.stop();
 
     supervisor = new Supervisor(baseDir);
     expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status\n/);
+    expect(supervisor.statusReport()).not.toContain('Fleet watch');
   });
 
   it('migrates an existing named fleet watch to the fleet-wide toggle', () => {
@@ -811,7 +814,7 @@ describe('Supervisor construction', () => {
 
     supervisor = new Supervisor(baseDir);
 
-    expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status 🔄\n/);
+    expect(supervisor.statusReport()).toContain('Fleet watch on but');
   });
 
   it('persists a tool-set sentinel override and a cleared designation', async () => {
@@ -895,32 +898,38 @@ describe('Supervisor construction', () => {
       gamma: `codename: gamma\nrepo: ${baseDir}\n`,
     });
     supervisor = new Supervisor(baseDir);
-    expect(await supervisor.command('/fleet-watch')).toBe('Fleet watch on.');
+    expect(await supervisor.command('/fleet-watch')).toContain('Fleet watch on but');
 
     rmSync(join(baseDir, 'config', 'sessions', 'gamma.yaml'));
     supervisor.reloadSessionsForTest();
 
-    expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status 🔄\n/);
+    expect(supervisor.statusReport()).toContain('Fleet watch on but');
+    expect(supervisor.statusReport()).toContain('2 standing session(s)');
     await supervisor.stop();
 
     supervisor = new Supervisor(baseDir);
-    expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status 🔄\n/);
+    expect(supervisor.statusReport()).toContain('Fleet watch on but');
     await supervisor.command('/fleet-watch');
-    expect(supervisor.statusReport()).toMatch(/^Agent Conductor Status\n/);
+    expect(supervisor.statusReport()).not.toContain('Fleet watch');
   });
 
   it('reconciles surviving panes before a persisted threshold-zero fleet watch evaluates', async () => {
     const port = await freePort();
-    writeConfig(`mcp:\n  port: ${String(port)}\nhealth:\n  fleetStallConfirmMs: 0\n`, {
+    writeConfig(`mcp:\n  port: ${String(port)}\nhealth:\n  fleetStallConfirmMs: 0\n  idleConfirmMs: 0\n`, {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+      beta: `codename: beta\nrepo: ${baseDir}\n`,
     });
     const store = new Store(join(baseDir, 'data', 'conductor.db'));
     store.setWorkspaceValue('sentinel.fleetWatchEnabled', true);
     store.close();
     const terminal = new FakeTerminalBackend();
-    const survivingPane = await terminal.createPane('alpha', 'pane', baseDir);
-    terminal.panes.get(survivingPane.id)!.sessionActive = true;
-    terminal.survivors.set('alpha', survivingPane);
+    const workingPane = await terminal.createPane('alpha', 'pane', baseDir);
+    const idlePane = await terminal.createPane('beta', 'pane', baseDir);
+    for (const pane of [workingPane, idlePane]) terminal.panes.get(pane.id)!.sessionActive = true;
+    terminal.setPaneContent(workingPane.id, ['live output', '❯', 'Press up to edit queued messages'].join('\n'));
+    terminal.setPaneContent(idlePane.id, 'completed output\n❯ ');
+    terminal.survivors.set('alpha', workingPane);
+    terminal.survivors.set('beta', idlePane);
     const channel = new StrictStartChannel();
     supervisor = new Supervisor(baseDir, {
       terminalBackend: terminal,
@@ -934,23 +943,60 @@ describe('Supervisor construction', () => {
     expect(supervisor.statusReport('alpha')).toContain('"activity": "working"');
     expect(channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled'))).toBe(false);
 
-    expect(await supervisor.command('/stop alpha')).toBe('alpha stopped.');
+    // Both standing seats are up, so the quorum holds; the campaign only counts
+    // as dark once the working one is reconciled to idle too.
+    terminal.setPaneContent(workingPane.id, 'completed output\n❯ ');
+    await supervisor.command('/status alpha');
     await until(() => channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled')));
+  });
+
+  it('does not raise a campaign alert for a roster that is merely switched off', async () => {
+    // Quorum is measured over standing seats that are UP. With nothing running
+    // there is no campaign to be dark, and status must say so rather than
+    // presenting itself as an armed backstop.
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\nhealth:\n  fleetStallConfirmMs: 0\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+      beta: `codename: beta\nrepo: ${baseDir}\n`,
+    });
+    const store = new Store(join(baseDir, 'data', 'conductor.db'));
+    store.setWorkspaceValue('sentinel.fleetWatchEnabled', true);
+    store.close();
+    const channel = new StrictStartChannel();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      channels: [channel],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start();
+
+    expect(channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled'))).toBe(false);
+    const status = supervisor.statusReport();
+    expect(status).not.toContain('Agent Conductor Status 🔄');
+    expect(status).toContain('Fleet watch on but SUPPRESSED');
+    expect(status).toContain('0 running');
   });
 
   it('classifies a surviving idle composer before persisted fleet watch evaluates', async () => {
     const port = await freePort();
     writeConfig(`mcp:\n  port: ${String(port)}\nhealth:\n  fleetStallConfirmMs: 0\n`, {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+      beta: `codename: beta\nrepo: ${baseDir}\n`,
     });
     const store = new Store(join(baseDir, 'data', 'conductor.db'));
     store.setWorkspaceValue('sentinel.fleetWatchEnabled', true);
     store.close();
     const terminal = new FakeTerminalBackend();
     const survivingPane = await terminal.createPane('alpha', 'pane', baseDir);
-    terminal.panes.get(survivingPane.id)!.sessionActive = true;
-    terminal.setPaneContent(survivingPane.id, 'completed output\n❯ ');
+    const betaPane = await terminal.createPane('beta', 'pane', baseDir);
+    for (const pane of [survivingPane, betaPane]) {
+      terminal.panes.get(pane.id)!.sessionActive = true;
+      terminal.setPaneContent(pane.id, 'completed output\n❯ ');
+    }
     terminal.survivors.set('alpha', survivingPane);
+    terminal.survivors.set('beta', betaPane);
     const channel = new StrictStartChannel();
     supervisor = new Supervisor(baseDir, {
       terminalBackend: terminal,
@@ -1023,17 +1069,25 @@ describe('Supervisor construction', () => {
     expect(channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled'))).toBe(false);
   });
 
-  it('routes a threshold-zero stopped-roster alert only after channels are ready', async () => {
+  it('routes a threshold-zero fleet alert only after channels are ready', async () => {
     const port = await freePort();
     writeConfig(`mcp:\n  port: ${String(port)}\nhealth:\n  fleetStallConfirmMs: 0\n`, {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+      beta: `codename: beta\nrepo: ${baseDir}\n`,
     });
     const store = new Store(join(baseDir, 'data', 'conductor.db'));
     store.setWorkspaceValue('sentinel.fleetWatchEnabled', true);
     store.close();
+    const terminal = new FakeTerminalBackend();
     const channel = new StrictStartChannel();
+    for (const codename of ['alpha', 'beta']) {
+      const pane = await terminal.createPane(codename, 'pane', baseDir);
+      terminal.panes.get(pane.id)!.sessionActive = true;
+      terminal.setPaneContent(pane.id, 'completed output\n❯ ');
+      terminal.survivors.set(codename, pane);
+    }
     supervisor = new Supervisor(baseDir, {
-      terminalBackend: new FakeTerminalBackend(),
+      terminalBackend: terminal,
       channels: [channel],
       includeConfiguredChannels: false,
       env: {},

@@ -83,7 +83,25 @@ export const sessionConfigSchema = z
     model: z.string().optional(),
     /** Per-session effort default. Runtime/model support is intentionally not validated here. */
     effort: z.string().min(1).optional(),
+    /**
+     * Declared stall-routing policy for this session, applied when it is first
+     * registered — including at spawn — and whenever no per-session state has
+     * been persisted yet. `toggle_auto` remains the runtime control and its
+     * value persists, so a live change is never undone by a config reload.
+     * Declaring it here is what makes a unit's policy durable and reviewable in
+     * version control rather than dependent on the fleet default in force at
+     * the moment Conductor happened to boot.
+     */
+    auto: z.boolean().optional(),
     additionalDirs: z.array(z.string()).default([]),
+    /**
+     * Short-lived worker rather than a standing member of this fleet. Sessions
+     * created by `spawn_session` are ephemeral by default; hand-authored configs
+     * are standing unless they say otherwise. Fleet watch measures the standing
+     * roster only, so a burst of pods cannot silently disarm it and a pod
+     * finishing its task cannot look like the fleet going dark.
+     */
+    ephemeral: z.boolean().default(false),
     /**
      * Per-session durable role instructions, appended after the conductor protocol and
      * retained across runtime compaction. Maximum 5 KiB UTF-8. Absolute, or resolved

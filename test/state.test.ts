@@ -13,6 +13,44 @@ afterEach(() => {
   store.close();
 });
 
+describe('declared auto policy', () => {
+  it('applies a session-config policy at registration and persists it', () => {
+    const store = new Store(':memory:');
+    const states = new SessionStateManager(store, true);
+
+    states.register('alpha', false, false);
+
+    expect(states.isAuto('alpha')).toBe(false);
+    // Materialized immediately: the policy must not depend on the config file
+    // that declared it still being readable later.
+    expect(store.getSessionState('alpha')?.auto).toBe(false);
+    store.close();
+  });
+
+  it('keeps a persisted runtime toggle ahead of the declared policy', () => {
+    const store = new Store(':memory:');
+    const first = new SessionStateManager(store, false);
+    first.register('alpha', false, false);
+    first.toggleAuto('alpha');
+    expect(first.isAuto('alpha')).toBe(true);
+
+    // A restart re-registers from the same config; the operator's live decision
+    // wins over the declaration, in either direction.
+    const second = new SessionStateManager(store, false);
+    second.register('alpha', false, false);
+    expect(second.isAuto('alpha')).toBe(true);
+    store.close();
+  });
+
+  it('falls back to the fleet default only when nothing else says otherwise', () => {
+    const store = new Store(':memory:');
+    const states = new SessionStateManager(store, true);
+    states.register('alpha', false);
+    expect(states.isAuto('alpha')).toBe(true);
+    store.close();
+  });
+});
+
 describe('SessionStateManager tags', () => {
   it('rejects over-limit tags without changing the current value', () => {
     const states = new SessionStateManager(store, false, undefined, 10);

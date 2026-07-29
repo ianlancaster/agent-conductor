@@ -14,6 +14,7 @@ let autoSessions: Set<string>;
 let pausedSessions: Set<string>;
 let activeSessions: Set<string>;
 let activities: Map<string, Activity>;
+let ephemeralSessions: Set<string>;
 let panes: Map<string, string>;
 let events: FakeEventPublisher;
 let recentMessages: {
@@ -48,6 +49,7 @@ function makeRouter(
     isAuto: (session) => autoSessions.has(session),
     isPaused: (session) => pausedSessions.has(session),
     activityFor: (session) => activities.get(session),
+    isEphemeral: (session) => ephemeralSessions.has(session),
     isActive,
     deliver: async (session, text) => {
       delivered.push({ session, text });
@@ -76,6 +78,7 @@ beforeEach(async () => {
     ['beta', 'working'],
     ['watch', 'idle'],
   ]);
+  ephemeralSessions = new Set();
   panes = new Map();
   events = new FakeEventPublisher();
   recentMessages = [];
@@ -306,6 +309,50 @@ describe('isSentinel', () => {
   });
 });
 
+describe('sentinel liveness', () => {
+  it('reports the watcher\u2019s own failure without waiting for a stall to need routing', async () => {
+    // Fleet watch excludes the sentinel by design, so nothing else observes the
+    // one seat whose failure disables all stall routing.
+    activeSessions.delete('watch');
+
+    await router.checkSentinelHealth();
+
+    expect(operatorMessages).toHaveLength(1);
+    expect(operatorMessages[0]).toContain('Sentinel watch is not running');
+    expect(delivered).toEqual([]);
+  });
+
+  it('rate-limits the alarm and announces recovery once', async () => {
+    activeSessions.delete('watch');
+    await router.checkSentinelHealth();
+    await router.checkSentinelHealth();
+    expect(operatorMessages).toHaveLength(1);
+
+    activeSessions.add('watch');
+    await router.checkSentinelHealth();
+    await router.checkSentinelHealth();
+
+    expect(operatorMessages).toHaveLength(2);
+    expect(operatorMessages[1]).toContain('running again');
+  });
+
+  it('treats an inconclusive liveness inspection as unknown, not failure', async () => {
+    router = makeRouter('watch', () => {
+      throw new Error('terminal inspection failed');
+    });
+
+    await router.checkSentinelHealth();
+
+    expect(operatorMessages).toEqual([]);
+  });
+
+  it('says nothing when no sentinel is designated', async () => {
+    router = makeRouter(undefined);
+    await router.checkSentinelHealth();
+    expect(operatorMessages).toEqual([]);
+  });
+});
+
 describe('fleet stall watch', () => {
   it('routes one fleet alert only after every non-sentinel session is non-working', async () => {
     expect(router.toggleFleetWatch()).toBe(true);
@@ -352,7 +399,7 @@ describe('fleet stall watch', () => {
     router.activateFleetWatch();
     router.toggleFleetWatch();
     activities.set('alpha', 'idle');
-    activities.set('beta', 'stopped');
+    activities.set('beta', 'idle');
     await router.handleStall('alpha', 'idle', {});
 
     await vi.advanceTimersByTimeAsync(10_000);
@@ -378,6 +425,8 @@ describe('fleet stall watch', () => {
       isAuto: () => false,
       isPaused: () => false,
       activityFor: (session) => activities.get(session),
+      isEphemeral: (session) => ephemeralSessions.has(session),
+      isEphemeral: (session) => ephemeralSessions.has(session),
       isActive: () => true,
       deliver: async () => undefined,
       notifyOperator: async () => undefined,
@@ -430,15 +479,144 @@ describe('fleet stall watch', () => {
     expect(fleet[0]?.text).toContain('sessions=alpha,beta,gamma');
   });
 
-  it('alerts for a single registered non-sentinel session', async () => {
+  it('does not restate one session\u2019s idle stall as a campaign-level alert', async () => {
+    // With a single running standing member, "nobody is working" says exactly
+    // what that member's own idle stall already said. The sentinel would get the
+    // same fact twice, dressed as a fleet emergency.
     router.setRegisteredSessions(['alpha', 'watch']);
     router.toggleFleetWatch();
-    activities.set('alpha', 'stopped');
+    activities.set('alpha', 'idle');
     router.reset('alpha');
     await Promise.resolve();
 
     expect(router.isFleetWatchEnabled()).toBe(true);
-    expect(delivered.filter((item) => item.text.startsWith('[Fleet Stall]'))).toHaveLength(1);
+    expect(delivered.filter((item) => item.text.startsWith('[Fleet Stall]'))).toHaveLength(0);
+    const status = router.fleetWatchStatus();
+    expect(status.state).toBe('suppressed');
+    expect(status.reason).toContain('quorum unmet');
+  });
+
+  it('measures the standing fleet only, so a burst of pods cannot disarm it', async () => {
+    // spawn_session registers its pods, and with continuous lanes something is
+    // always working \u2014 an unscoped roster then cannot fire while still
+    // reporting itself armed.
+    ephemeralSessions.add('pod-1');
+    activeSessions.add('pod-1');
+    activities.set('pod-1', 'working');
+    router.setRegisteredSessions(['alpha', 'beta', 'pod-1', 'watch']);
+    router.toggleFleetWatch();
+
+    activities.set('alpha', 'idle');
+    await router.handleStall('alpha', 'idle', {});
+    activities.set('beta', 'idle');
+    await router.handleStall('beta', 'idle', {});
+    await Promise.resolve();
+
+    const fleet = delivered.filter((item) => item.text.startsWith('[Fleet Stall]'));
+    expect(fleet).toHaveLength(1);
+    expect(fleet[0]?.text).toContain('sessions=alpha,beta');
+    expect(fleet[0]?.text).not.toContain('pod-1');
+  });
+
+  it('raises a distinct alert when the whole standing fleet goes down', async () => {
+    // A stopped session emits no stalls, so nothing else in the system can
+    // report this. Suppressing it behind the stall quorum would leave a fleet
+    // that died overnight covered by a true sentence in a status report nobody
+    // is reading at 4am.
+    router.toggleFleetWatch();
+    activities.set('alpha', 'idle');
+    activities.set('beta', 'idle');
+    router.reset('alpha');
+    await Promise.resolve();
+    expect(delivered.filter((item) => item.text.startsWith('[Fleet Down]'))).toHaveLength(0);
+
+    activities.set('alpha', 'stopped');
+    activities.set('beta', 'stopped');
+    router.reset('alpha');
+    await Promise.resolve();
+
+    const down = delivered.filter((item) => item.text.startsWith('[Fleet Down]'));
+    expect(down).toHaveLength(1);
+    expect(down[0]?.session).toBe('watch');
+    expect(down[0]?.text).toMatch(
+      /^\[Fleet Down\] sessions=alpha,beta none-running-for=0s detected-at=\d{4}-\d{2}-\d{2}T.*No standing session is running/u,
+    );
+
+    // Latched: repeated lifecycle boundaries while still down do not re-alert.
+    router.reset('beta');
+    await Promise.resolve();
+    expect(delivered.filter((item) => item.text.startsWith('[Fleet Down]'))).toHaveLength(1);
+  });
+
+  it('does not call a fleet that never came up an outage', async () => {
+    // Starting Conductor with nothing running is not a fleet going dark.
+    activities.set('alpha', 'stopped');
+    activities.set('beta', 'stopped');
+    router = makeRouter('watch');
+    router.activateFleetWatch();
+    router.toggleFleetWatch();
+    await Promise.resolve();
+
+    expect(delivered.filter((item) => item.text.startsWith('[Fleet Down]'))).toHaveLength(0);
+    const status = router.fleetWatchStatus();
+    expect(status.state).toBe('suppressed');
+    expect(status.covers).toEqual([]);
+    expect(status.reason).toContain('never came up');
+  });
+
+  it('rearms the outage alert once the fleet is back up', async () => {
+    router.toggleFleetWatch();
+    activities.set('alpha', 'stopped');
+    activities.set('beta', 'stopped');
+    router.reset('alpha');
+    await Promise.resolve();
+    expect(delivered.filter((item) => item.text.startsWith('[Fleet Down]'))).toHaveLength(1);
+
+    activities.set('alpha', 'working');
+    router.noteWorking('alpha');
+    expect(router.fleetWatchStatus().covers).toEqual([]);
+
+    activities.set('alpha', 'stopped');
+    router.reset('alpha');
+    await Promise.resolve();
+    expect(delivered.filter((item) => item.text.startsWith('[Fleet Down]'))).toHaveLength(2);
+  });
+
+  it('states which signal it is armed for when only the outage alert can fire', async () => {
+    router.toggleFleetWatch();
+    activities.set('alpha', 'working');
+    router.noteWorking('alpha');
+    activities.set('alpha', 'stopped');
+    activities.set('beta', 'stopped');
+    const status = router.fleetWatchStatus();
+
+    expect(status.state).toBe('armed');
+    expect(status.covers).toEqual(['fleet-down']);
+  });
+
+  it('reports itself inert rather than armed when only pods are registered', () => {
+    ephemeralSessions.add('pod-1');
+    router.setRegisteredSessions(['pod-1', 'watch']);
+    router.toggleFleetWatch();
+
+    const status = router.fleetWatchStatus();
+    expect(status.enabled).toBe(true);
+    expect(status.state).toBe('inert');
+    expect(status.reason).toContain('no standing sessions are registered');
+    expect(status.members).toEqual([]);
+  });
+
+  it('reports armed only when it can actually fire', () => {
+    router.toggleFleetWatch();
+    const status = router.fleetWatchStatus();
+    expect(status.state).toBe('armed');
+    expect(status.reason).toBeUndefined();
+    expect(status.members).toEqual(['alpha', 'beta']);
+    expect(status.runningMembers).toEqual(['alpha', 'beta']);
+    expect(status.covers).toEqual(['fleet-stall']);
+    expect(router.fleetWatchStatus().state).toBe('armed');
+    router.toggleFleetWatch();
+    expect(router.fleetWatchStatus().state).toBe('off');
   });
 
   it('stays enabled without alerting when no non-sentinel sessions are registered', async () => {
@@ -451,8 +629,8 @@ describe('fleet stall watch', () => {
   });
 
   it('does not evaluate a persisted threshold-zero watch until startup reconciliation activates it', async () => {
-    activities.set('alpha', 'stopped');
-    activities.set('beta', 'stopped');
+    activities.set('alpha', 'idle');
+    activities.set('beta', 'idle');
     router.stop();
     router = new StallSentinelRouter({
       config: {
@@ -468,6 +646,8 @@ describe('fleet stall watch', () => {
       isAuto: () => false,
       isPaused: () => false,
       activityFor: (session) => activities.get(session),
+      isEphemeral: (session) => ephemeralSessions.has(session),
+      isEphemeral: (session) => ephemeralSessions.has(session),
       isActive: () => true,
       deliver: async (session, text) => delivered.push({ session, text }),
       notifyOperator: async (text) => operatorMessages.push(text),
@@ -487,7 +667,7 @@ describe('fleet stall watch', () => {
     autoSessions.clear();
     pausedSessions.add('alpha');
     activities.set('alpha', 'idle');
-    activities.set('beta', 'stopped');
+    activities.set('beta', 'idle');
     router.toggleFleetWatch();
     await Promise.resolve();
 

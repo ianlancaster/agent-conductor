@@ -98,6 +98,7 @@ describe('ConductorEventBus', () => {
       'session.activity.changed',
       'stall',
       'fleet.stalled',
+      'fleet.down',
       'schedule',
       'operator.request.created',
       'operator.request.resolved',

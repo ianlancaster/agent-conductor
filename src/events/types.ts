@@ -13,6 +13,7 @@ export const CONDUCTOR_EVENT_TYPES = [
   'session.activity.changed',
   'stall',
   'fleet.stalled',
+  'fleet.down',
   'schedule',
   'operator.request.created',
   'operator.request.resolved',
@@ -85,6 +86,14 @@ export type ConductorEvent = ConductorEventEnvelope &
         readonly type: 'fleet.stalled';
         readonly sessions: readonly string[];
         /** Mechanical fleet-stall classification time. */
+        readonly detectedAt: string;
+        readonly disposition: 'routed' | 'reported-to-operator' | 'sentinel-down';
+      }
+    | {
+        /** Every standing session is stopped, after the fleet had been observed running. */
+        readonly type: 'fleet.down';
+        readonly sessions: readonly string[];
+        /** Mechanical fleet-down classification time. */
         readonly detectedAt: string;
         readonly disposition: 'routed' | 'reported-to-operator' | 'sentinel-down';
       }

@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ChannelAdapter, ChannelMessage } from '../channels/types.js';
@@ -106,6 +106,9 @@ export class Supervisor {
   private readonly channelFailures = new Map<string, string>();
   private readonly env: NodeJS.ProcessEnv;
   private readonly lock: FleetLock;
+  /** mtime of the supervisor config actually loaded into this process. */
+  private readonly supervisorConfigFile: string;
+  private supervisorConfigMtimeMs: number | undefined;
   private heartbeatTimer: NodeJS.Timeout | undefined;
 
   constructor(
@@ -232,6 +235,7 @@ export class Supervisor {
       runtimeFor: (session) => this.runtimeFor(session),
       runtimeCandidates: (session) => this.runtimeCandidates(session),
       getPane: (session) => this.lifecycle.getPane(session),
+      lifecycleBusy: (session) => this.lifecycle.operationInFlight(session) !== undefined,
       onRuntimeObserved: (session) => {
         this.markRuntimeObserved(session);
       },
@@ -281,6 +285,9 @@ export class Supervisor {
       reloadSessions: (teardownSession) => {
         this.reloadSessions(teardownSession);
       },
+      refreshSessions: () => {
+        this.watcher.checkNow();
+      },
       supervisionReset: (session) => {
         this.health.reset(session);
         if (this.states.get(session)?.activity === 'working') this.health.markTurnActive(session);
@@ -300,7 +307,9 @@ export class Supervisor {
       delivery: this.delivery,
       states: this.states,
       sessions: () => this.sessions,
-      startSession: (codename, opts) => this.lifecycle.start(codename, opts),
+      // Auto-start on delivery is a lifecycle transition like any other, and
+      // it should say so on the seat it is claiming.
+      startSession: (codename, opts) => this.lifecycle.start(codename, { ...opts, initiator: 'delivery' }),
       events: this.eventBus,
     });
     this.integrations = new IntegrationManager({
@@ -332,6 +341,7 @@ export class Supervisor {
       isAuto: (session) => this.states.isAuto(session),
       isPaused: (session) => this.states.isPaused(session),
       activityFor: (session) => this.states.get(session)?.activity,
+      isEphemeral: (session) => this.sessions.get(session)?.ephemeral === true,
       isActive: async (session) => {
         // State can lag behind reality after a runtime conversation boundary
         // (notably Claude /clear). Route against authoritative terminal-process
@@ -431,8 +441,8 @@ export class Supervisor {
         return this.states.get(session)?.running === true;
       },
       isPaused: (session) => this.states.isPaused(session),
-      startSession: (session, opts) => this.lifecycle.start(session, opts),
-      stopSession: (session) => this.lifecycle.stop(session),
+      startSession: (session, opts) => this.lifecycle.start(session, { ...opts, initiator: 'schedule' }),
+      stopSession: (session) => this.lifecycle.stop(session, { initiator: 'schedule' }),
       deliver: (session, text) => this.delivery.deliverOrQueue(session, text),
       events: this.eventBus,
     });
@@ -450,9 +460,11 @@ export class Supervisor {
 
     this.watcher = new ConfigWatcher(sessionConfigDir(baseDir));
     this.watcher.onChange(() => this.reloadSessions());
+    this.supervisorConfigFile = fleetPaths.supervisorFile;
+    this.supervisorConfigMtimeMs = this.supervisorConfigMtime();
 
     for (const [codename, session] of this.sessions) {
-      this.states.register(codename, this.lifecycle.isAgentProject(session));
+      this.states.register(codename, this.lifecycle.isAgentProject(session), session.auto);
     }
   }
 
@@ -551,7 +563,11 @@ export class Supervisor {
 
     const heartbeatMs = this.config.supervisor.heartbeatIntervalSeconds * 1000;
     this.heartbeatTimer = setInterval(() => {
+      this.checkSupervisorConfigDrift();
       void this.health.heartbeat();
+      // The sentinel is excluded from fleet watch by design, so without this it
+      // is the one seat nothing observes until a stall needs routing.
+      void this.sentinel.checkSentinelHealth();
     }, heartbeatMs);
     this.heartbeatTimer.unref();
 
@@ -630,6 +646,7 @@ export class Supervisor {
         effortFor: (name) => this.displayEffortFor(name),
         sentinelCodename: () => this.sentinel.sentinelCodename(),
         processObservation: (name) => this.lifecycle.processObservation(name),
+        operationInFlight: (name) => this.lifecycle.operationInFlight(name),
       },
       codename,
       { shepherdRecipient: this.shepherd.recipientSession() },
@@ -637,7 +654,7 @@ export class Supervisor {
     if (codename !== undefined) return report;
     const shepherd = this.shepherd.status();
     return formatFleetStatusReport(report, {
-      fleetWatchActive: this.sentinel.isFleetWatchEnabled(),
+      fleetWatch: this.sentinel.fleetWatchStatus(),
       shepherdOnline: shepherd.state === 'healthy',
       eventJournal: this.eventBus.journalStatus(),
       integrations: this.integrations.status(),
@@ -872,6 +889,33 @@ export class Supervisor {
     return delivered;
   }
 
+  /**
+   * Session files hot-reload; supervisor settings do not. Silence there means a
+   * fleet can run for hours on values nobody believes are in effect — the file
+   * says `defaults.auto: true` while every session registered since boot is
+   * unwatched. Report the divergence instead of leaving it invisible; applying
+   * it would mean re-deriving ports, backends, and runtimes underneath live panes.
+   */
+  private checkSupervisorConfigDrift(): void {
+    const current = this.supervisorConfigMtime();
+    if (current === undefined || current === this.supervisorConfigMtimeMs) return;
+    this.supervisorConfigMtimeMs = current;
+    const message =
+      'supervisor.yaml changed after this Conductor process started. The running fleet still uses the settings ' +
+      'loaded at boot — including defaults.auto for newly registered sessions, health thresholds, and runtime ' +
+      'settings. Restart Conductor to apply them.';
+    log().warn('supervisor', message);
+    void this.channelSend({ text: `⚠️ ${message}` });
+  }
+
+  private supervisorConfigMtime(): number | undefined {
+    try {
+      return statSync(this.supervisorConfigFile).mtimeMs;
+    } catch {
+      return undefined;
+    }
+  }
+
   private reloadSessions(teardownSession?: string): void {
     const fresh = loadSessionConfigs(this.baseDir, {
       tolerant: true,
@@ -892,7 +936,7 @@ export class Supervisor {
       if (isNew) {
         log().info('supervisor', `Session registered: ${codename}`);
       }
-      this.states.register(codename, this.lifecycle.isAgentProject(session));
+      this.states.register(codename, this.lifecycle.isAgentProject(session), session.auto);
       if (isNew) {
         this.eventBus.emit({ type: 'session.registered', session: codename, cause: 'config-added' });
       }

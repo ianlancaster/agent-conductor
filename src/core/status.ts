@@ -5,7 +5,8 @@ import type { SessionState } from './types.js';
 import { currentBranch } from './worktree.js';
 import type { ConductorEventJournalStatus } from '../events/types.js';
 import type { IntegrationStatus } from '../integrations/types.js';
-import type { ProcessObservation } from './lifecycle.js';
+import type { LifecycleOperation, ProcessObservation } from './lifecycle.js';
+import type { FleetWatchStatus } from './sentinel.js';
 
 const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
   working: '🟢',
@@ -28,6 +29,8 @@ export interface StatusDeps {
   effortFor(codename: string): string | undefined;
   sentinelCodename(): string | undefined;
   processObservation(codename: string): ProcessObservation | undefined;
+  /** Advisory: a lifecycle transition already owns this seat right now. */
+  operationInFlight?(codename: string): LifecycleOperation | undefined;
 }
 
 export type RuntimeSettingDefaults = Record<string, string | undefined>;
@@ -63,12 +66,24 @@ export function resolvedSessionEffort(
   return defaults[runtime];
 }
 
+/**
+ * Advisory recovery marker. A second supervisor that reads status before acting
+ * can see that the seat is already being recovered, and by whom, instead of
+ * discovering it by colliding with the first one.
+ */
+export function formatLifecycleOperation(operation: LifecycleOperation): string {
+  return ` · ⏳ ${operation.kind} in progress since ${operation.since}${
+    operation.initiator !== undefined ? ` (${operation.initiator})` : ''
+  }`;
+}
+
 export function formatSessionLine(
   codename: string,
   runtime: SessionConfig['runtime'],
   state: SessionState | undefined,
   isSentinel: boolean,
   isShepherdRecipient = false,
+  operation?: LifecycleOperation,
 ): string {
   const name = `${codename} - ${RUNTIME_LABELS[runtime] ?? runtime}${isSentinel ? ' 🛡' : ''}${isShepherdRecipient ? ' 🐑' : ''}`;
   if (state === undefined) return `${name} · ⚪ unregistered`;
@@ -76,7 +91,8 @@ export function formatSessionLine(
   const activity = state.running ? state.activity : 'stopped';
   const mode = state.auto ? ' - auto 🔄' : '';
   const paused = state.paused ? ' (paused)' : '';
-  return `${name} · ${ACTIVITY_ICONS[activity]} ${activity}${mode}${paused}${tag}`;
+  const recovering = operation !== undefined ? formatLifecycleOperation(operation) : '';
+  return `${name} · ${ACTIVITY_ICONS[activity]} ${activity}${mode}${paused}${tag}${recovering}`;
 }
 
 export interface StatusMarkers {
@@ -91,6 +107,7 @@ export function statusReport(deps: StatusDeps, codename?: string, markers: Statu
     const session = deps.sessions().get(codename);
     if (state === undefined || session === undefined) return `Unknown session: ${codename}`;
     const process = deps.processObservation(codename);
+    const operation = deps.operationInFlight?.(codename);
     return JSON.stringify(
       {
         codename,
@@ -110,6 +127,11 @@ export function statusReport(deps: StatusDeps, codename?: string, markers: Statu
         agentProject: state.isAgentProject,
         isSentinel: codename === sentinel,
         isShepherdRecipient: codename === markers.shepherdRecipient,
+        // Advisory only: another caller is already recovering this seat. Acting
+        // anyway is not blocked, it just duplicates work that is under way.
+        lifecycleOperation: operation?.kind ?? null,
+        lifecycleOperationBy: operation?.initiator ?? null,
+        lifecycleOperationSince: operation?.since ?? null,
       },
       null,
       2,
@@ -135,7 +157,14 @@ export function statusReport(deps: StatusDeps, codename?: string, markers: Statu
       const runtime = deps.runtimeFor(name);
       if (runtime !== undefined) {
         lines.push(
-          `  ${formatSessionLine(name, runtime, deps.getState(name), name === sentinel, name === markers.shepherdRecipient)}`,
+          `  ${formatSessionLine(
+            name,
+            runtime,
+            deps.getState(name),
+            name === sentinel,
+            name === markers.shepherdRecipient,
+            deps.operationInFlight?.(name),
+          )}`,
         );
         const session = deps.sessions().get(name);
         if (session !== undefined) {
@@ -148,20 +177,41 @@ export function statusReport(deps: StatusDeps, codename?: string, markers: Statu
   return lines.join('\n');
 }
 
+/**
+ * State the instrument's real coverage in one line. "On" is a setting; armed,
+ * inert, and suppressed are what it can actually do, and a reader that cannot
+ * tell them apart will treat structural silence as an all-clear.
+ */
+export function formatFleetWatchStatus(status: FleetWatchStatus): string {
+  const measured = `${String(status.members.length)} standing session(s), ${String(status.runningMembers.length)} running`;
+  switch (status.state) {
+    case 'off':
+      return 'Fleet watch off.';
+    case 'armed':
+      // Name the signals it can produce: armed for an outage only is a real and
+      // materially different kind of coverage from armed for a quiet fleet.
+      return `Fleet watch armed for ${status.covers.join(' and ')} — measuring ${measured}.`;
+    default:
+      return `Fleet watch on but ${status.state.toUpperCase()} — cannot fire: ${status.reason ?? 'reason unavailable'} (${measured}). There is no fleet-level backstop right now.`;
+  }
+}
+
 /** Add the canonical fleet heading and optional companion-health summary. */
 export function formatFleetStatusReport(
   report: string,
   options: {
-    fleetWatchActive: boolean;
+    fleetWatch: FleetWatchStatus;
     shepherdOnline: boolean;
     eventJournal?: ConductorEventJournalStatus;
     integrations?: readonly IntegrationStatus[];
   },
 ): string {
-  const heading = `Agent Conductor Status${options.fleetWatchActive ? ' 🔄' : ''}`;
+  // The 🔄 badge means armed, never merely enabled.
+  const heading = `Agent Conductor Status${options.fleetWatch.state === 'armed' ? ' 🔄' : ''}`;
   const integrations = options.integrations ?? [];
   return [
     heading,
+    ...(options.fleetWatch.state === 'off' ? [] : [formatFleetWatchStatus(options.fleetWatch)]),
     ...(options.shepherdOnline ? [PR_SHEPHERD_ONLINE_STATUS] : []),
     ...(options.eventJournal?.degraded === true
       ? [

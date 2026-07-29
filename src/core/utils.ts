@@ -45,6 +45,15 @@ export function fleetStallEnvelope(sessions: readonly string[], seconds: number,
   return `[Fleet Stall] sessions=${sessions.join(',')} all-nonworking-for=${seconds}s detected-at=${detectedAt} Investigate immediately.`;
 }
 
+/**
+ * The fleet is not merely quiet — nothing is running. No session in this state
+ * emits stalls of its own, so unlike a fleet stall this fact has no other
+ * carrier anywhere in the system.
+ */
+export function fleetDownEnvelope(sessions: readonly string[], seconds: number, detectedAt: string): string {
+  return `[Fleet Down] sessions=${sessions.join(',')} none-running-for=${seconds}s detected-at=${detectedAt} No standing session is running, so no session can report a stall. Investigate immediately.`;
+}
+
 export function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
 }

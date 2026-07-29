@@ -11,6 +11,7 @@ import {
 } from '../src/core/documentation.js';
 import { InvalidRequestError } from '../src/core/errors.js';
 import { RunbookRegistry } from '../src/runbooks/registry.js';
+import { PACKAGE_VERSION } from '../src/version.js';
 
 const referencePath = fileURLToPath(new URL('../docs/agent-guide.md', import.meta.url));
 const builtInDir = fileURLToPath(new URL('../runbooks', import.meta.url));
@@ -156,6 +157,25 @@ describe('agent documentation', () => {
     await expect(documentation().read('not-real')).rejects.toThrow('Available topics:');
   });
 
+  it('reports the build the handbook reflects, in every response shape', async () => {
+    // The handbook is read from disk at call time; the process is a snapshot
+    // from when it started. Callers must be able to tell those apart without
+    // asking a human whether the code exists yet.
+    const index = JSON.parse(await documentation().read()) as { build: Record<string, unknown> };
+    const topic = JSON.parse(await documentation().read('supervision')) as { build: Record<string, unknown> };
+
+    for (const build of [index.build, topic.build]) {
+      expect(build.conductorVersion).toBe(PACKAGE_VERSION);
+      expect(typeof build.reflectsRunningBuild).toBe('boolean');
+      expect(build).toHaveProperty('documentationModifiedAt');
+      expect(build).toHaveProperty('runningBuildModifiedAt');
+    }
+    // These tests run from source, where the handbook and the code are one tree.
+    expect(index.build.runningFromSource).toBe(true);
+    expect(index.build.reflectsRunningBuild).toBe(true);
+    expect(index.build.warning).toBeUndefined();
+  });
+
   it('keeps live status, maintenance commands, and health semantics discoverable', async () => {
     const operator = JSON.parse(await documentation().read('operator-channels')) as { content: string };
     expect(operator.content).toContain('conductor status [session]');
@@ -177,7 +197,11 @@ describe('agent documentation', () => {
     expect(supervision.content).toContain('`silent`');
     expect(supervision.content).toContain("Codex's generated `notify` command authoritatively reports");
     expect(supervision.content).toContain('authoritative turn-completion');
-    expect(supervision.content).toContain('no watched session is `working`');
+    expect(supervision.content).toContain('no standing member is `working`');
+    // Coverage honesty is part of the documented contract, not a rendering detail.
+    expect(supervision.content).toContain('`inert`');
+    expect(supervision.content).toContain('`suppressed`');
+    expect(supervision.content).toContain('At least two standing members must be running');
 
     const events = JSON.parse(await documentation().read('event-subscribers')) as { content: string };
     expect(events.content).toContain('`ConductorEventSubscriber`');

@@ -172,9 +172,12 @@ Autonomy is composed from three small controls:
    [sentinel instructions](prompts/sentinel.md).
 2. `/auto <session>` toggles stall routing for one worker. Auto off is the normal
    hand-driven state; auto on routes that worker's stalls to the sentinel.
-3. `/fleet-watch` toggles fleet-wide darkness detection. It watches every registered session
-   except the sentinel and follows roster and activity changes automatically. Stopped sessions
-   count as non-working rather than disappearing from the fleet.
+3. `/fleet-watch` toggles fleet-wide darkness detection. It measures the standing fleet — every
+   registered session that is neither the sentinel nor ephemeral — and follows roster and activity
+   changes automatically. Stopped standing sessions count as non-working rather than disappearing
+   from the fleet. Sessions created by `/spawn` are ephemeral by default, and at least two standing
+   members must be running before a fleet alert can mean anything a single session's idle stall did
+   not already say.
 
 The guided onboarding assistant can configure the sentinel safely. The underlying session
 configuration is intentionally ordinary:
@@ -208,9 +211,11 @@ Then start and designate the sentinel before enabling autonomous workers:
 ```
 
 Auto and fleet watch are independent. Auto routes an individual session's stalls. Fleet
-watch alerts when no registered non-sentinel session is working for the configured
-confirmation interval—15 seconds by default. A one-session fleet is valid; an empty fleet
-does not alert.
+watch alerts when no standing session is working for the configured confirmation interval—15
+seconds by default. It reports its real coverage rather than only its setting: `/status` shows
+`armed`, `inert` (nothing standing to measure), or `suppressed` with a reason, and the 🔄 badge
+means armed. An instrument that presents as armed while structurally unable to fire turns its
+own silence into a false all-clear.
 Both settings survive Conductor restarts. `/pause` suppresses schedules and stall routing
 temporarily without changing a session's saved auto setting; `/resume` restores them.
 

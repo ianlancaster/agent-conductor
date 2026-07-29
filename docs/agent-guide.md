@@ -7,6 +7,13 @@ mechanics, while this handbook owns recipes, configuration, and troubleshooting.
 Use the session-only `get_conductor_docs` tool to load this guide one topic at a time. Calling it
 without a topic also returns the current fleet's authoritative configuration paths.
 
+**This handbook is read from disk when you ask for it; the Conductor serving your fleet is the build
+that was running when it started.** Every response carries a `build` block naming the version, both
+timestamps, and `reflectsRunningBuild`. When that is false the response also carries a warning, and
+you should treat the text as a description of the checkout rather than of the live fleet. Documented
+is not deployed: never retire a workaround because this guide says its replacement exists — confirm
+the running build has it, and that it was observed working.
+
 <!-- conductor-topic:overview -->
 
 ## Orientation and feature map
@@ -144,8 +151,10 @@ repo: /absolute/path/to/project
 runtime: codex
 model: provider/model-id
 effort: high
+auto: false
 additionalDirs: []
 systemPromptFile: /optional/path/to/instructions.md
+ephemeral: false
 schedules: []
 ```
 
@@ -162,6 +171,24 @@ Important rules:
 - Prefer absolute project paths. Relative paths are resolved according to the documented config
   loader rules, not the agent's current shell.
 - Model and effort values are intentional free text. Availability lists are hints, not allowlists.
+- `auto` declares this session's stall-routing policy in the file itself. It applies when the
+  session is first registered — including at spawn, via `spawn_session`'s `auto` argument — and
+  whenever no per-session state has been persisted. A live `toggle_auto` persists and wins over the
+  declaration, so a config reload never undoes an operator's decision. Declare it for any session
+  whose supervision policy matters: without it, a newly registered session inherits whichever fleet
+  default was in force **when Conductor started**, which is not necessarily the value now in
+  `supervisor.yaml`. Per-session auto state survives restarts; it is deleted only when the session
+  is deregistered.
+- Session files hot-reload on an mtime poll, and a start, continue, or restart re-reads them first,
+  so an edit followed immediately by a restart launches the file as it is on disk rather than as it
+  was at the last poll.
+- Supervisor settings do **not** hot-reload. When `supervisor.yaml` changes after Conductor started,
+  the running process keeps the values it loaded at boot — including `defaults.auto`, which decides
+  whether sessions registered from then on are supervised at all. Conductor now warns the operator
+  once per change instead of diverging silently, but only a restart applies the new settings.
+- `ephemeral` marks a short-lived worker rather than a standing member of the fleet. It defaults to
+  `false` for hand-authored configs, and `spawn_session` writes `true` unless the caller passes
+  `ephemeral: false`. Only standing members are measured by fleet watch; nothing else changes.
 - A session's `systemPromptFile` is appended after the mandatory Conductor protocol and retained
   across Claude Code and Codex compaction. It is capped at 5 KiB UTF-8, validated and privately
   snapshotted on start/continue, and never written into the working repository. Missing,
@@ -300,6 +327,13 @@ Use:
   comes from the terminal backend's process inspection after reconciliation; `processObservedAt`
   says when that check ran. A `null` process value means inspection was inconclusive, not that the
   runtime was idle.
+- `lifecycleOperation`, `lifecycleOperationBy`, and `lifecycleOperationSince` in
+  `get_session_status` (and a `⏳ … in progress` marker in `list_sessions`) when a start, continue,
+  stop, restart, or teardown currently owns that seat. Two supervisors recovering one session is the
+  normal consequence of running auto stall routing beside a scheduled backup sweep, so Conductor
+  serializes those transitions per session and publishes who is already doing it. The marker is
+  advisory: read it before starting your own recovery, and prefer letting the in-flight one finish
+  over queueing a second identical transition behind it.
 - `set_tag` for a concise human-readable current-purpose label. Its schema advertises the fleet's
   configured maximum (50 Unicode characters by default); an over-limit update returns a correctable
   error and preserves the existing tag instead of truncating it.
@@ -444,7 +478,15 @@ A worker waiting at an explicit review or approval gate may correctly remain idl
 
 Other stall kinds come from mechanical signals:
 
-- Claude Code `Notification` hooks become `blocked` immediately.
+- Claude Code `Notification` hooks become `blocked` immediately, except for the runtime's
+  idle-timer message ("waiting for your input"), which reports an empty composer rather than a
+  prompt to answer. That class is classified in the runtime adapter as ordinary turn completion and
+  takes the same debounced `idle` path as a `Stop` hook. An unrecognized notification message stays
+  `blocked`: a missed block strands a session waiting on a human, which is the worse failure.
+  `blocked` therefore means a prompt is genuinely outstanding, and is worth the pane read it costs.
+- A stall that is detected but not routed is recorded as `stall_dropped` in the health log with its
+  reason (auto off, or paused). Detection working while routing silently discards the evidence is
+  otherwise indistinguishable from a supervised seat that simply never stalled.
 - Claude Code and Codex `PreCompact` hooks begin compaction tracking. A matching compact
   `SessionStart` begins the normal `health.idleConfirmMs` confirmation; Conductor emits
   `compaction` only if the runtime-owned activity parser then proves that the session is waiting at
@@ -502,15 +544,51 @@ routing without changing the configured auto state. Use it for maintenance, inte
 or operator review; `resume_session` restores the prior behavior.
 
 Fleet watch detects campaign-level darkness when individual idle states are normal but no worker is
-making progress. `toggle_fleet_watch` is a single fleet-level boolean. When enabled, it watches every
-registered session except the sentinel and follows roster and activity changes automatically.
-Stopped registrations remain members and count as non-working. After no watched session is `working`
-for `health.fleetStallConfirmMs` (15
-seconds by default), Conductor sends one fleet alert to the sentinel, or directly to the operator
-if no sentinel exists. One watched session is sufficient; an empty watched roster does not alert.
-Startup evaluation begins only after surviving panes have been rediscovered, so provisional stopped
-state cannot produce a false alert. Recovery, roster changes, sentinel changes, and process restarts
-reset the confirmation cycle without changing the persisted toggle.
+making progress. `toggle_fleet_watch` is a single fleet-level boolean. When enabled, it measures the
+**standing fleet**: registered sessions that are neither the sentinel nor ephemeral, following roster
+and activity changes automatically. Stopped standing registrations remain members and count as
+non-working. After no standing member is `working` for `health.fleetStallConfirmMs` (15 seconds by
+default), Conductor sends one fleet alert to the sentinel, or directly to the operator if no sentinel
+exists. Startup evaluation begins only after surviving panes have been rediscovered, so provisional
+stopped state cannot produce a false alert. Recovery, roster changes, sentinel changes, and process
+restarts reset the confirmation cycle without changing the persisted toggle.
+
+Fleet watch produces two distinct signals, because a quiet fleet and an absent one are different
+facts with different carriers:
+
+- **Fleet stall** — every standing member is registered and up, and none is working. Requires the
+  quorum below.
+- **Fleet down** — no standing member is running at all, after the fleet had been observed running
+  in this Conductor process. A stopped session emits no stalls, so nothing else in the system
+  reports this; the quorum deliberately does not apply. A fleet that has not come up yet is not an
+  outage, so this cannot fire before something has run.
+
+Two structural rules keep the stall signal meaningful at both ends of fleet occupancy:
+
+- **Standing roster.** `spawn_session` writes `ephemeral: true` into the session config it creates,
+  so short-lived pods never join the measured roster. Without this, a fleet running continuous
+  ephemeral lanes always has something working, and fleet watch becomes structurally unable to fire
+  while still presenting as enabled. Pass `ephemeral: false` to spawn a standing member, or edit the
+  generated config. Hand-authored session configs are standing unless they set `ephemeral: true`.
+- **Quorum.** At least two standing members must be running. With one running member, "nobody is
+  working" is a restatement of that member's own idle stall, which the sentinel already receives.
+  The quorum is a property of what the signal means, not a tunable noise filter.
+
+The sentinel itself is watched mechanically. Fleet watch excludes it by design, so Conductor checks
+the sentinel seat's process liveness on the ordinary heartbeat and notifies the operator when the
+one destination for stall routing is not running — rate-limited to one alarm per ten minutes, with a
+single recovery notice when it returns. This is deliberately mechanical liveness only, it costs no
+agent context, and it replaces reciprocal agent-side watch schedules, which spend context in both
+watched windows.
+
+Because a coverage claim that is not true is worse than no claim, fleet watch reports what it can
+actually do rather than only whether it is switched on. `/status` and `toggle_fleet_watch` report one
+of `off`, `armed`, `inert` (enabled with no standing roster to measure), or `suppressed` (enabled but
+currently unable to fire, with the reason). An armed report also names which signals it covers —
+`fleet-stall`, `fleet-down`, or both — because being armed for an outage only is materially
+different coverage from being armed for a quiet fleet. The 🔄 status badge means armed, never merely
+enabled. A sentinel reading `inert` or `suppressed` should understand that there is no fleet-level
+backstop at that moment.
 
 <!-- conductor-topic:scheduling -->
 

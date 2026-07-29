@@ -1,10 +1,21 @@
+import { statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import type { FleetPaths } from '../config/paths.js';
 import { log } from '../logger.js';
 import type { RunbookRegistry } from '../runbooks/registry.js';
 import { readRunbookFile } from '../runbooks/schema.js';
 import type { ResolvedRunbook } from '../runbooks/types.js';
 import { InvalidRequestError } from './errors.js';
+import { PACKAGE_VERSION } from '../version.js';
+
+function safeModifiedAt(path: string): number | undefined {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
 
 const TOPIC_MARKER = /^<!-- conductor-topic:([a-z0-9-]+) -->$/gmu;
 
@@ -82,6 +93,40 @@ export class ConductorDocumentation {
 
   constructor(private readonly options: ConductorDocumentationOptions) {}
 
+  /**
+   * Describe the build this handbook actually reflects.
+   *
+   * The handbook is read from disk at call time while the running process is a
+   * snapshot taken when it started. When the package root is a link to a
+   * checkout — the normal developer setup — the two diverge silently, and the
+   * tool's version-matching promise becomes false in the most dangerous
+   * direction: a reader retires a workaround because the document says its
+   * replacement shipped. Report the divergence in every response instead of
+   * making callers ask a human whether the code exists yet.
+   */
+  private buildIdentity(): Record<string, unknown> {
+    const documentedAt = safeModifiedAt(this.options.referencePath);
+    const runningBuildPath = fileURLToPath(import.meta.url);
+    const builtAt = safeModifiedAt(runningBuildPath);
+    // Running from source means the code and the handbook are the same tree, so
+    // there is no snapshot to drift from.
+    const runningFromSource = runningBuildPath.endsWith('.ts');
+    const stale = !runningFromSource && documentedAt !== undefined && builtAt !== undefined && documentedAt > builtAt;
+    return {
+      conductorVersion: PACKAGE_VERSION,
+      runningFromSource,
+      documentationModifiedAt: documentedAt === undefined ? null : new Date(documentedAt).toISOString(),
+      runningBuildModifiedAt: builtAt === undefined ? null : new Date(builtAt).toISOString(),
+      reflectsRunningBuild: !stale,
+      ...(stale
+        ? {
+            warning:
+              'This handbook copy was modified after the running Conductor build. It describes the checkout, not the process serving this fleet: documented behaviour may not exist in the running Conductor, and behaviour it does not mention may still be active. Do not retire a workaround on the strength of this document alone — confirm the running build has the change, and that the change was observed working.',
+          }
+        : {}),
+    };
+  }
+
   async read(topic?: string): Promise<string> {
     const parsed = parseConductorDocumentation(await readFile(this.options.referencePath, 'utf8'));
     this.assertComplete(parsed);
@@ -103,6 +148,7 @@ export class ConductorDocumentation {
       runbooksDir: this.options.fleetPaths.runbooksDir,
       referencePath: this.options.referencePath,
     };
+    const build = this.buildIdentity();
 
     if (topic === undefined) {
       return JSON.stringify(
@@ -125,6 +171,7 @@ export class ConductorDocumentation {
             resources: runbook.resources.map(({ id, title, mediaType }) => ({ id, title, mediaType })),
           })),
           fleet: context,
+          build,
           safety:
             'The environment file may contain credentials. Never print, quote, summarize, or send its values unless the operator explicitly requests a specific safe operation.',
         },
@@ -141,6 +188,7 @@ export class ConductorDocumentation {
           title: entry.title,
           content: entry.content,
           fleet: context,
+          build,
         },
         null,
         2,
@@ -168,6 +216,7 @@ export class ConductorDocumentation {
         },
         content: readRunbookFile(resolved.runbook, resolved.path, `Runbook resource '${canonicalTopic}'`),
         fleet: context,
+        build,
       },
       null,
       2,

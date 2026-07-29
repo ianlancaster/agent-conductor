@@ -100,6 +100,7 @@ beforeEach(() => {
     isAuto: (a) => states.isAuto(a),
     isPaused: (a) => states.isPaused(a),
     activityFor: (a) => states.get(a)?.activity,
+    isEphemeral: () => false,
     isActive: (a) => states.get(a)?.running === true,
     deliver: async () => 'delivered',
     notifyOperator: async () => undefined,
@@ -426,7 +427,10 @@ describe('surface contract', () => {
   });
 
   it('toggles fleet watch through one argument-free MCP primitive', async () => {
-    expect(await tool('toggle_fleet_watch').handler({}, 'unknown')).toBe('Fleet watch on.');
+    // Turning it on reports the coverage it actually has, not just the setting.
+    expect(await tool('toggle_fleet_watch').handler({}, 'unknown')).toMatch(
+      /^Fleet watch (armed|on but (INERT|SUPPRESSED))/u,
+    );
     expect(await tool('toggle_fleet_watch').handler({}, 'alpha')).toBe('Fleet watch off.');
     expect(tools.some((item) => item.name === 'arm_fleet_watch')).toBe(false);
     expect(tools.some((item) => item.name === 'disarm_fleet_watch')).toBe(false);

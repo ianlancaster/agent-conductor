@@ -111,6 +111,7 @@ beforeEach(async () => {
     isAuto: (session) => states.isAuto(session),
     isPaused: (session) => states.isPaused(session),
     activityFor: (session) => states.get(session)?.activity,
+    isEphemeral: () => false,
     isActive: (session) => states.get(session)?.running === true,
     deliver: async () => 'delivered',
     notifyOperator: async () => undefined,

@@ -3,11 +3,17 @@ import { describe, expect, it } from 'vitest';
 import {
   displayPath,
   formatFleetStatusReport,
+  formatFleetWatchStatus,
   formatSessionLine,
   resolvedSessionEffort,
   resolvedSessionModel,
 } from '../src/core/status.js';
 import type { SessionState } from '../src/core/types.js';
+import type { FleetWatchStatus } from '../src/core/sentinel.js';
+
+function fleetWatch(overrides: Partial<FleetWatchStatus> = {}): FleetWatchStatus {
+  return { enabled: false, state: 'off', members: [], runningMembers: [], covers: [], ...overrides };
+}
 
 function sessionState(overrides: Partial<SessionState> = {}): SessionState {
   return {
@@ -55,6 +61,18 @@ describe('formatSessionLine', () => {
     );
   });
 
+  it('advertises an in-flight recovery and who is already doing it', () => {
+    // Two supervisors recovering one seat is normal; discovering it by
+    // colliding is not. The marker is what a second caller reads first.
+    expect(
+      formatSessionLine('alpha', 'claude-code', sessionState({ activity: 'idle' }), false, false, {
+        kind: 'restart',
+        initiator: 'agent-stubbs',
+        since: '2026-07-29T08:02:40.000Z',
+      }),
+    ).toBe('alpha - CC · 🟡 idle · ⏳ restart in progress since 2026-07-29T08:02:40.000Z (agent-stubbs)');
+  });
+
   it('marks the PR Shepherd recipient and composes it with the sentinel marker', () => {
     expect(formatSessionLine('alpha', 'claude-code', sessionState(), false, true)).toBe('alpha - CC 🐑 · 🟢 working');
     expect(formatSessionLine('alpha', 'codex', sessionState(), true, true)).toBe('alpha - codex 🛡 🐑 · 🟢 working');
@@ -65,7 +83,7 @@ describe('formatFleetStatusReport', () => {
   it('omits PR Shepherd entirely when it is not online', () => {
     expect(
       formatFleetStatusReport('Sessions:\n  alpha - CC · 🟢 working', {
-        fleetWatchActive: false,
+        fleetWatch: fleetWatch(),
         shepherdOnline: false,
       }),
     ).toBe('Agent Conductor Status\n\nSessions:\n  alpha - CC · 🟢 working');
@@ -74,16 +92,24 @@ describe('formatFleetStatusReport', () => {
   it('places the simple online line immediately under the fleet heading', () => {
     expect(
       formatFleetStatusReport('Sessions:\n  alpha - CC 🐑 · 🟢 working', {
-        fleetWatchActive: true,
+        fleetWatch: fleetWatch({
+          enabled: true,
+          state: 'armed',
+          members: ['alpha', 'beta'],
+          runningMembers: ['alpha', 'beta'],
+          covers: ['fleet-stall'],
+        }),
         shepherdOnline: true,
       }),
-    ).toBe('Agent Conductor Status 🔄\nPR Shepherd Status Online\n\nSessions:\n  alpha - CC 🐑 · 🟢 working');
+    ).toBe(
+      'Agent Conductor Status 🔄\nFleet watch armed for fleet-stall — measuring 2 standing session(s), 2 running.\nPR Shepherd Status Online\n\nSessions:\n  alpha - CC 🐑 · 🟢 working',
+    );
   });
 
   it('surfaces a degraded event journal without exposing its error text', () => {
     expect(
       formatFleetStatusReport('Sessions:\n  alpha - CC · 🟢 working', {
-        fleetWatchActive: false,
+        fleetWatch: fleetWatch(),
         shepherdOnline: false,
         eventJournal: { enabled: true, degraded: true, failureCount: 2, lastError: 'secret disk path' },
       }),
@@ -94,7 +120,7 @@ describe('formatFleetStatusReport', () => {
 
   it('renders configured integration health after the roster and omits it otherwise', () => {
     const status = formatFleetStatusReport('No sessions configured.', {
-      fleetWatchActive: false,
+      fleetWatch: fleetWatch(),
       shepherdOnline: false,
       integrations: [
         {
@@ -111,11 +137,41 @@ describe('formatFleetStatusReport', () => {
     );
     expect(
       formatFleetStatusReport('No sessions configured.', {
-        fleetWatchActive: false,
+        fleetWatch: fleetWatch(),
         shepherdOnline: false,
         integrations: [],
       }),
     ).not.toContain('Integrations:');
+  });
+});
+
+describe('fleet watch coverage', () => {
+  it('never badges an enabled-but-unfirable watch as armed', () => {
+    // An instrument that reports itself armed while structurally incapable of
+    // firing is worse than one switched off: its silence reads as an all-clear.
+    const report = formatFleetStatusReport('Sessions:\n  alpha - CC · 🟡 idle', {
+      fleetWatch: fleetWatch({
+        enabled: true,
+        state: 'suppressed',
+        reason: 'quorum unmet — 1 of 3 standing session(s) running, 2 needed',
+        members: ['alpha', 'beta', 'gamma'],
+        runningMembers: ['alpha'],
+      }),
+      shepherdOnline: false,
+    });
+    expect(report).not.toContain('Agent Conductor Status 🔄');
+    expect(report).toContain('Fleet watch on but SUPPRESSED — cannot fire: quorum unmet');
+    expect(report).toContain('There is no fleet-level backstop right now.');
+  });
+
+  it('says inert when there is no standing roster to measure', () => {
+    expect(
+      formatFleetWatchStatus(
+        fleetWatch({ enabled: true, state: 'inert', reason: 'no standing sessions are registered' }),
+      ),
+    ).toBe(
+      'Fleet watch on but INERT — cannot fire: no standing sessions are registered (0 standing session(s), 0 running). There is no fleet-level backstop right now.',
+    );
   });
 });
 

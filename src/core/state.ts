@@ -19,7 +19,10 @@ export class SessionStateManager {
     private readonly maxTagLength = DEFAULT_MAX_TAG_LENGTH,
   ) {}
 
-  register(codename: string, isAgentProject: boolean): void {
+  /**
+   * @param declaredAuto session-config policy, used when nothing is persisted.
+   */
+  register(codename: string, isAgentProject: boolean, declaredAuto?: boolean): void {
     const existing = this.states.get(codename);
     if (existing !== undefined) {
       existing.isAgentProject = isAgentProject;
@@ -29,7 +32,10 @@ export class SessionStateManager {
     const persistedTag = persisted?.tag ?? undefined;
     const tag = persistedTag === undefined || [...persistedTag].length <= this.maxTagLength ? persistedTag : undefined;
     this.states.set(codename, {
-      auto: persisted?.auto ?? this.defaultAuto,
+      // Persisted runtime state wins over the declared policy, which wins over
+      // the fleet default. A session that has never been given a policy is the
+      // only one that inherits whichever default was in force at boot.
+      auto: persisted?.auto ?? declaredAuto ?? this.defaultAuto,
       tag,
       paused: persisted?.paused ?? false,
       runtime: persisted?.activeRuntime ?? undefined,
@@ -39,6 +45,11 @@ export class SessionStateManager {
       activity: 'stopped',
       isAgentProject,
     });
+    if (persisted?.auto === undefined && declaredAuto !== undefined) {
+      // Materialize the declared policy immediately so it is inspectable and
+      // survives independently of the config file that declared it.
+      this.persist(codename);
+    }
     if (persistedTag !== undefined && tag === undefined) {
       this.persist(codename);
       log().warn(

@@ -7,6 +7,7 @@ import type { StallSentinelRouter } from './sentinel.js';
 import type { SessionStateManager } from './state.js';
 import { InvalidRequestError } from './errors.js';
 import type { Placement } from './types.js';
+import { formatFleetWatchStatus } from './status.js';
 import type { RunbookAdoptionActions } from './runbook-adoptions.js';
 import {
   operationSchema as schema,
@@ -257,6 +258,7 @@ export class ConductorOperations {
               effort: optionalString(args, 'effort'),
               placement: placement(args),
               headless: args.headless === true,
+              initiator: actorName(actor),
             }),
           ),
       },
@@ -267,7 +269,9 @@ export class ConductorOperations {
         audiences: BOTH,
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
-          this.forTargets(args, actor, 'stop', (codename) => this.deps.lifecycle.stop(codename)),
+          this.forTargets(args, actor, 'stop', (codename) =>
+            this.deps.lifecycle.stop(codename, { initiator: actorName(actor) }),
+          ),
       },
       {
         name: 'continue_session',
@@ -292,6 +296,7 @@ export class ConductorOperations {
               effort: optionalString(args, 'effort'),
               placement: placement(args),
               headless: args.headless === true,
+              initiator: actorName(actor),
             }),
           ),
       },
@@ -334,10 +339,20 @@ export class ConductorOperations {
             ),
             placement: placementProperty,
             headless: headlessProperty,
+            ephemeral: {
+              type: 'boolean',
+              description:
+                'Short-lived worker rather than a standing fleet member (default: true). Fleet watch measures the standing roster only.',
+            },
+            auto: {
+              type: 'boolean',
+              description:
+                "Declared stall-routing policy, written into the new session's config and applied at registration. Omit to inherit the fleet default that was in force when Conductor started.",
+            },
           },
           ['codename'],
         ),
-        handler: (args) =>
+        handler: (args, actor) =>
           this.deps.lifecycle.spawn(requireString(args, 'codename'), {
             path: optionalString(args, 'path'),
             runtime: runtime(args),
@@ -351,6 +366,9 @@ export class ConductorOperations {
             branch: optionalString(args, 'branch'),
             placement: placement(args),
             headless: args.headless === true,
+            ephemeral: typeof args.ephemeral === 'boolean' ? args.ephemeral : undefined,
+            auto: typeof args.auto === 'boolean' ? args.auto : undefined,
+            initiator: actorName(actor),
           }),
       },
       {
@@ -372,7 +390,9 @@ export class ConductorOperations {
         handler: (args, actor) => {
           const codename = requireString(args, 'codename');
           this.noSelf(actor, codename, 'tear down');
-          return this.deps.lifecycle.teardown(codename, args.deleteDir === true);
+          return this.deps.lifecycle.teardown(codename, args.deleteDir === true, {
+            initiator: actorName(actor),
+          });
         },
       },
       {
@@ -470,11 +490,17 @@ export class ConductorOperations {
       },
       {
         name: 'toggle_fleet_watch',
-        description: 'Toggle detection of all registered non-sentinel sessions being non-working.',
-        resultDescription: 'Returns whether fleet watch is now on or off.',
+        description:
+          'Toggle detection of the standing fleet going dark: every standing (non-sentinel, non-ephemeral) session non-working, with at least two of them running.',
+        resultDescription: 'Returns whether fleet watch is now on or off, and whether it can currently fire at all.',
         audiences: BOTH,
         inputSchema: schema(),
-        handler: () => Promise.resolve(`Fleet watch ${this.deps.sentinel.toggleFleetWatch() ? 'on' : 'off'}.`),
+        handler: () => {
+          this.deps.sentinel.toggleFleetWatch();
+          // Never answer "on" for an instrument that cannot fire — its silence
+          // would then read as an all-clear it is not able to give.
+          return Promise.resolve(formatFleetWatchStatus(this.deps.sentinel.fleetWatchStatus()));
+        },
       },
       {
         name: 'set_tag',
@@ -535,7 +561,8 @@ export class ConductorOperations {
         name: 'get_conductor_docs',
         description:
           'List or lazily read the version-matched Agent Conductor handbook, including runbooks, fleet recipes, configuration paths, adapters, event subscribers, worktrees, scheduling, supervision, and troubleshooting.',
-        resultDescription: 'Returns a JSON topic index or the requested handbook topic with authoritative fleet paths.',
+        resultDescription:
+          'Returns a JSON topic index or the requested handbook topic with authoritative fleet paths, plus a build block stating whether the handbook reflects the running Conductor build.',
         audiences: SESSION_ONLY,
         inputSchema: schema({
           topic: {
