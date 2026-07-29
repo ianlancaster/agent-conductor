@@ -70,6 +70,58 @@ describe('DeliveryQueue', () => {
     expect(deliveryEvents).toEqual(['alpha']);
   });
 
+  it('never types into a session holding an interactive selection prompt', async () => {
+    // Real capture shape from a wedged sentinel: an AskUserQuestion menu whose
+    // free-text option renders the same prompt glyph as the composer. Typing
+    // into it answers a question nobody asked Conductor to answer, loses the
+    // message, and leaves a draft that blocks every later delivery.
+    const menu = [
+      '  3. Leave the toggle where it is for now.',
+      '  4. Type something.',
+      '  5. Chat about this',
+      '',
+      'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
+      '',
+      '  ❯ ',
+    ].join('\n');
+    backend.setPaneContent(pane.id, menu);
+    // The runtime adapter owns menu recognition; core owns the veto.
+    runtime.blockingPrompt = true;
+    const skipReasons: (string | null)[] = [];
+
+    const result = await queue.deliverOrQueue('alpha', 'hello', {
+      deliveryId: 1,
+      onAttempt: (reason) => skipReasons.push(reason),
+    });
+
+    expect(result).toBe('queued');
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    // A distinct reason: "composer not visible" reads as a transient capture
+    // problem, when the truth is a session waiting on a human.
+    expect(skipReasons).toEqual(['prompt-open']);
+  });
+
+  it('does not let another runtime parser override the blocking-prompt veto', async () => {
+    queue.stop();
+    const menu = ['  1. Yes', '  2. No', 'Enter to select · Esc to cancel', '  ❯ '].join('\n');
+    backend.setPaneContent(pane.id, menu);
+    const permissive = new FakeRuntime('permissive');
+    permissive.inputState = 'clear';
+    queue = new DeliveryQueue({
+      backend,
+      runtimeFor: () => runtime,
+      runtimeCandidates: () => [runtime, permissive],
+      getPane: () => pane,
+      onDelivered: (session) => deliveryEvents.push(session),
+      config: CONFIG,
+    });
+    runtime.inputState = null;
+    runtime.blockingPrompt = true;
+
+    await expect(queue.deliverOrQueue('alpha', 'hello')).resolves.toBe('queued');
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+  });
+
   it('delivers immediately when the input line is clear', async () => {
     const result = await queue.deliverOrQueue('alpha', 'hello');
     expect(result).toBe('delivered');

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { supervisorConfigSchema, type SessionConfig } from '../src/config/schema.js';
 import { ClaudeCodeRuntime, seedFolderTrust } from '../src/runtimes/claude-code/index.js';
 import {
+  hasClaudeSelectionPrompt,
   parseClaudeActivityState,
   parseClaudeInputState,
   stripClaudeChrome,
@@ -278,6 +279,37 @@ describe('parseEvent', () => {
       'notification',
     );
     expect(runtime.parseEvent({ hook_event_name: 'Notification' })?.type).toBe('notification');
+  });
+});
+
+describe('selection prompts', () => {
+  const menu = [
+    '  3. Leave the toggle where it is for now.',
+    '  4. Type something.',
+    '  5. Chat about this',
+    '',
+    'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
+    '',
+    '  ❯ ',
+  ].join('\n');
+
+  it('refuses to read an open menu as an empty composer', () => {
+    // The free-text option renders the same glyph as the composer, so glyph
+    // alone cannot tell them apart — and reading it as `clear` is what let a
+    // stall envelope be typed into a sentinel's open question.
+    expect(hasClaudeSelectionPrompt(menu)).toBe(true);
+    expect(parseClaudeInputState(menu)).toBeNull();
+  });
+
+  it('recognizes the numbered-option and cancel-hint shapes independently', () => {
+    expect(hasClaudeSelectionPrompt('❯ 1. Approve this tool call')).toBe(true);
+    expect(hasClaudeSelectionPrompt('press Esc to cancel')).toBe(true);
+  });
+
+  it('leaves an ordinary composer classifiable', () => {
+    expect(hasClaudeSelectionPrompt('assistant output\n❯ \nshift+tab to cycle')).toBe(false);
+    expect(parseClaudeInputState('assistant output\n❯ \nshift+tab to cycle')).toBe('clear');
+    expect(parseClaudeInputState('assistant output\n❯ half-typed thought')).toBe('draft');
   });
 });
 

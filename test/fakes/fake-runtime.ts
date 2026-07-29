@@ -31,6 +31,7 @@ export class FakeRuntime implements SessionRuntime {
   readonly launches: { session: SessionConfig; opts: LaunchOptions }[] = [];
   /** Controls parseInputState; set to 'draft' to simulate occupied input. */
   inputState: InputState = 'clear';
+  blockingPrompt = false;
   /** Controls execution-state observation independently from input readiness. */
   activityState: PaneActivityEvidence = 'unknown';
   readonly transcripts = new Map<string, string>();
@@ -51,6 +52,10 @@ export class FakeRuntime implements SessionRuntime {
 
   parseInputState(_capture: string): InputState {
     return this.inputState;
+  }
+
+  hasBlockingPrompt(_capture: string): boolean {
+    return this.blockingPrompt;
   }
 
   parseActivityState(_capture: string): PaneActivityEvidence {

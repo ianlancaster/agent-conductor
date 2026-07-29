@@ -12,6 +12,7 @@ export type DeliverySkipReason =
   | 'runtime-unavailable'
   | 'capture-failed'
   | 'composer-not-visible'
+  | 'prompt-open'
   | 'input-occupied'
   | 'pane-changed'
   | 'write-failed';
@@ -304,6 +305,13 @@ export class DeliveryQueue {
         capture = await this.deps.backend.captureStyled(pane, 10);
       } else {
         capture = await this.deps.backend.capture(pane, 10);
+      }
+      // A veto, not a classification: no alternate parser may override it, and
+      // its own skip reason says why, because "composer not visible" reads as a
+      // transient capture problem rather than a session waiting on a human.
+      if (runtime.hasBlockingPrompt?.(capture, session) === true) {
+        this.deps.onRuntimeObserved?.(session);
+        return { state: 'blocked', inputState: null, skipReason: 'prompt-open' };
       }
       let selectedRuntime = runtime;
       let state = runtime.parseInputState(capture, session);

@@ -11,7 +11,12 @@ import {
   PROTOCOL_SNAPSHOT_NAME,
   SESSION_INSTRUCTIONS_SNAPSHOT_NAME,
 } from '../instructions.js';
-import { parseClaudeActivityState, parseClaudeInputState, stripClaudeChrome } from './chrome.js';
+import {
+  hasClaudeSelectionPrompt,
+  parseClaudeActivityState,
+  parseClaudeInputState,
+  stripClaudeChrome,
+} from './chrome.js';
 import { readLastAssistantMessage } from './transcript.js';
 
 type ClaudeCodeConfig = SupervisorConfig['runtimes']['claudeCode'];
@@ -163,6 +168,10 @@ export class ClaudeCodeRuntime implements SessionRuntime {
 
   parseInputState(capture: string): InputState {
     return parseClaudeInputState(capture);
+  }
+
+  hasBlockingPrompt(capture: string): boolean {
+    return hasClaudeSelectionPrompt(capture);
   }
 
   parseActivityState(capture: string): PaneActivityEvidence {

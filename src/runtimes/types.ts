@@ -71,6 +71,15 @@ export interface SessionRuntime {
    * session's composer ghost text).
    */
   parseInputState(capture: string, session?: string): InputState;
+  /**
+   * True when the frame is holding an interactive prompt that a human must
+   * answer — a permission request, a plan confirmation, or an agent-authored
+   * question. Delivery treats this as an unconditional veto rather than one
+   * parser's opinion: such prompts render a free-text option that looks exactly
+   * like an empty composer, and submitting into one answers a question nobody
+   * asked Conductor to answer.
+   */
+  hasBlockingPrompt?(capture: string, session?: string): boolean;
 
   /**
    * Classify whether the runtime is executing a turn. This must use positive

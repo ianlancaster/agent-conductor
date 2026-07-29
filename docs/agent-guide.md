@@ -504,6 +504,16 @@ Other stall kinds come from mechanical signals:
   `bypassPermissions`; those are independent security controls. The disposable shakedown in
   `test/manual/codex-lifecycle.md` verifies this runtime boundary.
 
+A session holding an interactive selection prompt — a permission request, a plan confirmation, or an
+agent-authored question — is never a delivery destination. Those prompts render a free-text option
+using the same glyph as the composer, so Conductor treats a recognized prompt as an unconditional
+veto rather than one parser's opinion, and the message queues with skip reason `prompt-open`. This
+matters beyond the lost message: text submitted into a menu leaves the session holding a draft, and
+the never-type-over-a-draft rule then blocks every later delivery to that session indefinitely. When
+the session is the sentinel, that silently ends stall routing for the whole fleet, because stalls
+reach the sentinel as ordinary messages. `stall_routed` in the health log means dispatched to
+delivery, not received.
+
 The runtime's visual status line is operator-facing context, not a lifecycle API. Conductor never
 infers turn completion from tokens, elapsed time, spinner text, or a frozen/animated Codex footer.
 

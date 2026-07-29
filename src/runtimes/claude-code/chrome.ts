@@ -39,12 +39,38 @@ export function stripClaudeChrome(capture: string): string {
 }
 
 /**
+ * Chrome of an interactive selection prompt — a permission request, a plan
+ * confirmation, or an agent-authored `AskUserQuestion`. Its free-text option
+ * renders with the same `❯` glyph as the composer, so an empty one is
+ * indistinguishable from an empty input line by glyph alone.
+ */
+const SELECTION_PROMPT_PATTERNS: readonly RegExp[] = [
+  /\bEnter to select\b/iu,
+  /\bEsc to cancel\b/iu,
+  /\bTab\/Arrow keys to navigate\b/iu,
+  /❯\s*\d+\.\s+\S/u,
+];
+
+/** True when the frame is holding a selection prompt open. */
+export function hasClaudeSelectionPrompt(capture: string): boolean {
+  return SELECTION_PROMPT_PATTERNS.some((pattern) => pattern.test(capture));
+}
+
+/**
  * Classify the Claude Code input line. Looks at the LAST prompt-glyph line
  * in the capture: only an empty line is clear; any visible text is a draft.
  * Null when no input line is visible. Claude prompt suggestions are disabled
  * at launch because plain iTerm capture cannot distinguish them from input.
+ *
+ * A visible selection prompt is never classifiable. Its free-text option looks
+ * exactly like an empty composer, and submitting into it answers a question
+ * nobody asked Conductor to answer — typing a message into a menu both loses
+ * the message and leaves the session holding a draft, which then blocks every
+ * later delivery under the never-type-over-a-draft rule. Unknown is the safe
+ * answer here: it queues.
  */
 export function parseClaudeInputState(capture: string): InputState {
+  if (hasClaudeSelectionPrompt(capture)) return null;
   const lines = capture.split('\n');
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i];
