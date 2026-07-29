@@ -135,6 +135,20 @@ That is the argument for building the canary alongside the event rather than aft
 real compaction on this fleet will be the first time any of this code runs in anger, and a signal
 whose failure mode is silence cannot be validated by waiting to see whether it stays quiet.
 
+**Read that number narrowly.** The fleet it came from runs deliberate consolidation practice —
+sessions are cleared and restarted at context boundaries by policy, and a context ladder intervenes
+well before the runtime's own compaction threshold. Those rituals are an intervention that suppresses
+compaction, so the observation is a fact about a fleet that manages context on purpose, not about
+coding agents in general. It supports "this code path is unexercised here", which is a statement
+about test coverage. It does not support any claim about how often the population of interest
+compacts, in either direction, and a consumer sizing a study from it would be reading a selection
+effect the fleet authored itself.
+
+Whether the target population compacts at all is a prior question, answerable from transcripts and
+literature rather than from this proposal. It does not block the event — Conductor is the only
+producer that can see the boundary, and the observation is worth publishing regardless — but it may
+change what a consumer should do with it.
+
 ## Open decisions
 
 1. **Event names.** `session.compaction.started` / `.completed` follows the existing
