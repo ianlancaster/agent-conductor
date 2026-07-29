@@ -19,6 +19,20 @@ type ClaudeCodeConfig = SupervisorConfig['runtimes']['claudeCode'];
 /** Hook events wired into every session. All POST their stdin JSON to the events endpoint. */
 const HOOK_EVENTS = ['UserPromptSubmit', 'Stop', 'Notification', 'PreCompact', 'SessionEnd', 'SessionStart'] as const;
 
+/**
+ * Claude fires one `Notification` hook for two unrelated conditions: a real
+ * permission/approval prompt, and the idle timer that reports an empty composer
+ * after roughly a minute. Only the first is a `blocked` stall. The second is
+ * ordinary turn completion — it arrives on every seat that sits between tasks,
+ * and treating it as blocked costs the sentinel a pane read each time, because
+ * `blocked` is the one stall kind that cannot be dismissed mechanically.
+ *
+ * The hook payload carries no class field, so the message text is the only
+ * discriminator available. Classification stays narrow: an unrecognized message
+ * keeps the conservative `blocked` mapping rather than being assumed harmless.
+ */
+const IDLE_NOTIFICATION = /waiting for your input/iu;
+
 const EVENT_MAP: Record<string, RuntimeEvent['type']> = {
   UserPromptSubmit: 'turn-start',
   Stop: 'stop',
@@ -167,11 +181,18 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     if (hookEvent === 'SessionStart' && record.source === 'compact') {
       return { type: 'compaction-complete' };
     }
-    const type = EVENT_MAP[hookEvent];
+    const message = typeof record.message === 'string' ? record.message : undefined;
+    const type =
+      hookEvent === 'Notification' && message !== undefined && IDLE_NOTIFICATION.test(message)
+        ? // Waiting at an empty composer is completion evidence, not a block. It
+          // takes the same debounced, dedupable `idle` path as a `Stop` hook, so
+          // it also repairs a completion hook that was never delivered.
+          'stop'
+        : EVENT_MAP[hookEvent];
     if (type === undefined) return null;
     return {
       type,
-      reason: typeof record.message === 'string' ? record.message : undefined,
+      reason: message,
       transcriptPath: typeof record.transcript_path === 'string' ? record.transcript_path : undefined,
     };
   }

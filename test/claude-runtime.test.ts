@@ -249,6 +249,36 @@ describe('parseEvent', () => {
     expect(runtime.parseEvent({ hook_event_name: 'Whatever' })).toBeNull();
     expect(runtime.parseEvent('garbage')).toBeNull();
   });
+
+  it('treats the idle-timer notification as turn completion, not a block', () => {
+    // Verbatim message from Claude's idle timer. It fires on every seat that
+    // sits at an empty composer, so mapping it to `blocked` manufactures the one
+    // stall kind a sentinel must confirm by reading the pane.
+    expect(
+      runtime.parseEvent({
+        hook_event_name: 'Notification',
+        message: 'Claude is waiting for your input',
+        transcript_path: '/t.jsonl',
+      }),
+    ).toEqual({
+      type: 'stop',
+      reason: 'Claude is waiting for your input',
+      transcriptPath: '/t.jsonl',
+    });
+  });
+
+  it('keeps blocked for permission prompts and unrecognized notifications', () => {
+    expect(
+      runtime.parseEvent({ hook_event_name: 'Notification', message: 'Claude needs your permission to use Bash' })
+        ?.type,
+    ).toBe('notification');
+    // An unknown message class must not be assumed harmless: a missed block
+    // strands a session waiting on a human, which is the worse failure.
+    expect(runtime.parseEvent({ hook_event_name: 'Notification', message: 'Something new' })?.type).toBe(
+      'notification',
+    );
+    expect(runtime.parseEvent({ hook_event_name: 'Notification' })?.type).toBe('notification');
+  });
 });
 
 describe('chrome parsing', () => {
