@@ -628,7 +628,9 @@ backstop at that moment.
 ## Cron schedules and recurring agent work
 
 Schedules live in session YAML and send prompts through existing lifecycle and protected delivery
-primitives:
+primitives. A schedule that fires into a session which cannot receive — one holding an unanswered
+prompt or a draft — reports `queued` rather than `fired`, because a scheduled sweep that never
+arrives while the stream says it ran teaches its owner to trust coverage they do not have:
 
 ```yaml
 schedules:

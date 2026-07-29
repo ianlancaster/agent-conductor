@@ -84,13 +84,23 @@ export class Scheduler {
         this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'fired-fresh' });
         return;
       }
+      // Firing and arriving are different facts. A session holding a prompt or a
+      // draft cannot receive, and a schedule that reports `fired` for a message
+      // still sitting in a queue tells its owner they have coverage they do not
+      // have — which is how ten consecutive sweeps went unreported.
+      let queued = false;
       if (await this.deps.isActive(codename)) {
-        await this.deps.deliver(codename, entry.prompt);
+        queued = (await this.deps.deliver(codename, entry.prompt)) === 'queued';
       } else {
         await this.deps.startSession(codename, { prompt: entry.prompt });
       }
-      log().info('scheduler', `${codename}: '${label}' fired`);
-      this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'fired' });
+      log().info('scheduler', `${codename}: '${label}' ${queued ? 'fired but held for delivery' : 'fired'}`);
+      this.deps.events?.emit({
+        type: 'schedule',
+        session: codename,
+        label,
+        outcome: queued ? 'queued' : 'fired',
+      });
     } catch (err) {
       log().error('scheduler', `${codename}: '${label}' failed: ${err instanceof Error ? err.message : String(err)}`);
       this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'failed' });

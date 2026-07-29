@@ -120,7 +120,8 @@ export type ConductorEvent = ConductorEventEnvelope &
         readonly type: 'schedule';
         readonly session: string;
         readonly label: string;
-        readonly outcome: 'fired' | 'fired-fresh' | 'deferred-paused' | 'failed';
+        /** `queued` means dispatched to delivery but not accepted by the pane. */
+        readonly outcome: 'fired' | 'fired-fresh' | 'queued' | 'deferred-paused' | 'failed';
       }
     | {
         readonly type: 'operator.request.created';

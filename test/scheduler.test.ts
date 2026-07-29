@@ -10,6 +10,7 @@ function sessionWith(schedules: SessionConfig['schedules']): SessionConfig {
 let scheduler: Scheduler;
 let sessions: Map<string, SessionConfig>;
 let active: boolean;
+let deliveryResult: 'delivered' | 'queued';
 let paused: boolean;
 let started: { session: string; prompt?: string }[];
 let stopped: string[];
@@ -25,6 +26,7 @@ beforeEach(() => {
   vi.setSystemTime(new Date('2026-01-02T03:04:05.500Z'));
   sessions = new Map();
   active = false;
+  deliveryResult = 'delivered';
   paused = false;
   started = [];
   stopped = [];
@@ -46,7 +48,7 @@ beforeEach(() => {
     },
     deliver: async (session, text) => {
       delivered.push({ session, text });
-      return 'delivered';
+      return deliveryResult;
     },
     events,
   });
@@ -74,6 +76,26 @@ describe('Scheduler', () => {
       session: 'alpha',
       label: EVERY_SECOND,
       outcome: 'fired',
+    });
+  });
+
+  it('says a schedule was held rather than reporting it as arrived', async () => {
+    // Firing and arriving are different facts. A seat holding a prompt or a
+    // draft cannot receive, and reporting `fired` for a message still sitting
+    // in a queue tells the schedule's owner they have coverage they do not —
+    // which is how ten consecutive fleet sweeps went unreported.
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'sweep', paused: false, freshContext: false }]));
+    active = true;
+    deliveryResult = 'queued';
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+
+    expect(delivered[0]).toEqual({ session: 'alpha', text: 'sweep' });
+    expect(events.events).toContainEqual({
+      type: 'schedule',
+      session: 'alpha',
+      label: EVERY_SECOND,
+      outcome: 'queued',
     });
   });
 
