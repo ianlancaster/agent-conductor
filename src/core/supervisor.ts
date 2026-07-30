@@ -1238,7 +1238,7 @@ export class Supervisor {
    */
   private warnOnLaunchFieldEdit(codename: string, previous: SessionConfig | undefined, next: SessionConfig): void {
     if (previous === undefined || this.states.get(codename)?.running !== true) return;
-    const changed = launchTimeFieldEdits(previous, next);
+    const changed = launchTimeFieldEdits(previous, next, this.config.runtimes.claudeCode);
     if (changed.length === 0) return;
     log().warn(
       'supervisor',

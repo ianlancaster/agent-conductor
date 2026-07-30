@@ -28,6 +28,7 @@ import {
 import { readLastAssistantMessage } from './transcript.js';
 
 export type ClaudeCodeConfig = SupervisorConfig['runtimes']['claudeCode'];
+export type ClaudePreToolUseConfig = Pick<ClaudeCodeConfig, 'preToolUseHooks'>;
 type PreToolUseHook = ClaudeCodeConfig['preToolUseHooks'][number];
 
 interface RenderedPreToolUseHook {
@@ -40,7 +41,7 @@ export interface ClaudePreToolUseDeclaration {
   renderedDigest?: string;
 }
 
-function effectivePreToolUseHooks(session: SessionConfig, config: ClaudeCodeConfig): PreToolUseHook[] {
+function effectivePreToolUseHooks(session: SessionConfig, config: ClaudePreToolUseConfig): PreToolUseHook[] {
   return session.claudeCode?.preToolUseHooks ?? config.preToolUseHooks;
 }
 
@@ -66,7 +67,7 @@ function preToolUseDigest(rendered: readonly RenderedPreToolUseHook[]): string |
 /** Current declaration for the next Claude Code launch; never runtime registration evidence. */
 export function resolveClaudePreToolUseDeclaration(
   session: SessionConfig,
-  config: ClaudeCodeConfig,
+  config: ClaudePreToolUseConfig,
 ): ClaudePreToolUseDeclaration {
   const rendered = renderPreToolUseHooks(effectivePreToolUseHooks(session, config));
   return {

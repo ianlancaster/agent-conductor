@@ -45,6 +45,15 @@ describe('launchTimeFieldEdits', () => {
     };
   }
 
+  const hook = (args: string[] = []) => ({
+    matcher: 'Bash',
+    command: '/usr/bin/true',
+    args,
+    timeoutSec: 5,
+  });
+
+  const hookChange = 'claudeCode.preToolUseHooks: effective declaration changed';
+
   it('names each launch-time field that moved, with both values', () => {
     expect(launchTimeFieldEdits(config({ model: 'claude-opus-5' }), config({ model: 'opus[1m]' }))).toEqual([
       'model: claude-opus-5 → opus[1m]',
@@ -60,6 +69,45 @@ describe('launchTimeFieldEdits', () => {
     // would teach operators to ignore the warning that matters.
     expect(launchTimeFieldEdits(config({ auto: false }), config({ auto: true }))).toEqual([]);
     expect(launchTimeFieldEdits(config({ model: 'opus[1m]' }), config({ model: 'opus[1m]' }))).toEqual([]);
+  });
+
+  it('detects an effective hook declaration being added', () => {
+    expect(launchTimeFieldEdits(config(), config({ claudeCode: { preToolUseHooks: [hook()] } }))).toContain(hookChange);
+  });
+
+  it('detects an effective hook declaration being edited', () => {
+    expect(
+      launchTimeFieldEdits(
+        config({ claudeCode: { preToolUseHooks: [hook(['--first'])] } }),
+        config({ claudeCode: { preToolUseHooks: [hook(['--edited'])] } }),
+      ),
+    ).toContain(hookChange);
+  });
+
+  it('detects an effective hook declaration being removed', () => {
+    expect(launchTimeFieldEdits(config({ claudeCode: { preToolUseHooks: [hook()] } }), config())).toContain(hookChange);
+  });
+
+  it('detects an explicit opt-out from a nonempty fleet default', () => {
+    expect(
+      launchTimeFieldEdits(config(), config({ claudeCode: { preToolUseHooks: [] } }), {
+        preToolUseHooks: [hook()],
+      }),
+    ).toContain(hookChange);
+  });
+
+  it('stays silent for semantically unchanged effective hook declarations', () => {
+    expect(
+      launchTimeFieldEdits(
+        config({ claudeCode: { preToolUseHooks: [hook(['same'])] } }),
+        config({ claudeCode: { preToolUseHooks: [{ ...hook(['same']), args: ['same'] }] } }),
+      ),
+    ).toEqual([]);
+    expect(
+      launchTimeFieldEdits(config(), config({ claudeCode: { preToolUseHooks: [hook()] } }), {
+        preToolUseHooks: [hook()],
+      }),
+    ).toEqual([]);
   });
 });
 

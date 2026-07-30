@@ -7,6 +7,7 @@ import type { ConductorEventJournalStatus } from '../events/types.js';
 import type { IntegrationStatus } from '../integrations/types.js';
 import type { LifecycleOperation, ProcessObservation } from './lifecycle.js';
 import type { FleetWatchStatus } from './sentinel.js';
+import { resolveClaudePreToolUseDeclaration, type ClaudePreToolUseConfig } from '../runtimes/claude-code/index.js';
 
 const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
   working: '🟢',
@@ -109,15 +110,30 @@ export function formatModelDrift(drift: ModelDrift | undefined): string | null {
  * `schedules` are read live, and an edit to those really does take effect.
  */
 const LAUNCH_TIME_FIELDS = ['runtime', 'model', 'effort', 'bypassPermissions', 'systemPromptFile'] as const;
+const NO_CLAUDE_PRE_TOOL_USE_HOOKS: ClaudePreToolUseConfig = { preToolUseHooks: [] };
 
 /**
  * Describe launch-time fields that changed between two revisions of a session
  * config. Empty when nothing launch-relevant moved, so a caller can stay silent.
  */
-export function launchTimeFieldEdits(previous: SessionConfig, next: SessionConfig): string[] {
-  return LAUNCH_TIME_FIELDS.filter((field) => previous[field] !== next[field]).map(
+export function launchTimeFieldEdits(
+  previous: SessionConfig,
+  next: SessionConfig,
+  claudeCode: ClaudePreToolUseConfig = NO_CLAUDE_PRE_TOOL_USE_HOOKS,
+): string[] {
+  const changed = LAUNCH_TIME_FIELDS.filter((field) => previous[field] !== next[field]).map(
     (field) => `${field}: ${describeFieldValue(previous[field])} → ${describeFieldValue(next[field])}`,
   );
+  const hookDigest = (session: SessionConfig): string | undefined =>
+    session.runtime === 'claude-code'
+      ? resolveClaudePreToolUseDeclaration(session, claudeCode).renderedDigest
+      : undefined;
+  if (hookDigest(previous) !== hookDigest(next)) {
+    // Do not log command paths or arguments: the warning needs to identify the
+    // frozen field and remedy, not reproduce executable configuration.
+    changed.push('claudeCode.preToolUseHooks: effective declaration changed');
+  }
+  return changed;
 }
 
 function describeFieldValue(value: string | boolean | undefined): string {

@@ -803,8 +803,18 @@ describe('Supervisor construction', () => {
       hooksRegistrationObserved: 'UNKNOWN',
     });
 
-    writeFileSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'), sessionYaml(['--edited-after-launch']));
-    supervisor.reloadSessionsForTest();
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      writeFileSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'), sessionYaml(['--edited-after-launch']));
+      supervisor.reloadSessionsForTest();
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'claudeCode.preToolUseHooks: effective declaration changed). The live process keeps what it was launched with; restart the session to apply.',
+        ),
+      );
+    } finally {
+      consoleSpy.mockRestore();
+    }
     const edited = JSON.parse(supervisor.statusReport('alpha')) as Record<string, unknown>;
     expect(edited).toMatchObject({
       hooksDeclared: true,
