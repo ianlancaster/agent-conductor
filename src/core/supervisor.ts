@@ -665,6 +665,7 @@ export class Supervisor {
         declaredModelFor: (name) => this.declaredModelFor(name),
         modelDriftFor: (name) => this.modelDriftFor(name),
         effortFor: (name) => this.displayEffortFor(name),
+        declaredEffortFor: (name) => this.declaredEffortFor(name),
         sentinelCodename: () => this.sentinel.sentinelCodename(),
         processObservation: (name) => this.lifecycle.processObservation(name),
         operationInFlight: (name) => this.lifecycle.operationInFlight(name),
@@ -865,18 +866,23 @@ export class Supervisor {
     return { declared, launched: state.model, launchedAt: state.launchedAt };
   }
 
-  /** Effort resolved for the active run, or the configured next run while stopped. */
+  /** Effort in force: the launched value while running, the next launch's while stopped. */
   private displayEffortFor(session: string): string | undefined {
+    const state = this.states.get(session);
+    const declared = this.declaredEffortFor(session);
+    return state?.running === true ? (state.effort ?? declared) : declared;
+  }
+
+  /** What the config resolves to for the next launch, independent of any live process. */
+  private declaredEffortFor(session: string): string | undefined {
     const configured = this.sessions.get(session);
     const runtime = this.displayRuntimeFor(session);
     if (configured === undefined || runtime === undefined) return undefined;
-    const resolved = resolvedSessionEffort(configured, runtime, {
+    return resolvedSessionEffort(configured, runtime, {
       'claude-code':
         this.config.runtimes.claudeCode.defaultEffort ?? this.config.runtimes.claudeCode.env.CLAUDE_CODE_EFFORT_LEVEL,
       'codex': this.config.runtimes.codex.defaultEffort,
     });
-    const state = this.states.get(session);
-    return state?.running === true ? (state.effort ?? resolved) : resolved;
   }
 
   private handleRuntimeEvent(session: string, body: unknown): void {

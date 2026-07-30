@@ -145,7 +145,16 @@ const countLines = (value) => value.length === 0 ? 0 : value.split('\\n').filter
 
 const model = input?.model?.display_name || 'Unknown Model';
 const used = Number(input?.context_window?.used_percentage);
-const usage = Number.isFinite(used) ? \`\${Math.round(used)}%\` : '0%';
+// The runtime's own resolved window, not a number derived from the model name.
+// A display name cannot distinguish variants of one model that differ only in
+// context size, so a percentage alone leaves the denominator unknowable from the
+// pane. Printing the window makes it a read value rather than an inference, and
+// it is the denominator any compaction-threshold check needs.
+const windowSize = Number(input?.context_window?.context_window_size);
+const formatTokens = (value) =>
+  value >= 1_000_000 ? \`\${(value / 1_000_000).toFixed(1)}M\` : \`\${Math.round(value / 1000)}k\`;
+const percent = Number.isFinite(used) ? \`\${Math.round(used)}%\` : '0%';
+const usage = Number.isFinite(windowSize) && windowSize > 0 ? \`\${percent} of \${formatTokens(windowSize)}\` : percent;
 const cost = Number(input?.cost?.total_cost_usd);
 const costText = Number.isFinite(cost) ? \`$\${cost.toFixed(2)}\` : '$0.00';
 const cwd = input?.worktree?.original_cwd || input?.cwd || process.cwd();

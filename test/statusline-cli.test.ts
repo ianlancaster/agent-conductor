@@ -110,6 +110,32 @@ describe('configureStatusLines', () => {
     );
   });
 
+  it('prints the runtime-reported context window so the denominator is not an inference', () => {
+    const paths = {
+      claudeSettingsPath: join(baseDir, 'claude', 'settings.json'),
+      codexConfigPath: join(baseDir, 'codex', 'config.toml'),
+      claudeScriptPath: join(baseDir, 'conductor', 'statusline.mjs'),
+    };
+    configureStatusLines({ paths });
+    const render = (contextWindow: Record<string, number>): string =>
+      execFileSync(process.execPath, [paths.claudeScriptPath], {
+        encoding: 'utf8',
+        input: JSON.stringify({
+          model: { display_name: 'Opus 5' },
+          context_window: contextWindow,
+          worktree: { original_cwd: baseDir },
+        }),
+      });
+
+    // Two seats can report the same display name and different windows; the
+    // percentage alone cannot tell them apart, which is exactly how a 200k seat
+    // passed for a 1M one.
+    expect(render({ used_percentage: 13, context_window_size: 1_000_000 })).toContain('Opus 5 | 13% of 1.0M |');
+    expect(render({ used_percentage: 13, context_window_size: 200_000 })).toContain('Opus 5 | 13% of 200k |');
+    // A runtime that does not report the window must not be given a made-up one.
+    expect(render({ used_percentage: 13 })).toContain('Opus 5 | 13% |');
+  });
+
   it('detects a linked worktree that was created outside Claude Code', () => {
     const paths = {
       claudeSettingsPath: join(baseDir, 'claude', 'settings.json'),

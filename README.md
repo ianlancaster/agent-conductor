@@ -147,8 +147,11 @@ There are three complementary status surfaces:
 - `conductor statusline` is a one-time, optional setup command for richer footers inside
   Claude Code and Codex panes. It does not display fleet status.
 
-The Claude Code status line shows model, context used, cost, project, worktree, Git branch,
-and staged/modified counts. Codex uses its native status-line fields for model and reasoning,
+The Claude Code status line shows model, context used as a percentage of the runtime's own
+reported context window, cost, project, worktree, Git branch, and staged/modified counts. The
+window is printed because a model's display name cannot distinguish variants that differ only in
+context size, so a bare percentage leaves its denominator unknowable from the pane. It is omitted
+rather than guessed when the runtime does not report one. Codex uses its native status-line fields for model and reasoning,
 context used, tokens used, project, and Git branch. Restart an existing agent process after
 running `conductor statusline` so it receives the new runtime settings.
 

@@ -317,6 +317,16 @@ therefore reports the declaration and the launch as separate facts:
 - `modelDeclared` — what the config resolves to now.
 - `modelDrift` — a sentence naming both values, when the process started, and the remedy. `null` when
   they agree. `list_sessions` badges the same seats with `⚠ running <model>`.
+- `effort` and `effortDeclared` — the same split for reasoning effort.
+- `launchedAt` — when the live process started. `null` while stopped, and `null` for a process adopted
+  from before Conductor recorded launches.
+
+`launchedAt` is what gives a launch its currency, and it is the field to reach for when a value
+matters. A session config is trivially readable and always current, which makes reading it the cheap
+and wrong answer to "what is this session running": the file states a value with no indication of when
+it took effect, so an edit made after launch is indistinguishable from one that was launched with.
+Compare `launchedAt` against when the declaration was written before treating a config value as a
+description of a running process.
 
 A running process whose launch predates this record reports its model as unknown rather than as the
 declaration, and a config edit to a launch-time field under a running session is logged as a warning

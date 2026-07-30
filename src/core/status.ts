@@ -42,7 +42,10 @@ export interface StatusDeps {
   /** What the config resolves to for the next launch. */
   declaredModelFor?(codename: string): string | undefined;
   modelDriftFor?(codename: string): ModelDrift | undefined;
+  /** In force now: the launched value while running, the next launch's value while stopped. */
   effortFor(codename: string): string | undefined;
+  /** What the config resolves to for the next launch. */
+  declaredEffortFor?(codename: string): string | undefined;
   sentinelCodename(): string | undefined;
   processObservation(codename: string): ProcessObservation | undefined;
   /** Advisory: a lifecycle transition already owns this seat right now. */
@@ -179,6 +182,14 @@ export function statusReport(deps: StatusDeps, codename?: string, markers: Statu
         modelDeclared: deps.declaredModelFor?.(codename) ?? null,
         modelDrift: formatModelDrift(deps.modelDriftFor?.(codename)),
         effort: deps.effortFor(codename) ?? null,
+        effortDeclared: deps.declaredEffortFor?.(codename) ?? null,
+        // When the live process started. Null while stopped, and null for a
+        // process adopted from before Conductor recorded launches. It is the
+        // field that gives the launch a currency: a declaration edited after
+        // this instant has not reached the running process, and without the
+        // timestamp the config is the only dated record in sight — which is why
+        // reading the config has been the cheap and wrong read all along.
+        launchedAt: state.running ? (state.launchedAt ?? null) : null,
         auto: state.auto,
         paused: state.paused,
         tag: state.tag ?? null,
