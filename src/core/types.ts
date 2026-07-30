@@ -23,6 +23,20 @@ export interface SessionState {
   runtime?: RuntimeName;
   /** Reasoning effort resolved for the active process. Absent when the runtime chooses. */
   effort?: string;
+  /**
+   * Model the live process was launched with, as the runtime resolved it.
+   * Absent when the runtime was left to choose, and absent for a session whose
+   * launch predates this record — both are reported as unknown rather than
+   * inferred from the config, which may have been edited since launch.
+   */
+  model?: string;
+  /**
+   * When the live process was launched, ISO-8601. Absent while stopped and for a
+   * process adopted from before this record existed. It is what turns a model
+   * mismatch from a fact into a measurable one: how long the session has been
+   * running something its config no longer declares.
+   */
+  launchedAt?: string;
   running: boolean;
   /**
    * The runtime process has proven it is up through a lifecycle event,

@@ -39,7 +39,14 @@ import { OperatorRequests } from './operator-requests.js';
 import { RunbookAdoptions } from './runbook-adoptions.js';
 import { StallSentinelRouter } from './sentinel.js';
 import { SessionStateManager } from './state.js';
-import { formatFleetStatusReport, resolvedSessionEffort, resolvedSessionModel, statusReport } from './status.js';
+import {
+  formatFleetStatusReport,
+  launchTimeFieldEdits,
+  type ModelDrift,
+  resolvedSessionEffort,
+  resolvedSessionModel,
+  statusReport,
+} from './status.js';
 import { observePaneActivity } from './activity.js';
 import { ShepherdManager } from './shepherd-manager.js';
 import { IntegrationManager } from './integration-manager.js';
@@ -271,10 +278,6 @@ export class Supervisor {
       config: {
         defaultPlacement: this.config.defaults.placement,
         defaultRuntime: this.config.defaults.runtime,
-        defaultModels: {
-          'claude-code': this.config.runtimes.claudeCode.defaultModel,
-          'codex': this.config.runtimes.codex.defaultModel,
-        },
         defaultEfforts: {
           'claude-code':
             this.config.runtimes.claudeCode.defaultEffort ??
@@ -659,6 +662,8 @@ export class Supervisor {
         getState: (name) => this.states.get(name),
         runtimeFor: (name) => this.displayRuntimeFor(name),
         modelFor: (name) => this.displayModelFor(name),
+        declaredModelFor: (name) => this.declaredModelFor(name),
+        modelDriftFor: (name) => this.modelDriftFor(name),
         effortFor: (name) => this.displayEffortFor(name),
         sentinelCodename: () => this.sentinel.sentinelCodename(),
         processObservation: (name) => this.lifecycle.processObservation(name),
@@ -810,9 +815,11 @@ export class Supervisor {
       'delivery',
       `${session}: visible composer identifies ${runtimeName}; correcting stale active runtime ${state.runtime ?? '(unknown)'}`,
     );
-    // The old runtime's effort cannot be assumed portable to the process we
-    // just identified. Runtime defaults remain available to status rendering.
-    this.states.setRunSettings(session, runtimeName, undefined);
+    // Neither the old runtime's effort nor its model can be assumed portable to
+    // the process we just identified, and we did not launch that process, so its
+    // model is unknown rather than inherited. Runtime defaults remain available
+    // to status rendering.
+    this.states.setRunSettings(session, { runtime: runtimeName, effort: undefined, model: undefined });
   }
 
   private displayRuntimeFor(session: string): SessionConfig['runtime'] | undefined {
@@ -820,8 +827,21 @@ export class Supervisor {
     return this.states.get(session)?.running === true ? this.lifecycle.runtimeNameFor(session) : configured;
   }
 
-  /** Model string Conductor resolves for this run; null status means the runtime chooses its own default. */
+  /**
+   * The model actually in force: the recorded launch while a process is running,
+   * otherwise what the config would resolve to on the next launch. A running
+   * session whose launch was never recorded reports the launch as unknown rather
+   * than falling back to the declaration, which is the substitution that let a
+   * seat run one model for twenty hours under a config naming another.
+   */
   private displayModelFor(session: string): string | undefined {
+    const state = this.states.get(session);
+    if (state?.running === true) return state.model;
+    return this.declaredModelFor(session);
+  }
+
+  /** What the config resolves to for the next launch, independent of any live process. */
+  private declaredModelFor(session: string): string | undefined {
     const configured = this.sessions.get(session);
     const runtime = this.displayRuntimeFor(session);
     if (configured === undefined || runtime === undefined) return undefined;
@@ -829,6 +849,20 @@ export class Supervisor {
       'claude-code': this.config.runtimes.claudeCode.defaultModel,
       'codex': this.config.runtimes.codex.defaultModel,
     });
+  }
+
+  /**
+   * Named drift between a running process and its declaration. Launch-time
+   * fields are frozen at launch, so a config edit under a live session changes
+   * only what the NEXT launch will do. Reporting the declaration as though it
+   * described the process is what made this invisible.
+   */
+  private modelDriftFor(session: string): ModelDrift | undefined {
+    const state = this.states.get(session);
+    if (state?.running !== true) return undefined;
+    const declared = this.declaredModelFor(session);
+    if (declared === undefined || state.model === declared) return undefined;
+    return { declared, launched: state.model, launchedAt: state.launchedAt };
   }
 
   /** Effort resolved for the active run, or the configured next run while stopped. */
@@ -1032,6 +1066,8 @@ export class Supervisor {
       const isNew = !this.sessions.has(codename);
       if (isNew) {
         log().info('supervisor', `Session registered: ${codename}`);
+      } else {
+        this.warnOnLaunchFieldEdit(codename, this.sessions.get(codename), session);
       }
       this.states.register(codename, this.lifecycle.isAgentProject(session), session.auto);
       if (isNew) {
@@ -1067,6 +1103,27 @@ export class Supervisor {
     this.sessions = fresh;
     this.sentinel.setRegisteredSessions(fresh.keys());
     this.scheduler.rebuild();
+  }
+
+  /**
+   * Launch-time fields are frozen at launch. Editing one under a running session
+   * changes only what its NEXT launch will do, and the edit is otherwise
+   * indistinguishable from having taken effect — which is how a seat ran one
+   * model for twenty hours under a config naming another, with three separate
+   * instruments agreeing with the config and all of them wrong.
+   *
+   * The remedy is named because the obvious repair does not work: only a stop and
+   * start re-reads these, and clearing a session's context does not.
+   */
+  private warnOnLaunchFieldEdit(codename: string, previous: SessionConfig | undefined, next: SessionConfig): void {
+    if (previous === undefined || this.states.get(codename)?.running !== true) return;
+    const changed = launchTimeFieldEdits(previous, next);
+    if (changed.length === 0) return;
+    log().warn(
+      'supervisor',
+      `${codename} is running and its launch-time config changed (${changed.join('; ')}). ` +
+        'The live process keeps what it was launched with; restart the session to apply.',
+    );
   }
 
   private resolveProtocolPath(): string | undefined {

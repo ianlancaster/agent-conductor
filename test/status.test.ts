@@ -4,10 +4,13 @@ import {
   displayPath,
   formatFleetStatusReport,
   formatFleetWatchStatus,
+  formatModelDrift,
   formatSessionLine,
+  launchTimeFieldEdits,
   resolvedSessionEffort,
   resolvedSessionModel,
 } from '../src/core/status.js';
+import type { SessionConfig } from '../src/config/schema.js';
 import type { SessionState } from '../src/core/types.js';
 import type { FleetWatchStatus } from '../src/core/sentinel.js';
 
@@ -26,6 +29,58 @@ function sessionState(overrides: Partial<SessionState> = {}): SessionState {
     ...overrides,
   };
 }
+
+describe('launchTimeFieldEdits', () => {
+  function config(overrides: Partial<SessionConfig> = {}): SessionConfig {
+    return {
+      codename: 'alpha',
+      repo: '/tmp/alpha',
+      runtime: 'claude-code',
+      additionalDirs: [],
+      ephemeral: false,
+      schedules: [],
+      ...overrides,
+    };
+  }
+
+  it('names each launch-time field that moved, with both values', () => {
+    expect(launchTimeFieldEdits(config({ model: 'claude-opus-5' }), config({ model: 'opus[1m]' }))).toEqual([
+      'model: claude-opus-5 → opus[1m]',
+    ]);
+    expect(launchTimeFieldEdits(config(), config({ model: 'opus[1m]', bypassPermissions: true }))).toEqual([
+      'model: (unset) → opus[1m]',
+      'bypassPermissions: (unset) → true',
+    ]);
+  });
+
+  it('stays silent for fields that are genuinely read live', () => {
+    // `auto` and `tag` take effect without a relaunch, so warning about them
+    // would teach operators to ignore the warning that matters.
+    expect(launchTimeFieldEdits(config({ auto: false }), config({ auto: true }))).toEqual([]);
+    expect(launchTimeFieldEdits(config({ model: 'opus[1m]' }), config({ model: 'opus[1m]' }))).toEqual([]);
+  });
+});
+
+describe('formatModelDrift', () => {
+  it('names both values, when the process started, and the only remedy', () => {
+    expect(
+      formatModelDrift({ declared: 'opus[1m]', launched: 'claude-opus-5', launchedAt: '2026-07-29T07:48:13.577Z' }),
+    ).toBe('opus[1m] declared, claude-opus-5 running since 2026-07-29T07:48:13.577Z — restart to apply');
+  });
+
+  it('reports an unrecorded launch as unknown rather than as agreement', () => {
+    // A process adopted from before launch recording existed. Reporting the
+    // declaration here is the substitution that hid a seat running the wrong
+    // model for twenty hours.
+    expect(formatModelDrift({ declared: 'opus[1m]', launched: undefined })).toBe(
+      'opus[1m] declared, the running process predates launch recording, so what it is running is unknown — restart to apply',
+    );
+  });
+
+  it('is silent when there is nothing to report', () => {
+    expect(formatModelDrift(undefined)).toBeNull();
+  });
+});
 
 describe('displayPath', () => {
   it('uses a home alias for the home directory and its descendants', () => {
@@ -75,6 +130,17 @@ describe('formatSessionLine', () => {
 
   it('marks the PR Shepherd recipient and composes it with the sentinel marker', () => {
     expect(formatSessionLine('alpha', 'claude-code', sessionState(), false, true)).toBe('alpha - CC 🐑 · 🟢 working');
+  });
+
+  it('badges a running session whose model is not the one its config declares', () => {
+    // Visible in the fleet list, not only in per-session detail: a wrong pin in
+    // a fleet of pods is not something anyone thinks to go and ask about.
+    expect(
+      formatSessionLine('alpha', 'claude-code', sessionState(), false, false, undefined, {
+        declared: 'opus[1m]',
+        launched: 'claude-opus-5',
+      }),
+    ).toBe('alpha - CC · 🟢 working · ⚠ running claude-opus-5');
     expect(formatSessionLine('alpha', 'codex', sessionState(), true, true)).toBe('alpha - codex 🛡 🐑 · 🟢 working');
   });
 });

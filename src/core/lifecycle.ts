@@ -4,10 +4,10 @@ import { isAbsolute, join, resolve } from 'node:path';
 import yaml from 'js-yaml';
 import { log } from '../logger.js';
 import { isValidCodename, type SessionConfig, type SpawnTemplate } from '../config/schema.js';
-import type { SessionRuntime, IdentityEndpoints } from '../runtimes/types.js';
+import type { SessionRuntime, IdentityEndpoints, LaunchOptions } from '../runtimes/types.js';
 import type { Store } from '../store/index.js';
 import type { TerminalBackend } from '../terminals/types.js';
-import type { SessionStateManager } from './state.js';
+import type { RunSettings, SessionStateManager } from './state.js';
 import { truncate } from './utils.js';
 import type { PaneActivityEvidence, PaneRef, Placement } from './types.js';
 import { materializeWorkspace, type WorkspaceSource } from './workspace.js';
@@ -101,7 +101,9 @@ export interface LifecycleDeps {
   config: {
     defaultPlacement: Placement;
     defaultRuntime: SessionConfig['runtime'];
-    defaultModels?: Record<string, string | undefined>;
+    // No defaultModels: model precedence belongs to the runtime that passes the
+    // flag (SessionRuntime.resolveLaunchModel). A second copy here is what let
+    // an adopted process be reported with a model it was never launched with.
     defaultEfforts: Record<string, string | undefined>;
     defaultBypassPermissions: boolean;
     markerFile: string;
@@ -130,6 +132,13 @@ export interface LifecycleDeps {
   onRunning?(session: string): void;
   events?: ConductorEventPublisher;
 }
+
+/**
+ * No process, so no launch facts. Cleared as a set: a leftover model or launch
+ * stamp on a stopped session would be read later as a description of something
+ * running.
+ */
+const CLEARED_RUN_SETTINGS: RunSettings = { runtime: undefined, effort: undefined, model: undefined };
 
 /** Session lifecycle: start / continue / stop / restart / spawn / teardown. */
 export class Lifecycle {
@@ -354,13 +363,21 @@ export class Lifecycle {
     this.panes.set(codename, pane);
 
     try {
-      this.deps.states.setRunSettings(codename, runtimeName, effort);
-      const command = runtime.buildLaunchCommand(launchSession, identity, {
+      const launchOptions: LaunchOptions = {
         prompt: opts.prompt,
         continueSession: opts.continueSession ?? false,
         effort,
         bypassPermissions: launchSession.bypassPermissions ?? this.deps.config.defaultBypassPermissions,
+      };
+      // Record what this launch pins BEFORE the command runs, and take the value
+      // from the runtime that builds the command rather than re-deriving it here.
+      // A config edited after launch must never be able to overwrite this.
+      this.deps.states.setRunSettings(codename, {
+        runtime: runtimeName,
+        effort,
+        model: runtime.resolveLaunchModel(launchSession, launchOptions),
       });
+      const command = runtime.buildLaunchCommand(launchSession, identity, launchOptions);
       // Title the pane from INSIDE the launch command (cc-conductor pattern):
       // the shell's own preexec title escape fires first, then this prefix,
       // then the runtime (titles disabled) — last writer wins, no race.
@@ -384,7 +401,7 @@ export class Lifecycle {
         // A pre-existing shell is still useful even if this launch failed.
         this.clearSession(codename, 'launch-failed', true);
       }
-      if (this.deps.states.has(codename)) this.deps.states.setRunSettings(codename, undefined, undefined);
+      if (this.deps.states.has(codename)) this.deps.states.setRunSettings(codename, CLEARED_RUN_SETTINGS);
       throw err;
     }
 
@@ -591,7 +608,7 @@ export class Lifecycle {
     if (!keepPane) this.panes.delete(codename);
     if (this.deps.states.has(codename)) {
       this.deps.states.setSession(codename, undefined);
-      this.deps.states.setRunSettings(codename, undefined, undefined);
+      this.deps.states.setRunSettings(codename, CLEARED_RUN_SETTINGS);
       this.deps.states.setActivity(codename, 'stopped');
     }
     if (wasRunning || cause === 'launch-failed') {
@@ -627,14 +644,16 @@ export class Lifecycle {
     // Every caller has either persisted the selected run settings or backfilled
     // the configured runtime before reaching this choke point.
     if (runtime !== undefined) {
-      const configured = this.deps.sessions().get(codename);
-      const launchModel =
-        configured === undefined
-          ? undefined
-          : runtime === configured.runtime
-            ? (configured.model ?? this.deps.config.defaultModels?.[runtime])
-            : this.deps.config.defaultModels?.[runtime];
-      const launchEffort = this.deps.states.get(codename)?.effort;
+      // Read the recorded launch, never re-derive it from config. `adopt` and
+      // `discovered` describe a process this conductor did not start: its config
+      // may have been edited since, and resolving it here would report the
+      // declaration as though it were the launch — a fabricated fact, and one
+      // that fabricates agreement between the config and the running process.
+      // Absent means the launch was not recorded, which is reported as nothing
+      // at all rather than as a guess.
+      const state = this.deps.states.get(codename);
+      const launchModel = state?.model;
+      const launchEffort = state?.effort;
       this.deps.events?.emit({
         type: 'session.started',
         session: codename,

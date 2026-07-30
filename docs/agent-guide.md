@@ -306,8 +306,24 @@ Model and effort resolution:
 4. Runtime CLI default
 
 Model and effort strings pass through without allowlist validation so newly released and
-third-party models remain usable. `get_session_status` reports what Conductor resolved; it may show
-`null` when the runtime owns selection.
+third-party models remain usable.
+
+These are **launch-time** settings: they are read when a process starts and are then frozen for that
+process's lifetime. Editing a session config under a running session changes only what its _next_
+launch will do. Clearing context does not re-read them; only a stop and start does. Conductor
+therefore reports the declaration and the launch as separate facts:
+
+- `model` — what the live process was launched with, or what the next launch would use while stopped.
+- `modelDeclared` — what the config resolves to now.
+- `modelDrift` — a sentence naming both values, when the process started, and the remedy. `null` when
+  they agree. `list_sessions` badges the same seats with `⚠ running <model>`.
+
+A running process whose launch predates this record reports its model as unknown rather than as the
+declaration, and a config edit to a launch-time field under a running session is logged as a warning
+naming the fields that moved. What none of this can tell you is what a session is _effectively_
+running: an in-session model change, or a runtime that accepts a value and silently substitutes
+another, is invisible to Conductor. Only the process's own report can certify that, so ask the
+session when a model must be guaranteed rather than merely declared.
 
 Placement is `pane`, `tab`, or `window`. With the tmux backend, `headless: true` puts the pane in
 the detached fleet session. Operator-only `/summon` and `/banish` move supported panes into or out

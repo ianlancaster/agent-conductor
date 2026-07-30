@@ -32,6 +32,8 @@ export class FakeRuntime implements SessionRuntime {
   /** Controls parseInputState; set to 'draft' to simulate occupied input. */
   inputState: InputState = 'clear';
   blockingPrompt = false;
+  /** Stands in for a runtime-scoped defaultModel when a session pins none. */
+  defaultModel: string | undefined = undefined;
   /** Controls execution-state observation independently from input readiness. */
   activityState: PaneActivityEvidence = 'unknown';
   readonly transcripts = new Map<string, string>();
@@ -48,6 +50,11 @@ export class FakeRuntime implements SessionRuntime {
     if (opts.continueSession) parts.push('--continue');
     if (opts.prompt !== undefined) parts.push(`--prompt ${JSON.stringify(opts.prompt)}`);
     return parts.join(' ');
+  }
+
+  /** Mirrors the real runtimes: a per-session pin wins over the fake's default. */
+  resolveLaunchModel(session: SessionConfig): string | undefined {
+    return session.model ?? this.defaultModel;
   }
 
   parseInputState(_capture: string): InputState {

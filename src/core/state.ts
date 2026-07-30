@@ -5,9 +5,18 @@ import type { ConductorEventPublisher } from '../events/types.js';
 import { InvalidRequestError } from './errors.js';
 import { log } from '../logger.js';
 
+/** Settings of the process being launched, recorded as one indivisible set. */
+export interface RunSettings {
+  runtime: RuntimeName | undefined;
+  effort: string | undefined;
+  /** As the runtime resolved it. Undefined means the agent CLI was left to choose. */
+  model: string | undefined;
+}
+
 /**
- * Per-session state registry. Auto/tag/pause persist to SQLite; session and
- * activity fields are runtime-only and recomputed after a conductor restart.
+ * Per-session state registry. Auto/tag/pause and the active run settings persist
+ * to SQLite; session and activity fields are runtime-only and recomputed after a
+ * conductor restart.
  */
 export class SessionStateManager {
   private readonly states = new Map<string, SessionState>();
@@ -40,6 +49,8 @@ export class SessionStateManager {
       paused: persisted?.paused ?? false,
       runtime: persisted?.activeRuntime ?? undefined,
       effort: persisted?.activeEffort ?? undefined,
+      model: persisted?.activeModel ?? undefined,
+      launchedAt: persisted?.activeLaunchedAt ?? undefined,
       running: false,
       ready: false,
       activity: 'stopped',
@@ -137,11 +148,22 @@ export class SessionStateManager {
     this.persist(codename);
   }
 
-  /** Persist the active process settings together so restart recovery never sees a torn pair. */
-  setRunSettings(codename: string, runtime: RuntimeName | undefined, effort: string | undefined): void {
+  /**
+   * Persist the settings of the process being launched, together, so restart
+   * recovery never sees a torn set. `runtime: undefined` means no process — the
+   * whole set is cleared, including the launch stamp, because a stale model on a
+   * stopped session would later read as a live fact.
+   *
+   * The launch stamp is taken here rather than passed in: this call site is the
+   * moment of launch by construction, and it is what lets status say how long a
+   * process has been running something its config no longer declares.
+   */
+  setRunSettings(codename: string, settings: RunSettings): void {
     const state = this.mustGet(codename);
-    state.runtime = runtime;
-    state.effort = effort;
+    state.runtime = settings.runtime;
+    state.effort = settings.effort;
+    state.model = settings.model;
+    state.launchedAt = settings.runtime === undefined ? undefined : new Date().toISOString();
     this.persist(codename);
   }
 
@@ -192,6 +214,8 @@ export class SessionStateManager {
       paused: state.paused,
       activeRuntime: state.runtime ?? null,
       activeEffort: state.effort ?? null,
+      activeModel: state.model ?? null,
+      activeLaunchedAt: state.launchedAt ?? null,
       activity: state.activity,
     });
   }

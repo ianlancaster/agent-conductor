@@ -57,6 +57,16 @@ export interface PersistedSessionState {
   paused: boolean;
   activeRuntime: RuntimeName | null;
   activeEffort: string | null;
+  /**
+   * Model the live process was actually launched with, as resolved by its
+   * runtime at launch. Null when the runtime was left to choose. Persisted
+   * because a declaration can be edited after launch and a pane can be adopted
+   * across restarts: without this, nothing distinguishes what a session was
+   * started with from what its config says today.
+   */
+  activeModel: string | null;
+  /** ISO-8601 launch time of the live process. Null when stopped or unrecorded. */
+  activeLaunchedAt: string | null;
   activity: Activity;
 }
 
@@ -275,6 +285,10 @@ const MIGRATIONS: string[] = [
   `,
   `
   UPDATE session_state SET activity = 'idle' WHERE activity = 'stalled';
+  `,
+  `
+  ALTER TABLE session_state ADD COLUMN active_model TEXT;
+  ALTER TABLE session_state ADD COLUMN active_launched_at TEXT;
   `,
 ];
 
@@ -678,6 +692,8 @@ export class Store {
           is_paused: number;
           active_runtime: RuntimeName | null;
           active_effort: string | null;
+          active_model: string | null;
+          active_launched_at: string | null;
           activity: string;
         }
       | undefined;
@@ -689,6 +705,10 @@ export class Store {
       paused: row.is_paused === 1,
       activeRuntime: row.active_runtime,
       activeEffort: row.active_effort,
+      // Rows written before this column existed report null, which is honest:
+      // that launch was not recorded, so nothing may claim to know it.
+      activeModel: row.active_model ?? null,
+      activeLaunchedAt: row.active_launched_at ?? null,
       activity: normalizedActivity(row.activity),
     };
   }
@@ -703,11 +723,14 @@ export class Store {
   upsertSessionState(state: PersistedSessionState): void {
     this.db
       .prepare(
-        `INSERT INTO session_state (session, auto, tag, is_paused, active_runtime, active_effort, activity, updated_at)
-         VALUES (@session, @auto, @tag, @paused, @activeRuntime, @activeEffort, @activity, datetime('now'))
+        `INSERT INTO session_state (session, auto, tag, is_paused, active_runtime, active_effort, active_model,
+           active_launched_at, activity, updated_at)
+         VALUES (@session, @auto, @tag, @paused, @activeRuntime, @activeEffort, @activeModel,
+           @activeLaunchedAt, @activity, datetime('now'))
          ON CONFLICT(session) DO UPDATE SET
            auto = @auto, tag = @tag, is_paused = @paused, active_runtime = @activeRuntime,
-           active_effort = @activeEffort, activity = @activity,
+           active_effort = @activeEffort, active_model = @activeModel,
+           active_launched_at = @activeLaunchedAt, activity = @activity,
            updated_at = datetime('now')`,
       )
       .run({
@@ -717,6 +740,11 @@ export class Store {
         '@paused': state.paused ? 1 : 0,
         '@activeRuntime': state.activeRuntime,
         '@activeEffort': state.activeEffort,
+        // Coalesce rather than trusting the caller: node:sqlite rejects
+        // undefined outright, and an embedder or an older caller that omits a
+        // newer field should record "not known", not crash a state write.
+        '@activeModel': state.activeModel ?? null,
+        '@activeLaunchedAt': state.activeLaunchedAt ?? null,
         '@activity': state.activity,
       });
   }

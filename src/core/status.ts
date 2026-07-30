@@ -21,11 +21,27 @@ const RUNTIME_LABELS: Record<string, string> = {
 
 export const PR_SHEPHERD_ONLINE_STATUS = 'PR Shepherd Status Online';
 
+/**
+ * A running process pinned to one model while its config declares another.
+ * Launch-time settings are frozen at launch, so this is not a failure to apply a
+ * declaration — it is a declaration that has not been launched yet.
+ */
+export interface ModelDrift {
+  declared: string;
+  /** Undefined when the process predates launch recording: unknown, not equal. */
+  launched: string | undefined;
+  launchedAt?: string;
+}
+
 export interface StatusDeps {
   sessions(): Map<string, SessionConfig>;
   getState(codename: string): SessionState | undefined;
   runtimeFor(codename: string): SessionConfig['runtime'] | undefined;
+  /** In force now: the recorded launch while running, the next launch's value while stopped. */
   modelFor(codename: string): string | undefined;
+  /** What the config resolves to for the next launch. */
+  declaredModelFor?(codename: string): string | undefined;
+  modelDriftFor?(codename: string): ModelDrift | undefined;
   effortFor(codename: string): string | undefined;
   sentinelCodename(): string | undefined;
   processObservation(codename: string): ProcessObservation | undefined;
@@ -67,6 +83,41 @@ export function resolvedSessionEffort(
 }
 
 /**
+ * State the drift in one sentence that names the remedy. Null when a running
+ * process matches its declaration, or when there is nothing to compare.
+ */
+export function formatModelDrift(drift: ModelDrift | undefined): string | null {
+  if (drift === undefined) return null;
+  const running =
+    drift.launched === undefined
+      ? 'the running process predates launch recording, so what it is running is unknown'
+      : `${drift.launched} running`;
+  const since = drift.launchedAt !== undefined ? ` since ${drift.launchedAt}` : '';
+  return `${drift.declared} declared, ${running}${since} — restart to apply`;
+}
+
+/**
+ * Session-config fields consumed when a process launches, and therefore frozen
+ * for that process's lifetime. Deliberately not every field: `auto`, `tag` and
+ * `schedules` are read live, and an edit to those really does take effect.
+ */
+const LAUNCH_TIME_FIELDS = ['runtime', 'model', 'effort', 'bypassPermissions', 'systemPromptFile'] as const;
+
+/**
+ * Describe launch-time fields that changed between two revisions of a session
+ * config. Empty when nothing launch-relevant moved, so a caller can stay silent.
+ */
+export function launchTimeFieldEdits(previous: SessionConfig, next: SessionConfig): string[] {
+  return LAUNCH_TIME_FIELDS.filter((field) => previous[field] !== next[field]).map(
+    (field) => `${field}: ${describeFieldValue(previous[field])} → ${describeFieldValue(next[field])}`,
+  );
+}
+
+function describeFieldValue(value: string | boolean | undefined): string {
+  return value === undefined ? '(unset)' : String(value);
+}
+
+/**
  * Advisory recovery marker. A second supervisor that reads status before acting
  * can see that the seat is already being recovered, and by whom, instead of
  * discovering it by colliding with the first one.
@@ -84,6 +135,7 @@ export function formatSessionLine(
   isSentinel: boolean,
   isShepherdRecipient = false,
   operation?: LifecycleOperation,
+  modelDrift?: ModelDrift,
 ): string {
   const name = `${codename} - ${RUNTIME_LABELS[runtime] ?? runtime}${isSentinel ? ' 🛡' : ''}${isShepherdRecipient ? ' 🐑' : ''}`;
   if (state === undefined) return `${name} · ⚪ unregistered`;
@@ -92,7 +144,11 @@ export function formatSessionLine(
   const mode = state.auto ? ' - auto 🔄' : '';
   const paused = state.paused ? ' (paused)' : '';
   const recovering = operation !== undefined ? formatLifecycleOperation(operation) : '';
-  return `${name} · ${ACTIVITY_ICONS[activity]} ${activity}${mode}${paused}${tag}${recovering}`;
+  // Visible in the fleet list, not only in per-session detail: nobody asks a
+  // seat about its model until something has already gone wrong, and a fleet of
+  // pods is exactly where one wrong pin hides.
+  const drift = modelDrift !== undefined ? ` · ⚠ running ${modelDrift.launched ?? 'unrecorded'}` : '';
+  return `${name} · ${ACTIVITY_ICONS[activity]} ${activity}${mode}${paused}${tag}${drift}${recovering}`;
 }
 
 export interface StatusMarkers {
@@ -114,7 +170,14 @@ export function statusReport(deps: StatusDeps, codename?: string, markers: Statu
         path: displayPath(session.repo),
         branch: currentBranch(session.repo),
         runtime: deps.runtimeFor(codename) ?? null,
+        // `model` is what this session is running (or would run if started).
+        // `modelDeclared` is what its config says. They differ whenever a
+        // launch-time field was edited under a live process, and only a restart
+        // closes the gap — so the drift is stated rather than left to be
+        // inferred from two fields that look interchangeable.
         model: deps.modelFor(codename) ?? null,
+        modelDeclared: deps.declaredModelFor?.(codename) ?? null,
+        modelDrift: formatModelDrift(deps.modelDriftFor?.(codename)),
         effort: deps.effortFor(codename) ?? null,
         auto: state.auto,
         paused: state.paused,
@@ -164,6 +227,7 @@ export function statusReport(deps: StatusDeps, codename?: string, markers: Statu
             name === sentinel,
             name === markers.shepherdRecipient,
             deps.operationInFlight?.(name),
+            deps.modelDriftFor?.(name),
           )}`,
         );
         const session = deps.sessions().get(name);

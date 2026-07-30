@@ -166,6 +166,10 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     return parts.join(' && ');
   }
 
+  resolveLaunchModel(session: SessionConfig): string | undefined {
+    return session.model ?? this.config.defaultModel;
+  }
+
   parseInputState(capture: string): InputState {
     return parseClaudeInputState(capture);
   }

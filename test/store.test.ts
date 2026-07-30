@@ -275,6 +275,8 @@ describe('session state', () => {
       paused: true,
       activeRuntime: 'codex',
       activeEffort: 'xhigh',
+      activeModel: 'gpt-5.6-sol',
+      activeLaunchedAt: '2026-07-29T07:48:13.577Z',
       activity: 'working',
     });
     const state = store.getSessionState('alpha');
@@ -283,6 +285,11 @@ describe('session state', () => {
     expect(state?.paused).toBe(true);
     expect(state?.activeRuntime).toBe('codex');
     expect(state?.activeEffort).toBe('xhigh');
+    // The launch record has to survive a conductor restart: it is the only thing
+    // that distinguishes what an adopted process was started with from what its
+    // config says today.
+    expect(state?.activeModel).toBe('gpt-5.6-sol');
+    expect(state?.activeLaunchedAt).toBe('2026-07-29T07:48:13.577Z');
 
     store.upsertSessionState({
       session: 'alpha',
@@ -291,6 +298,8 @@ describe('session state', () => {
       paused: false,
       activeRuntime: null,
       activeEffort: null,
+      activeModel: null,
+      activeLaunchedAt: null,
       activity: 'stopped',
     });
     const updated = store.getSessionState('alpha');
@@ -307,6 +316,8 @@ describe('session state', () => {
       paused: false,
       activeRuntime: null,
       activeEffort: null,
+      activeModel: null,
+      activeLaunchedAt: null,
       activity: 'stopped',
     });
     store.deleteSessionState('alpha');
@@ -360,6 +371,8 @@ describe('session state', () => {
       'updated_at',
       'active_runtime',
       'active_effort',
+      'active_model',
+      'active_launched_at',
     ]);
   });
 
@@ -374,15 +387,23 @@ describe('session state', () => {
       paused: false,
       activeRuntime: 'codex',
       activeEffort: null,
+      activeModel: null,
+      activeLaunchedAt: null,
       activity: 'idle',
     });
     seeded.close();
 
+    // Reconstruct the older schema rather than only rewinding the version
+    // counter: rewinding replays every migration after that point, so a later
+    // migration that adds a column would be re-applied and fail. Drop what the
+    // migrations under replay are supposed to add, and they can do their work.
     const legacy = openSqliteDatabase(dbPath);
     const versionRow = legacy.prepare('PRAGMA user_version').get() as { user_version: number };
     const currentVersion = versionRow.user_version;
+    legacy.exec('ALTER TABLE session_state DROP COLUMN active_model');
+    legacy.exec('ALTER TABLE session_state DROP COLUMN active_launched_at');
     legacy.exec("UPDATE session_state SET activity = 'stalled' WHERE session = 'alpha'");
-    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 1)}`);
+    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 2)}`);
     legacy.close();
 
     const migrated = new Store(dbPath);

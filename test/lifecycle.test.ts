@@ -240,6 +240,80 @@ describe('lifecycle edges', () => {
     expect(states.get('alpha')?.activity).toBe('idle');
   });
 
+  it('records the model a launch actually pinned, taken from the runtime that pinned it', async () => {
+    runtime.defaultModel = 'runtime-default';
+    await lifecycle.start('alpha');
+
+    expect(states.get('alpha')?.model).toBe('runtime-default');
+    expect(lifecycleEvents.events).toContainEqual(
+      expect.objectContaining({ type: 'session.started', cause: 'start', launchModel: 'runtime-default' }),
+    );
+
+    // A session pin outranks the runtime default, and the recorded value must be
+    // the one the runtime itself resolved rather than a second copy in core.
+    writeFileSync(
+      join(baseDir, 'config', 'sessions', 'alpha.yaml'),
+      `codename: alpha\nrepo: ${join(baseDir, 'repos', 'alpha')}\nmodel: pinned-model\n`,
+    );
+    watcher.checkNow();
+    await lifecycle.restart('alpha');
+
+    expect(states.get('alpha')?.model).toBe('pinned-model');
+  });
+
+  it('does not report a launch model for a process it did not launch', async () => {
+    // The defect this replaces: `launchModel` was re-derived from the config at
+    // emit time, so adopting a surviving pane reported whatever the config said
+    // NOW as though it were that process's launch — manufacturing agreement
+    // between a stale process and an edited declaration.
+    runtime.defaultModel = 'launched-with-this';
+    const pane = await backend.createPane('alpha', 'pane');
+    backend.panes.get(pane.id)!.sessionActive = true;
+
+    await lifecycle.adopt('alpha', pane);
+
+    const adopted = lifecycleEvents.events.filter(
+      (event) => event.type === 'session.started' && event.cause === 'adopt',
+    );
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0]).not.toHaveProperty('launchModel');
+    expect(states.get('alpha')?.model).toBeUndefined();
+  });
+
+  it('keeps a launch record across adoption instead of re-deriving it', async () => {
+    runtime.defaultModel = 'launched-with-this';
+    await lifecycle.start('alpha');
+    const pane = lifecycle.getPane('alpha');
+
+    // The declaration changes under the running process, as a hand edit would.
+    writeFileSync(
+      join(baseDir, 'config', 'sessions', 'alpha.yaml'),
+      `codename: alpha\nrepo: ${join(baseDir, 'repos', 'alpha')}\nmodel: edited-after-launch\n`,
+    );
+    watcher.checkNow();
+    // A fresh conductor re-adopting the same live pane must still report the
+    // launch, not the edit.
+    await lifecycle.adopt('alpha', pane!);
+
+    expect(states.get('alpha')?.model).toBe('launched-with-this');
+    const adopted = lifecycleEvents.events.filter(
+      (event) => event.type === 'session.started' && event.cause === 'adopt',
+    );
+    expect(adopted.at(-1)).toMatchObject({ launchModel: 'launched-with-this' });
+  });
+
+  it('clears the launch record when the process stops', async () => {
+    runtime.defaultModel = 'launched-with-this';
+    await lifecycle.start('alpha');
+    expect(states.get('alpha')?.launchedAt).toBeDefined();
+
+    await lifecycle.stop('alpha');
+
+    // A leftover model on a stopped session would later read as a live fact.
+    expect(states.get('alpha')?.model).toBeUndefined();
+    expect(states.get('alpha')?.launchedAt).toBeUndefined();
+  });
+
   it('keeps a surviving pane working when no composer is visible', async () => {
     recoveredActivity = 'working';
     const pane = await backend.createPane('alpha', 'pane');

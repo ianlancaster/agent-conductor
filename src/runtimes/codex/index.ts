@@ -389,7 +389,7 @@ export class CodexRuntime implements SessionRuntime {
     if (opts.bypassPermissions === true) parts.push('--dangerously-bypass-approvals-and-sandbox');
     if (this.settings.bypassHookTrust === true) parts.push('--dangerously-bypass-hook-trust');
 
-    const model = session.model ?? this.settings.defaultModel;
+    const model = this.resolveLaunchModel(session);
     if (model !== undefined) parts.push('--model', shellQuote(model));
 
     for (const dir of session.additionalDirs) parts.push('--add-dir', shellQuote(this.resolvePath(dir)));
@@ -398,6 +398,10 @@ export class CodexRuntime implements SessionRuntime {
 
     const codexHome = this.codexHomePath(identity);
     return `cd ${shellQuote(repo)} && export CODEX_HOME=${shellQuote(codexHome)} && ${parts.join(' ')}`;
+  }
+
+  resolveLaunchModel(session: SessionConfig): string | undefined {
+    return session.model ?? this.settings.defaultModel;
   }
 
   /**

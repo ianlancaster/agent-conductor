@@ -66,6 +66,20 @@ export interface SessionRuntime {
   buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, opts: LaunchOptions): string;
 
   /**
+   * The model this launch will actually pin, using the same precedence the
+   * runtime applies when it builds the command. Undefined means no pin is
+   * passed and the agent CLI chooses — which must be reported as unknown, never
+   * as a value.
+   *
+   * Resolution lives here rather than in core because each runtime owns its own
+   * precedence, and a second copy in core would silently drift from the flags
+   * actually passed. Conductor persists the answer so that a config edited after
+   * launch, or a pane adopted across a restart, cannot make a stale process look
+   * like it matches its declaration.
+   */
+  resolveLaunchModel(session: SessionConfig, opts: LaunchOptions): string | undefined;
+
+  /**
    * Classify the runtime's input line from a pane capture. `session` (the
    * codename) lets runtimes keep per-session state (e.g. Codex learns each
    * session's composer ghost text).
