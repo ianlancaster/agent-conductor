@@ -28,6 +28,14 @@ export const DEFAULT_SPAWN_TEMPLATES = {
 
 export const DEFAULT_MAX_TAG_LENGTH = 50;
 
+/**
+ * Values Claude Code accepts for `askUserQuestionTimeout`, version-matched to
+ * 2.1.220. Validated rather than passed through: an unrecognized value silently
+ * resolves to `never`, which is the indefinite park this setting exists to
+ * prevent, so a typo would reinstate the defect while looking configured.
+ */
+export const ASK_USER_QUESTION_TIMEOUTS = ['60s', '5m', '10m', 'never'] as const;
+
 const stringHints = (defaults: readonly string[]) => z.array(z.string().trim().min(1)).default([...defaults]);
 /** Codenames become URL path segments, filenames, and tmux targets — keep them boring. */
 export const CODENAME_PATTERN = /^[a-z0-9][a-z0-9-_]*$/i;
@@ -108,6 +116,12 @@ export const sessionConfigSchema = z
      * relative to the fleet root.
      */
     systemPromptFile: z.string().trim().min(1).optional(),
+    /**
+     * Override the fleet's Claude Code question auto-continue timeout for this
+     * session. **Claude Code only** — Codex has no equivalent, and Conductor
+     * warns rather than silently ignoring it on a session of another runtime.
+     */
+    askUserQuestionTimeout: z.enum(ASK_USER_QUESTION_TIMEOUTS).optional(),
     schedules: z.array(scheduleEntrySchema).default([]),
   })
   .strict();
@@ -316,6 +330,22 @@ export const supervisorConfigSchema = z
             disableNonessentialTraffic: z.boolean().default(true),
             /** Strip Claude Code's optional UI chrome from panes: spinner tips, prompt suggestions, onboarding/startup hints. */
             bareUi: z.boolean().default(true),
+            /**
+             * How long an unanswered `AskUserQuestion` prompt waits before the
+             * session continues on its own.
+             *
+             * Claude Code's own default is `never`, which parks a managed seat
+             * indefinitely: the prompt blocks the turn, Conductor cannot answer it
+             * (typing into a selection menu answers a question nobody asked
+             * Conductor to answer), and the seat holds a `blocked` stall until a
+             * human arrives. Observed once as an 11.5-hour fleet stall.
+             *
+             * Conductor defaults to `5m` instead. That still lets an agent ask a
+             * real question and get a real answer from an attentive operator, and
+             * it bounds the damage when nobody is there. Set `never` to restore the
+             * runtime's own behavior on a fleet that is always attended.
+             */
+            askUserQuestionTimeout: z.enum(ASK_USER_QUESTION_TIMEOUTS).default('5m'),
             /** Extra env vars exported to every session. Values here override the built-in defaults. */
             env: z.record(z.string()).default({}),
           })

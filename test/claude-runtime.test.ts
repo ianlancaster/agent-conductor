@@ -69,6 +69,24 @@ describe('buildLaunchCommand', () => {
     expect(command).toContain(`export CLAUDE_CODE_AUTO_COMPACT_WINDOW='1000000'`);
   });
 
+  it('bounds an unanswered question in the generated per-session settings', async () => {
+    // Claude Code resolves this key from policySettings, flagSettings and
+    // userSettings only — never project or local settings — and --settings is
+    // the flagSettings layer. So the generated file is the only per-session
+    // place it can be set; user settings would hit every session on the machine.
+    await runtime.prepare(session, identity);
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as Record<string, unknown>;
+    expect(settings.askUserQuestionTimeout).toBe('5m');
+
+    const perSession = new ClaudeCodeRuntime({
+      config: defaults.runtimes.claudeCode,
+      claudeJsonPath: join(configDir, '.claude.json'),
+    });
+    await perSession.prepare({ ...session, askUserQuestionTimeout: '60s' }, identity);
+    const overridden = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as Record<string, unknown>;
+    expect(overridden.askUserQuestionTimeout).toBe('60s');
+  });
+
   it('reports the model a launch will pin, and nothing when the CLI chooses', () => {
     expect(runtime.resolveLaunchModel({ ...session, model: 'opus[1m]' })).toBe('opus[1m]');
     expect(runtime.resolveLaunchModel({ ...session, model: undefined })).toBeUndefined();

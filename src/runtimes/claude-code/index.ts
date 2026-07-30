@@ -118,7 +118,10 @@ export class ClaudeCodeRuntime implements SessionRuntime {
       sessionSourcePath: session.systemPromptFile,
     });
     await writeFile(this.mcpConfigPath(identity), `${JSON.stringify(this.buildMcpConfig(identity), null, 2)}\n`);
-    await writeFile(this.hooksSettingsPath(identity), `${JSON.stringify(this.buildHookSettings(identity), null, 2)}\n`);
+    await writeFile(
+      this.hooksSettingsPath(identity),
+      `${JSON.stringify(this.buildSessionSettings(session, identity), null, 2)}\n`,
+    );
     await seedFolderTrust(this.claudeJsonPath, session.repo);
   }
 
@@ -270,7 +273,15 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     };
   }
 
-  private buildHookSettings(identity: IdentityEndpoints): unknown {
+  /**
+   * The per-session settings file passed as `--settings`, which Claude Code
+   * loads into its `flagSettings` layer. `askUserQuestionTimeout` is resolved
+   * from `policySettings`, `flagSettings` and `userSettings` only — not project
+   * or local settings — so this generated file is the one place Conductor can
+   * set it per session. Writing it to user settings instead would apply it to
+   * every Claude Code session on the machine, managed or not.
+   */
+  private buildSessionSettings(session: SessionConfig, identity: IdentityEndpoints): unknown {
     const command = `curl -s -m 5 -X POST -H 'Content-Type: application/json' --data-binary @- ${shellQuote(
       identity.eventsUrl,
     )} >/dev/null 2>&1 || true`;
@@ -278,6 +289,15 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     for (const event of HOOK_EVENTS) {
       hooks[event] = [{ hooks: [{ type: 'command', command }] }];
     }
-    return { hooks, ...(this.config.bareUi ? { spinnerTipsEnabled: false } : {}) };
+    return {
+      hooks,
+      // Bounds an unanswered question rather than letting it park the seat. A
+      // selection prompt blocks the turn and Conductor must not answer it — its
+      // free-text option is indistinguishable from a composer, and typing there
+      // answers a question nobody asked Conductor to answer — so without a
+      // timeout the only exit is a human.
+      askUserQuestionTimeout: session.askUserQuestionTimeout ?? this.config.askUserQuestionTimeout,
+      ...(this.config.bareUi ? { spinnerTipsEnabled: false } : {}),
+    };
   }
 }

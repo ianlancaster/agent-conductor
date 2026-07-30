@@ -1155,6 +1155,14 @@ export class Supervisor {
       } else {
         this.warnOnLaunchFieldEdit(codename, this.sessions.get(codename), session);
       }
+      // A setting that applies to one runtime must not be silently dropped on
+      // another: an operator who wrote it believes the seat is bounded.
+      if (session.askUserQuestionTimeout !== undefined && session.runtime !== 'claude-code') {
+        log().warn(
+          'supervisor',
+          `${codename} sets askUserQuestionTimeout but runs ${session.runtime}; that setting is Claude Code only and has no effect here.`,
+        );
+      }
       this.states.register(codename, this.lifecycle.isAgentProject(session), session.auto);
       if (isNew) {
         this.eventBus.emit({ type: 'session.registered', session: codename, cause: 'config-added' });

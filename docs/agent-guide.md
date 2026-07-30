@@ -308,6 +308,15 @@ Model and effort resolution:
 Model and effort strings pass through without allowlist validation so newly released and
 third-party models remain usable.
 
+Claude Code sessions are launched with `askUserQuestionTimeout` (default `5m`, per-session override in
+the session's YAML). An `AskUserQuestion` prompt blocks the turn, and Conductor deliberately will not
+answer it — the free-text option renders like a composer, so typing there would answer a question
+nobody asked Conductor to answer and would leave a draft that blocks every later delivery. Without a
+timeout the only exit is a human, which once parked a seat for 11.5 hours. The timeout does not make
+the question pointless: an attentive operator still answers it, and an unanswered one now continues
+instead of holding the seat. Prefer `send_to_operator` with options for anything that genuinely needs
+a decision, since that is recorded durably and survives an unanswered wait.
+
 These are **launch-time** settings: they are read when a process starts and are then frozen for that
 process's lifetime. Editing a session config under a running session changes only what its _next_
 launch will do. Clearing context does not re-read them; only a stop and start does. Conductor
