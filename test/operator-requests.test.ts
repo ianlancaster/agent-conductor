@@ -5,7 +5,7 @@ import { OperatorRequests } from '../src/core/operator-requests.js';
 import { Store } from '../src/store/index.js';
 import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
 
-function setup(options: { delivered?: boolean; delivery?: () => Promise<string> } = {}): {
+function setup(options: { delivered?: boolean; delivery?: () => Promise<string>; allowOptions?: boolean } = {}): {
   store: Store;
   requests: OperatorRequests;
   outbound: ChannelMessage[];
@@ -29,9 +29,67 @@ function setup(options: { delivered?: boolean; delivery?: () => Promise<string> 
       },
     },
     events,
+    allowOptions: () => options.allowOptions ?? true,
   });
   return { store, requests, outbound, sessionMessages, events };
 }
+
+describe('OperatorRequests with selectable requests disabled', () => {
+  const VIOLATION = 'EDICTUM-LIVE-VIOLATION-CONTROL/options [one,two]';
+  const CLEAN = 'EDICTUM-LIVE-CLEAN-CONTROL: prose notification; no action.';
+
+  /** Ids autoincrement from 1, so an absent #1 proves nothing was ever inserted. */
+  function firstRowExists(store: Store): boolean {
+    return store.getOperatorRequest(1) !== undefined;
+  }
+
+  it('refuses an option-bearing send before any row or event exists', async () => {
+    const { store, requests, outbound, events } = setup({ allowOptions: false });
+
+    await expect(requests.send('alpha', VIOLATION, ['one', 'two'])).rejects.toThrow(
+      'Selectable operator requests are disabled on this fleet',
+    );
+
+    // Rejected BEFORE the insert, not compensated after it: a row created and
+    // then deleted would still have emitted an event and taken an id.
+    expect(firstRowExists(store)).toBe(false);
+    expect(events.events).toHaveLength(0);
+    expect(outbound).toHaveLength(0);
+  });
+
+  it('leaves prose-only sends completely unchanged', async () => {
+    const { store, requests, outbound } = setup({ allowOptions: false });
+    expect(await requests.send('alpha', CLEAN)).toBe('Sent to the operator.');
+    expect(outbound).toEqual([{ text: `[Message from alpha] ${CLEAN}` }]);
+    expect(firstRowExists(store)).toBe(false);
+  });
+
+  it('refuses empty and malformed option lists for the same stated reason', async () => {
+    const { store, requests } = setup({ allowOptions: false });
+    // The capability is off, so the refusal must not read as a shape complaint —
+    // "must contain between 1 and 8 choices" would tell an agent that a
+    // well-formed list would be accepted, which is the opposite of the policy.
+    for (const bad of [[], [''], ['dup', 'dup']] as string[][]) {
+      await expect(requests.send('alpha', VIOLATION, bad)).rejects.toThrow(
+        'Selectable operator requests are disabled on this fleet',
+      );
+    }
+    expect(firstRowExists(store)).toBe(false);
+  });
+
+  it('does not disturb rows created before the policy was applied', async () => {
+    // Existing pending requests and every read path over them keep working; the
+    // policy governs creation only, so a fleet turning it on mid-flight does not
+    // strand a question a human already has in front of them.
+    const permissive = setup();
+    const ack = await permissive.requests.send('alpha', 'pick one', ['yes', 'no']);
+    expect(ack).toContain('Request #1');
+    const stored = permissive.store.getOperatorRequest(1);
+    expect(stored).toMatchObject({ status: 'pending', options: ['yes', 'no'] });
+    expect(await permissive.requests.respond(1, 2)).toContain('no');
+    expect(permissive.store.getOperatorRequest(1)?.status).toBe('responded');
+  });
+});
 
 describe('OperatorRequests', () => {
   it('keeps plain operator messages backward compatible and unpersisted', async () => {

@@ -85,6 +85,12 @@ health:
 
 messaging:
   queueDrainMs: 2000 # how often held messages retry; also the release latency after input clears
+  # Whether sessions may raise selectable operator requests (send_to_operator with
+  # `options`), which create a durable pending row a human must resolve. Set false
+  # on a fleet whose policy is that agents must not park a decision on a human: the
+  # call is refused before any row exists and the refusal points at prose instead.
+  # Prose-only send_to_operator, existing rows, and all read paths are unaffected.
+  allowOperatorRequestOptions: true
   # Safety valve for a conductor delivery stuck unsubmitted in a composer.
   # Applies ONLY to the conductor's own drafts — text the OPERATOR is typing
   # (any unsigned input) is never typed over, no matter how old the queue is;

@@ -1,6 +1,7 @@
 import type { ChannelAction, ChannelMessage } from '../channels/types.js';
 import type { Store } from '../store/index.js';
 import { renderMessageReceipt, type Messaging } from './messaging.js';
+import { InvalidRequestError } from './errors.js';
 import { messageEnvelope } from './utils.js';
 import type { ConductorEventPublisher } from '../events/types.js';
 
@@ -12,6 +13,12 @@ export interface OperatorRequestsDeps {
   messaging: Pick<Messaging, 'sendToSession'>;
   channelSend(message: ChannelMessage): Promise<boolean>;
   events?: ConductorEventPublisher;
+  /**
+   * Whether sessions may raise selectable requests at all. Read per call rather
+   * than captured, so a fleet that turns the capability off does not have to
+   * restart to mean it.
+   */
+  allowOptions?(): boolean;
 }
 
 /** Correlates selectable operator questions with one ordinary session reply. */
@@ -26,6 +33,17 @@ export class OperatorRequests {
   }
 
   async send(from: string, message: string, rawOptions?: readonly string[]): Promise<string> {
+    // Refusal is decided by the PRESENCE of options, before validation and
+    // before any row or event exists. A fleet that disables selectable requests
+    // is disabling the capability, not rejecting a payload, so an empty or
+    // malformed list is refused for the same stated reason rather than falling
+    // through to a shape complaint that implies a well-formed list would work.
+    if (rawOptions !== undefined && this.deps.allowOptions?.() === false) {
+      throw new InvalidRequestError(
+        'Selectable operator requests are disabled on this fleet. Send the message as prose without ' +
+          "'options' — describe the choices in the text and ask the operator to reply in their own words.",
+      );
+    }
     if (rawOptions === undefined) {
       const sent = await this.deps.channelSend({ text: messageEnvelope(from, message) });
       return sent ? 'Sent to the operator.' : this.notDelivered();

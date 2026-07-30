@@ -339,6 +339,7 @@ export class Supervisor {
       messaging: this.messaging,
       channelSend: (message) => this.channelSend(message),
       events: this.eventBus,
+      allowOptions: () => this.config.messaging.allowOperatorRequestOptions,
     });
 
     this.sentinel = new StallSentinelRouter({
@@ -413,6 +414,7 @@ export class Supervisor {
       sentinel: this.sentinel,
       states: this.states,
       sessions: () => this.sessions,
+      allowOperatorRequestOptions: () => this.config.messaging.allowOperatorRequestOptions,
       modelHints: {
         'claude-code': this.config.runtimes.claudeCode.availableModels,
         'codex': this.config.runtimes.codex.availableModels,

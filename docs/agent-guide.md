@@ -308,6 +308,14 @@ Model and effort resolution:
 Model and effort strings pass through without allowlist validation so newly released and
 third-party models remain usable.
 
+A fleet may disable **selectable** operator requests entirely
+(`messaging.allowOperatorRequestOptions: false`). Where that is set, `send_to_operator` stops
+advertising `options` in its schema and refuses any call carrying them — before any request row or
+event exists — because a fleet can hold that agents must not park a human decision in front of
+themselves. Prose-only `send_to_operator` is unaffected: describe the choices in the text and ask for
+a reply in the operator's own words. Existing requests and `respond_to_operator_request` keep working,
+so enabling the policy never strands a question a human already has.
+
 Claude Code sessions are launched with `askUserQuestionTimeout` (default `5m`, per-session override in
 the session's YAML). An `AskUserQuestion` prompt blocks the turn, and Conductor deliberately will not
 answer it — the free-text option renders like a composer, so typing there would answer a question

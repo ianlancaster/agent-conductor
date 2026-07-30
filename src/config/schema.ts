@@ -195,6 +195,19 @@ export const supervisorConfigSchema = z
     messaging: z
       .object({
         queueDrainMs: z.number().int().positive().default(2_000),
+        /**
+         * Whether sessions may raise *selectable* operator requests — a
+         * `send_to_operator` call carrying `options`, which creates a durable
+         * pending row a human must resolve.
+         *
+         * Set `false` on a fleet whose policy is that agents must not put a
+         * human decision in front of themselves: the call is then refused before
+         * any row or event exists, and the refusal names prose as the route that
+         * remains. Prose-only `send_to_operator` is unaffected either way, as are
+         * existing rows and every read path over them. Defaults to `true` so no
+         * fleet loses the capability without asking.
+         */
+        allowOperatorRequestOptions: z.boolean().default(true),
         /** @deprecated Retained for config compatibility; occupied input is never force-delivered over. */
         queueMaxAgeMs: z.number().int().positive().default(60_000),
         tailDefaultLines: z.number().int().positive().default(30),

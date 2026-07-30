@@ -44,6 +44,8 @@ export interface ConductorOperationDeps {
   sentinel: StallSentinelRouter;
   states: SessionStateManager;
   sessions(): Map<string, SessionConfig>;
+  /** False when this fleet refuses selectable operator requests; the tool stops advertising them. */
+  allowOperatorRequestOptions?(): boolean;
   modelHints: Record<string, readonly string[]>;
   effortHints: Record<string, readonly string[]>;
   runtimeNames?: readonly string[];
@@ -170,6 +172,7 @@ export class ConductorOperations {
   private buildDefinitions(): OperationDefinition[] {
     const templateNames = this.deps.lifecycle.templateNames();
     const runRuntimeProperty = runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex']);
+    const selectableOperatorRequests = this.deps.allowOperatorRequestOptions?.() ?? true;
     return [
       {
         name: 'send_to_session',
@@ -209,11 +212,24 @@ export class ConductorOperations {
       },
       {
         name: 'send_to_operator',
-        description: 'Send a message, optionally with selectable choices, to the operator.',
-        resultDescription: 'Returns an acknowledgement and request id when selectable choices were supplied.',
+        // A tool that advertises a parameter the fleet refuses is an instrument
+        // promising what it cannot do; the schema follows the policy so an agent
+        // never reads a capability it does not have.
+        description: selectableOperatorRequests
+          ? 'Send a message, optionally with selectable choices, to the operator.'
+          : 'Send a message to the operator. This fleet does not accept selectable choices — describe any options in the text.',
+        resultDescription: selectableOperatorRequests
+          ? 'Returns an acknowledgement and request id when selectable choices were supplied.'
+          : 'Returns an acknowledgement.',
         audiences: SESSION_ONLY,
         signedIdentity: true,
-        inputSchema: schema({ message: stringProperty('Message text'), options: optionsProperty }, ['message']),
+        inputSchema: schema(
+          {
+            message: stringProperty('Message text'),
+            ...(selectableOperatorRequests ? { options: optionsProperty } : {}),
+          },
+          ['message'],
+        ),
         handler: (args, actor) =>
           this.deps.operatorRequests.send(
             actorName(actor),
