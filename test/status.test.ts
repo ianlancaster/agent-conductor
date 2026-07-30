@@ -5,6 +5,7 @@ import {
   formatFleetStatusReport,
   formatFleetWatchStatus,
   formatModelDrift,
+  formatOperatorReach,
   formatSessionLine,
   launchTimeFieldEdits,
   resolvedSessionEffort,
@@ -208,6 +209,54 @@ describe('formatFleetStatusReport', () => {
         integrations: [],
       }),
     ).not.toContain('Integrations:');
+  });
+});
+
+describe('operator reachability', () => {
+  it('says nothing when the operator is actually reachable', () => {
+    // Silence is only safe here because the state is good; the report stays terse
+    // in the normal case and speaks up in the failing one.
+    const report = formatFleetStatusReport('Sessions:\n  alpha - CC · 🟡 idle', {
+      fleetWatch: fleetWatch(),
+      shepherdOnline: false,
+      operatorReach: { state: 'armed', channels: ['telegram'], consoles: 0, undelivered: 0 },
+    });
+    expect(report).not.toContain('Operator channel');
+  });
+
+  it('states that every alarm is ending in a log when no transport exists', () => {
+    // The disease fleet watch had, in the mechanism built to report fleet watch:
+    // a notification path that cannot reach anyone, reporting nothing.
+    const report = formatFleetStatusReport('Sessions:\n  alpha - CC · 🟡 idle', {
+      fleetWatch: fleetWatch({ enabled: true, state: 'armed', members: ['alpha', 'beta'], runningMembers: ['alpha'] }),
+      shepherdOnline: false,
+      operatorReach: {
+        state: 'inert',
+        reason: 'no operator channel is enabled and no console is attached',
+        channels: [],
+        consoles: 0,
+        undelivered: 11,
+        undeliveredSince: '2026-07-30T04:10:00.000Z',
+      },
+    });
+    expect(report).toContain('Operator channel INERT');
+    expect(report).toContain('11 notification(s) have reached nobody since 2026-07-30T04:10:00.000Z');
+    expect(report).toContain('Every alarm this fleet raises is currently ending in a log file.');
+  });
+
+  it('separates a transport that is failing from one that is absent', () => {
+    expect(
+      formatOperatorReach({
+        state: 'degraded',
+        reason: 'every configured operator channel has failed to deliver this run',
+        channels: ['slack'],
+        consoles: 0,
+        undelivered: 2,
+      }),
+    ).toContain('Operator channel DEGRADED');
+    expect(formatOperatorReach({ state: 'armed', channels: ['slack'], consoles: 2, undelivered: 0 })).toBe(
+      'Operator reachable via 2 console(s), slack.',
+    );
   });
 });
 

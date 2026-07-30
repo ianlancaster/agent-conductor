@@ -272,11 +272,57 @@ export function formatFleetWatchStatus(status: FleetWatchStatus): string {
 }
 
 /** Add the canonical fleet heading and optional companion-health summary. */
+/**
+ * Whether anything Conductor raises can actually reach a human right now.
+ *
+ * `armed` — at least one operator channel is started, or a console is attached.
+ * `inert` — no channel and no console: every alarm terminates in a log file.
+ * `degraded` — a transport exists but notifications are failing to land.
+ *
+ * This is the same distinction fleet watch needs and for the same reason. An
+ * alarm path that reports itself present while structurally incapable of
+ * reaching anyone is worse than an absent one, because its silence reads as
+ * nothing being wrong.
+ */
+export interface OperatorReach {
+  state: 'armed' | 'inert' | 'degraded';
+  reason?: string;
+  /** Started operator channels, by name. */
+  channels: readonly string[];
+  /** Attached consoles (`conductor start`, `conductor console`). */
+  consoles: number;
+  /** Operator notifications this run that reached nobody. */
+  undelivered: number;
+  /** ISO-8601 instant of the oldest such notification, if any. */
+  undeliveredSince?: string;
+}
+
+export function formatOperatorReach(reach: OperatorReach): string {
+  if (reach.state === 'armed') {
+    const where = [...(reach.consoles > 0 ? [`${String(reach.consoles)} console(s)`] : []), ...reach.channels].join(
+      ', ',
+    );
+    return `Operator reachable via ${where}.`;
+  }
+  const label = reach.state === 'inert' ? 'INERT' : 'DEGRADED';
+  const backlog =
+    reach.undelivered > 0
+      ? ` ${String(reach.undelivered)} notification(s) have reached nobody${
+          reach.undeliveredSince !== undefined ? ` since ${reach.undeliveredSince}` : ''
+        }.`
+      : '';
+  return (
+    `Operator channel ${label} — ${reach.reason ?? 'notifications cannot be delivered'}.` +
+    `${backlog} Every alarm this fleet raises is currently ending in a log file.`
+  );
+}
+
 export function formatFleetStatusReport(
   report: string,
   options: {
     fleetWatch: FleetWatchStatus;
     shepherdOnline: boolean;
+    operatorReach?: OperatorReach;
     eventJournal?: ConductorEventJournalStatus;
     integrations?: readonly IntegrationStatus[];
   },
@@ -287,6 +333,11 @@ export function formatFleetStatusReport(
   return [
     heading,
     ...(options.fleetWatch.state === 'off' ? [] : [formatFleetWatchStatus(options.fleetWatch)]),
+    // Before fleet watch's own state, an unreachable operator makes every other
+    // alarm on this report undeliverable, including fleet watch's.
+    ...(options.operatorReach !== undefined && options.operatorReach.state !== 'armed'
+      ? [formatOperatorReach(options.operatorReach)]
+      : []),
     ...(options.shepherdOnline ? [PR_SHEPHERD_ONLINE_STATUS] : []),
     ...(options.eventJournal?.degraded === true
       ? [

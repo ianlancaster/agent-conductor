@@ -43,6 +43,7 @@ import {
   formatFleetStatusReport,
   launchTimeFieldEdits,
   type ModelDrift,
+  type OperatorReach,
   resolvedSessionEffort,
   resolvedSessionModel,
   statusReport,
@@ -121,6 +122,9 @@ export class Supervisor {
   private supervisorConfigMtimeMs: number | undefined;
   private heartbeatTimer: NodeJS.Timeout | undefined;
   private readonly undeliverableWarnedAt = new Map<string, number>();
+  /** Operator notifications this run that reached no channel and no console. */
+  private undeliveredOperatorNotices = 0;
+  private undeliveredOperatorSince: string | undefined;
   /** Last inbound operator interaction this run; null until a human acts. */
   private lastOperatorInteractionAt: string | undefined;
   private operatorAttached: boolean | undefined;
@@ -617,6 +621,19 @@ export class Supervisor {
       log().warn('supervisor', `Configured sentinel '${sentinel}' has no session config.`);
     }
     log().info('supervisor', `Ready — ${this.sessions.size} session(s) registered.`);
+    // Say it at boot as well as on demand. A detached conductor with no channel
+    // enabled will detect stalls, fleet-wide darkness and a dead sentinel, and
+    // deliver none of it. The warning also lands in the log, which is the same
+    // dead end — but an operator reads the log at startup, and this is the last
+    // moment before the fleet starts running unattended.
+    if (this.channels.length === 0 && this.mcpServer.feedClientCount() === 0) {
+      log().warn(
+        'supervisor',
+        'No operator channel is enabled and no console is attached — every alarm this fleet raises ' +
+          '(stalls, fleet-down, sentinel failure) will terminate in this log and reach nobody. ' +
+          'Attach with `conductor console`, or enable Telegram or Slack.',
+      );
+    }
   }
 
   async stop(): Promise<void> {
@@ -655,7 +672,13 @@ export class Supervisor {
     this.reloadSessions();
   }
 
-  statusReport(codename?: string): string {
+  /**
+   * @param audience `session` omits operator reachability. Whether a human is
+   * attached is deliberately not observable by managed sessions: an agent that
+   * can tell would be able to behave differently when unobserved, and that is
+   * not a capability to hand out as a side effect of a status field.
+   */
+  statusReport(codename?: string, audience: 'operator' | 'session' = 'operator'): string {
     const report = statusReport(
       {
         sessions: () => this.sessions,
@@ -678,9 +701,52 @@ export class Supervisor {
     return formatFleetStatusReport(report, {
       fleetWatch: this.sentinel.fleetWatchStatus(),
       shepherdOnline: shepherd.state === 'healthy',
+      ...(audience === 'operator' ? { operatorReach: this.operatorReach() } : {}),
       eventJournal: this.eventBus.journalStatus(),
       integrations: this.integrations.status(),
     });
+  }
+
+  /**
+   * Whether anything this fleet raises can reach a human right now. Computed at
+   * read time, not at boot: a console can attach or detach at any moment, so a
+   * value captured at startup would be exactly the kind of stale fact that
+   * makes an instrument lie.
+   */
+  operatorReach(): OperatorReach {
+    const channels = this.channels.map((channel) => channel.name);
+    const consoles = this.mcpServer.feedClientCount();
+    const backlog = {
+      undelivered: this.undeliveredOperatorNotices,
+      ...(this.undeliveredOperatorSince !== undefined ? { undeliveredSince: this.undeliveredOperatorSince } : {}),
+    };
+    if (channels.length === 0 && consoles === 0) {
+      return {
+        state: 'inert',
+        reason:
+          'no operator channel is enabled and no console is attached — enable Telegram or Slack, or run conductor console',
+        channels,
+        consoles,
+        ...backlog,
+      };
+    }
+    // A transport exists but has failed this run. Not inert — a retry may land —
+    // but not something to describe as reachable either.
+    if (this.undeliveredOperatorNotices > 0 && consoles === 0) {
+      return {
+        state: 'degraded',
+        reason: 'every configured operator channel has failed to deliver this run',
+        channels,
+        consoles,
+        ...backlog,
+      };
+    }
+    return { state: 'armed', channels, consoles, ...backlog };
+  }
+
+  /** Raise an operator notification through the real send path. Tests only. */
+  notifyOperatorForTest(text: string): Promise<boolean> {
+    return this.channelSend({ text });
   }
 
   /** Structured companion status for embedding and tests. */
@@ -1000,6 +1066,20 @@ export class Supervisor {
   }
 
   private async channelSend(message: ChannelMessage): Promise<boolean> {
+    const delivered = await this.channelSendInner(message);
+    // Callers legitimately ignore this boolean — an alarm has nothing better to
+    // do when it cannot be raised. So the failure is counted here instead, at
+    // the one choke point, and reported through status. Discarding it at ten
+    // call sites is what made a fleet with no operator transport look identical
+    // to one with a listening operator.
+    if (!delivered) {
+      this.undeliveredOperatorNotices += 1;
+      this.undeliveredOperatorSince ??= new Date().toISOString();
+    }
+    return delivered;
+  }
+
+  private async channelSendInner(message: ChannelMessage): Promise<boolean> {
     // Attached operator consoles (conductor start / conductor console) get
     // every operator-bound message pushed over the /feed SSE stream.
     const consoleDelivered = this.mcpServer.pushToFeed(message);

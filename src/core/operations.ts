@@ -47,7 +47,7 @@ export interface ConductorOperationDeps {
   modelHints: Record<string, readonly string[]>;
   effortHints: Record<string, readonly string[]>;
   runtimeNames?: readonly string[];
-  statusReport(codename?: string): string;
+  statusReport(codename?: string, audience?: 'operator' | 'session'): string;
   tail(codename: string, lines: number): Promise<string>;
   /** Deliberately bypass the protected delivery queue for terminal control input. */
   typeInPane(codename: string, text: string): Promise<string>;
@@ -643,9 +643,12 @@ export class ConductorOperations {
         resultDescription: 'Returns the rendered fleet status report.',
         audiences: BOTH,
         inputSchema: schema(),
-        handler: async () => {
+        handler: async (_args, actor) => {
           await this.deps.lifecycle.reconcile();
-          return this.deps.statusReport();
+          // Audience matters here: whether an operator is attached must stay
+          // invisible to managed sessions, so operator reachability is rendered
+          // for the operator only.
+          return this.deps.statusReport(undefined, actor.audience);
         },
       },
       {

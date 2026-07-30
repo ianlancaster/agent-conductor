@@ -417,10 +417,12 @@ describe('Supervisor construction', () => {
     expect(attachment).toMatchObject({ attached: false, surfaces: [], lastInteractionAt: null });
 
     // An operator command is an interaction; the fact stays out of every
-    // session-readable surface.
+    // session-readable surface. The operator's own view may name attachment —
+    // it is their own state — so the audience is what this asserts, not the
+    // absence of the fact everywhere.
     await supervisor.command('/status');
-    expect(supervisor.statusReport()).not.toContain('attach');
-    expect(supervisor.statusReport('alpha')).not.toContain('attach');
+    expect(supervisor.statusReport(undefined, 'session')).not.toContain('attach');
+    expect(supervisor.statusReport('alpha', 'session')).not.toContain('attach');
   });
 
   it('reports journal degradation while lifecycle and live subscribers continue', async () => {
@@ -901,6 +903,55 @@ describe('Supervisor construction', () => {
 
     supervisor = new Supervisor(baseDir);
     expect(supervisor.statusReport()).not.toContain('🛡');
+  });
+
+  it('reports an unreachable operator instead of raising alarms into a log file', async () => {
+    // The condition this fleet was actually in: detached conductor, no channel
+    // enabled, no console attached. Every alarm — stalls, fleet-down, sentinel
+    // failure — routes through one send that logs and returns false, and all ten
+    // call sites discard that boolean. Armed while structurally dead, inside the
+    // mechanism built to report armed-while-structurally-dead.
+    writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43411\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    supervisor = new Supervisor(baseDir, { terminalBackend: new FakeTerminalBackend() });
+
+    expect(supervisor.operatorReach()).toMatchObject({ state: 'inert', channels: [], consoles: 0, undelivered: 0 });
+    expect(supervisor.statusReport()).toContain('Operator channel INERT');
+    // The operator needs to know an alarm cannot reach them. A managed session
+    // must NOT be able to tell whether a human is attached — an agent that can
+    // tell could behave differently when unobserved, and that capability is not
+    // something to hand out as a side effect of a status field.
+    expect(supervisor.statusReport(undefined, 'session')).not.toContain('Operator channel');
+    expect(supervisor.statusReport(undefined, 'session')).not.toContain('attach');
+
+    await supervisor.notifyOperatorForTest('🚨 Fleet stalled.');
+    await supervisor.notifyOperatorForTest('🚨 Sentinel is not running.');
+
+    const reach = supervisor.operatorReach();
+    expect(reach.undelivered).toBe(2);
+    expect(reach.undeliveredSince).toBeDefined();
+    expect(supervisor.statusReport()).toContain('2 notification(s) have reached nobody since');
+  });
+
+  it('reports the operator as reachable once a channel is attached', async () => {
+    writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43412\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const channel = new FakeChannel();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      channels: [channel],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+
+    await supervisor.notifyOperatorForTest('🚨 Fleet stalled.');
+
+    expect(supervisor.operatorReach()).toMatchObject({ state: 'armed', undelivered: 0 });
+    expect(supervisor.statusReport()).not.toContain('Operator channel');
+    expect(channel.sent.map((message) => message.text)).toContain('🚨 Fleet stalled.');
   });
 
   it('keeps persisted state when a config transiently fails to parse (M13)', async () => {

@@ -230,6 +230,11 @@ export class ClaudeCodeRuntime implements SessionRuntime {
       // empty composer can authorize protected delivery. IS_DEMO remains the
       // broader bare-UI switch; spinner tips are handled in settings.
       CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
+      // IS_DEMO does NOT suppress the `statusLine` command: measured across eight
+      // seats running with IS_DEMO=1 and a rendering footer, and in an A/B with
+      // the variable set explicitly rather than inherited. Recorded because the
+      // opposite was believed for a while on one clean-looking observation, and
+      // it nearly bought a config knob that was not needed.
       ...(this.config.bareUi ? { IS_DEMO: '1' } : {}),
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1',
