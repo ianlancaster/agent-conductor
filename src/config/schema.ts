@@ -297,6 +297,21 @@ export const supervisorConfigSchema = z
             /** Discoverability hints only; model support varies and unknown values pass through. */
             availableEfforts: stringHints(DEFAULT_CLAUDE_CODE_EFFORTS),
             autocompactPct: z.number().int().min(1).max(100).default(70),
+            /**
+             * Context window, in tokens, that Claude Code's auto-compaction
+             * threshold is computed against. It must be set for `autocompactPct`
+             * to have any effect at all: Claude Code only consults the percentage
+             * when a window has been configured explicitly, so a percentage on its
+             * own leaves auto-compaction off — measured at 157,995 tokens against a
+             * 9,000-token threshold with zero compactions.
+             *
+             * The default is deliberately the largest supported value. Claude Code
+             * clamps it and then takes the minimum against the model's real window,
+             * so the maximum arms the gate on every seat without shrinking any of
+             * them, while a smaller number would silently truncate large-window
+             * sessions. Lower it only to force earlier compaction on purpose.
+             */
+            autocompactWindowTokens: z.number().int().min(100_000).max(1_000_000).default(1_000_000),
             /** Export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 (disable if it breaks tools you rely on). */
             disableNonessentialTraffic: z.boolean().default(true),
             /** Strip Claude Code's optional UI chrome from panes: spinner tips, prompt suggestions, onboarding/startup hints. */

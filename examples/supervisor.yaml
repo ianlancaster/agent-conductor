@@ -115,6 +115,12 @@ runtimes:
     # Hints shown on spawn/start/continue effort. Model support varies; unknown values still pass through.
     availableEfforts: [low, medium, high, xhigh, max]
     autocompactPct: 70
+    # Window the percentage above is measured against. Claude Code ignores the
+    # percentage entirely unless a window is configured, so both are needed for
+    # auto-compaction to arm at all. The maximum is the right default: it is
+    # clamped against each model's real window, so it never shrinks a seat.
+    # Lower it only to force earlier compaction deliberately.
+    autocompactWindowTokens: 1000000
     disableNonessentialTraffic: true # exports CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; disable if it breaks tools you rely on
     bareUi: true # bare-bones panes: no spinner tips, prompt suggestions, or onboarding/startup hints. Set false for the full Claude Code UI.
     # Native auto-memory is disabled by default. Set this override to "0" to re-enable it.

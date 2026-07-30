@@ -60,6 +60,20 @@ describe('buildLaunchCommand', () => {
     expect(command).toContain(`export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'`);
   });
 
+  it('exports the auto-compaction window alongside the percentage', () => {
+    // The percentage is inert on its own: Claude Code consults it only when a
+    // window has been configured explicitly. Exporting one without the other is
+    // how a fleet ends up believing compaction is tuned while it is switched off.
+    const command = runtime.buildLaunchCommand(session, identity, {});
+    expect(command).toContain(`export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE='70'`);
+    expect(command).toContain(`export CLAUDE_CODE_AUTO_COMPACT_WINDOW='1000000'`);
+  });
+
+  it('reports the model a launch will pin, and nothing when the CLI chooses', () => {
+    expect(runtime.resolveLaunchModel({ ...session, model: 'opus[1m]' })).toBe('opus[1m]');
+    expect(runtime.resolveLaunchModel({ ...session, model: undefined })).toBeUndefined();
+  });
+
   it('omits CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC when disabled in config', () => {
     const custom = new ClaudeCodeRuntime({
       config: { ...defaults.runtimes.claudeCode, disableNonessentialTraffic: false },

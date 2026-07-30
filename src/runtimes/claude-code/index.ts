@@ -219,6 +219,11 @@ export class ClaudeCodeRuntime implements SessionRuntime {
   private envVars(): Record<string, string> {
     return {
       CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(this.config.autocompactPct),
+      // The percentage above is inert on its own: Claude Code checks whether a
+      // window was configured explicitly before it consults the percentage, and
+      // returns early when the window source is automatic. Setting both is what
+      // actually arms auto-compaction.
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(this.config.autocompactWindowTokens),
       ...(this.config.disableNonessentialTraffic ? { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } : {}),
       // Plain iTerm capture cannot distinguish prompt suggestions from real
       // typed input. Disable them in every Conductor session so only a truly
