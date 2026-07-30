@@ -150,9 +150,10 @@ The then-searched runtime transcripts also contained no compaction marker. That 
 established only that no compaction was observed in that interval; the later three-event capture
 supersedes any present-tense zero claim.
 
-That is the argument for building the canary alongside the event rather than after it. The first
-real compaction on this fleet will be the first time any of this code runs in anger, and a signal
-whose failure mode is silence cannot be validated by waiting to see whether it stays quiet.
+That historical zero was the argument for building the canary alongside the event rather than after
+it. The runtime has now compacted on this fleet, but none of this proposed Conductor publication code
+exists yet. Its first controlled exercise must still include the canary: a signal whose failure mode
+is silence cannot be validated by waiting to see whether it stays quiet.
 
 **Read that number narrowly.** The fleet it came from runs deliberate consolidation practice —
 sessions are cleared and restarted at context boundaries by policy, and a context ladder intervenes
