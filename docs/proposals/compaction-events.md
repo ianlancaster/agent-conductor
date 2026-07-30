@@ -4,13 +4,19 @@
 written, per the requirement that the shape — including what it cannot tell anyone — is agreed
 first.
 
-## Why Conductor is the right producer
+## Why Conductor is still a useful producer
 
-Claude Code's OpenTelemetry export has no carrier for a conversation-compaction fact:
-`gen_ai.conversation.compacted` is neither observed on the wire nor documented. Conductor, by
-contrast, already receives authoritative compaction lifecycle signals from both supported runtimes
-and already runs a state machine over them. It is currently the only component in the stack that can
-see the boundary at all, and it throws most of that observation away after using it.
+**Evidence correction (Claude Code 2.1.220):** the original premise that OpenTelemetry has no
+compaction carrier is false. A live OTLP/HTTP JSON capture observed `claude_code.compaction` three
+times on the `com.anthropic.claude_code.events` logs scope. The name
+`gen_ai.conversation.compacted` was not emitted on that tested path and is not documented, but that
+does not make Conductor the only component that can see the boundary. Evidence and limits are frozen
+at fleet records `c7d6151` and telemetry commit `23d3989`.
+
+Conductor remains useful because it receives lifecycle signals from both supported runtimes, can
+publish one cross-runtime shape, and already runs a state machine over start, completion, and
+post-boundary resumption. Runtime OTel and Conductor hooks are independent observation paths with
+different gaps; neither should be described as the sole authority.
 
 Consumers care about compaction because it is where instructions, constraints, and context are at
 risk of being dropped. A consumer measuring whether a rule survived needs to know when the boundary
@@ -76,6 +82,11 @@ Notes on the shape:
 - `trigger` requires capturing a field the Claude adapter currently discards (`PreCompact` carries a
   trigger distinguishing automatic from operator-invoked `/compact`). Codex's generated hook may not
   supply one; `unknown` is the honest value there rather than a guess.
+- **`trigger: 'auto'` is not a health classification.** Claude Code uses `"auto"` for both the normal
+  threshold path and reactive `prompt_too_long` recovery. In the OTel lane's wording: *"anyone scoring
+  context hygiene off this conflates a healthy threshold compaction with a seat that ran out of
+  room."* Conductor may preserve the runtime value, but consumers must not infer which automatic path
+  occurred without an independent discriminator.
 
 ## Delivery guarantee, stated in the contract
 
@@ -103,6 +114,9 @@ collapse. Concretely:
   Conductor can say when to look, not what to find.
 - **Token or context accounting.** Neither hook carries before/after context size, and Conductor
   does not parse transcripts for usage. Any accrual measure has to come from elsewhere.
+- **Whether an automatic compaction was threshold-driven or reactive recovery.** Both surface as
+  `trigger: 'auto'` in Claude Code. The proposed event can report that value but cannot turn it into a
+  health verdict.
 - **Sub-session or subagent compaction**, if a runtime performs it without emitting a session-level
   hook.
 - **Ordering against a turn.** The events carry `detectedAt`, which is Conductor's mechanical
@@ -124,12 +138,17 @@ pass**:
 
 ## Evidence from the dogfooding fleet
 
-Worth stating plainly: **this path is unexercised in production.** Across two nights of heavy use
-with `runtimes.claudeCode.autocompactPct: 70`, the fleet store contains **no compaction records at
-all** — 215 stalls, of which 180 `idle` and 35 `blocked`, and zero `compaction`. Searching the
-runtimes' own session transcripts for compaction markers also returns nothing, so the absence
-reflects reality: no session has compacted yet, and Conductor's silence is correct rather than a
-lost-hook problem.
+**Current status:** the runtime path is no longer unexercised. The OTel lane induced and captured
+three real Claude Code 2.1.220 compactions. What remains unbuilt and therefore unexercised is this
+proposal's Conductor event publication and cross-runtime resumption shape. The paragraph below is
+retained as the earlier fleet-store snapshot, not as current evidence that no compaction occurs.
+
+At the time this proposal was written, the path was unexercised in the measured fleet snapshot.
+Across two nights of use with `runtimes.claudeCode.autocompactPct: 70`, the fleet store contained
+**no compaction records** — 215 stalls, of which 180 `idle` and 35 `blocked`, and zero `compaction`.
+The then-searched runtime transcripts also contained no compaction marker. That historical snapshot
+established only that no compaction was observed in that interval; the later three-event capture
+supersedes any present-tense zero claim.
 
 That is the argument for building the canary alongside the event rather than after it. The first
 real compaction on this fleet will be the first time any of this code runs in anger, and a signal
