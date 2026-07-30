@@ -261,6 +261,22 @@ describe('lifecycle edges', () => {
     expect(states.get('alpha')?.model).toBe('pinned-model');
   });
 
+  it('records the rendered hook digest only from runtime preparation and freezes it for the launch', async () => {
+    runtime.preparation = { hooksRenderedDigest: 'a'.repeat(64) };
+    await lifecycle.start('alpha');
+
+    expect(states.get('alpha')?.hooksRenderedDigest).toBe('a'.repeat(64));
+    expect(store.getSessionState('alpha')?.activeHooksRenderedDigest).toBe('a'.repeat(64));
+
+    // A later declaration/config edit cannot rewrite the launch artifact. Only
+    // another runtime preparation attached to an actual launch may replace it.
+    runtime.preparation = { hooksRenderedDigest: 'b'.repeat(64) };
+    expect(states.get('alpha')?.hooksRenderedDigest).toBe('a'.repeat(64));
+
+    await lifecycle.restart('alpha');
+    expect(states.get('alpha')?.hooksRenderedDigest).toBe('b'.repeat(64));
+  });
+
   it('does not report a launch model for a process it did not launch', async () => {
     // The defect this replaces: `launchModel` was re-derived from the config at
     // emit time, so adopting a surviving pane reported whatever the config said
@@ -278,6 +294,7 @@ describe('lifecycle edges', () => {
     expect(adopted).toHaveLength(1);
     expect(adopted[0]).not.toHaveProperty('launchModel');
     expect(states.get('alpha')?.model).toBeUndefined();
+    expect(states.get('alpha')?.hooksRenderedDigest).toBeUndefined();
   });
 
   it('keeps a launch record across adoption instead of re-deriving it', async () => {
@@ -304,6 +321,7 @@ describe('lifecycle edges', () => {
 
   it('clears the launch record when the process stops', async () => {
     runtime.defaultModel = 'launched-with-this';
+    runtime.preparation = { hooksRenderedDigest: 'c'.repeat(64) };
     await lifecycle.start('alpha');
     expect(states.get('alpha')?.launchedAt).toBeDefined();
 
@@ -312,6 +330,7 @@ describe('lifecycle edges', () => {
     // A leftover model on a stopped session would later read as a live fact.
     expect(states.get('alpha')?.model).toBeUndefined();
     expect(states.get('alpha')?.launchedAt).toBeUndefined();
+    expect(states.get('alpha')?.hooksRenderedDigest).toBeUndefined();
   });
 
   it('keeps a surviving pane working when no composer is visible', async () => {

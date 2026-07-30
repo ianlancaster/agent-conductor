@@ -325,6 +325,33 @@ the question pointless: an attentive operator still answers it, and an unanswere
 instead of holding the seat. Prefer `send_to_operator` with options for anything that genuinely needs
 a decision, since that is recorded durably and survives an unanswered wait.
 
+Claude Code can also receive explicitly configured `PreToolUse` command registrations. The fleet
+default is `runtimes.claudeCode.preToolUseHooks`; a session's `claudeCode.preToolUseHooks` replaces
+that list, and `[]` opts that seat out. Each entry requires a non-empty `matcher`, an absolute
+`command`, a string `args` array when needed, and a positive `timeoutSec`. Conductor renders the
+structured command through its shell-quoting primitive and refuses launch when the command is
+missing or not executable at `prepare()` time.
+
+This is an **executable-code authority boundary**: every matching tool call runs the configured
+command with the session's environment and working directory. Conductor does not sandbox, review,
+test, interpret, or translate the command or its hook output. Only a trusted fleet owner should edit
+these registrations. Validation freezes the matcher, command path, arguments, and timeout into the
+generated launch settings; it does not freeze the executable bytes, referenced policy files, or
+inherited environment. Those can change after launch without a Conductor-visible event, so use a
+content-addressed wrapper when immutable hook behavior matters.
+
+Detailed status keeps three facts separate:
+
+- `hooksDeclared` describes the current effective configuration for the next launch;
+- `hooksRenderedDigest` is the recorded SHA-256 of the exact `PreToolUse` block generated for the
+  active launch, or `null` when no block or launch record exists;
+- `hooksRegistrationObserved` remains `UNKNOWN` without a runtime registration receipt.
+
+`hooksRenderingDrift` compares the current declaration with a recorded launch. A surviving process
+adopted without launch state stays unknown: Conductor never promotes configuration or a rendered
+digest into proof that Claude registered or honored the hook. Registration changes require an
+actual relaunch; editing YAML under a running seat changes only the next launch.
+
 These are **launch-time** settings: they are read when a process starts and are then frozen for that
 process's lifetime. Editing a session config under a running session changes only what its _next_
 launch will do. Clearing context does not re-read them; only a stop and start does. Conductor

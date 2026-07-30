@@ -1,11 +1,19 @@
-import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { constants, existsSync } from 'node:fs';
+import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import type { PaneActivityEvidence, RuntimeEvent } from '../../core/types.js';
 import { shellQuote } from '../../core/shell.js';
-import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
+import type {
+  SessionRuntime,
+  IdentityEndpoints,
+  InputState,
+  LaunchOptions,
+  RuntimeCapabilities,
+  RuntimePreparation,
+} from '../types.js';
 import {
   prepareInstructionLayers,
   PROTOCOL_SNAPSHOT_NAME,
@@ -19,7 +27,53 @@ import {
 } from './chrome.js';
 import { readLastAssistantMessage } from './transcript.js';
 
-type ClaudeCodeConfig = SupervisorConfig['runtimes']['claudeCode'];
+export type ClaudeCodeConfig = SupervisorConfig['runtimes']['claudeCode'];
+type PreToolUseHook = ClaudeCodeConfig['preToolUseHooks'][number];
+
+interface RenderedPreToolUseHook {
+  matcher: string;
+  hooks: { type: 'command'; command: string; timeout: number }[];
+}
+
+export interface ClaudePreToolUseDeclaration {
+  hooksDeclared: boolean;
+  renderedDigest?: string;
+}
+
+function effectivePreToolUseHooks(session: SessionConfig, config: ClaudeCodeConfig): PreToolUseHook[] {
+  return session.claudeCode?.preToolUseHooks ?? config.preToolUseHooks;
+}
+
+function renderPreToolUseHooks(hooks: readonly PreToolUseHook[]): RenderedPreToolUseHook[] {
+  return hooks.map((hook) => ({
+    matcher: hook.matcher,
+    hooks: [
+      {
+        type: 'command',
+        command: [hook.command, ...hook.args].map(shellQuote).join(' '),
+        timeout: hook.timeoutSec,
+      },
+    ],
+  }));
+}
+
+function preToolUseDigest(rendered: readonly RenderedPreToolUseHook[]): string | undefined {
+  if (rendered.length === 0) return undefined;
+  const exactBlock = JSON.stringify({ PreToolUse: rendered });
+  return createHash('sha256').update(exactBlock).digest('hex');
+}
+
+/** Current declaration for the next Claude Code launch; never runtime registration evidence. */
+export function resolveClaudePreToolUseDeclaration(
+  session: SessionConfig,
+  config: ClaudeCodeConfig,
+): ClaudePreToolUseDeclaration {
+  const rendered = renderPreToolUseHooks(effectivePreToolUseHooks(session, config));
+  return {
+    hooksDeclared: rendered.length > 0,
+    ...(rendered.length > 0 ? { renderedDigest: preToolUseDigest(rendered) } : {}),
+  };
+}
 
 /** Hook events wired into every session. All POST their stdin JSON to the events endpoint. */
 const HOOK_EVENTS = ['UserPromptSubmit', 'Stop', 'Notification', 'PreCompact', 'SessionEnd', 'SessionStart'] as const;
@@ -106,7 +160,9 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     this.claudeJsonPath = opts.claudeJsonPath ?? join(homedir(), '.claude.json');
   }
 
-  async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
+  async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<RuntimePreparation> {
+    const configuredHooks = effectivePreToolUseHooks(session, this.config);
+    await this.validatePreToolUseCommands(configuredHooks);
     await mkdir(identity.configDir, { recursive: true });
     const protocolText =
       this.protocolPath !== undefined && existsSync(this.protocolPath)
@@ -118,11 +174,14 @@ export class ClaudeCodeRuntime implements SessionRuntime {
       sessionSourcePath: session.systemPromptFile,
     });
     await writeFile(this.mcpConfigPath(identity), `${JSON.stringify(this.buildMcpConfig(identity), null, 2)}\n`);
+    const renderedHooks = renderPreToolUseHooks(configuredHooks);
     await writeFile(
       this.hooksSettingsPath(identity),
-      `${JSON.stringify(this.buildSessionSettings(session, identity), null, 2)}\n`,
+      `${JSON.stringify(this.buildSessionSettings(session, identity, renderedHooks), null, 2)}\n`,
     );
     await seedFolderTrust(this.claudeJsonPath, session.repo);
+    const hooksRenderedDigest = preToolUseDigest(renderedHooks);
+    return hooksRenderedDigest === undefined ? {} : { hooksRenderedDigest };
   }
 
   buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, opts: LaunchOptions): string {
@@ -281,7 +340,11 @@ export class ClaudeCodeRuntime implements SessionRuntime {
    * set it per session. Writing it to user settings instead would apply it to
    * every Claude Code session on the machine, managed or not.
    */
-  private buildSessionSettings(session: SessionConfig, identity: IdentityEndpoints): unknown {
+  private buildSessionSettings(
+    session: SessionConfig,
+    identity: IdentityEndpoints,
+    preToolUseHooks: readonly RenderedPreToolUseHook[],
+  ): unknown {
     const command = `curl -s -m 5 -X POST -H 'Content-Type: application/json' --data-binary @- ${shellQuote(
       identity.eventsUrl,
     )} >/dev/null 2>&1 || true`;
@@ -289,6 +352,7 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     for (const event of HOOK_EVENTS) {
       hooks[event] = [{ hooks: [{ type: 'command', command }] }];
     }
+    if (preToolUseHooks.length > 0) hooks.PreToolUse = preToolUseHooks;
     return {
       hooks,
       // Bounds an unanswered question rather than letting it park the seat. A
@@ -299,5 +363,17 @@ export class ClaudeCodeRuntime implements SessionRuntime {
       askUserQuestionTimeout: session.askUserQuestionTimeout ?? this.config.askUserQuestionTimeout,
       ...(this.config.bareUi ? { spinnerTipsEnabled: false } : {}),
     };
+  }
+
+  private async validatePreToolUseCommands(hooks: readonly PreToolUseHook[]): Promise<void> {
+    for (const hook of hooks) {
+      try {
+        const info = await stat(hook.command);
+        if (!info.isFile()) throw new Error('not a file');
+        await access(hook.command, constants.X_OK);
+      } catch {
+        throw new Error(`PreToolUse hook command is missing or not executable: ${hook.command}`);
+      }
+    }
   }
 }

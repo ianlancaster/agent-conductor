@@ -62,6 +62,7 @@ describe('loadSupervisorConfig', () => {
     expect(config.runtimes.claudeCode.availableModels).toEqual(DEFAULT_CLAUDE_CODE_MODELS);
     expect(config.runtimes.claudeCode.availableEfforts).toEqual(DEFAULT_CLAUDE_CODE_EFFORTS);
     expect(config.runtimes.claudeCode.defaultEffort).toBeUndefined();
+    expect(config.runtimes.claudeCode.preToolUseHooks).toEqual([]);
     expect(config.runtimes.codex.toolTimeoutSec).toBe(600);
     expect(config.runtimes.codex.bypassHookTrust).toBe(true);
     expect(config.runtimes.codex.availableModels).toEqual(DEFAULT_CODEX_MODELS);
@@ -389,6 +390,72 @@ describe('loadSessionConfigs', () => {
       'codename: alpha\nrepo: /tmp/alpha\nschedules:\n  - cron: "0 9 * * *"\n    prompt: work\n    backfill: true\n',
     );
     expect(() => loadSessionConfigs(baseDir)).toThrow(/backfill/);
+  });
+
+  it('parses strict structured Claude PreToolUse hooks and rejects them on other runtimes', () => {
+    writeSession(
+      'alpha',
+      [
+        'codename: alpha',
+        'repo: /tmp/alpha',
+        'runtime: claude-code',
+        'claudeCode:',
+        '  preToolUseHooks:',
+        '    - matcher: " Bash "',
+        '      command: /opt/conductor/gate',
+        '      args: ["--mode", "enforce"]',
+        '      timeoutSec: 2.5',
+      ].join('\n'),
+    );
+    expect(loadSessionConfigs(baseDir).get('alpha')?.claudeCode?.preToolUseHooks).toEqual([
+      {
+        matcher: 'Bash',
+        command: '/opt/conductor/gate',
+        args: ['--mode', 'enforce'],
+        timeoutSec: 2.5,
+      },
+    ]);
+
+    writeSession('alpha', 'codename: alpha\nrepo: /tmp/alpha\nruntime: codex\nclaudeCode:\n  preToolUseHooks: []\n');
+    expect(() => loadSessionConfigs(baseDir)).toThrow(/claudeCode settings are invalid for runtime 'codex'/u);
+
+    writeSession('alpha', 'codename: alpha\nrepo: /tmp/alpha\nclaudeCode:\n  preToolUseHooks: []\n');
+    expect(() => loadSessionConfigs(baseDir, { defaultRuntime: 'codex' })).toThrow(
+      /claudeCode settings are invalid for runtime 'codex'/u,
+    );
+  });
+
+  it('strictly rejects malformed PreToolUse hook declarations', () => {
+    const prefix = 'codename: alpha\nrepo: /tmp/alpha\nclaudeCode:\n  preToolUseHooks:\n    - ';
+    for (const [body, error] of [
+      ['command: /opt/gate\n      timeoutSec: 1\n', /matcher/u],
+      ['matcher: "  "\n      command: /opt/gate\n      timeoutSec: 1\n', /matcher must be non-empty/u],
+      ['matcher: Bash\n      timeoutSec: 1\n', /command/u],
+      ['matcher: Bash\n      command: relative/gate\n      timeoutSec: 1\n', /absolute path/u],
+      ['matcher: Bash\n      command: /opt/gate\n', /timeoutSec/u],
+      ['matcher: Bash\n      command: /opt/gate\n      timeoutSec: 0\n', /timeoutSec must be positive/u],
+      ['matcher: Bash\n      command: /opt/gate\n      timeoutSec: 1\n      surprise: true\n', /surprise/u],
+      ['matcher: Bash\n      command: /opt/gate\n      args: [ok, 1]\n      timeoutSec: 1\n', /args/u],
+    ] as const) {
+      writeSession('alpha', `${prefix}${body}`);
+      expect(() => loadSessionConfigs(baseDir)).toThrow(error);
+    }
+  });
+
+  it('strictly validates the fleet PreToolUse default', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'runtimes:\n  claudeCode:\n    preToolUseHooks:\n      - matcher: Bash\n        command: /opt/gate\n        timeoutSec: 3\n',
+    );
+    expect(loadSupervisorConfig(baseDir).runtimes.claudeCode.preToolUseHooks).toEqual([
+      { matcher: 'Bash', command: '/opt/gate', args: [], timeoutSec: 3 },
+    ]);
+
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'runtimes:\n  claudeCode:\n    preToolUseHooks:\n      - matcher: Bash\n        command: /opt/gate\n        timeoutSec: 3\n        surprise: true\n',
+    );
+    expect(() => loadSupervisorConfig(baseDir)).toThrow(/surprise/u);
   });
 });
 

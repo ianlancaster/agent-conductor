@@ -135,6 +135,13 @@ runtimes:
     # selection prompt, so the only exit is a human. Per-session override:
     # askUserQuestionTimeout in the session's YAML. Claude Code sessions only.
     askUserQuestionTimeout: 5m
+    # Explicit opt-in executable authority. Each matching Claude tool call runs
+    # the named local command in that session's environment and working directory.
+    # A session may replace this list under claudeCode.preToolUseHooks; [] opts out.
+    # Conductor validates the absolute executable path at prepare time, but does
+    # not sandbox or inspect it. Keep the default empty unless a trusted fleet
+    # owner has reviewed the command and its mutable dependencies.
+    preToolUseHooks: []
     # Native auto-memory is disabled by default. Set this override to "0" to re-enable it.
     env: {} # e.g. { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0" }; values override built-in conductor defaults
   codex:

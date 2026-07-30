@@ -10,6 +10,7 @@ import {
   launchTimeFieldEdits,
   resolvedSessionEffort,
   resolvedSessionModel,
+  statusReport,
 } from '../src/core/status.js';
 import type { SessionConfig } from '../src/config/schema.js';
 import type { SessionState } from '../src/core/types.js';
@@ -80,6 +81,57 @@ describe('formatModelDrift', () => {
 
   it('is silent when there is nothing to report', () => {
     expect(formatModelDrift(undefined)).toBeNull();
+  });
+});
+
+describe('hook launch status', () => {
+  const configuredSession: SessionConfig = {
+    codename: 'alpha',
+    repo: '/tmp/alpha',
+    runtime: 'claude-code',
+    additionalDirs: [],
+    ephemeral: false,
+    schedules: [],
+  };
+
+  function hookStatus(state: SessionState, drift: boolean | null, declared = true): Record<string, unknown> {
+    return JSON.parse(
+      statusReport(
+        {
+          sessions: () => new Map([['alpha', configuredSession]]),
+          getState: () => state,
+          runtimeFor: () => 'claude-code',
+          modelFor: () => undefined,
+          effortFor: () => undefined,
+          hooksDeclaredFor: () => declared,
+          hooksRenderingDriftFor: () => drift,
+          sentinelCodename: () => undefined,
+          processObservation: () => undefined,
+        },
+        'alpha',
+      ),
+    ) as Record<string, unknown>;
+  }
+
+  it('keeps declaration, launch rendering, and observed registration separate', () => {
+    const digest = 'e'.repeat(64);
+    const status = hookStatus(sessionState({ hooksRenderedDigest: digest }), false);
+    expect(status).toMatchObject({
+      hooksDeclared: true,
+      hooksRenderedDigest: digest,
+      hooksRenderingDrift: false,
+      hooksRegistrationObserved: 'UNKNOWN',
+    });
+  });
+
+  it('keeps adoption UNKNOWN and never derives a rendered digest from current config', () => {
+    const status = hookStatus(sessionState({ launchedAt: undefined, hooksRenderedDigest: undefined }), null);
+    expect(status).toMatchObject({
+      hooksDeclared: true,
+      hooksRenderedDigest: null,
+      hooksRenderingDrift: null,
+      hooksRegistrationObserved: 'UNKNOWN',
+    });
   });
 });
 

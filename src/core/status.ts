@@ -46,6 +46,10 @@ export interface StatusDeps {
   effortFor(codename: string): string | undefined;
   /** What the config resolves to for the next launch. */
   declaredEffortFor?(codename: string): string | undefined;
+  /** Whether the current effective configuration declares any Claude PreToolUse hooks. */
+  hooksDeclaredFor?(codename: string): boolean;
+  /** Null when no recorded launch exists; otherwise whether declaration and rendered launch differ. */
+  hooksRenderingDriftFor?(codename: string): boolean | null;
   sentinelCodename(): string | undefined;
   processObservation(codename: string): ProcessObservation | undefined;
   /** Advisory: a lifecycle transition already owns this seat right now. */
@@ -183,6 +187,12 @@ export function statusReport(deps: StatusDeps, codename?: string, markers: Statu
         modelDrift: formatModelDrift(deps.modelDriftFor?.(codename)),
         effort: deps.effortFor(codename) ?? null,
         effortDeclared: deps.declaredEffortFor?.(codename) ?? null,
+        hooksDeclared: deps.hooksDeclaredFor?.(codename) ?? false,
+        hooksRenderedDigest: state.running ? (state.hooksRenderedDigest ?? null) : null,
+        hooksRenderingDrift: deps.hooksRenderingDriftFor?.(codename) ?? null,
+        // Registration is a runtime fact. Configuration and a rendered digest
+        // cannot promote it; this feature deliberately consumes no hook receipt.
+        hooksRegistrationObserved: 'UNKNOWN',
         // When the live process started. Null while stopped, and null for a
         // process adopted from before Conductor recorded launches. It is the
         // field that gives the launch a currency: a declaration edited after

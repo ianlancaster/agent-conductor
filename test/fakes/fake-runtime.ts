@@ -6,6 +6,7 @@ import type {
   InputState,
   LaunchOptions,
   RuntimeCapabilities,
+  RuntimePreparation,
 } from '../../src/runtimes/types.js';
 
 const EVENT_TYPES = new Set([
@@ -37,11 +38,13 @@ export class FakeRuntime implements SessionRuntime {
   /** Controls execution-state observation independently from input readiness. */
   activityState: PaneActivityEvidence = 'unknown';
   readonly transcripts = new Map<string, string>();
+  preparation: RuntimePreparation | undefined;
 
   constructor(readonly name = 'fake') {}
 
-  async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
+  async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<RuntimePreparation | undefined> {
     this.prepared.push({ session, identity });
+    return this.preparation;
   }
 
   buildLaunchCommand(session: SessionConfig, _identity: IdentityEndpoints, opts: LaunchOptions): string {

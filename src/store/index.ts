@@ -67,6 +67,8 @@ export interface PersistedSessionState {
   activeModel: string | null;
   /** ISO-8601 launch time of the live process. Null when stopped or unrecorded. */
   activeLaunchedAt: string | null;
+  /** SHA-256 of the PreToolUse block written for the active launch, if recorded. */
+  activeHooksRenderedDigest?: string | null;
   activity: Activity;
 }
 
@@ -289,6 +291,9 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE session_state ADD COLUMN active_model TEXT;
   ALTER TABLE session_state ADD COLUMN active_launched_at TEXT;
+  `,
+  `
+  ALTER TABLE session_state ADD COLUMN active_hooks_rendered_digest TEXT;
   `,
 ];
 
@@ -694,6 +699,7 @@ export class Store {
           active_effort: string | null;
           active_model: string | null;
           active_launched_at: string | null;
+          active_hooks_rendered_digest: string | null;
           activity: string;
         }
       | undefined;
@@ -709,6 +715,7 @@ export class Store {
       // that launch was not recorded, so nothing may claim to know it.
       activeModel: row.active_model ?? null,
       activeLaunchedAt: row.active_launched_at ?? null,
+      activeHooksRenderedDigest: row.active_hooks_rendered_digest ?? null,
       activity: normalizedActivity(row.activity),
     };
   }
@@ -724,13 +731,14 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO session_state (session, auto, tag, is_paused, active_runtime, active_effort, active_model,
-           active_launched_at, activity, updated_at)
+           active_launched_at, active_hooks_rendered_digest, activity, updated_at)
          VALUES (@session, @auto, @tag, @paused, @activeRuntime, @activeEffort, @activeModel,
-           @activeLaunchedAt, @activity, datetime('now'))
+           @activeLaunchedAt, @activeHooksRenderedDigest, @activity, datetime('now'))
          ON CONFLICT(session) DO UPDATE SET
            auto = @auto, tag = @tag, is_paused = @paused, active_runtime = @activeRuntime,
            active_effort = @activeEffort, active_model = @activeModel,
-           active_launched_at = @activeLaunchedAt, activity = @activity,
+           active_launched_at = @activeLaunchedAt, active_hooks_rendered_digest = @activeHooksRenderedDigest,
+           activity = @activity,
            updated_at = datetime('now')`,
       )
       .run({
@@ -745,6 +753,7 @@ export class Store {
         // newer field should record "not known", not crash a state write.
         '@activeModel': state.activeModel ?? null,
         '@activeLaunchedAt': state.activeLaunchedAt ?? null,
+        '@activeHooksRenderedDigest': state.activeHooksRenderedDigest ?? null,
         '@activity': state.activity,
       });
   }

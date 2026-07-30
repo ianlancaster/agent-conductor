@@ -11,6 +11,8 @@ export interface RunSettings {
   effort: string | undefined;
   /** As the runtime resolved it. Undefined means the agent CLI was left to choose. */
   model: string | undefined;
+  /** Runtime-produced launch artifact; absent means no rendered block or an unrecorded launch. */
+  hooksRenderedDigest: string | undefined;
 }
 
 /**
@@ -51,6 +53,7 @@ export class SessionStateManager {
       effort: persisted?.activeEffort ?? undefined,
       model: persisted?.activeModel ?? undefined,
       launchedAt: persisted?.activeLaunchedAt ?? undefined,
+      hooksRenderedDigest: persisted?.activeHooksRenderedDigest ?? undefined,
       running: false,
       ready: false,
       activity: 'stopped',
@@ -163,6 +166,7 @@ export class SessionStateManager {
     state.runtime = settings.runtime;
     state.effort = settings.effort;
     state.model = settings.model;
+    state.hooksRenderedDigest = settings.hooksRenderedDigest;
     state.launchedAt = settings.runtime === undefined ? undefined : new Date().toISOString();
     this.persist(codename);
   }
@@ -216,6 +220,7 @@ export class SessionStateManager {
       activeEffort: state.effort ?? null,
       activeModel: state.model ?? null,
       activeLaunchedAt: state.launchedAt ?? null,
+      activeHooksRenderedDigest: state.hooksRenderedDigest ?? null,
       activity: state.activity,
     });
   }

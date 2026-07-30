@@ -1,9 +1,13 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { supervisorConfigSchema, type SessionConfig } from '../src/config/schema.js';
-import { ClaudeCodeRuntime, seedFolderTrust } from '../src/runtimes/claude-code/index.js';
+import {
+  ClaudeCodeRuntime,
+  resolveClaudePreToolUseDeclaration,
+  seedFolderTrust,
+} from '../src/runtimes/claude-code/index.js';
 import {
   hasClaudeSelectionPrompt,
   parseClaudeActivityState,
@@ -25,6 +29,7 @@ const session: SessionConfig = {
 let configDir: string;
 let identity: IdentityEndpoints;
 let runtime: ClaudeCodeRuntime;
+let hookCommand: string;
 
 beforeEach(() => {
   configDir = mkdtempSync(join(tmpdir(), 'conductor-claude-'));
@@ -37,6 +42,9 @@ beforeEach(() => {
     config: defaults.runtimes.claudeCode,
     claudeJsonPath: join(configDir, '.claude.json'),
   });
+  hookCommand = join(configDir, 'gate command');
+  writeFileSync(hookCommand, '#!/bin/sh\nexit 0\n');
+  chmodSync(hookCommand, 0o755);
 });
 
 afterEach(() => {
@@ -85,6 +93,134 @@ describe('buildLaunchCommand', () => {
     await perSession.prepare({ ...session, askUserQuestionTimeout: '60s' }, identity);
     const overridden = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as Record<string, unknown>;
     expect(overridden.askUserQuestionTimeout).toBe('60s');
+  });
+
+  it('leaves generated settings byte-identical when no PreToolUse hook is declared', async () => {
+    await runtime.prepare(session, identity);
+    const eventCommand =
+      "curl -s -m 5 -X POST -H 'Content-Type: application/json' --data-binary @- 'http://127.0.0.1:3456/events/alpha' >/dev/null 2>&1 || true";
+    const hooks = Object.fromEntries(
+      ['UserPromptSubmit', 'Stop', 'Notification', 'PreCompact', 'SessionEnd', 'SessionStart'].map((event) => [
+        event,
+        [{ hooks: [{ type: 'command', command: eventCommand }] }],
+      ]),
+    );
+    const legacySettings = `${JSON.stringify(
+      { hooks, askUserQuestionTimeout: '5m', spinnerTipsEnabled: false },
+      null,
+      2,
+    )}\n`;
+    expect(readFileSync(join(configDir, 'settings.json'), 'utf8')).toBe(legacySettings);
+  });
+
+  it('renders structured matching registrations with quoted command elements and a launch digest', async () => {
+    const hookConfig = {
+      ...defaults.runtimes.claudeCode,
+      preToolUseHooks: [
+        {
+          matcher: 'Bash|mcp__conductor__send_to_operator',
+          command: hookCommand,
+          args: ['--mode', "operator's choice"],
+          timeoutSec: 10,
+        },
+      ],
+    };
+    const configured = new ClaudeCodeRuntime({
+      config: hookConfig,
+      claudeJsonPath: join(configDir, '.claude.json'),
+    });
+    const preparation = await configured.prepare(session, identity);
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as {
+      hooks: Record<string, unknown>;
+    };
+    expect(settings.hooks.PreToolUse).toEqual([
+      {
+        matcher: 'Bash|mcp__conductor__send_to_operator',
+        hooks: [
+          {
+            type: 'command',
+            command: `'${hookCommand}' '--mode' 'operator'\\''s choice'`,
+            timeout: 10,
+          },
+        ],
+      },
+    ]);
+    expect(preparation?.hooksRenderedDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(resolveClaudePreToolUseDeclaration(session, hookConfig).renderedDigest).toBe(
+      preparation?.hooksRenderedDigest,
+    );
+  });
+
+  it('distinguishes absent, nonmatching, and matching declarations in generated settings', async () => {
+    await runtime.prepare(session, identity);
+    let settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as {
+      hooks: Record<string, unknown>;
+    };
+    expect(settings.hooks).not.toHaveProperty('PreToolUse');
+
+    const configured = new ClaudeCodeRuntime({
+      config: {
+        ...defaults.runtimes.claudeCode,
+        preToolUseHooks: [
+          { matcher: 'mcp__conductor__send_to_operator', command: hookCommand, args: [], timeoutSec: 3 },
+          { matcher: 'Bash', command: hookCommand, args: ['--deny'], timeoutSec: 4 },
+        ],
+      },
+      claudeJsonPath: join(configDir, '.claude.json'),
+    });
+    await configured.prepare(session, identity);
+    settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as {
+      hooks: Record<string, unknown>;
+    };
+    expect(settings.hooks.PreToolUse).toEqual([
+      expect.objectContaining({ matcher: 'mcp__conductor__send_to_operator' }),
+      expect.objectContaining({ matcher: 'Bash' }),
+    ]);
+  });
+
+  it('lets a session replace the fleet hooks or opt out with an empty list', async () => {
+    const configured = new ClaudeCodeRuntime({
+      config: {
+        ...defaults.runtimes.claudeCode,
+        preToolUseHooks: [{ matcher: 'Bash', command: hookCommand, args: [], timeoutSec: 5 }],
+      },
+      claudeJsonPath: join(configDir, '.claude.json'),
+    });
+    await configured.prepare(
+      {
+        ...session,
+        claudeCode: {
+          preToolUseHooks: [{ matcher: 'Write', command: hookCommand, args: ['--session'], timeoutSec: 2 }],
+        },
+      },
+      identity,
+    );
+    let settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as {
+      hooks: Record<string, unknown>;
+    };
+    expect(settings.hooks.PreToolUse).toEqual([expect.objectContaining({ matcher: 'Write' })]);
+
+    const preparation = await configured.prepare({ ...session, claudeCode: { preToolUseHooks: [] } }, identity);
+    settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as {
+      hooks: Record<string, unknown>;
+    };
+    expect(settings.hooks).not.toHaveProperty('PreToolUse');
+    expect(preparation?.hooksRenderedDigest).toBeUndefined();
+  });
+
+  it('refuses a missing or non-executable command before writing launch settings', async () => {
+    for (const command of [join(configDir, 'missing-gate'), join(configDir, 'not-executable')]) {
+      if (command.endsWith('not-executable')) writeFileSync(command, '#!/bin/sh\n');
+      const configured = new ClaudeCodeRuntime({
+        config: {
+          ...defaults.runtimes.claudeCode,
+          preToolUseHooks: [{ matcher: 'Bash', command, args: [], timeoutSec: 1 }],
+        },
+        claudeJsonPath: join(configDir, '.claude.json'),
+      });
+      await expect(configured.prepare(session, identity)).rejects.toThrow(command);
+      expect(() => readFileSync(join(configDir, 'settings.json'), 'utf8')).toThrow();
+    }
   });
 
   it('reports the model a launch will pin, and nothing when the CLI chooses', () => {

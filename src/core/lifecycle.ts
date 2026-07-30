@@ -138,7 +138,12 @@ export interface LifecycleDeps {
  * stamp on a stopped session would be read later as a description of something
  * running.
  */
-const CLEARED_RUN_SETTINGS: RunSettings = { runtime: undefined, effort: undefined, model: undefined };
+const CLEARED_RUN_SETTINGS: RunSettings = {
+  runtime: undefined,
+  effort: undefined,
+  model: undefined,
+  hooksRenderedDigest: undefined,
+};
 
 /** Session lifecycle: start / continue / stop / restart / spawn / teardown. */
 export class Lifecycle {
@@ -350,7 +355,7 @@ export class Lifecycle {
       return `Headless sessions need a headless-capable backend (tmux) — the ${this.deps.backend.name} backend cannot detach panes.`;
     }
 
-    await runtime.prepare(launchSession, identity);
+    const preparation = await runtime.prepare(launchSession, identity);
     this.deps.states.register(codename, this.isAgentProject(session), session.auto);
 
     const placement = opts.placement ?? this.deps.config.defaultPlacement;
@@ -376,6 +381,7 @@ export class Lifecycle {
         runtime: runtimeName,
         effort,
         model: runtime.resolveLaunchModel(launchSession, launchOptions),
+        hooksRenderedDigest: preparation?.hooksRenderedDigest,
       });
       const command = runtime.buildLaunchCommand(launchSession, identity, launchOptions);
       // Title the pane from INSIDE the launch command (cc-conductor pattern):

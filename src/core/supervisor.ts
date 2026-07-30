@@ -13,7 +13,7 @@ import { ConfigWatcher } from '../config/watcher.js';
 import { initLogger, log } from '../logger.js';
 import { ConductorMcpServer } from '../mcp/server.js';
 import { buildMcpTools } from '../mcp/tools.js';
-import { ClaudeCodeRuntime } from '../runtimes/claude-code/index.js';
+import { ClaudeCodeRuntime, resolveClaudePreToolUseDeclaration } from '../runtimes/claude-code/index.js';
 import { CodexRuntime } from '../runtimes/codex/index.js';
 import type { SessionRuntime } from '../runtimes/types.js';
 import { Store } from '../store/index.js';
@@ -691,6 +691,8 @@ export class Supervisor {
         modelDriftFor: (name) => this.modelDriftFor(name),
         effortFor: (name) => this.displayEffortFor(name),
         declaredEffortFor: (name) => this.declaredEffortFor(name),
+        hooksDeclaredFor: (name) => this.hooksDeclarationFor(name).hooksDeclared,
+        hooksRenderingDriftFor: (name) => this.hooksRenderingDriftFor(name),
         sentinelCodename: () => this.sentinel.sentinelCodename(),
         processObservation: (name) => this.lifecycle.processObservation(name),
         operationInFlight: (name) => this.lifecycle.operationInFlight(name),
@@ -888,7 +890,12 @@ export class Supervisor {
     // the process we just identified, and we did not launch that process, so its
     // model is unknown rather than inherited. Runtime defaults remain available
     // to status rendering.
-    this.states.setRunSettings(session, { runtime: runtimeName, effort: undefined, model: undefined });
+    this.states.setRunSettings(session, {
+      runtime: runtimeName,
+      effort: undefined,
+      model: undefined,
+      hooksRenderedDigest: undefined,
+    });
   }
 
   private displayRuntimeFor(session: string): SessionConfig['runtime'] | undefined {
@@ -932,6 +939,24 @@ export class Supervisor {
     const declared = this.declaredModelFor(session);
     if (declared === undefined || state.model === declared) return undefined;
     return { declared, launched: state.model, launchedAt: state.launchedAt };
+  }
+
+  /** Current config declaration for the session's next configured-runtime launch. */
+  private hooksDeclarationFor(session: string): { hooksDeclared: boolean; renderedDigest?: string } {
+    const configured = this.sessions.get(session);
+    if (configured?.runtime !== 'claude-code') return { hooksDeclared: false };
+    return resolveClaudePreToolUseDeclaration(configured, this.config.runtimes.claudeCode);
+  }
+
+  /**
+   * Compare current declaration with the recorded launch artifact. A process
+   * adopted without a launch record stays unknown even when config happens to
+   * match; equality cannot be manufactured from a declaration.
+   */
+  private hooksRenderingDriftFor(session: string): boolean | null {
+    const state = this.states.get(session);
+    if (state?.running !== true || state.launchedAt === undefined) return null;
+    return this.hooksDeclarationFor(session).renderedDigest !== state.hooksRenderedDigest;
   }
 
   /** Effort in force: the launched value while running, the next launch's while stopped. */

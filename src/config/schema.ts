@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isAbsolute } from 'node:path';
 
 export const DEFAULT_CLAUDE_CODE_MODELS = [
   'claude-fable-5',
@@ -80,6 +81,26 @@ export const configuredIntegrationSchema = z
   })
   .strict();
 
+export const preToolUseHookSchema = z
+  .object({
+    matcher: z.string().trim().min(1, 'PreToolUse hook matcher must be non-empty'),
+    command: z
+      .string()
+      .trim()
+      .min(1, 'PreToolUse hook command must be non-empty')
+      .refine(isAbsolute, 'PreToolUse hook command must be an absolute path'),
+    args: z.array(z.string()).default([]),
+    timeoutSec: z.number().positive('PreToolUse hook timeoutSec must be positive'),
+  })
+  .strict();
+
+const claudeCodeSessionConfigSchema = z
+  .object({
+    /** Replace the fleet Claude Code default for this session. An empty list opts out. */
+    preToolUseHooks: z.array(preToolUseHookSchema),
+  })
+  .strict();
+
 export const sessionConfigSchema = z
   .object({
     codename: z.string().min(1).regex(CODENAME_PATTERN, 'codename must be alphanumeric with dashes/underscores'),
@@ -122,9 +143,20 @@ export const sessionConfigSchema = z
      * warns rather than silently ignoring it on a session of another runtime.
      */
     askUserQuestionTimeout: z.enum(ASK_USER_QUESTION_TIMEOUTS).optional(),
+    /** Claude Code-only launch settings. The object is unavailable to other runtimes. */
+    claudeCode: claudeCodeSessionConfigSchema.optional(),
     schedules: z.array(scheduleEntrySchema).default([]),
   })
-  .strict();
+  .strict()
+  .superRefine((session, ctx) => {
+    if (session.claudeCode !== undefined && session.runtime !== 'claude-code') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['claudeCode'],
+        message: `claudeCode settings are invalid for runtime '${session.runtime}'`,
+      });
+    }
+  });
 
 export const supervisorConfigSchema = z
   .object({
@@ -359,6 +391,8 @@ export const supervisorConfigSchema = z
              * runtime's own behavior on a fleet that is always attended.
              */
             askUserQuestionTimeout: z.enum(ASK_USER_QUESTION_TIMEOUTS).default('5m'),
+            /** Fleet default; sessions may replace it or opt out with an empty list. */
+            preToolUseHooks: z.array(preToolUseHookSchema).default([]),
             /** Extra env vars exported to every session. Values here override the built-in defaults. */
             env: z.record(z.string()).default({}),
           })

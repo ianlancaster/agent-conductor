@@ -36,6 +36,12 @@ export interface LaunchOptions {
   bypassPermissions?: boolean;
 }
 
+/** Runtime-owned launch artifacts proved while writing generated configuration. */
+export interface RuntimePreparation {
+  /** SHA-256 of the exact generated PreToolUse block, when one was written. */
+  hooksRenderedDigest?: string;
+}
+
 /**
  * What the runtime's visible input line holds.
  * - `'clear'` — the composer is visibly and unambiguously empty: safe to type.
@@ -60,7 +66,7 @@ export interface SessionRuntime {
    * Write per-session config files (MCP identity, lifecycle hooks, instruction
    * injection) before launch. Idempotent.
    */
-  prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void>;
+  prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<RuntimePreparation | void>;
 
   /** Full shell command line to start (or continue) the session in its pane. */
   buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, opts: LaunchOptions): string;

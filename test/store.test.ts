@@ -277,6 +277,7 @@ describe('session state', () => {
       activeEffort: 'xhigh',
       activeModel: 'gpt-5.6-sol',
       activeLaunchedAt: '2026-07-29T07:48:13.577Z',
+      activeHooksRenderedDigest: 'd'.repeat(64),
       activity: 'working',
     });
     const state = store.getSessionState('alpha');
@@ -290,6 +291,7 @@ describe('session state', () => {
     // config says today.
     expect(state?.activeModel).toBe('gpt-5.6-sol');
     expect(state?.activeLaunchedAt).toBe('2026-07-29T07:48:13.577Z');
+    expect(state?.activeHooksRenderedDigest).toBe('d'.repeat(64));
 
     store.upsertSessionState({
       session: 'alpha',
@@ -300,11 +302,13 @@ describe('session state', () => {
       activeEffort: null,
       activeModel: null,
       activeLaunchedAt: null,
+      activeHooksRenderedDigest: null,
       activity: 'stopped',
     });
     const updated = store.getSessionState('alpha');
     expect(updated?.auto).toBe(false);
     expect(updated?.paused).toBe(false);
+    expect(updated?.activeHooksRenderedDigest).toBeNull();
     expect(store.getAllSessionStates().length).toBe(1);
   });
 
@@ -373,6 +377,7 @@ describe('session state', () => {
       'active_effort',
       'active_model',
       'active_launched_at',
+      'active_hooks_rendered_digest',
     ]);
   });
 
@@ -402,8 +407,9 @@ describe('session state', () => {
     const currentVersion = versionRow.user_version;
     legacy.exec('ALTER TABLE session_state DROP COLUMN active_model');
     legacy.exec('ALTER TABLE session_state DROP COLUMN active_launched_at');
+    legacy.exec('ALTER TABLE session_state DROP COLUMN active_hooks_rendered_digest');
     legacy.exec("UPDATE session_state SET activity = 'stalled' WHERE session = 'alpha'");
-    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 2)}`);
+    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 3)}`);
     legacy.close();
 
     const migrated = new Store(dbPath);

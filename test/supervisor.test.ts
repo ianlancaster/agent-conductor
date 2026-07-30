@@ -15,6 +15,8 @@ import type { ConductorIntegration, ConductorIntegrationContext } from '../src/i
 import { DeliveryQueue } from '../src/core/delivery.js';
 import { ShepherdManager } from '../src/core/shepherd-manager.js';
 import { ConductorMcpServer } from '../src/mcp/server.js';
+import { loadSessionConfigs } from '../src/config/loader.js';
+import { resolveClaudePreToolUseDeclaration } from '../src/runtimes/claude-code/index.js';
 
 let baseDir: string;
 let supervisor: Supervisor | undefined;
@@ -762,6 +764,54 @@ describe('Supervisor construction', () => {
     expect(detailed.path).toBe(repo);
     expect(detailed.branch).toBe('main');
     expect(supervisor.statusReport()).toContain(`path: ${repo} · branch: main`);
+  });
+
+  it('reports hook declaration drift without promoting rendering to observed registration', async () => {
+    const sessionYaml = (args: string[]) =>
+      [
+        'codename: alpha',
+        `repo: ${baseDir}`,
+        'runtime: claude-code',
+        'claudeCode:',
+        '  preToolUseHooks:',
+        '    - matcher: Bash',
+        `      command: ${JSON.stringify(process.execPath)}`,
+        `      args: ${JSON.stringify(args)}`,
+        '      timeoutSec: 5',
+      ].join('\n');
+    writeConfig('', { alpha: sessionYaml(['--first']) });
+    const runtime = new FakeRuntime('claude-code');
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      runtimes: [runtime],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    const configured = loadSessionConfigs(baseDir).get('alpha');
+    expect(configured).toBeDefined();
+    runtime.preparation = {
+      hooksRenderedDigest: resolveClaudePreToolUseDeclaration(configured!, supervisor.config.runtimes.claudeCode)
+        .renderedDigest,
+    };
+
+    await supervisor.command('/start alpha');
+    const launched = JSON.parse(supervisor.statusReport('alpha')) as Record<string, unknown>;
+    expect(launched).toMatchObject({
+      hooksDeclared: true,
+      hooksRenderedDigest: runtime.preparation.hooksRenderedDigest,
+      hooksRenderingDrift: false,
+      hooksRegistrationObserved: 'UNKNOWN',
+    });
+
+    writeFileSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'), sessionYaml(['--edited-after-launch']));
+    supervisor.reloadSessionsForTest();
+    const edited = JSON.parse(supervisor.statusReport('alpha')) as Record<string, unknown>;
+    expect(edited).toMatchObject({
+      hooksDeclared: true,
+      hooksRenderedDigest: runtime.preparation.hooksRenderedDigest,
+      hooksRenderingDrift: true,
+      hooksRegistrationObserved: 'UNKNOWN',
+    });
   });
 
   it('reports freshly reconciled foreground-process truth in detailed status', async () => {

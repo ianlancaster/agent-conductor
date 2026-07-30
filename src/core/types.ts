@@ -37,6 +37,8 @@ export interface SessionState {
    * running something its config no longer declares.
    */
   launchedAt?: string;
+  /** SHA-256 of the exact PreToolUse block generated for this launch, if one was written. */
+  hooksRenderedDigest?: string;
   running: boolean;
   /**
    * The runtime process has proven it is up through a lifecycle event,
