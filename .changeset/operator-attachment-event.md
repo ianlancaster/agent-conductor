@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': minor
+'agent-conductor': minor
 ---
 
 Publish whether an operator is attached as a typed observation. Whether a human is listening decides

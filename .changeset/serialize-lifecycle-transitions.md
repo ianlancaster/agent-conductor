@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': patch
+'agent-conductor': patch
 ---
 
 Serialize session lifecycle transitions and publish an advisory recovery marker. Only `start` was

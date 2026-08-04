@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': minor
+'agent-conductor': minor
 ---
 
 Report recipients that have stopped accepting messages. Protected delivery correctly refuses to

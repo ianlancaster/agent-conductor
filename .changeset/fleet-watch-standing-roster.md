@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': minor
+'agent-conductor': minor
 ---
 
 Scope fleet watch to the standing fleet, require a quorum, and make it state its real coverage.

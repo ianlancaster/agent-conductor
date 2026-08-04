@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': patch
+'agent-conductor': patch
 ---
 
 Never deliver into a session holding an interactive selection prompt. Claude renders a menu's

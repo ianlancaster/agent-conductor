@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': patch
+'agent-conductor': patch
 ---
 
 Distinguish a schedule that fired from one that arrived. A cron send into a session that cannot

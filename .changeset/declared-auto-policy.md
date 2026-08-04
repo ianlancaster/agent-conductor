@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': minor
+'agent-conductor': minor
 ---
 
 Let a session declare its stall-routing policy in its own config. `defaults.auto` is read once at

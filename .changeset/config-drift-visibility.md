@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': patch
+'agent-conductor': patch
 ---
 
 Stop session and supervisor configuration from diverging silently from the running fleet. A start,

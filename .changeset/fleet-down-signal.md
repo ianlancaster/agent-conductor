@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': minor
+'agent-conductor': minor
 ---
 
 Add a distinct fleet-down signal for a standing fleet with nothing running. Scoping fleet watch to

@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': patch
+'agent-conductor': patch
 ---
 
 Watch the sentinel seat mechanically. Fleet watch excludes the sentinel by design, so the one seat

@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': patch
+'agent-conductor': patch
 ---
 
 Make `get_conductor_docs` state which build its handbook actually reflects. The guide is read from

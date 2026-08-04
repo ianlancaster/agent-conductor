@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': patch
+'agent-conductor': patch
 ---
 
 Stop reporting Claude Code's idle-timer notification as a `blocked` stall. Claude fires one
