@@ -6,6 +6,9 @@ import {
   bracketedPastePayload,
   buildCloseSessionScript,
   buildCreateSessionWindowScript,
+  buildFindTtyWindowScript,
+  buildNameTtySessionScript,
+  buildRevealSessionScript,
   buildCreateTabScript,
   buildCreateWindowScript,
   buildInSessionScript,
@@ -20,6 +23,7 @@ import {
   decodeSessionVar,
   encodeSessionVar,
   escapeAppleScript,
+  interpretLivenessResult,
   parseRediscoveryOutput,
   parseWindowCreateResult,
   sessionSetup,
@@ -262,6 +266,94 @@ describe('parseRediscoveryOutput', () => {
   });
 });
 
+describe('interpretLivenessResult', () => {
+  it('answers only when the scan actually answered', () => {
+    expect(interpretLivenessResult('S', 'ALIVE\n')).toBe(true);
+    expect(interpretLivenessResult('S', `${SESSION_NOT_FOUND_RESULT}\n`)).toBe(false);
+  });
+
+  it('refuses to report an unobservable terminal as an absent pane', () => {
+    // This is the whole defect: osascript timing out, iTerm erroring, or output
+    // arriving truncated used to read as "the pane is gone", which marks a live
+    // session stopped and drops its pane mapping — and reconcile only visits
+    // mapped panes, so nothing ever revisits the seat. Throwing instead lets
+    // lifecycle record an unknown and try again on the next tick.
+    for (const inconclusive of ['', '   ', 'ALIV', 'execution error: iTerm got an error (-1728)']) {
+      expect(() => interpretLivenessResult('S', inconclusive)).toThrow(/unrecognized liveness result/);
+    }
+  });
+});
+
+describe('enumeration tolerates panes that vanish mid-scan', () => {
+  // Every scan walks ALL of iTerm — one process cannot enumerate only its own
+  // panes. So a pane closing anywhere, including in another fleet's window,
+  // lands mid-scan. Untolerated it aborts the whole enumeration, and that
+  // failure is indistinguishable from "your session is gone": one fleet
+  // spawning tabs marked another fleet's live, working sessions stopped.
+  const scans: [string, string][] = [
+    ['buildInSessionScript', buildInSessionScript('uuid', '')],
+    ['buildSessionTtyScript', buildSessionTtyScript('uuid')],
+    ['buildRevealSessionScript', buildRevealSessionScript('uuid')],
+    ['buildCloseSessionScript', buildCloseSessionScript('uuid')],
+    ['buildListSessionIdsScript', buildListSessionIdsScript()],
+    ['buildRediscoverScript', buildRediscoverScript()],
+    ['buildNameTtySessionScript', buildNameTtySessionScript('/dev/ttys001', 'name')],
+    ['buildFindTtyWindowScript', buildFindTtyWindowScript('/dev/ttys001')],
+  ];
+
+  it.each(scans)('%s guards every window, tab and session level', (_name, script) => {
+    // Windows and tabs disappear too — a closed window makes `tabs of w` raise
+    // the same error as a closed pane makes `id of s` raise.
+    const guards = script.match(/\{-1719, -1728\} contains errorNumber/g) ?? [];
+    expect(guards).toHaveLength(3);
+    expect(script).toContain('set sessionList to every session of t');
+  });
+
+  it.skipIf(process.platform !== 'darwin')('skips vanished elements and keeps scanning', () => {
+    // The guard's semantics, verified against the real AppleScript interpreter
+    // rather than asserted from the generated text.
+    const out = execFileSync(
+      'osascript',
+      [
+        '-e',
+        `set out to ""
+         set n to 0
+         repeat with i in {1, 2, 3, 4}
+           set n to n + 1
+           try
+             if n is 2 then error "gone" number -1728
+             if n is 3 then error "lazy" number -1719
+             set out to out & n
+           on error errorMessage number errorNumber
+             if not ({-1719, -1728} contains errorNumber) then error errorMessage number errorNumber
+           end try
+         end repeat
+         return out`,
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(out.trim()).toBe('14');
+  });
+
+  it.skipIf(process.platform !== 'darwin')('still propagates errors that are not a vanished element', () => {
+    expect(() =>
+      execFileSync(
+        'osascript',
+        [
+          '-e',
+          `try
+             error "genuine failure" number -1700
+           on error errorMessage number errorNumber
+             if not ({-1719, -1728} contains errorNumber) then error errorMessage number errorNumber
+           end try
+           return "swallowed"`,
+        ],
+        { encoding: 'utf8', stdio: 'pipe' },
+      ),
+    ).toThrow();
+  });
+});
+
 describe('script builders', () => {
   it('buildWindowExistsScript targets the window id', () => {
     expect(buildWindowExistsScript(42)).toContain('exists window id 42');
@@ -370,7 +462,7 @@ describe('script builders', () => {
     expect(script).toContain('set name to "n"');
     expect(script).toContain('return (contents as string)');
     expect(script).toContain('set sessionList to every session of t');
-    expect(script).toContain('if errorNumber is not -1719 then error errorMessage number errorNumber');
+    expect(script).toContain('if not ({-1719, -1728} contains errorNumber) then error errorMessage number errorNumber');
   });
 
   it('buildInSessionScript defaults to returning "OK" and escapes the session id', () => {

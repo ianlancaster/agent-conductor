@@ -19,6 +19,7 @@ import {
   buildDeliveryCommands,
   encodeSessionOption,
   hasShellPrompt,
+  isNoServerError,
   parseSessionPanes,
   parsePaneIds,
   parseWritableClients,
@@ -416,9 +417,13 @@ export class TmuxBackend implements TerminalBackend {
     try {
       const output = await tmux(['list-panes', '-a', '-F', '#{pane_id}']);
       return parsePaneIds(output).includes(pane.id);
-    } catch {
-      // tmux server not running -> no pane is alive.
-      return false;
+    } catch (err) {
+      // No server is a real answer: no pane is alive. Anything else means tmux
+      // could not be asked, and per the isAlive contract an unobservable
+      // terminal must not be reported as an absent pane — that retires a live
+      // session permanently.
+      if (isNoServerError(err instanceof Error ? err.message : String(err))) return false;
+      throw err;
     }
   }
 

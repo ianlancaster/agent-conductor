@@ -26,6 +26,13 @@ export class FakeTerminalBackend implements TerminalBackend {
 
   readonly panes = new Map<string, FakePane>();
   survivors = new Map<string, PaneRef>();
+  /**
+   * Pane ids the terminal cannot currently be asked about — isAlive throws
+   * rather than answering. A real terminal does this on a timeout, a busy
+   * automation queue, or an element that vanished mid-scan; it is a different
+   * fact from a pane that is gone, and callers must not conflate them.
+   */
+  readonly unobservable = new Set<string>();
   private counter = 0;
 
   async init(): Promise<void> {
@@ -79,6 +86,7 @@ export class FakeTerminalBackend implements TerminalBackend {
   }
 
   async isAlive(pane: PaneRef): Promise<boolean> {
+    if (this.unobservable.has(pane.id)) throw new Error(`fake terminal cannot observe ${pane.id}`);
     return this.panes.get(pane.id)?.alive ?? false;
   }
 

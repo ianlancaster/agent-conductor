@@ -90,6 +90,20 @@ export interface TerminalBackend {
    */
   captureStyled?(pane: PaneRef, lines: number): Promise<string>;
 
+  /**
+   * Whether the pane still exists.
+   *
+   * Return false ONLY for an observation that completed and found the pane
+   * absent. THROW when the terminal could not be observed at all — a timeout,
+   * a dead server, a scripting error. The two are not interchangeable: false
+   * makes lifecycle mark the session stopped and forget its pane mapping, and
+   * because reconcile only visits mapped panes, no later tick revisits the
+   * seat. Reporting an unobservable terminal as an absent pane therefore
+   * retires a live session permanently, on nothing more than a transient.
+   *
+   * Callers are built for the throw: lifecycle records an unknown observation,
+   * health warns and skips the tick, delivery holds the queue.
+   */
   isAlive(pane: PaneRef): Promise<boolean>;
 
   /**

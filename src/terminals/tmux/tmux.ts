@@ -38,6 +38,22 @@ export async function tmux(args: readonly string[]): Promise<string> {
   }
 }
 
+/**
+ * Whether a tmux failure means "there is no server", which is a real answer
+ * about the panes (there are none), as opposed to "tmux could not be asked",
+ * which is no answer at all. Liveness checks must not read the second as the
+ * first: a timed-out `list-panes` would otherwise report every live pane dead.
+ */
+export function isNoServerError(message: string): boolean {
+  const text = message.toLowerCase();
+  return (
+    text.includes('no server running') ||
+    text.includes('error connecting to') ||
+    text.includes('no current client') ||
+    text.includes('server exited unexpectedly')
+  );
+}
+
 /** Run a tmux command purely for its exit status (e.g. `has-session`). */
 export async function tmuxSucceeds(args: readonly string[]): Promise<boolean> {
   try {
