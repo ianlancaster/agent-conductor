@@ -88,7 +88,12 @@ export type ConductorEvent = ConductorEventEnvelope &
         readonly sessions: readonly string[];
         /** Mechanical fleet-stall classification time. */
         readonly detectedAt: string;
-        readonly disposition: 'routed' | 'reported-to-operator' | 'sentinel-down';
+        /**
+         * `suppressed-work-in-flight` means the quiet roster was real but a
+         * standing seat still had measurable work running underneath it, so no
+         * stall was reported. The watch re-arms rather than latching.
+         */
+        readonly disposition: 'routed' | 'reported-to-operator' | 'sentinel-down' | 'suppressed-work-in-flight';
       }
     | {
         /** Every standing session is stopped, after the fleet had been observed running. */

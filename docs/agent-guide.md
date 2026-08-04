@@ -649,6 +649,25 @@ Two structural rules keep the stall signal meaningful at both ends of fleet occu
 - **Quorum.** At least two standing members must be running. With one running member, "nobody is
   working" is a restatement of that member's own idle stall, which the sentinel already receives.
   The quorum is a property of what the signal means, not a tunable noise filter.
+- **Outstanding work.** Roster activity answers "is any seat typing"; a fleet stall needs "is any
+  work in flight." A seat can sit idle at its prompt while a build, test run, or tool subprocess it
+  launched keeps running underneath — invisible to the roster, because those processes hold no tty
+  and own no foreground process group. At the moment a fleet stall would otherwise fire, and only
+  then, Conductor samples cumulative CPU across each running seat's process tree twice a second
+  apart. A seat above the threshold suppresses the alert, is named in the log
+  (`suppressed — <seat> has work in flight`) and in a `suppressed-work-in-flight` event, and the
+  watch **re-arms rather than latching**, so the alert still fires once the work finishes.
+
+  Counting descendant processes instead would be wrong, and measurably so: an idle seat is not at
+  zero. What sits beneath it — `caffeinate`, stdio MCP servers — is indistinguishable from a build
+  by count, so a `descendants > 0` term would suppress fleet stall permanently on any seat with an
+  MCP server attached. Parked helpers hold pids; they do not hold the CPU.
+
+  The term can only ever **suppress** a fleet stall, never cause one. That asymmetry is what makes
+  an inconclusive probe safe: when the process tree cannot be read, the stall is still reported and
+  the report says the probe was inconclusive and names the seat, rather than silently claiming the
+  fleet was quiet. Treating an unreadable probe as "no work" fires into a working fleet; treating it
+  as "work" disables the instrument. Neither is as good as saying which one you actually know.
 
 The sentinel itself is watched mechanically. Fleet watch excludes it by design, so Conductor checks
 the sentinel seat's process liveness on the ordinary heartbeat and notifies the operator when the

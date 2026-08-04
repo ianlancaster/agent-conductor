@@ -38,6 +38,7 @@ import { ConductorOperations } from './operations.js';
 import { OperatorRequests } from './operator-requests.js';
 import { RunbookAdoptions } from './runbook-adoptions.js';
 import { StallSentinelRouter } from './sentinel.js';
+import { createOutstandingWorkProbe } from './outstanding-work.js';
 import { SessionStateManager } from './state.js';
 import {
   formatFleetStatusReport,
@@ -370,6 +371,10 @@ export class Supervisor {
         this.store.logHealthEvent(session, event, detail);
       },
       recentMessages: (session, limit) => this.store.getRecentMessageActivity(session, limit),
+      probeOutstandingWork: createOutstandingWorkProbe({
+        backend: this.backend,
+        getPane: (session) => this.lifecycle.getPane(session),
+      }),
       initialFleetWatchEnabled: fleetWatchEnabled,
       initialSessions: this.sessions.keys(),
       onFleetWatchChanged: (enabled) => {

@@ -4,6 +4,7 @@ import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
 import type { Activity } from '../src/core/types.js';
+import type { OutstandingWork } from '../src/core/outstanding-work.js';
 
 let backend: FakeTerminalBackend;
 let runtime: FakeRuntime;
@@ -17,6 +18,8 @@ let activities: Map<string, Activity>;
 let ephemeralSessions: Set<string>;
 let panes: Map<string, string>;
 let events: FakeEventPublisher;
+let outstandingWork: Map<string, OutstandingWork>;
+let loggedEvents: { session: string; event: string; detail?: string }[];
 let recentMessages: {
   id: number;
   sender: string;
@@ -26,6 +29,14 @@ let recentMessages: {
   delivered_at: string | null;
   cancelled_at: string | null;
 }[];
+
+/**
+ * Drain the microtask queue. The fleet-stall confirmation path awaits the
+ * outstanding-work probe before reporting, so a single tick no longer covers it.
+ */
+async function flushAsyncWork(): Promise<void> {
+  for (let tick = 0; tick < 20; tick += 1) await Promise.resolve();
+}
 
 function makeRouter(
   sentinelCodename: string | undefined,
@@ -58,8 +69,12 @@ function makeRouter(
     notifyOperator: async (text) => {
       operatorMessages.push(text);
     },
-    logEvent: () => undefined,
+    logEvent: (session, event, detail) => {
+      loggedEvents.push({ session, event, detail });
+    },
     recentMessages: () => recentMessages,
+    probeOutstandingWork: async (session) =>
+      outstandingWork.get(session) ?? { state: 'quiet', session, detail: '1cs across 3 process(es) in 1000ms' },
     initialSessions: ['alpha', 'beta', 'watch'],
     events,
   });
@@ -81,6 +96,8 @@ beforeEach(async () => {
   ephemeralSessions = new Set();
   panes = new Map();
   events = new FakeEventPublisher();
+  outstandingWork = new Map();
+  loggedEvents = [];
   recentMessages = [];
   const alphaPane = await backend.createPane('alpha', 'pane');
   panes.set('alpha', alphaPane.id);
@@ -363,13 +380,127 @@ describe('fleet stall watch', () => {
 
     activities.set('beta', 'idle');
     await router.handleStall('beta', 'idle', {});
-    await Promise.resolve();
+    await flushAsyncWork();
     const fleet = delivered.filter((item) => item.text.startsWith('[Fleet Stall]'));
     expect(fleet).toHaveLength(1);
     expect(fleet[0]?.session).toBe('watch');
     expect(fleet[0]?.text).toMatch(
       /^\[Fleet Stall\] sessions=alpha,beta all-nonworking-for=0s detected-at=\d{4}-\d{2}-\d{2}T.*Z Investigate immediately\.$/u,
     );
+  });
+
+  it('suppresses the alert when a quiet seat still has work in flight, and names it', async () => {
+    // The roster question is "is any seat typing"; the fleet question is "is any
+    // work in flight". A seat can read idle while a build it launched runs on.
+    expect(router.toggleFleetWatch()).toBe(true);
+    outstandingWork.set('beta', {
+      state: 'in-flight',
+      session: 'beta',
+      detail: '184cs across 9 process(es) in 1000ms',
+    });
+
+    activities.set('alpha', 'idle');
+    await router.handleStall('alpha', 'idle', {});
+    activities.set('beta', 'idle');
+    await router.handleStall('beta', 'idle', {});
+    await flushAsyncWork();
+
+    expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
+    const suppression = loggedEvents.find((item) => item.event === 'fleet_stall_suppressed');
+    expect(suppression?.detail).toContain('suppressed — beta has work in flight');
+    expect(suppression?.detail).toContain('184cs');
+    expect(events.events).toContainEqual(
+      expect.objectContaining({ type: 'fleet.stalled', disposition: 'suppressed-work-in-flight' }),
+    );
+  });
+
+  it('rearms after suppression instead of latching, so the alert still fires once the work finishes', async () => {
+    // Latching here would silence the instrument for the rest of the process
+    // the first time a seat happened to be busy.
+    vi.useFakeTimers();
+    router = makeRouter('watch', undefined, 30);
+    router.activateFleetWatch();
+    router.toggleFleetWatch();
+    outstandingWork.set('beta', {
+      state: 'in-flight',
+      session: 'beta',
+      detail: '210cs across 4 process(es) in 1000ms',
+    });
+
+    activities.set('alpha', 'idle');
+    await router.handleStall('alpha', 'idle', {});
+    activities.set('beta', 'idle');
+    await router.handleStall('beta', 'idle', {});
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
+
+    outstandingWork.delete('beta');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(delivered.filter((item) => item.text.startsWith('[Fleet Stall]'))).toHaveLength(1);
+  });
+
+  it('still fires when the probe is inconclusive, and says so rather than claiming the fleet was quiet', async () => {
+    // Silently treating an inconclusive probe as "no work" fires into a working
+    // fleet; silently treating it as "work" disables the instrument. Neither is
+    // as good as reporting what was actually established.
+    expect(router.toggleFleetWatch()).toBe(true);
+    outstandingWork.set('beta', { state: 'unknown', session: 'beta', detail: 'iTerm session 9 has no tty' });
+
+    activities.set('alpha', 'idle');
+    await router.handleStall('alpha', 'idle', {});
+    activities.set('beta', 'idle');
+    await router.handleStall('beta', 'idle', {});
+    await flushAsyncWork();
+
+    const fleet = delivered.filter((item) => item.text.startsWith('[Fleet Stall]'));
+    expect(fleet).toHaveLength(1);
+    expect(fleet[0]?.text).toContain('outstanding-work probe inconclusive for beta (iTerm session 9 has no tty)');
+    expect(fleet[0]?.text).toContain('could not be ruled out');
+  });
+
+  it('treats a probe that throws as inconclusive rather than letting it break the watch', async () => {
+    router = new StallSentinelRouter({
+      config: {
+        captureLines: 40,
+        suppressWindowMs: 300_000,
+        suppressSimilarity: 0.8,
+        sentinelCodename: 'watch',
+        fleetStallThresholdSeconds: 0,
+      },
+      backend,
+      runtimeFor: () => runtime,
+      getPane: () => undefined,
+      isAuto: (session) => autoSessions.has(session),
+      isPaused: (session) => pausedSessions.has(session),
+      activityFor: (session) => activities.get(session),
+      isEphemeral: (session) => ephemeralSessions.has(session),
+      isActive: (session) => activeSessions.has(session),
+      deliver: async (session, text) => {
+        delivered.push({ session, text });
+        return 'delivered';
+      },
+      notifyOperator: async (text) => {
+        operatorMessages.push(text);
+      },
+      logEvent: () => undefined,
+      probeOutstandingWork: async () => {
+        throw new Error('ps exited with code 1');
+      },
+      initialSessions: ['alpha', 'beta', 'watch'],
+      events,
+    });
+    router.activateFleetWatch();
+    router.toggleFleetWatch();
+
+    activities.set('alpha', 'idle');
+    await router.handleStall('alpha', 'idle', {});
+    activities.set('beta', 'idle');
+    await router.handleStall('beta', 'idle', {});
+    await flushAsyncWork();
+
+    const fleet = delivered.filter((item) => item.text.startsWith('[Fleet Stall]'));
+    expect(fleet).toHaveLength(1);
+    expect(fleet[0]?.text).toContain('ps exited with code 1');
   });
 
   it('cancels confirmation when one member recovers, then rearms for a later fleet stall', async () => {
@@ -453,7 +584,7 @@ describe('fleet stall watch', () => {
     expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(false);
 
     router.setRegisteredSessions(['alpha', 'beta', 'watch']);
-    await Promise.resolve();
+    await flushAsyncWork();
 
     expect(delivered.some((item) => item.text.startsWith('[Fleet Stall]'))).toBe(true);
     expect(router.isFleetWatchEnabled()).toBe(true);
@@ -472,7 +603,7 @@ describe('fleet stall watch', () => {
 
     activities.set('gamma', 'idle');
     await router.handleStall('gamma', 'idle', {});
-    await Promise.resolve();
+    await flushAsyncWork();
 
     const fleet = delivered.filter((item) => item.text.startsWith('[Fleet Stall]'));
     expect(fleet).toHaveLength(1);
@@ -487,7 +618,7 @@ describe('fleet stall watch', () => {
     router.toggleFleetWatch();
     activities.set('alpha', 'idle');
     router.reset('alpha');
-    await Promise.resolve();
+    await flushAsyncWork();
 
     expect(router.isFleetWatchEnabled()).toBe(true);
     expect(delivered.filter((item) => item.text.startsWith('[Fleet Stall]'))).toHaveLength(0);
@@ -510,7 +641,7 @@ describe('fleet stall watch', () => {
     await router.handleStall('alpha', 'idle', {});
     activities.set('beta', 'idle');
     await router.handleStall('beta', 'idle', {});
-    await Promise.resolve();
+    await flushAsyncWork();
 
     const fleet = delivered.filter((item) => item.text.startsWith('[Fleet Stall]'));
     expect(fleet).toHaveLength(1);
@@ -527,13 +658,13 @@ describe('fleet stall watch', () => {
     activities.set('alpha', 'idle');
     activities.set('beta', 'idle');
     router.reset('alpha');
-    await Promise.resolve();
+    await flushAsyncWork();
     expect(delivered.filter((item) => item.text.startsWith('[Fleet Down]'))).toHaveLength(0);
 
     activities.set('alpha', 'stopped');
     activities.set('beta', 'stopped');
     router.reset('alpha');
-    await Promise.resolve();
+    await flushAsyncWork();
 
     const down = delivered.filter((item) => item.text.startsWith('[Fleet Down]'));
     expect(down).toHaveLength(1);
@@ -544,7 +675,7 @@ describe('fleet stall watch', () => {
 
     // Latched: repeated lifecycle boundaries while still down do not re-alert.
     router.reset('beta');
-    await Promise.resolve();
+    await flushAsyncWork();
     expect(delivered.filter((item) => item.text.startsWith('[Fleet Down]'))).toHaveLength(1);
   });
 
@@ -555,7 +686,7 @@ describe('fleet stall watch', () => {
     router = makeRouter('watch');
     router.activateFleetWatch();
     router.toggleFleetWatch();
-    await Promise.resolve();
+    await flushAsyncWork();
 
     expect(delivered.filter((item) => item.text.startsWith('[Fleet Down]'))).toHaveLength(0);
     const status = router.fleetWatchStatus();
@@ -569,7 +700,7 @@ describe('fleet stall watch', () => {
     activities.set('alpha', 'stopped');
     activities.set('beta', 'stopped');
     router.reset('alpha');
-    await Promise.resolve();
+    await flushAsyncWork();
     expect(delivered.filter((item) => item.text.startsWith('[Fleet Down]'))).toHaveLength(1);
 
     activities.set('alpha', 'working');
@@ -578,7 +709,7 @@ describe('fleet stall watch', () => {
 
     activities.set('alpha', 'stopped');
     router.reset('alpha');
-    await Promise.resolve();
+    await flushAsyncWork();
     expect(delivered.filter((item) => item.text.startsWith('[Fleet Down]'))).toHaveLength(2);
   });
 
@@ -656,10 +787,10 @@ describe('fleet stall watch', () => {
       initialSessions: ['alpha', 'beta', 'watch'],
     });
 
-    await Promise.resolve();
+    await flushAsyncWork();
     expect(delivered).toEqual([]);
     router.activateFleetWatch();
-    await Promise.resolve();
+    await flushAsyncWork();
     expect(delivered.filter((item) => item.text.startsWith('[Fleet Stall]'))).toHaveLength(1);
   });
 
@@ -669,7 +800,7 @@ describe('fleet stall watch', () => {
     activities.set('alpha', 'idle');
     activities.set('beta', 'idle');
     router.toggleFleetWatch();
-    await Promise.resolve();
+    await flushAsyncWork();
 
     expect(delivered.filter((item) => item.text.startsWith('[Fleet Stall]'))).toHaveLength(1);
   });
@@ -681,7 +812,7 @@ describe('fleet stall watch', () => {
     await router.handleStall('beta', 'idle', {});
     activities.set('watch', 'idle');
     await router.handleStall('watch', 'idle', {});
-    await Promise.resolve();
+    await flushAsyncWork();
 
     const fleet = delivered.filter((item) => item.text.startsWith('[Fleet Stall]'));
     expect(fleet).toHaveLength(1);

@@ -7,7 +7,7 @@ import { sleep } from '../../core/utils.js';
 import { log } from '../../logger.js';
 import type { Store } from '../../store/index.js';
 import type { DeliveryCapture, TerminalBackend, TerminalCapabilities } from '../types.js';
-import { ttyHasForegroundJob } from '../process.js';
+import { ttyHasForegroundJob, ttyInteractiveShellPid } from '../process.js';
 import {
   buildCloseSessionScript,
   buildCreateSessionWindowScript,
@@ -260,6 +260,12 @@ export class ITermBackend implements TerminalBackend {
     const tty = (await runOsa(buildSessionTtyScript(pane.id))).trim();
     if (tty.length === 0) throw new Error(`iTerm session ${pane.id} has no tty`);
     return ttyHasForegroundJob(tty);
+  }
+
+  async paneShellPid(pane: PaneRef): Promise<number> {
+    const tty = (await runOsa(buildSessionTtyScript(pane.id))).trim();
+    if (tty.length === 0) throw new Error(`iTerm session ${pane.id} has no tty`);
+    return ttyInteractiveShellPid(tty);
   }
 
   async kill(pane: PaneRef): Promise<void> {

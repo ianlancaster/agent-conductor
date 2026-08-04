@@ -116,29 +116,29 @@ paths, or arbitrary runtime reason strings.
 
 ## Event catalog
 
-| Event                         | Payload beyond the envelope                                                             |
-| ----------------------------- | --------------------------------------------------------------------------------------- |
-| `session.registered`          | `session`; `cause: startup \| config-added`                                             |
-| `session.deregistered`        | `session`; `cause: config-removed \| teardown`                                          |
-| `session.started`             | `session`; `runtime`; cause; optional configured `launchModel` and `launchEffort`       |
-| `session.ready`               | `session`; emitted once when a run is first proven ready                                |
-| `session.stopped`             | `session`; `cause: requested \| runtime-exit \| pane-missing \| launch-failed`          |
-| `session.activity.changed`    | `session`; `previous`; `activity`; transition-only                                      |
-| `stall`                       | `session`; `kind`; `detectedAt`; mechanical `disposition`                               |
-| `fleet.stalled`               | `sessions`; `detectedAt`; routed/operator/sentinel-down `disposition`                   |
-| `fleet.down`                  | `sessions`; `detectedAt`; routed/operator/sentinel-down `disposition`                   |
-| `operator.attachment.changed` | `attached`; attached `surfaces`; `lastInteractionAt` — never exposed to sessions        |
-| `schedule`                    | `session`; `label`; `outcome: fired/queued \| fired-fresh \| deferred-paused \| failed` |
-| `operator.request.created`    | `session`; `requestId`; `optionCount`                                                   |
-| `operator.request.resolved`   | `session`; `requestId`; one-based `selectedOption`                                      |
-| `runbook.adopted`             | adoption/runbook IDs, version, source, topic, operator approval, session roles          |
-| `runbook.superseded`          | prior/replacement adoption IDs and replacement runbook metadata                         |
-| `runbook.adoption.ended`      | `adoptionId`; `approvedBy: operator`                                                    |
-| `message.created`             | direct receipt ID, sender, recipient, UTF-8 `byteCount`                                 |
-| `message.delivered`           | direct receipt ID, sender, recipient                                                    |
-| `message.cancelled`           | direct receipt metadata; `reason: requested \| conductor-restarted`                     |
-| `workspace.provisioned`       | `session`; `kind: empty \| template \| worktree`                                        |
-| `workspace.removed`           | `session`; `kind: directory \| worktree`                                                |
+| Event                         | Payload beyond the envelope                                                                     |
+| ----------------------------- | ----------------------------------------------------------------------------------------------- |
+| `session.registered`          | `session`; `cause: startup \| config-added`                                                     |
+| `session.deregistered`        | `session`; `cause: config-removed \| teardown`                                                  |
+| `session.started`             | `session`; `runtime`; cause; optional configured `launchModel` and `launchEffort`               |
+| `session.ready`               | `session`; emitted once when a run is first proven ready                                        |
+| `session.stopped`             | `session`; `cause: requested \| runtime-exit \| pane-missing \| launch-failed`                  |
+| `session.activity.changed`    | `session`; `previous`; `activity`; transition-only                                              |
+| `stall`                       | `session`; `kind`; `detectedAt`; mechanical `disposition`                                       |
+| `fleet.stalled`               | `sessions`; `detectedAt`; routed/operator/sentinel-down/suppressed-work-in-flight `disposition` |
+| `fleet.down`                  | `sessions`; `detectedAt`; routed/operator/sentinel-down `disposition`                           |
+| `operator.attachment.changed` | `attached`; attached `surfaces`; `lastInteractionAt` — never exposed to sessions                |
+| `schedule`                    | `session`; `label`; `outcome: fired/queued \| fired-fresh \| deferred-paused \| failed`         |
+| `operator.request.created`    | `session`; `requestId`; `optionCount`                                                           |
+| `operator.request.resolved`   | `session`; `requestId`; one-based `selectedOption`                                              |
+| `runbook.adopted`             | adoption/runbook IDs, version, source, topic, operator approval, session roles                  |
+| `runbook.superseded`          | prior/replacement adoption IDs and replacement runbook metadata                                 |
+| `runbook.adoption.ended`      | `adoptionId`; `approvedBy: operator`                                                            |
+| `message.created`             | direct receipt ID, sender, recipient, UTF-8 `byteCount`                                         |
+| `message.delivered`           | direct receipt ID, sender, recipient                                                            |
+| `message.cancelled`           | direct receipt metadata; `reason: requested \| conductor-restarted`                             |
+| `workspace.provisioned`       | `session`; `kind: empty \| template \| worktree`                                                |
+| `workspace.removed`           | `session`; `kind: directory \| worktree`                                                        |
 
 The `stall` dispositions are `routed`, `suppressed`, `reported-to-operator`, `sentinel-down`,
 `ignored-auto-off`, and `ignored-paused`. Pause takes precedence when a session is both paused and

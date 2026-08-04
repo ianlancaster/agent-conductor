@@ -428,13 +428,17 @@ export class TmuxBackend implements TerminalBackend {
   }
 
   async isSessionActive(pane: PaneRef): Promise<boolean> {
+    return shellHasForegroundJob(await this.paneShellPid(pane));
+  }
+
+  async paneShellPid(pane: PaneRef): Promise<number> {
     this.assertRef(pane);
     const rawPid = (await tmux(['display-message', '-p', '-t', pane.id, '#{pane_pid}'])).trim();
     const shellPid = Number.parseInt(rawPid, 10);
     if (!Number.isSafeInteger(shellPid) || shellPid <= 0) {
       throw new Error(`tmux returned an invalid shell PID for pane ${pane.id}: ${JSON.stringify(rawPid)}`);
     }
-    return shellHasForegroundJob(shellPid);
+    return shellPid;
   }
 
   async kill(pane: PaneRef): Promise<void> {

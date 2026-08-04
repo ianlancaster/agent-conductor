@@ -1126,7 +1126,12 @@ describe('Supervisor construction', () => {
 
     expect(channel.started).toBe(true);
     expect(supervisor.statusReport('alpha')).toContain('"activity": "idle"');
-    expect(channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled'))).toBe(true);
+    // The confirmation path consults the outstanding-work probe before
+    // reporting, so the alert lands after startup rather than within it. Poll
+    // rather than sleeping a fixed interval, which is a flake under load.
+    await vi.waitFor(() => {
+      expect(channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled'))).toBe(true);
+    });
   });
 
   it('does not classify active surviving runtimes as idle merely because their composers are visible', async () => {

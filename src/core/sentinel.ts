@@ -4,6 +4,7 @@ import type { TerminalBackend } from '../terminals/types.js';
 import type { StallInfo } from './health.js';
 import { contentSimilarity, fleetDownEnvelope, fleetStallEnvelope, stallEnvelope, truncate } from './utils.js';
 import type { Activity, PaneRef, StallKind } from './types.js';
+import type { OutstandingWork } from './outstanding-work.js';
 import type { ConductorEventPublisher } from '../events/types.js';
 import type { RecentMessageActivity } from '../store/index.js';
 
@@ -64,6 +65,14 @@ export interface SentinelDeps {
   /** True for short-lived workers, which are not part of the standing fleet. */
   isEphemeral(session: string): boolean;
   isActive(session: string): boolean | Promise<boolean>;
+  /**
+   * Whether a seat has real work in flight, asked ONLY on the fleet-stall
+   * confirmation path. Roster activity answers "is this seat typing"; a fleet
+   * stall needs "is any work in flight", and a seat can sit idle at its prompt
+   * while a build it launched runs on underneath. Omitted when no probe is
+   * wired, in which case the term simply does not apply.
+   */
+  probeOutstandingWork?(session: string): Promise<OutstandingWork>;
   deliver(session: string, text: string): Promise<unknown>;
   notifyOperator(text: string): Promise<unknown>;
   logEvent(session: string, event: string, detail?: string): void;
@@ -497,6 +506,51 @@ export class StallSentinelRouter {
     this.deps.events?.emit({ type: 'fleet.down', sessions, detectedAt, disposition: 'routed' });
   }
 
+  /**
+   * The outstanding-work term, evaluated once at the moment a fleet stall would
+   * otherwise fire. Returns the note to carry into the report, or `suppressed`
+   * when a seat is demonstrably still working.
+   *
+   * The term can only ever suppress a fleet stall, never cause one. That
+   * asymmetry is what makes an inconclusive probe safe to proceed through: the
+   * worst case is the behavior this instrument already had, reported honestly.
+   */
+  private async evaluateOutstandingWork(
+    running: readonly string[],
+  ): Promise<{ suppressed: true; busy: readonly OutstandingWork[] } | { suppressed: false; note?: string }> {
+    if (this.deps.probeOutstandingWork === undefined) return { suppressed: false };
+
+    const results = await Promise.all(
+      running.map(async (session): Promise<OutstandingWork> => {
+        try {
+          return (
+            (await this.deps.probeOutstandingWork?.(session)) ?? {
+              state: 'unknown',
+              session,
+              detail: 'no outstanding-work probe is configured',
+            }
+          );
+        } catch (error) {
+          return { state: 'unknown', session, detail: error instanceof Error ? error.message : String(error) };
+        }
+      }),
+    );
+
+    const busy = results.filter((result) => result.state === 'in-flight');
+    if (busy.length > 0) return { suppressed: true, busy };
+
+    const unknown = results.filter((result) => result.state === 'unknown');
+    if (unknown.length === 0) return { suppressed: false };
+    // Said, not assumed. Silence here would read as "no seat had work", which
+    // is a claim the probe did not establish.
+    return {
+      suppressed: false,
+      note: `outstanding-work probe inconclusive for ${unknown
+        .map((result) => `${result.session} (${result.detail})`)
+        .join(', ')} — work in flight there could not be ruled out.`,
+    };
+  }
+
   private async reportFleetStall(): Promise<void> {
     const sessions = this.fleetMembers();
     if (
@@ -507,26 +561,70 @@ export class StallSentinelRouter {
     ) {
       return;
     }
+
+    // Only the configured term costs real time; with no probe wired this path
+    // stays exactly as immediate as it was.
+    let note: string | undefined;
+    if (this.deps.probeOutstandingWork !== undefined) {
+      const outstanding = await this.evaluateOutstandingWork(this.runningFleetMembers(sessions));
+      if (outstanding.suppressed) {
+        const named = outstanding.busy.map((result) => `${result.session} (${result.detail})`).join(', ');
+        const first = outstanding.busy[0]?.session ?? 'a standing session';
+        this.deps.logEvent('fleet', 'fleet_stall_suppressed', `suppressed — ${first} has work in flight: ${named}`);
+        this.deps.events?.emit({
+          type: 'fleet.stalled',
+          sessions,
+          detectedAt: new Date().toISOString(),
+          disposition: 'suppressed-work-in-flight',
+        });
+        log().info('sentinel', `fleet stall suppressed — ${first} has work in flight`);
+        // Re-arm rather than latch. Leaving the pending confirmation in place
+        // would silence the instrument for the rest of the process the first
+        // time a seat happened to be busy.
+        this.fleetAllNonWorkingAt = undefined;
+        this.evaluateFleetWatch();
+        return;
+      }
+      note = outstanding.note;
+
+      // The probe window is real time, during which a seat may have started
+      // working or stopped. Re-check before latching on a stale reading.
+      const current = this.fleetMembers();
+      if (
+        !this.fleetWatchActive ||
+        this.fleetNotified ||
+        this.runningFleetMembers(current).length < FLEET_WATCH_QUORUM ||
+        !this.allFleetMembersNonWorking(current)
+      ) {
+        this.fleetAllNonWorkingAt = undefined;
+        return;
+      }
+    }
+
     this.fleetNotified = true;
     const detectedAt = new Date().toISOString();
     const thresholdSeconds = this.deps.config.fleetStallThresholdSeconds;
-    const detail = `all standing sessions non-working for ${String(thresholdSeconds)}s: ${sessions.join(', ')}`;
+    const detail = `all standing sessions non-working for ${String(thresholdSeconds)}s: ${sessions.join(', ')}${
+      note === undefined ? '' : ` (${note})`
+    }`;
     this.deps.logEvent('fleet', 'fleet_stall', detail);
+
+    const caveat = note === undefined ? '' : ` ${note}`;
 
     const sentinel = this.sentinel;
     if (sentinel === undefined) {
-      await this.deps.notifyOperator(`🚨 Fleet stalled at ${detectedAt}: ${sessions.join(', ')}.`);
+      await this.deps.notifyOperator(`🚨 Fleet stalled at ${detectedAt}: ${sessions.join(', ')}.${caveat}`);
       this.deps.events?.emit({ type: 'fleet.stalled', sessions, detectedAt, disposition: 'reported-to-operator' });
       return;
     }
     if (!(await this.deps.isActive(sentinel))) {
       await this.deps.notifyOperator(
-        `🚨 Fleet stalled at ${detectedAt} (${sessions.join(', ')}) but sentinel ${sentinel} is not running.`,
+        `🚨 Fleet stalled at ${detectedAt} (${sessions.join(', ')}) but sentinel ${sentinel} is not running.${caveat}`,
       );
       this.deps.events?.emit({ type: 'fleet.stalled', sessions, detectedAt, disposition: 'sentinel-down' });
       return;
     }
-    await this.deps.deliver(sentinel, fleetStallEnvelope(sessions, thresholdSeconds, detectedAt));
+    await this.deps.deliver(sentinel, fleetStallEnvelope(sessions, thresholdSeconds, detectedAt, note));
     this.deps.events?.emit({ type: 'fleet.stalled', sessions, detectedAt, disposition: 'routed' });
   }
 

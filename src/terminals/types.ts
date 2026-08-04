@@ -113,6 +113,17 @@ export interface TerminalBackend {
    */
   isSessionActive(pane: PaneRef): Promise<boolean>;
 
+  /**
+   * The pid of the pane's interactive shell — the root of everything the
+   * session has spawned. Callers walk downward from it to inspect a seat's
+   * real process tree, which `isSessionActive` cannot see: a detached build or
+   * test runner holds no tty and owns no foreground process group.
+   *
+   * Optional because a backend may be unable to expose one. Absence must be
+   * treated as an unknown, never as an empty tree.
+   */
+  paneShellPid?(pane: PaneRef): Promise<number>;
+
   kill(pane: PaneRef): Promise<void>;
 
   /** Rename the pane's visible label; inlineName omits metadata such as tags. */
