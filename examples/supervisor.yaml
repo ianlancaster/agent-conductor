@@ -39,6 +39,11 @@ terminal:
   # windowName: My Fleet          # default: "Agent Conductor (<fleet dir name>)"
   iterm:
     badge: true # watermark the session codename on the pane; set false to disable
+    # iTerm selects whatever it creates, so every pane the fleet opens — on spawn,
+    # start, restart, or recreating an adopted pane — pulls the cursor out of
+    # whatever you were typing in. Set false to put your selection back
+    # immediately after creation. /summon still deliberately raises a pane.
+    focusNewPanes: true
     bracketedPasteThreshold: 512
     launchTimeoutSec: 8
     pollIntervalSec: 0.25

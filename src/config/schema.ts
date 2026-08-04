@@ -205,6 +205,19 @@ export const supervisorConfigSchema = z
           .object({
             /** Watermark the session codename as an iTerm badge (the big red text). */
             badge: z.boolean().default(true),
+            /**
+             * Let a newly created session pane take the keyboard focus.
+             *
+             * iTerm selects whatever it creates, so every pane a fleet opens —
+             * on spawn, start, restart, or recreating an adopted pane — pulls the
+             * cursor out of whatever the operator was typing in. Set false to
+             * restore the previously selected window, tab, and pane immediately
+             * after creation. Default true, which is the historical behavior.
+             *
+             * This governs the operator's focus only. It does not affect where a
+             * pane is created, and `/summon` still deliberately raises a pane.
+             */
+            focusNewPanes: z.boolean().default(true),
             bracketedPasteThreshold: z.number().int().positive().default(512),
             launchTimeoutSec: z.number().positive().default(8),
             pollIntervalSec: z.number().positive().default(0.25),
