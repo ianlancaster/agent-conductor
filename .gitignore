@@ -1,4 +1,7 @@
-node_modules/
+# No trailing slash: a git worktree is normally set up by symlinking
+# node_modules at the shared install, and `node_modules/` matches directories
+# only — leaving that symlink untracked, and stageable by `git add -A`.
+node_modules
 dist/
 coverage/
 *.log
