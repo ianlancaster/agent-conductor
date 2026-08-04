@@ -458,6 +458,25 @@ export function interpretLivenessResult(sessionId: string, result: string): bool
   throw new Error(`iTerm returned an unrecognized liveness result for session ${sessionId}: ${trimmed || '(empty)'}`);
 }
 
+/**
+ * Confirm a completed missing scan before retiring an iTerm pane.
+ *
+ * iTerm can transiently throw -1728 for a live snapshotted session while its
+ * window or tab is changing. The enumeration correctly skips that unstable
+ * element, but that makes one otherwise-complete scan look exactly like true
+ * absence. A second independent scan keeps that race from permanently
+ * orphaning a healthy agent; errors still propagate as unobservable.
+ */
+export async function confirmLiveness(
+  sessionId: string,
+  probe: () => Promise<string>,
+  pause: () => Promise<void>,
+): Promise<boolean> {
+  if (interpretLivenessResult(sessionId, await probe())) return true;
+  await pause();
+  return interpretLivenessResult(sessionId, await probe());
+}
+
 /** Return the tty path for an iTerm session UUID, or empty output if it is gone. */
 export function buildSessionTtyScript(sessionId: string): string {
   return buildInSessionScript(sessionId, '', '(tty as string)');

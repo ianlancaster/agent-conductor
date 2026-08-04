@@ -16,7 +16,6 @@ import {
   buildFindTtyWindowScript,
   buildNameTtySessionScript,
   buildInSessionScript,
-  interpretLivenessResult,
   buildListSessionIdsScript,
   buildRediscoverScript,
   buildRevealSessionScript,
@@ -26,6 +25,7 @@ import {
   buildUnchangedContentsGuard,
   buildWindowExistsScript,
   bracketedPastePayload,
+  confirmLiveness,
   containsPromptMarker,
   encodeSessionVar,
   escapeAppleScript,
@@ -66,6 +66,7 @@ export interface ITermBackendOptions {
 const WINDOW_ID_KEY = 'iterm.windowId';
 const PANES_KEY = 'iterm.panes';
 const PANE_CHANGED_RESULT = '__CONDUCTOR_ITERM_PANE_CHANGED__';
+const LIVENESS_CONFIRM_DELAY_MS = 100;
 
 /**
  * iTerm2 TerminalBackend, driven via async AppleScript (execFile, never execSync —
@@ -483,7 +484,8 @@ export class ITermBackend implements TerminalBackend {
   private async sessionAlive(sessionId: string): Promise<boolean> {
     // No catch: a runOsa rejection is an unobservable terminal, and
     // interpretLivenessResult refuses anything that is not a clear answer.
-    return interpretLivenessResult(sessionId, await runOsa(buildInSessionScript(sessionId, '', '"ALIVE"')));
+    const probe = async (): Promise<string> => runOsa(buildInSessionScript(sessionId, '', '"ALIVE"'));
+    return confirmLiveness(sessionId, probe, async () => sleep(LIVENESS_CONFIRM_DELAY_MS));
   }
 
   private async sessionContents(sessionId: string): Promise<string> {

@@ -19,6 +19,7 @@ import {
   buildSplitPaneScript,
   buildTitleShellPrefix,
   buildWindowExistsScript,
+  confirmLiveness,
   containsPromptMarker,
   decodeSessionVar,
   encodeSessionVar,
@@ -281,6 +282,64 @@ describe('interpretLivenessResult', () => {
     for (const inconclusive of ['', '   ', 'ALIV', 'execution error: iTerm got an error (-1728)']) {
       expect(() => interpretLivenessResult('S', inconclusive)).toThrow(/unrecognized liveness result/);
     }
+  });
+});
+
+describe('confirmLiveness', () => {
+  it('keeps a live pane when a transiently skipped iTerm element appears missing once', async () => {
+    const results = [`${SESSION_NOT_FOUND_RESULT}\n`, 'ALIVE\n'];
+    let pauses = 0;
+
+    await expect(
+      confirmLiveness(
+        'S',
+        async () => results.shift() ?? '',
+        async () => {
+          pauses += 1;
+        },
+      ),
+    ).resolves.toBe(true);
+    expect(pauses).toBe(1);
+    expect(results).toEqual([]);
+  });
+
+  it('reports a truly closed pane only after two independent missing scans', async () => {
+    let probes = 0;
+    await expect(
+      confirmLiveness(
+        'S',
+        async () => {
+          probes += 1;
+          return SESSION_NOT_FOUND_RESULT;
+        },
+        async () => undefined,
+      ),
+    ).resolves.toBe(false);
+    expect(probes).toBe(2);
+  });
+
+  it('does not delay an alive result or convert an observation error into absence', async () => {
+    let pauses = 0;
+    await expect(
+      confirmLiveness(
+        'S',
+        async () => 'ALIVE',
+        async () => {
+          pauses += 1;
+        },
+      ),
+    ).resolves.toBe(true);
+    expect(pauses).toBe(0);
+
+    await expect(
+      confirmLiveness(
+        'S',
+        async () => {
+          throw new Error('iTerm unavailable');
+        },
+        async () => undefined,
+      ),
+    ).rejects.toThrow('iTerm unavailable');
   });
 });
 
