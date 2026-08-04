@@ -7,3 +7,7 @@ coverage/
 /plans
 /reviews
 AGENTS.override.md
+# Running a fleet from a checkout of this repo scaffolds its state here:
+# credentials, session config, and the SQLite store. It belongs to that
+# deployment, not to the product.
+/.conductor/
