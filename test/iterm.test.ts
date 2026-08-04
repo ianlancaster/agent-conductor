@@ -306,6 +306,64 @@ describe('script builders', () => {
     expect(script).toContain('split vertically with default profile');
   });
 
+  it('leaves creation selecting the new pane by default', () => {
+    // The historical behavior, kept as the default so upgrading changes nothing.
+    for (const script of [
+      buildCreateSessionWindowScript('alpha', encodeSessionVar('f1', 'alpha')),
+      buildCreateTabScript(7, 'beta', encodeSessionVar('f1', 'beta')),
+      buildSplitPaneScript(7, 'gamma', encodeSessionVar('f1', 'gamma')),
+    ]) {
+      expect(script).not.toContain('priorWindow');
+      expect(script).not.toContain('select priorSession');
+    }
+    expect(buildCreateWindowScript('W')).toContain('activate');
+  });
+
+  it('restores the operator selection after every creation verb when focus is preserved', () => {
+    // iTerm has no create-without-selecting verb: window, tab and split all
+    // select what they make. Restoring afterwards is the only way not to pull
+    // the cursor out of whatever the operator was typing in.
+    for (const script of [
+      buildCreateSessionWindowScript('alpha', encodeSessionVar('f1', 'alpha'), true),
+      buildCreateTabScript(7, 'beta', encodeSessionVar('f1', 'beta'), true),
+      buildSplitPaneScript(7, 'gamma', encodeSessionVar('f1', 'gamma'), true),
+    ]) {
+      // All three, outermost first. Selecting the session alone does not bring
+      // its window back — measured against live iTerm, a session-only restore
+      // left the newly created pane's window current.
+      expect(script).toContain('set priorWindow to current window');
+      expect(script).toContain('set priorTab to current tab of priorWindow');
+      expect(script).toContain('set priorSession to current session of priorTab');
+      const created = script.indexOf('with default profile');
+      for (const target of ['priorWindow', 'priorTab', 'priorSession']) {
+        expect(script).toContain(`select ${target}`);
+        // Remembering must precede creating, or it captures the new pane instead.
+        expect(script.indexOf(`set ${target} to`)).toBeLessThan(created);
+        expect(script.lastIndexOf(`select ${target}`)).toBeGreaterThan(created);
+      }
+      expect(script.indexOf('select priorWindow')).toBeLessThan(script.indexOf('select priorTab'));
+      expect(script.indexOf('select priorTab')).toBeLessThan(script.indexOf('select priorSession'));
+    }
+  });
+
+  it('does not fail a created pane because the remembered one has gone', () => {
+    // Opening the first pane of a fleet has no previous selection to restore,
+    // and the operator may close a pane mid-creation. Neither may throw away a
+    // session that was created successfully.
+    const script = buildCreateTabScript(7, 'beta', encodeSessionVar('f1', 'beta'), true);
+    expect(script).toContain('set priorWindow to missing value');
+    expect(script).toContain('if priorWindow is not missing value then');
+    expect(script).toContain('if priorSession is not missing value then');
+    expect(script.match(/try/gu)?.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('does not activate iTerm when creating the workspace window with focus preserved', () => {
+    // `activate` raises the whole application, which no amount of in-iTerm
+    // restoration can undo.
+    expect(buildCreateWindowScript('W', true)).not.toContain('activate');
+    expect(buildCreateWindowScript('W', true)).toContain('create window with default profile');
+  });
+
   it('buildInSessionScript embeds operations and the return expression', () => {
     const script = buildInSessionScript('SESSION-X', 'set name to "n"', '(contents as string)');
     expect(script).toContain('if (id of s) is "SESSION-X" then');
