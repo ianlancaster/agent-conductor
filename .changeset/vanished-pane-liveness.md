@@ -13,7 +13,7 @@ separate defects combined:
   tolerated the related `-1719`, and none tolerated a window or tab disappearing.
   Every scan now skips vanished elements at all three levels and keeps going,
   while still propagating errors that are not a vanished element.
-- The liveness check turned *any* failure — a timeout, a scripting error — into
+- The liveness check turned _any_ failure — a timeout, a scripting error — into
   "the pane is gone". That is unrecoverable rather than merely wrong: lifecycle
   marks the session stopped and forgets its pane mapping, and reconcile only
   visits mapped panes, so nothing revisits the seat afterwards. The session keeps
