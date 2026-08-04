@@ -294,6 +294,68 @@ describe('chrome parsing', () => {
     expect(parseClaudeActivityState(capture)).toBe('working');
   });
 
+  it('ignores the frozen pulse rows that previous turns leave in scrollback', () => {
+    // Real capture shape from a live iTerm pane: Claude redraws its pulse row in
+    // place, so every completed turn leaves its final frame in the buffer. Only
+    // the row beside the live composer describes the current turn.
+    const separator = '─'.repeat(60);
+    const capture = [
+      '⏺ Written. Now I will hand off the path. ',
+      '✻ Puttering… (2m 42s · ↓ 5.0k tokens · thought for 1s) ',
+      separator,
+      '· Puttering… (2m 42s · ↓ 5.2k tokens · thought for 1s) ',
+      separator,
+      '❯   ',
+      separator,
+      '  Opus 4.8 | 11% | $6.09 | 📁 project | 🌳 no worktree | 🌿 main ',
+      '⏺ A later reply that arrived after that older frame. ',
+      '✻ Churned for 22s ',
+      '',
+      separator,
+      '❯   ',
+      separator,
+      '  Opus 4.8 | 13% | $8.14 | 📁 project | 🌳 no worktree | 🌿 main ',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents ',
+    ].join('\n');
+    expect(parseClaudeActivityState(capture)).toBe('idle');
+  });
+
+  it('reads the live pulse row when the newest frame is still working', () => {
+    const separator = '─'.repeat(60);
+    const capture = [
+      '✻ Puttering… (2m 42s · ↓ 5.0k tokens · thought for 1s) ',
+      separator,
+      '❯   ',
+      separator,
+      '⏺ Before toggling — I need to read the result rather than blindly flip. ',
+      '✻ Boondoggling… (56s · ↓ 3.3k tokens · thinking with high effort) ',
+      '',
+      separator,
+      '❯   ',
+      separator,
+      '  Opus 4.8 | 14% | $8.55 | 📁 project | 🌳 no worktree | 🌿 main ',
+    ].join('\n');
+    expect(parseClaudeActivityState(capture)).toBe('working');
+  });
+
+  it('never calls a working session idle when a long draft clips the status row', () => {
+    // A peer's long message expands the composer past the capture window, so the
+    // pulse row is no longer visible. Reporting idle here would stall the very
+    // session that just received the message.
+    const capture = [
+      '  ...earlier output whose status row is out of view... ',
+      '',
+      '─'.repeat(60),
+      '❯ [Message from agent-b] here is the long brief: ',
+      ...Array.from({ length: 30 }, (_, index) => `  paragraph line ${String(index + 1)} of the brief`),
+      '─'.repeat(60),
+      '  Opus 4.8 | 13% | $8.14 | 📁 project | 🌳 no worktree | 🌿 main ',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents ',
+    ].join('\n');
+    expect(parseClaudeActivityState(capture)).toBe('unknown');
+    expect(parseClaudeInputState(capture)).toBe('draft');
+  });
+
   it('uses only a current composer as idle evidence', () => {
     expect(parseClaudeActivityState('assistant output\n❯ \nshift+tab to cycle')).toBe('idle');
     expect(parseClaudeActivityState('❯ old submitted line\nnew model output')).toBe('unknown');
