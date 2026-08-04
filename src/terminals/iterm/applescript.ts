@@ -236,10 +236,10 @@ export function buildFindTtyWindowScript(ttyPath: string): string {
  * the FIRST session claims it instead of splitting, so the workspace never
  * shows an unexplained empty pane.
  */
-export function buildCreateWindowScript(windowName: string): string {
+export function buildCreateWindowScript(windowName: string, preserveFocus = false): string {
   return `
     tell application "iTerm2"
-      activate
+      ${preserveFocus ? '' : 'activate'}
       set newWin to (create window with default profile)
       tell current session of current tab of newWin
         set name to "${escapeAppleScript(windowName)}"
@@ -261,30 +261,98 @@ export function sessionSetup(displayName: string, sessionVarB64: string): string
             set variable named "${SESSION_USER_VAR}" to "${escapeAppleScript(sessionVarB64)}"`;
 }
 
+/**
+ * Remember what the operator had selected, so pane creation can put it back.
+ *
+ * iTerm has no "create without selecting" verb: `create window`, `create tab`
+ * and `split vertically` all select what they make. The only way not to steal
+ * the cursor is to restore the previous selection immediately afterwards.
+ * Wrapped in `try` because a fleet may legitimately be opening the first pane,
+ * with no current window to remember.
+ */
+const REMEMBER_FOCUS = `set priorWindow to missing value
+      set priorTab to missing value
+      set priorSession to missing value
+      try
+        set priorWindow to current window
+        set priorTab to current tab of priorWindow
+        set priorSession to current session of priorTab
+      end try`;
+
+/**
+ * Restore all three, outermost first.
+ *
+ * Selecting the session alone does NOT bring its window back — measured against
+ * live iTerm: creating a tab moved the current window from 74 to 108, and a
+ * session-only restore left it on 108. Window, then tab, then session returns
+ * it to 74. Each is guarded because a pane the operator closed mid-creation
+ * must not fail a creation that already succeeded.
+ */
+const RESTORE_FOCUS = `if priorWindow is not missing value then
+        try
+          select priorWindow
+        end try
+      end if
+      if priorTab is not missing value then
+        try
+          select priorTab
+        end try
+      end if
+      if priorSession is not missing value then
+        try
+          select priorSession
+        end try
+      end if`;
+
+/** Bracket a creation body with focus restoration when the fleet asked for it. */
+function preservingFocus(preserveFocus: boolean, body: string): string {
+  if (!preserveFocus) return body;
+  return `${REMEMBER_FOCUS}
+      ${body}
+      ${RESTORE_FOCUS}`;
+}
+
 /** Create a standalone window for a session. Returns the session id. */
-export function buildCreateSessionWindowScript(displayName: string, sessionVarB64: string): string {
+export function buildCreateSessionWindowScript(
+  displayName: string,
+  sessionVarB64: string,
+  preserveFocus = false,
+): string {
   return `
     tell application "iTerm2"
-      set newWin to (create window with default profile)
+      ${preservingFocus(
+        preserveFocus,
+        `set newWin to (create window with default profile)
       tell current session of current tab of newWin
         ${sessionSetup(displayName, sessionVarB64)}
-        return id as string
-      end tell
+        set sessId to id as string
+      end tell`,
+      )}
+      return sessId
     end tell
   `;
 }
 
 /** Create a new tab in the conductor window for a session. Returns the session id. */
-export function buildCreateTabScript(windowId: number, displayName: string, sessionVarB64: string): string {
+export function buildCreateTabScript(
+  windowId: number,
+  displayName: string,
+  sessionVarB64: string,
+  preserveFocus = false,
+): string {
   return `
     tell application "iTerm2"
-      tell window id ${windowId}
+      ${preservingFocus(
+        preserveFocus,
+        `tell window id ${windowId}
         set newTab to (create tab with default profile)
         tell current session of newTab
           ${sessionSetup(displayName, sessionVarB64)}
-          return id as string
+          set sessId to id as string
         end tell
-      end tell
+      end tell`,
+      )}
+      return sessId
     end tell
   `;
 }
@@ -293,18 +361,27 @@ export function buildCreateTabScript(windowId: number, displayName: string, sess
  * Split the first tab of the conductor window vertically (flat side-by-side layout).
  * Returns the session id.
  */
-export function buildSplitPaneScript(windowId: number, displayName: string, sessionVarB64: string): string {
+export function buildSplitPaneScript(
+  windowId: number,
+  displayName: string,
+  sessionVarB64: string,
+  preserveFocus = false,
+): string {
   return `
     tell application "iTerm2"
-      tell window id ${windowId}
+      ${preservingFocus(
+        preserveFocus,
+        `tell window id ${windowId}
         tell current session of first tab
           set newSession to (split vertically with default profile)
           tell newSession
             ${sessionSetup(displayName, sessionVarB64)}
-            return id as string
+            set sessId to id as string
           end tell
         end tell
-      end tell
+      end tell`,
+      )}
+      return sessId
     end tell
   `;
 }

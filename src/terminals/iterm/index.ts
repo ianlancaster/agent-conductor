@@ -44,6 +44,11 @@ export interface ITermBackendConfig {
   fleetId: string;
   /** Watermark the session name as an iTerm badge (the big red text). On by default. */
   badge: boolean;
+  /**
+   * Let a newly created session pane take the keyboard focus. False restores
+   * whatever the operator had selected immediately after creation.
+   */
+  focusNewPanes: boolean;
   bracketedPasteThreshold: number;
   launchTimeoutSec: number;
   pollIntervalSec: number;
@@ -96,6 +101,14 @@ export class ITermBackend implements TerminalBackend {
     this.store = options.store;
     this.config = options.config;
     this.env = options.env ?? process.env;
+  }
+
+  /**
+   * Whether creation must put the operator's selection back. iTerm selects
+   * everything it creates, so this is the inverse of the configured setting.
+   */
+  private get preserveFocus(): boolean {
+    return !this.config.focusNewPanes;
   }
 
   // ── Workspace lifecycle ─────────────────────────────────────────────────────
@@ -158,7 +171,7 @@ export class ITermBackend implements TerminalBackend {
     const sessionVar = encodeSessionVar(this.config.fleetId, session);
     let sessionId: string;
     if (placement === 'window') {
-      sessionId = (await runOsa(buildCreateSessionWindowScript(session, sessionVar))).trim();
+      sessionId = (await runOsa(buildCreateSessionWindowScript(session, sessionVar, this.preserveFocus))).trim();
     } else {
       const { windowId, seedSessionId } = await this.ensureWindow();
       if (seedSessionId !== null) {
@@ -170,8 +183,8 @@ export class ITermBackend implements TerminalBackend {
       } else {
         const script =
           placement === 'tab'
-            ? buildCreateTabScript(windowId, session, sessionVar)
-            : buildSplitPaneScript(windowId, session, sessionVar);
+            ? buildCreateTabScript(windowId, session, sessionVar, this.preserveFocus)
+            : buildSplitPaneScript(windowId, session, sessionVar, this.preserveFocus);
         sessionId = (await runOsa(script)).trim();
       }
     }
@@ -296,7 +309,7 @@ export class ITermBackend implements TerminalBackend {
   /** Create the workspace window; returns its id and the seed session's id. */
   private async createWorkspaceWindow(): Promise<{ windowId: number; seedSessionId: string }> {
     log().info('iterm', `Creating iTerm2 window: "${this.config.windowName}"`);
-    const stdout = await runOsa(buildCreateWindowScript(this.config.windowName));
+    const stdout = await runOsa(buildCreateWindowScript(this.config.windowName, this.preserveFocus));
     const parsed = parseWindowCreateResult(stdout);
     if (parsed === null) {
       throw new Error(`Unexpected create-window output from iTerm2: ${JSON.stringify(stdout)}`);
