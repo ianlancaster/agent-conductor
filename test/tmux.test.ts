@@ -5,6 +5,7 @@ import {
   buildCreateSessionArgs,
   buildDeliveryCommands,
   hasShellPrompt,
+  isNoServerError,
   parseSessionPanes,
   parsePaneIds,
   parseWritableClients,
@@ -232,5 +233,22 @@ describe('trimToTrailingLines', () => {
 
   it('strips trailing blank lines before trimming', () => {
     expect(trimToTrailingLines('a\nb\nc\n\n  \n', 2)).toBe('b\nc');
+  });
+});
+
+describe('isNoServerError', () => {
+  // "There is no server" is a real answer about the panes: there are none.
+  // "tmux could not be asked" is no answer at all, and reporting it as an
+  // absent pane marks live sessions stopped and drops their pane mapping.
+  it('recognizes the server genuinely being absent', () => {
+    expect(isNoServerError('tmux list-panes failed: no server running on /private/tmp/tmux-501/default')).toBe(true);
+    expect(isNoServerError('error connecting to /private/tmp/tmux-501/default (No such file or directory)')).toBe(true);
+    expect(isNoServerError('server exited unexpectedly')).toBe(true);
+  });
+
+  it('does not treat an unanswerable tmux as an empty one', () => {
+    expect(isNoServerError('tmux list-panes -a failed: Command failed: timeout')).toBe(false);
+    expect(isNoServerError('spawn tmux ENOENT')).toBe(false);
+    expect(isNoServerError('')).toBe(false);
   });
 });

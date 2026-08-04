@@ -190,18 +190,12 @@ export function buildNameTtySessionScript(ttyPath: string, name: string): string
   const escaped = escapeAppleScript(name);
   return `
     tell application "iTerm2"
-      repeat with w in windows
-        repeat with t in tabs of w
-          repeat with s in sessions of t
-            if (tty of s) is "${escapeAppleScript(ttyPath)}" then
+      ${forEachSession(`if (tty of s) is "${escapeAppleScript(ttyPath)}" then
               tell s
                 set name to "${escaped}"
               end tell
               return "OK"
-            end if
-          end repeat
-        end repeat
-      end repeat
+            end if`)}
       return ""
     end tell
   `;
@@ -216,15 +210,9 @@ export function buildNameTtySessionScript(ttyPath: string, name: string): string
 export function buildFindTtyWindowScript(ttyPath: string): string {
   return `
     tell application "iTerm2"
-      repeat with w in windows
-        repeat with t in tabs of w
-          repeat with s in sessions of t
-            if (tty of s) is "${escapeAppleScript(ttyPath)}" then
+      ${forEachSession(`if (tty of s) is "${escapeAppleScript(ttyPath)}" then
               return (id of w as string)
-            end if
-          end repeat
-        end repeat
-      end repeat
+            end if`)}
       return ""
     end tell
   `;
@@ -387,6 +375,52 @@ export function buildSplitPaneScript(
 }
 
 /**
+ * AppleScript error numbers that mean "the object this reference names is gone",
+ * raised when iTerm resolves an element reference after the pane behind it has
+ * closed: -1719 from the lazy `every session` specifier, and -1728 from a
+ * snapshotted element (`Can't get session id "..." of tab 5 of window id 108`).
+ *
+ * Every scan below walks ALL of iTerm — one process cannot enumerate only its
+ * own panes — so a pane closing anywhere, including in another fleet's window
+ * or a human's unrelated tab, lands mid-scan. Untolerated, that aborts the whole
+ * enumeration, and the resulting failure is indistinguishable from "your session
+ * is gone". Skipping the vanished element and continuing is the only reading
+ * that keeps one window's churn out of another window's answer.
+ */
+const VANISHED_ELEMENT_ERRORS = '{-1719, -1728}';
+
+/**
+ * Enumerate every session of every tab of every window, running `body` with `s`
+ * bound to the session (and `w`/`t` to its window and tab), tolerating elements
+ * that vanish mid-scan at all three levels. `body` may `return` to end the scan.
+ *
+ * Any error that is NOT a vanished element propagates: an unobservable iTerm is
+ * a fact callers must be able to tell apart from an empty one.
+ */
+function forEachSession(body: string): string {
+  const skipVanished = `on error errorMessage number errorNumber
+              if not (${VANISHED_ELEMENT_ERRORS} contains errorNumber) then error errorMessage number errorNumber
+            end try`;
+  return `repeat with w in windows
+        try
+          repeat with t in tabs of w
+            try
+              -- Snapshot the session references before iterating: the lazy
+              -- every-session specifier resolves elements as it walks, so a
+              -- pane closing mid-walk breaks the iteration itself.
+              set sessionList to every session of t
+              repeat with s in sessionList
+                try
+                  ${body}
+                ${skipVanished}
+              end repeat
+            ${skipVanished}
+          end repeat
+        ${skipVanished}
+      end repeat`;
+}
+
+/**
  * Run `operations` inside a `tell` block for the session with the given UUID,
  * searching ALL windows — panes may have been moved out of the conductor window.
  * Direct `session id "X"` references are unreliable across osascript process
@@ -396,34 +430,32 @@ export function buildSplitPaneScript(
 export function buildInSessionScript(sessionId: string, operations: string, returnExpr = '"OK"'): string {
   return `
     tell application "iTerm2"
-      repeat with w in windows
-        repeat with t in tabs of w
-          try
-            -- Snapshot object references before iterating. iTerm mutates its
-            -- live session collection while panes open/close; iterating the
-            -- lazy every-session specifier can otherwise raise -1719 and
-            -- make unrelated captures and deliveries fail.
-            set sessionList to every session of t
-            repeat with s in sessionList
-              try
-                if (id of s) is "${escapeAppleScript(sessionId)}" then
-                  tell s
-                    ${operations}
-                    return ${returnExpr}
-                  end tell
-                end if
-              on error errorMessage number errorNumber
-                if errorNumber is not -1719 then error errorMessage number errorNumber
-              end try
-            end repeat
-          on error errorMessage number errorNumber
-            if errorNumber is not -1719 then error errorMessage number errorNumber
-          end try
-        end repeat
-      end repeat
+      ${forEachSession(`if (id of s) is "${escapeAppleScript(sessionId)}" then
+              tell s
+                ${operations}
+                return ${returnExpr}
+              end tell
+            end if`)}
       return "${SESSION_NOT_FOUND_RESULT}"
     end tell
   `;
+}
+
+/**
+ * Read a liveness probe's output as an answer about the pane, or refuse to.
+ *
+ * Only a scan that ran to completion and reported the session missing means the
+ * pane is gone. Anything else — a timeout killing osascript, a scripting error,
+ * truncated output — means the terminal could not be asked, which is a
+ * different fact and must not be returned as `false`: lifecycle reads false as
+ * "pane died", marks the session stopped and forgets its pane mapping, and
+ * since reconcile only visits mapped panes, nothing revisits that seat again.
+ */
+export function interpretLivenessResult(sessionId: string, result: string): boolean {
+  const trimmed = result.trim();
+  if (trimmed === 'ALIVE') return true;
+  if (trimmed === SESSION_NOT_FOUND_RESULT) return false;
+  throw new Error(`iTerm returned an unrecognized liveness result for session ${sessionId}: ${trimmed || '(empty)'}`);
 }
 
 /** Return the tty path for an iTerm session UUID, or empty output if it is gone. */
@@ -436,18 +468,12 @@ export function buildRevealSessionScript(sessionId: string): string {
   return `
     tell application "iTerm2"
       activate
-      repeat with w in windows
-        repeat with t in tabs of w
-          repeat with s in sessions of t
-            if (id of s) is "${escapeAppleScript(sessionId)}" then
+      ${forEachSession(`if (id of s) is "${escapeAppleScript(sessionId)}" then
               select w
               select t
               select s
               return "OK"
-            end if
-          end repeat
-        end repeat
-      end repeat
+            end if`)}
       return "NOT_FOUND"
     end tell
   `;
@@ -458,13 +484,7 @@ export function buildListSessionIdsScript(): string {
   return `
     tell application "iTerm2"
       set out to ""
-      repeat with w in windows
-        repeat with t in tabs of w
-          repeat with s in sessions of t
-            set out to out & (id of s) & linefeed
-          end repeat
-        end repeat
-      end repeat
+      ${forEachSession('set out to out & (id of s) & linefeed')}
       return out
     end tell
   `;
@@ -478,20 +498,14 @@ export function buildRediscoverScript(): string {
   return `
     tell application "iTerm2"
       set out to ""
-      repeat with w in windows
-        repeat with t in tabs of w
-          repeat with s in sessions of t
-            set sid to (id of s)
+      ${forEachSession(`set sid to (id of s)
             set v to missing value
             try
               tell s to set v to (variable named "${SESSION_USER_VAR}")
             end try
             if v is not missing value and v is not "" then
               set out to out & sid & "|" & v & linefeed
-            end if
-          end repeat
-        end repeat
-      end repeat
+            end if`)}
       return out
     end tell
   `;
@@ -501,16 +515,10 @@ export function buildRediscoverScript(): string {
 export function buildCloseSessionScript(sessionId: string): string {
   return `
     tell application "iTerm2"
-      repeat with w in windows
-        repeat with t in tabs of w
-          repeat with s in sessions of t
-            if (id of s) is "${escapeAppleScript(sessionId)}" then
+      ${forEachSession(`if (id of s) is "${escapeAppleScript(sessionId)}" then
               close s
               return "OK"
-            end if
-          end repeat
-        end repeat
-      end repeat
+            end if`)}
     end tell
   `;
 }

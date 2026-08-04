@@ -16,6 +16,7 @@ import {
   buildFindTtyWindowScript,
   buildNameTtySessionScript,
   buildInSessionScript,
+  interpretLivenessResult,
   buildListSessionIdsScript,
   buildRediscoverScript,
   buildRevealSessionScript,
@@ -159,6 +160,10 @@ export class ITermBackend implements TerminalBackend {
   async createPane(session: string, placement: Placement, cwd?: string): Promise<PaneRef> {
     const existing = this.panes.get(session);
     if (existing !== undefined) {
+      // Deliberately unguarded: if the remembered pane cannot be observed, the
+      // creation fails rather than opening a second pane that may be a
+      // duplicate of a live one. Failing to start is recoverable; two panes
+      // claiming one identity is not.
       if (await this.sessionAlive(existing)) {
         log().debug('iterm', `${session}: pane already exists, reusing (session=${existing.slice(0, 8)})`);
         return { backend: this.name, id: existing };
@@ -460,12 +465,25 @@ export class ITermBackend implements TerminalBackend {
     }
   }
 
+  /**
+   * Whether the pane still exists — false ONLY when a scan ran to completion
+   * and did not find it.
+   *
+   * "Absent" and "unobservable" are different facts, and this is the one place
+   * where conflating them is unrecoverable. `isAlive` returning false makes
+   * lifecycle mark the session stopped and forget its pane mapping, and
+   * reconcile only visits mapped panes — so nothing ever looks at that seat
+   * again. A swallowed timeout or AppleScript error therefore retires a live,
+   * working session permanently, while the session itself notices nothing.
+   *
+   * So propagate, exactly as capture() does. Every caller is already built for
+   * it: lifecycle records the observation as unknown, health warns and skips
+   * the tick, delivery holds the queue for the next drain.
+   */
   private async sessionAlive(sessionId: string): Promise<boolean> {
-    try {
-      return (await this.inSession(sessionId, '', '"ALIVE"')).trim() === 'ALIVE';
-    } catch {
-      return false;
-    }
+    // No catch: a runOsa rejection is an unobservable terminal, and
+    // interpretLivenessResult refuses anything that is not a clear answer.
+    return interpretLivenessResult(sessionId, await runOsa(buildInSessionScript(sessionId, '', '"ALIVE"')));
   }
 
   private async sessionContents(sessionId: string): Promise<string> {
