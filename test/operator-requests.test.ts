@@ -2,10 +2,17 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChannelMessage } from '../src/channels/types.js';
 import { OperatorRequests } from '../src/core/operator-requests.js';
+import type { OperatorSendOutcome } from '../src/core/types.js';
 import { Store } from '../src/store/index.js';
 import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
 
-function setup(options: { delivered?: boolean; delivery?: () => Promise<string>; allowOptions?: boolean } = {}): {
+function setup(
+  options: {
+    outcome?: OperatorSendOutcome;
+    delivery?: () => Promise<string>;
+    allowOptions?: boolean;
+  } = {},
+): {
   store: Store;
   requests: OperatorRequests;
   outbound: ChannelMessage[];
@@ -20,7 +27,7 @@ function setup(options: { delivered?: boolean; delivery?: () => Promise<string>;
     store,
     channelSend: async (message) => {
       outbound.push(message);
-      return options.delivered ?? true;
+      return options.outcome ?? 'delivered';
     },
     messaging: {
       sendToSession: async (from, target, message) => {
@@ -59,7 +66,7 @@ describe('OperatorRequests with selectable requests disabled', () => {
 
   it('leaves prose-only sends completely unchanged', async () => {
     const { store, requests, outbound } = setup({ allowOptions: false });
-    expect(await requests.send('alpha', CLEAN)).toBe('Sent to the operator.');
+    expect(await requests.send('alpha', CLEAN)).toBe('Message queued for the operator.');
     expect(outbound).toEqual([{ text: `[Message from alpha] ${CLEAN}` }]);
     expect(firstRowExists(store)).toBe(false);
   });
@@ -94,7 +101,7 @@ describe('OperatorRequests with selectable requests disabled', () => {
 describe('OperatorRequests', () => {
   it('keeps plain operator messages backward compatible and unpersisted', async () => {
     const { store, requests, outbound } = setup();
-    expect(await requests.send('alpha', 'heads up')).toBe('Sent to the operator.');
+    expect(await requests.send('alpha', 'heads up')).toBe('Message queued for the operator.');
     expect(outbound).toEqual([{ text: '[Message from alpha] heads up' }]);
     expect(store.getOperatorRequest(1)).toBeUndefined();
     store.close();
@@ -103,7 +110,7 @@ describe('OperatorRequests', () => {
   it('persists a selectable request and emits channel-neutral actions', async () => {
     const { store, requests, outbound, events } = setup();
     expect(await requests.send('alpha', 'Deploy where?', [' Staging ', 'Production'])).toBe(
-      'Request #1 sent to the operator.',
+      'Request #1 queued for the operator.',
     );
     expect(store.getOperatorRequest(1)).toMatchObject({
       session: 'alpha',
@@ -192,9 +199,33 @@ describe('OperatorRequests', () => {
     store.close();
   });
 
-  it('honestly reports no connected operator while preserving the pending request', async () => {
-    const { store, requests } = setup({ delivered: false });
-    expect(await requests.send('alpha', 'Choose', ['one'])).toMatch(/^NOT delivered:/);
+  it('gives a held request the same receipt as a delivered one, so presence stays unreadable', async () => {
+    // The old wording named which branch had happened, which let any session
+    // probe operator attachment in a single call — the capability deliberately
+    // kept out of `list_sessions`. The outbox is what makes one wording true in
+    // both branches rather than merely reassuring.
+    const held = setup({ outcome: 'queued' });
+    const live = setup();
+
+    const heldReceipt = await held.requests.send('alpha', 'Choose', ['one']);
+    const liveReceipt = await live.requests.send('alpha', 'Choose', ['one']);
+
+    expect(heldReceipt).toBe(liveReceipt);
+    expect(heldReceipt).toBe('Request #1 queued for the operator.');
+    expect(held.store.getOperatorRequest(1)?.status).toBe('pending');
+    held.store.close();
+    live.store.close();
+  });
+
+  it('reports a message that could be neither sent nor held as the loss it is', async () => {
+    // The one honest failure left. It reports a storage fault, not whether
+    // anyone is watching, so it leaks no presence information.
+    const { store, requests } = setup({ outcome: 'lost' });
+
+    const receipt = await requests.send('alpha', 'Choose', ['one']);
+
+    expect(receipt).toContain('could NOT be queued');
+    expect(receipt).toContain('raise it again');
     expect(store.getOperatorRequest(1)?.status).toBe('pending');
     store.close();
   });
@@ -205,7 +236,7 @@ describe('OperatorRequests', () => {
     store.claimOperatorRequest(id);
     const requests = new OperatorRequests({
       store,
-      channelSend: async () => true,
+      channelSend: async () => 'delivered',
       messaging: { sendToSession: async () => 'Delivered.' },
     });
     expect(requests.recoverStaleClaims()).toBe(1);

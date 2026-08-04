@@ -219,14 +219,16 @@ describe('operator reachability', () => {
     const report = formatFleetStatusReport('Sessions:\n  alpha - CC · 🟡 idle', {
       fleetWatch: fleetWatch(),
       shepherdOnline: false,
-      operatorReach: { state: 'armed', channels: ['telegram'], consoles: 0, undelivered: 0 },
+      operatorReach: { state: 'armed', channels: ['telegram'], consoles: 0, undelivered: 0, held: 0 },
     });
     expect(report).not.toContain('Operator channel');
   });
 
-  it('states that every alarm is ending in a log when no transport exists', () => {
+  it('reports what becomes of alarms nobody received, not merely that nobody received them', () => {
     // The disease fleet watch had, in the mechanism built to report fleet watch:
-    // a notification path that cannot reach anyone, reporting nothing.
+    // a notification path that cannot reach anyone, reporting nothing. These
+    // alarms are now held rather than logged and dropped, so the line that used
+    // to say they were ending in a log file would itself be the untrue reading.
     const report = formatFleetStatusReport('Sessions:\n  alpha - CC · 🟡 idle', {
       fleetWatch: fleetWatch({ enabled: true, state: 'armed', members: ['alpha', 'beta'], runningMembers: ['alpha'] }),
       shepherdOnline: false,
@@ -237,11 +239,26 @@ describe('operator reachability', () => {
         consoles: 0,
         undelivered: 11,
         undeliveredSince: '2026-07-30T04:10:00.000Z',
+        held: 11,
       },
     });
     expect(report).toContain('Operator channel INERT');
     expect(report).toContain('11 notification(s) have reached nobody since 2026-07-30T04:10:00.000Z');
-    expect(report).toContain('Every alarm this fleet raises is currently ending in a log file.');
+    expect(report).toContain('11 message(s) are held and will be delivered when an operator surface attaches.');
+    expect(report).not.toContain('ending in a log file');
+  });
+
+  it('promises holding rather than a count when nothing is held yet', () => {
+    expect(
+      formatOperatorReach({
+        state: 'inert',
+        reason: 'no operator channel is enabled and no console is attached',
+        channels: [],
+        consoles: 0,
+        undelivered: 0,
+        held: 0,
+      }),
+    ).toContain('held for delivery rather than discarded');
   });
 
   it('separates a transport that is failing from one that is absent', () => {
@@ -252,9 +269,10 @@ describe('operator reachability', () => {
         channels: ['slack'],
         consoles: 0,
         undelivered: 2,
+        held: 2,
       }),
     ).toContain('Operator channel DEGRADED');
-    expect(formatOperatorReach({ state: 'armed', channels: ['slack'], consoles: 2, undelivered: 0 })).toBe(
+    expect(formatOperatorReach({ state: 'armed', channels: ['slack'], consoles: 2, undelivered: 0, held: 0 })).toBe(
       'Operator reachable via 2 console(s), slack.',
     );
   });

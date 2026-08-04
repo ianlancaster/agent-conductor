@@ -348,7 +348,10 @@ describe('Supervisor construction', () => {
       });
     };
     await postEvent({ hook_event_name: 'PreCompact', transcript_path: '/tmp/transcript.jsonl' });
-    expect(channel.sent).toEqual([]);
+    // PreCompact alone must not report a compaction stall. Other operator
+    // traffic may legitimately be present — notices raised before the channel
+    // finished starting are now held and flushed rather than lost.
+    expect(channel.sent.some((message) => message.text.includes('stalled (compaction)'))).toBe(false);
 
     await postEvent({ hook_event_name: 'SessionStart', source: 'compact' });
     await until(() => channel.sent.some((message) => message.text.includes('stalled (compaction)')));
@@ -684,33 +687,55 @@ describe('Supervisor construction', () => {
     expect((await response).status).toBe(200);
   });
 
-  it('reports NOT delivered when every operator send fails', async () => {
+  it('holds an operator message when every send fails, and says the same thing either way', async () => {
+    // The receipt must not name which branch happened: a session that can read
+    // "delivered" versus "nobody is listening" can probe operator presence in
+    // one call, which is the capability kept out of list_sessions on purpose.
     const port = await freePort();
-    writeConfig(`terminal:\n  backend: tmux\nmcp:\n  port: ${String(port)}\n`, {
-      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
-    });
-    const broken = new ControlledChannel('broken', undefined, async () => {
-      throw new Error('transport unavailable');
+    writeConfig(
+      `terminal:\n  backend: tmux\nmcp:\n  port: ${String(port)}\nsupervisor:\n  heartbeatIntervalSeconds: 1\n`,
+      {
+        alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+      },
+    );
+    let transportWorks = false;
+    const flaky = new ControlledChannel('flaky', undefined, async () => {
+      if (!transportWorks) throw new Error('transport unavailable');
     });
     supervisor = new Supervisor(baseDir, {
-      channels: [broken],
+      channels: [flaky],
       includeConfiguredChannels: false,
       env: {},
     });
     await supervisor.start();
 
-    const response = await fetch(`http://127.0.0.1:${String(port)}/mcp/alpha`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: { name: 'send_to_operator', arguments: { message: 'Important update' } },
-      }),
-    });
-    const payload = (await response.json()) as { result: { content: { text: string }[] } };
-    expect(payload.result.content[0]?.text).toMatch(/^NOT delivered:/);
+    const sendToOperator = async (message: string): Promise<string> => {
+      const response = await fetch(`http://127.0.0.1:${String(port)}/mcp/alpha`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'send_to_operator', arguments: { message } },
+        }),
+      });
+      const payload = (await response.json()) as { result: { content: { text: string }[] } };
+      return payload.result.content[0]?.text ?? '';
+    };
+
+    const heldReceipt = await sendToOperator('Important update');
+    expect(heldReceipt).toBe('Message queued for the operator.');
+
+    // Same wording once the transport works, so the two are indistinguishable.
+    transportWorks = true;
+    expect(await sendToOperator('Second update')).toBe(heldReceipt);
+
+    // The held message is not lost: it flushes on the heartbeat once a surface
+    // can take it, stamped with when it was raised rather than reading current.
+    await until(() => flaky.sent.some((message) => message.text.includes('[held since ')));
+    const flushed = flaky.sent.filter((message) => message.text.includes('[held since '));
+    expect(flushed.some((message) => message.text.includes('Important update'))).toBe(true);
   });
 
   it('constructs configured channels when fleet credentials override inherited values', () => {

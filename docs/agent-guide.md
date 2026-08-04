@@ -777,9 +777,23 @@ Telegram is a private bot long-polling adapter. It requires one token and author
 fleet. Follow `guides/telegram-adapter.md`.
 
 Operator channels are failure-isolated from the control plane. Startup and transport failures are
-written to Conductor's logs. `send_to_operator` confirms delivery only when an attached console or at
-least one external channel actually accepts the message; otherwise it returns `NOT delivered`.
-Agent-to-agent messaging remains available when an optional operator provider is down.
+written to Conductor's logs. Agent-to-agent messaging remains available when an optional operator
+provider is down.
+
+`send_to_operator` returns `queued for the operator` whether or not a surface was attached, because
+both are true: a message no surface accepted is written to a durable outbox and flushed, in order,
+when one appears — on attachment and on the ordinary heartbeat, so a channel that was merely failing
+is covered too. Flushed messages are prefixed with `[held since <time>]`; nothing is dropped for
+being old, because which stale alarms still matter is the operator's judgment rather than a
+threshold's. The outbox holds a bounded number of messages and drops the oldest beyond it, with a log
+line.
+
+The uniform receipt is deliberate. Naming which branch occurred would let any session read whether an
+operator is attached from a single call — the capability kept out of `list_sessions` by threading an
+audience through it. The outbox is what makes one wording true in both cases rather than merely
+reassuring: a held message is genuinely going to arrive, so a session is not left waiting on
+something that was silently discarded. The one remaining failure receipt is for a message that could
+be neither sent nor stored, which reports a storage fault and says nothing about who is watching.
 
 Slack is a private App Home Socket Mode adapter. It requires one Slack app per running fleet,
 because sharing an app silently load-balances events between connections. Follow

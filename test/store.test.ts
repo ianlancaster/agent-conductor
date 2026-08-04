@@ -400,10 +400,11 @@ describe('session state', () => {
     const legacy = openSqliteDatabase(dbPath);
     const versionRow = legacy.prepare('PRAGMA user_version').get() as { user_version: number };
     const currentVersion = versionRow.user_version;
+    legacy.exec('DROP TABLE operator_outbox');
     legacy.exec('ALTER TABLE session_state DROP COLUMN active_model');
     legacy.exec('ALTER TABLE session_state DROP COLUMN active_launched_at');
     legacy.exec("UPDATE session_state SET activity = 'stalled' WHERE session = 'alpha'");
-    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 2)}`);
+    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 3)}`);
     legacy.close();
 
     const migrated = new Store(dbPath);

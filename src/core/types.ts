@@ -14,6 +14,19 @@ export interface PaneRef {
   id: string;
 }
 
+/**
+ * What became of one operator-bound message.
+ *
+ * - `delivered` — a live operator surface accepted it.
+ * - `queued` — no surface was attached, so it is held durably and flushed on attach.
+ * - `lost` — it could be neither delivered nor held.
+ *
+ * `delivered` and `queued` are deliberately not distinguished in what a session
+ * is told: the distinction is operator-presence information, and a session that
+ * can read it can probe whether anyone is watching.
+ */
+export type OperatorSendOutcome = 'delivered' | 'queued' | 'lost';
+
 /** Persisted + runtime state for one session. */
 export interface SessionState {
   auto: boolean;

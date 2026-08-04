@@ -84,7 +84,7 @@ beforeEach(() => {
     sessions: () => sessions,
     startSession: (c, o) => lifecycle.start(c, o),
   });
-  const operatorRequests = new OperatorRequests({ store, messaging, channelSend: async () => false });
+  const operatorRequests = new OperatorRequests({ store, messaging, channelSend: async () => 'queued' });
   sentinel = new StallSentinelRouter({
     config: {
       captureLines: 40,
@@ -276,7 +276,7 @@ describe('surface contract', () => {
     });
 
     await expect(send.handler({ message: 'Choose', options: ['one', 'two'] }, 'alpha')).resolves.toMatch(
-      /^NOT delivered:/,
+      /^Request #1 queued for the operator\.$/,
     );
     expect(store.getOperatorRequest(1)).toMatchObject({ session: 'alpha', options: ['one', 'two'] });
     await expect(send.handler({ message: 'Choose', options: [] }, 'alpha')).rejects.toThrow(/at least 1/);

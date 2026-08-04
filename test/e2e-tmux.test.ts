@@ -381,7 +381,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       const requestPayload = (await requestResponse.json()) as {
         result: { content: { text: string }[] };
       };
-      expect(requestPayload.result.content[0]?.text).toBe('Request #1 sent to the operator.');
+      expect(requestPayload.result.content[0]?.text).toBe('Request #1 queued for the operator.');
       expect(channel.lastSent()).toEqual(secondChannel.lastSent());
       expect(channel.lastSent()?.actions?.[1]).toEqual({ label: 'Production', command: '/respond 1 2' });
       await until(async () => slack.posts.some((post) => Array.isArray(post.blocks)));

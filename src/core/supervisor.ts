@@ -17,6 +17,7 @@ import { ClaudeCodeRuntime } from '../runtimes/claude-code/index.js';
 import { CodexRuntime } from '../runtimes/codex/index.js';
 import type { SessionRuntime } from '../runtimes/types.js';
 import { Store } from '../store/index.js';
+import type { OperatorSendOutcome } from './types.js';
 import { ITermBackend } from '../terminals/iterm/index.js';
 import { TmuxBackend } from '../terminals/tmux/index.js';
 import type { TerminalBackend } from '../terminals/types.js';
@@ -57,6 +58,27 @@ const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 
 /** Repeat interval while a queue stays blocked. */
 const UNDELIVERABLE_REWARN_MS = 30 * 60 * 1000;
+
+/**
+ * How many undelivered operator messages are held. A fleet nobody is watching
+ * for a week would otherwise accumulate without limit and bury the recent,
+ * actionable notices under stale ones. The oldest are dropped, with a log line,
+ * because the newest are the ones an attaching operator can still act on.
+ */
+const OPERATOR_OUTBOX_LIMIT = 500;
+const OPERATOR_OUTBOX_FLUSH_BATCH = 50;
+
+/** Restore a held message's selectable actions, ignoring an unreadable payload. */
+function parseOutboxActions(actionsJson: string | null): Pick<ChannelMessage, 'actions'> {
+  if (actionsJson === null) return {};
+  try {
+    const parsed: unknown = JSON.parse(actionsJson);
+    return Array.isArray(parsed) ? { actions: parsed as ChannelMessage['actions'] } : {};
+  } catch {
+    // The prose is the message; losing the buttons is better than losing it.
+    return {};
+  }
+}
 const SENTINEL_WORKSPACE_KEY = 'sentinel.codename';
 const FLEET_WATCH_ENABLED_WORKSPACE_KEY = 'sentinel.fleetWatchEnabled';
 const LEGACY_FLEET_WATCHES_WORKSPACE_KEY = 'sentinel.fleetWatches';
@@ -129,6 +151,7 @@ export class Supervisor {
   /** Last inbound operator interaction this run; null until a human acts. */
   private lastOperatorInteractionAt: string | undefined;
   private operatorAttached: boolean | undefined;
+  private flushingOperatorOutbox = false;
 
   constructor(
     readonly baseDir: string,
@@ -589,6 +612,10 @@ export class Supervisor {
     this.heartbeatTimer = setInterval(() => {
       this.checkSupervisorConfigDrift();
       this.publishOperatorAttachment();
+      // Attachment only transitions when a surface appears or disappears, so a
+      // channel that exists but was failing never trips it. Retrying on the
+      // heartbeat is what covers transport recovery, which is the common case.
+      void this.flushOperatorOutbox();
       void this.checkUndeliverableQueues();
       void this.health.heartbeat();
       // The sentinel is excluded from fleet watch by design, so without this it
@@ -726,6 +753,7 @@ export class Supervisor {
     const backlog = {
       undelivered: this.undeliveredOperatorNotices,
       ...(this.undeliveredOperatorSince !== undefined ? { undeliveredSince: this.undeliveredOperatorSince } : {}),
+      held: this.heldOperatorMessages(),
     };
     if (channels.length === 0 && consoles === 0) {
       return {
@@ -752,7 +780,7 @@ export class Supervisor {
   }
 
   /** Raise an operator notification through the real send path. Tests only. */
-  notifyOperatorForTest(text: string): Promise<boolean> {
+  notifyOperatorForTest(text: string): Promise<OperatorSendOutcome> {
     return this.channelSend({ text });
   }
 
@@ -851,6 +879,10 @@ export class Supervisor {
       surfaces,
       lastInteractionAt: this.lastOperatorInteractionAt ?? null,
     });
+    // An operator arriving is the moment held messages become deliverable.
+    // Best-effort and never awaited: a slow or failing flush must not stall the
+    // heartbeat that noticed the attachment.
+    if (attached) void this.flushOperatorOutbox();
   }
 
   /** Any inbound operator action, from any surface. */
@@ -1072,18 +1104,93 @@ export class Supervisor {
     }
   }
 
-  private async channelSend(message: ChannelMessage): Promise<boolean> {
+  private async channelSend(message: ChannelMessage): Promise<OperatorSendOutcome> {
     const delivered = await this.channelSendInner(message);
-    // Callers legitimately ignore this boolean — an alarm has nothing better to
+    // Callers legitimately ignore this outcome — an alarm has nothing better to
     // do when it cannot be raised. So the failure is counted here instead, at
     // the one choke point, and reported through status. Discarding it at ten
     // call sites is what made a fleet with no operator transport look identical
     // to one with a listening operator.
-    if (!delivered) {
-      this.undeliveredOperatorNotices += 1;
-      this.undeliveredOperatorSince ??= new Date().toISOString();
+    if (delivered) return 'delivered';
+    this.undeliveredOperatorNotices += 1;
+    this.undeliveredOperatorSince ??= new Date().toISOString();
+    return this.queueForOperator(message);
+  }
+
+  /**
+   * Hold an operator-bound message that no live surface accepted, so attaching
+   * later shows what happened instead of an empty console. Without this, a
+   * plain prose send was written to the conductor log and lost, while only
+   * selectable requests survived — so the two kinds of message had different
+   * durability for no reason a caller could see.
+   */
+  /** Held messages awaiting an operator surface; a storage fault reads as none. */
+  private heldOperatorMessages(): number {
+    try {
+      return this.store.countPendingOperatorOutbox();
+    } catch {
+      return 0;
     }
-    return delivered;
+  }
+
+  private queueForOperator(message: ChannelMessage): OperatorSendOutcome {
+    try {
+      this.store.enqueueOperatorOutbox(
+        message.text,
+        message.actions === undefined ? undefined : JSON.stringify(message.actions),
+      );
+      const dropped = this.store.trimOperatorOutbox(OPERATOR_OUTBOX_LIMIT);
+      if (dropped > 0) {
+        log().warn(
+          'operator',
+          `operator outbox exceeded ${String(OPERATOR_OUTBOX_LIMIT)} held message(s); dropped the ${String(dropped)} oldest`,
+        );
+      }
+      return 'queued';
+    } catch (error) {
+      // Saying "queued" here would be the lie the uniform receipt exists to
+      // avoid, so the loss is reported as a loss.
+      log().error(
+        'operator',
+        `operator outbox write failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return 'lost';
+    }
+  }
+
+  /**
+   * Drain held messages in the order they were raised. Delivery is attempted
+   * through the inner path: a flush that failed and re-queued would rewrite its
+   * own ordering and could loop.
+   */
+  private async flushOperatorOutbox(): Promise<void> {
+    if (this.flushingOperatorOutbox) return;
+    this.flushingOperatorOutbox = true;
+    try {
+      for (;;) {
+        const pending = this.store.pendingOperatorOutbox(OPERATOR_OUTBOX_FLUSH_BATCH);
+        if (pending.length === 0) return;
+        for (const entry of pending) {
+          // Stamp when it was raised rather than dropping anything past an age
+          // cutoff. A held alarm can arrive days after the fact, and one that
+          // reads as current is worse than one that reads as old — but which
+          // ones still matter is the operator's call, not a threshold's.
+          const message: ChannelMessage = {
+            text: `[held since ${entry.createdAt}] ${entry.text}`,
+            ...parseOutboxActions(entry.actionsJson),
+          };
+          if (!(await this.channelSendInner(message))) return;
+          this.store.markOperatorOutboxDelivered(entry.id);
+        }
+      }
+    } catch (error) {
+      log().warn(
+        'operator',
+        `operator outbox flush stopped: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      this.flushingOperatorOutbox = false;
+    }
   }
 
   private async channelSendInner(message: ChannelMessage): Promise<boolean> {

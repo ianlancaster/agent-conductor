@@ -291,10 +291,12 @@ export interface OperatorReach {
   channels: readonly string[];
   /** Attached consoles (`conductor start`, `conductor console`). */
   consoles: number;
-  /** Operator notifications this run that reached nobody. */
+  /** Operator notifications this run that reached nobody live. */
   undelivered: number;
   /** ISO-8601 instant of the oldest such notification, if any. */
   undeliveredSince?: string;
+  /** Messages currently held in the durable outbox, awaiting an operator surface. */
+  held: number;
 }
 
 export function formatOperatorReach(reach: OperatorReach): string {
@@ -311,10 +313,15 @@ export function formatOperatorReach(reach: OperatorReach): string {
           reach.undeliveredSince !== undefined ? ` since ${reach.undeliveredSince}` : ''
         }.`
       : '';
-  return (
-    `Operator channel ${label} — ${reach.reason ?? 'notifications cannot be delivered'}.` +
-    `${backlog} Every alarm this fleet raises is currently ending in a log file.`
-  );
+  // Say what actually becomes of them. These alarms used to end in a log file;
+  // they are now held durably and flushed when a surface appears, and a status
+  // line still claiming they were discarded would be the same class of untrue
+  // reading this surface exists to prevent.
+  const fate =
+    reach.held > 0
+      ? ` ${String(reach.held)} message(s) are held and will be delivered when an operator surface attaches.`
+      : ' Alarms raised while this persists are held for delivery rather than discarded.';
+  return `Operator channel ${label} — ${reach.reason ?? 'notifications cannot be delivered'}.${backlog}${fate}`;
 }
 
 export function formatFleetStatusReport(

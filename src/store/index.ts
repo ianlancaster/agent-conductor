@@ -81,6 +81,17 @@ export interface OperatorRequestRow {
   resolvedAt: string | null;
 }
 
+/** One operator-bound message held because no operator surface could take it. */
+export interface OperatorOutboxRow {
+  id: number;
+  /** Originating session, or null for a conductor-generated notice. */
+  session: string | null;
+  text: string;
+  /** Serialized selectable actions, so a queued request keeps its choices. */
+  actionsJson: string | null;
+  createdAt: string;
+}
+
 export interface RunbookAdoptionSessionRole {
   codename: string;
   role: string;
@@ -289,6 +300,17 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE session_state ADD COLUMN active_model TEXT;
   ALTER TABLE session_state ADD COLUMN active_launched_at TEXT;
+  `,
+  `
+  CREATE TABLE operator_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session TEXT,
+    text TEXT NOT NULL,
+    actions_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    delivered_at TEXT
+  );
+  CREATE INDEX idx_operator_outbox_pending ON operator_outbox(delivered_at, id);
   `,
 ];
 
@@ -661,6 +683,71 @@ export class Store {
   resetRespondingOperatorRequests(): number {
     return Number(
       this.db.prepare("UPDATE operator_requests SET status = 'pending' WHERE status = 'responding'").run().changes,
+    );
+  }
+
+  // ── operator outbox ───────────────────────────────────────────────────────
+
+  /**
+   * Persist an operator-bound message that no live surface accepted. Returns the
+   * row id, which is also the flush order: an operator attaching hours later
+   * should read what happened in the order it happened.
+   */
+  enqueueOperatorOutbox(text: string, actionsJson?: string, session?: string): number {
+    const result = this.db
+      .prepare('INSERT INTO operator_outbox (session, text, actions_json) VALUES (?, ?, ?)')
+      .run(session ?? null, text, actionsJson ?? null);
+    return Number(result.lastInsertRowid);
+  }
+
+  pendingOperatorOutbox(limit: number): OperatorOutboxRow[] {
+    const rows = this.db
+      .prepare(
+        'SELECT id, session, text, actions_json, created_at FROM operator_outbox WHERE delivered_at IS NULL ORDER BY id LIMIT ?',
+      )
+      .all(limit) as {
+      id: number;
+      session: string | null;
+      text: string;
+      actions_json: string | null;
+      created_at: string;
+    }[];
+    return rows.map((row) => ({
+      id: row.id,
+      session: row.session,
+      text: row.text,
+      actionsJson: row.actions_json,
+      createdAt: row.created_at,
+    }));
+  }
+
+  countPendingOperatorOutbox(): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM operator_outbox WHERE delivered_at IS NULL').get() as
+      { n: number } | undefined;
+    return row?.n ?? 0;
+  }
+
+  markOperatorOutboxDelivered(id: number): boolean {
+    const result = this.db
+      .prepare("UPDATE operator_outbox SET delivered_at = datetime('now') WHERE id = ? AND delivered_at IS NULL")
+      .run(id);
+    return result.changes === 1;
+  }
+
+  /**
+   * Drop the oldest still-undelivered entries, returning how many were removed.
+   * An unbounded queue on a fleet nobody is watching is its own failure: it
+   * grows without limit and then buries the recent, actionable notices under a
+   * week of stale ones.
+   */
+  trimOperatorOutbox(keep: number): number {
+    return Number(
+      this.db
+        .prepare(
+          'DELETE FROM operator_outbox WHERE delivered_at IS NULL AND id NOT IN ' +
+            '(SELECT id FROM operator_outbox WHERE delivered_at IS NULL ORDER BY id DESC LIMIT ?)',
+        )
+        .run(keep).changes,
     );
   }
 

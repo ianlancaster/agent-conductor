@@ -4,6 +4,7 @@ import { renderMessageReceipt, type Messaging } from './messaging.js';
 import { InvalidRequestError } from './errors.js';
 import { messageEnvelope } from './utils.js';
 import type { ConductorEventPublisher } from '../events/types.js';
+import type { OperatorSendOutcome } from './types.js';
 
 const MAX_OPTIONS = 8;
 const MAX_OPTION_LENGTH = 80;
@@ -11,7 +12,7 @@ const MAX_OPTION_LENGTH = 80;
 export interface OperatorRequestsDeps {
   store: Store;
   messaging: Pick<Messaging, 'sendToSession'>;
-  channelSend(message: ChannelMessage): Promise<boolean>;
+  channelSend(message: ChannelMessage): Promise<OperatorSendOutcome>;
   events?: ConductorEventPublisher;
   /**
    * Whether sessions may raise selectable requests at all. Read per call rather
@@ -45,8 +46,8 @@ export class OperatorRequests {
       );
     }
     if (rawOptions === undefined) {
-      const sent = await this.deps.channelSend({ text: messageEnvelope(from, message) });
-      return sent ? 'Sent to the operator.' : this.notDelivered();
+      const outcome = await this.deps.channelSend({ text: messageEnvelope(from, message) });
+      return this.receipt(outcome, 'Message');
     }
 
     const options = this.normalizeOptions(rawOptions);
@@ -61,8 +62,8 @@ export class OperatorRequests {
       label,
       command: `/respond ${String(requestId)} ${String(index + 1)}`,
     }));
-    const sent = await this.deps.channelSend({ text: messageEnvelope(from, message), actions });
-    return sent ? `Request #${String(requestId)} sent to the operator.` : this.notDelivered();
+    const outcome = await this.deps.channelSend({ text: messageEnvelope(from, message), actions });
+    return this.receipt(outcome, `Request #${String(requestId)}`);
   }
 
   async respond(requestId: number, option: number): Promise<string> {
@@ -129,7 +130,22 @@ export class OperatorRequests {
     return `Operator request #${String(request.id)} was already answered${selected === undefined ? '.' : `: ${selected}`}`;
   }
 
-  private notDelivered(): string {
-    return 'NOT delivered: no operator interface accepted the message (no console attached and every channel was absent or failed). The message was only written to the conductor log — repeat it when an operator connects.';
+  /**
+   * One receipt for both the delivered and the held case.
+   *
+   * The previous wording named which one had happened, and that made operator
+   * presence readable by any session in a single call — the capability
+   * deliberately kept out of `list_sessions` by threading an audience through
+   * it. It was not gratuitous: an honest failure receipt is what stopped a
+   * session waiting forever on a question nobody received. The outbox is what
+   * makes a uniform receipt true rather than reassuring, because a held message
+   * is now genuinely going to arrive. Only a message that could be neither sent
+   * nor held reports a failure, and that reports a storage fault rather than
+   * whether anyone is watching.
+   */
+  private receipt(outcome: OperatorSendOutcome, subject: string): string {
+    return outcome === 'lost'
+      ? `${subject} could NOT be queued for the operator: the conductor failed to store it. Nothing was delivered and nothing is held — raise it again.`
+      : `${subject} queued for the operator.`;
   }
 }
