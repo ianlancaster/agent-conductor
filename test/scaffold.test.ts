@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureFleetScaffold, renderSupervisorConfig } from '../src/cli/scaffold.js';
-import { deriveInstanceDefaults } from '../src/config/instance.js';
+import { deriveFleetDefaults } from '../src/config/derived-defaults.js';
 import { loadSupervisorConfig, validateConfig } from '../src/config/loader.js';
 
 let baseDir: string;
@@ -43,11 +43,24 @@ describe('ensureFleetScaffold', () => {
     });
   });
 
+  it('scaffolds named instances without creating or selecting the default instance', () => {
+    const created = ensureFleetScaffold(baseDir, 'frontend');
+    const root = join(baseDir, '.conductor', 'instances', 'frontend');
+
+    expect(created).toContain(join(root, 'config', 'supervisor.yaml'));
+    expect(existsSync(join(root, 'config', 'sessions'))).toBe(true);
+    expect(existsSync(join(root, '.env'))).toBe(true);
+    expect(existsSync(join(baseDir, '.conductor', 'config'))).toBe(false);
+    expect(loadSupervisorConfig(baseDir, process.env, 'frontend').paths.dataDir).toBe(
+      './.conductor/instances/frontend/data',
+    );
+  });
+
   it('writes the complete effective defaults instead of a commented override stub', () => {
     ensureFleetScaffold(baseDir);
     const text = readFileSync(join(baseDir, '.conductor', 'config', 'supervisor.yaml'), 'utf8');
     const config = loadSupervisorConfig(baseDir);
-    const derived = deriveInstanceDefaults(baseDir);
+    const derived = deriveFleetDefaults(baseDir);
 
     expect(text).toContain('heartbeatIntervalSeconds: 30');
     expect(text).toContain('maxTagLength: 50');
@@ -64,6 +77,7 @@ describe('ensureFleetScaffold', () => {
     expect(config.terminal.tmux.sessionName).toBe(derived.tmuxSessionName);
     expect(config.runtimes.codex.bypassHookTrust).toBe(true);
     expect(config.integrations).toEqual([]);
+    expect(text).not.toContain('federation:');
   });
 
   it('renders the detected backend as an explicit value', () => {

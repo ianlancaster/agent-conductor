@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { deriveInstanceDefaults, PORT_RANGE_SIZE, PORT_RANGE_START } from '../src/config/instance.js';
+import { deriveFleetDefaults, PORT_RANGE_SIZE, PORT_RANGE_START } from '../src/config/derived-defaults.js';
 import {
   detectBackend,
   loadSessionConfigs,
@@ -10,8 +10,9 @@ import {
   loadSupervisorConfig,
   sessionConfigDir,
   validateConfig,
+  validateFederationExposure,
 } from '../src/config/loader.js';
-import { resolveFleetPaths } from '../src/config/paths.js';
+import { resolveConductorInstance, resolveFleetPaths } from '../src/config/paths.js';
 import { ConfigWatcher } from '../src/config/watcher.js';
 import {
   DEFAULT_CLAUDE_CODE_EFFORTS,
@@ -81,6 +82,63 @@ describe('loadSupervisorConfig', () => {
     expect(config.runbooks.paths).toEqual([]);
     expect(config.events.journal.enabled).toBe(true);
     expect(config.integrations).toEqual([]);
+    expect(config.federation).toBeUndefined();
+  });
+
+  it('loads minimal explicit and wildcard federation configuration', () => {
+    writeSession('alpha', 'codename: alpha\nrepo: ./alpha\n');
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'federation:\n  name: frontend\n  expose:\n    - alpha\n',
+    );
+    expect(loadConfig(baseDir).supervisor.federation).toEqual({ name: 'frontend', expose: ['alpha'] });
+
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'federation:\n  name: frontend\n  expose:\n    - "*"\n');
+    expect(loadConfig(baseDir).supervisor.federation?.expose).toEqual(['*']);
+  });
+
+  it('rejects unsafe federation names, mixed wildcards, duplicates, and unknown startup exposure', () => {
+    writeSession('alpha', 'codename: alpha\nrepo: ./alpha\n');
+    for (const yaml of [
+      'federation:\n  name: ../frontend\n  expose: []\n',
+      'federation:\n  name: frontend\n  expose: ["*", alpha]\n',
+      'federation:\n  name: frontend\n  expose: [alpha, alpha]\n',
+    ]) {
+      writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), yaml);
+      expect(() => loadConfig(baseDir)).toThrow();
+    }
+
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'federation:\n  name: frontend\n  expose: [missing]\n');
+    expect(() => loadConfig(baseDir)).toThrow(/unknown session.*missing/);
+    expect(validateConfig(baseDir)).toEqual([expect.stringMatching(/unknown session.*missing/)]);
+  });
+
+  it('requires a loopback MCP bind when federation is enabled', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'mcp:\n  host: 0.0.0.0\nfederation:\n  name: frontend\n  expose: []\n',
+    );
+    expect(() => loadConfig(baseDir)).toThrow(/mcp\.host must be 127\.0\.0\.1 or localhost/);
+    expect(validateConfig(baseDir)).toEqual([expect.stringMatching(/mcp\.host must be 127\.0\.0\.1 or localhost/)]);
+  });
+
+  it('distinguishes an unparsed exposed session from a genuinely absent one', () => {
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'federation:\n  name: frontend\n  expose: [alpha]\n');
+    writeSession('alpha', 'codename: [\n');
+    const supervisor = loadSupervisorConfig(baseDir);
+    const sessions = loadSessionConfigs(baseDir, { tolerant: true });
+    expect(() =>
+      validateFederationExposure(supervisor, sessions, join(baseDir, 'config', 'supervisor.yaml'), {
+        sessionsDir: join(baseDir, 'config', 'sessions'),
+      }),
+    ).toThrow(/exposed session configuration failed to parse: alpha/);
+
+    rmSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'));
+    expect(() =>
+      validateFederationExposure(supervisor, sessions, join(baseDir, 'config', 'supervisor.yaml'), {
+        sessionsDir: join(baseDir, 'config', 'sessions'),
+      }),
+    ).toThrow(/unknown session.*alpha/);
   });
 
   it('preserves an explicit opt-out from the Codex hook-trust default', () => {
@@ -199,6 +257,24 @@ describe('loadSupervisorConfig', () => {
     expect(resolveFleetPaths(baseDir).runbooksDir).toBe(join(baseDir, '.conductor', 'runbooks'));
   });
 
+  it('resolves named instances under .conductor without changing workspace roots', () => {
+    rmSync(join(baseDir, 'config'), { recursive: true });
+    const resolved = resolveConductorInstance(baseDir, 'frontend');
+
+    expect(resolved.baseDir).toBe(baseDir);
+    expect(resolved.name).toBe('frontend');
+    expect(resolved.paths.rootDir).toBe(join(baseDir, '.conductor', 'instances', 'frontend'));
+    expect(resolved.paths.sessionsDir).toBe(join(baseDir, '.conductor', 'instances', 'frontend', 'config', 'sessions'));
+    expect(resolved.paths.dataDirDefault).toBe('./.conductor/instances/frontend/data');
+    expect(loadSupervisorConfig(resolved).paths.dataDir).toBe('./.conductor/instances/frontend/data');
+  });
+
+  it('rejects reserved, unsafe, and legacy-root named instances', () => {
+    expect(() => resolveFleetPaths(baseDir, 'default')).toThrow(/reserved/);
+    expect(() => resolveFleetPaths(baseDir, '../other')).toThrow(/must match/);
+    expect(() => resolveFleetPaths(baseDir, 'frontend')).toThrow(/legacy root layout/);
+  });
+
   it('rejects ambiguous preferred and legacy configuration layouts', () => {
     mkdirSync(join(baseDir, '.conductor', 'config', 'sessions'), { recursive: true });
     writeFileSync(join(baseDir, '.conductor', 'config', 'supervisor.yaml'), '');
@@ -215,7 +291,7 @@ describe('loadSupervisorConfig', () => {
 
   it('derives per-fleet instance defaults so two fleets never collide', () => {
     const config = loadSupervisorConfig(baseDir);
-    const derived = deriveInstanceDefaults(baseDir);
+    const derived = deriveFleetDefaults(baseDir);
     expect(config.mcp.port).toBe(derived.port);
     expect(config.mcp.port).toBeGreaterThanOrEqual(PORT_RANGE_START);
     expect(config.mcp.port).toBeLessThan(PORT_RANGE_START + PORT_RANGE_SIZE);

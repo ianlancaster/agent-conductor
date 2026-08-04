@@ -16,10 +16,14 @@ export interface McpServerOptions {
   host: string;
   keepAliveTimeoutMs: number;
   tools: McpToolDefinition[];
+  /** Resolved supervisor config path used in actionable bind errors. */
+  configPath?: string;
   /** Lifecycle event pushed by a session's runtime hooks. */
   onEvent(session: string, body: unknown): void;
   /** CLI command line (from the interactive client via POST /cmd). */
   onCommand?(line: string, interactionId: string): Promise<string>;
+  /** Same-user loopback federation ingress; absent when federation is disabled. */
+  onFederationRequest?(body: unknown): Promise<unknown>;
   /** Internal SSE heartbeat cadence. Override only for deterministic tests. */
   feedHeartbeatMs?: number;
 }
@@ -69,7 +73,7 @@ export class ConductorMcpServer {
           reject(
             new Error(
               `Port ${String(this.opts.port)} is already in use — likely another conductor. ` +
-                `Set a unique 'mcp: port:' in this fleet's .conductor/config/supervisor.yaml, or stop the other process.`,
+                `Set a unique 'mcp: port:' in ${this.opts.configPath ?? "this fleet's .conductor/config/supervisor.yaml"}, or stop the other process.`,
             ),
           );
           return;
@@ -202,6 +206,26 @@ export class ConductorMcpServer {
           : 'cli';
       const reply = await this.opts.onCommand(line, interactionId);
       this.respondJson(res, 200, { reply });
+      return;
+    }
+
+    if (path === '/federation') {
+      if (this.opts.onFederationRequest === undefined) {
+        this.respondJson(res, 404, { ok: false, error: 'Federation is not enabled.' });
+        return;
+      }
+      try {
+        const result = await this.opts.onFederationRequest(body);
+        this.respondJson(res, 200, { ok: true, result });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log().warn('federation', `Rejected federation request: ${message}`);
+        this.respondJson(res, error instanceof InvalidRequestError ? 400 : 500, {
+          ok: false,
+          error: message,
+          invalid: error instanceof InvalidRequestError,
+        });
+      }
       return;
     }
 

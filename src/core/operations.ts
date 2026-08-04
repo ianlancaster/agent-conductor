@@ -8,6 +8,7 @@ import type { SessionStateManager } from './state.js';
 import { InvalidRequestError } from './errors.js';
 import type { Placement } from './types.js';
 import type { RunbookAdoptionActions } from './runbook-adoptions.js';
+import type { FederationListing } from '../federation/types.js';
 import {
   operationSchema as schema,
   optionalString,
@@ -22,7 +23,13 @@ export type { JsonPropertySchema, OperationInputSchema } from './operation-schem
 
 export type OperationAudience = 'operator' | 'session';
 
-export type OperationActor = { audience: 'operator'; id: string } | { audience: 'session'; codename: string };
+export interface RemoteOrigin {
+  fleet: string;
+  session: string;
+}
+
+export type OperationActor =
+  { audience: 'operator'; id: string } | { audience: 'session'; codename: string; origin?: RemoteOrigin };
 
 export interface OperationDefinition {
   name: string;
@@ -30,10 +37,12 @@ export interface OperationDefinition {
   /** Canonical description of the successful result exposed by every adapter. */
   resultDescription: string;
   audiences: readonly OperationAudience[];
+  /** Required so every new operation makes a deliberate federation decision. */
+  federation: 'routable' | 'local-only';
   inputSchema: OperationInputSchema;
   /** The actor's identity is applied mechanically to messages made by this operation. */
   signedIdentity?: boolean;
-  handler(args: Record<string, unknown>, actor: OperationActor): Promise<string | MessageReceipt>;
+  handler(args: Record<string, unknown>, actor: OperationActor): Promise<string | MessageReceipt | FederationListing>;
 }
 
 export interface ConductorOperationDeps {
@@ -43,10 +52,12 @@ export interface ConductorOperationDeps {
   sentinel: StallSentinelRouter;
   states: SessionStateManager;
   sessions(): Map<string, SessionConfig>;
+  /** Current sessions published to peers. Undefined when federation is disabled. */
+  exposedSessions?(): ReadonlySet<string>;
   modelHints: Record<string, readonly string[]>;
   effortHints: Record<string, readonly string[]>;
   runtimeNames?: readonly string[];
-  statusReport(codename?: string): string;
+  statusReport(codename?: string, only?: ReadonlySet<string>): string;
   tail(codename: string, lines: number): Promise<string>;
   /** Deliberately bypass the protected delivery queue for terminal control input. */
   typeInPane(codename: string, text: string): Promise<string>;
@@ -56,6 +67,8 @@ export interface ConductorOperationDeps {
   banish(codename: string): Promise<string>;
   setSentinel(codename: string | undefined): void;
   getDocumentation(topic?: string): Promise<string>;
+  /** Present only when federation is enabled; keeps discovery absent otherwise. */
+  listFederation?(): Promise<FederationListing>;
   runbookAdoptions: RunbookAdoptionActions;
 }
 
@@ -156,7 +169,11 @@ export class ConductorOperations {
     return this.deps.sessions().has(codename);
   }
 
-  async invoke(name: string, args: Record<string, unknown>, actor: OperationActor): Promise<string | MessageReceipt> {
+  async invoke(
+    name: string,
+    args: Record<string, unknown>,
+    actor: OperationActor,
+  ): Promise<string | MessageReceipt | FederationListing> {
     const definition = this.byName.get(name);
     if (definition === undefined) throw new Error(`Unknown operation: ${name}`);
     if (!definition.audiences.includes(actor.audience)) {
@@ -169,12 +186,13 @@ export class ConductorOperations {
   private buildDefinitions(): OperationDefinition[] {
     const templateNames = this.deps.lifecycle.templateNames();
     const runRuntimeProperty = runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex']);
-    return [
+    const definitions: OperationDefinition[] = [
       {
         name: 'send_to_session',
         description: "Send a message to another session's pane, starting it if needed.",
         resultDescription: 'Returns a structured receipt with the message id and delivered or queued status.',
         audiences: BOTH,
+        federation: 'routable',
         signedIdentity: true,
         inputSchema: schema(
           {
@@ -189,28 +207,36 @@ export class ConductorOperations {
           },
           ['codename', 'message'],
         ),
-        handler: (args, actor) =>
-          this.deps.messaging.sendToSession(
+        handler: (args, actor) => {
+          const codename = requireString(args, 'codename');
+          if (!this.isVisible(actor, codename)) return Promise.resolve(`Unknown session: ${codename}`);
+          return this.deps.messaging.sendToSession(
             actorName(actor),
-            requireString(args, 'codename'),
+            codename,
             requireString(args, 'message'),
             optionalString(args, 'idempotencyKey'),
-          ),
+          );
+        },
       },
       {
         name: 'broadcast',
         description: 'Send a message to every active session except the sender. Use sparingly.',
         resultDescription: 'Returns a delivery summary for the active recipients.',
         audiences: BOTH,
+        federation: 'routable',
         signedIdentity: true,
         inputSchema: schema({ message: stringProperty('Message text') }, ['message']),
-        handler: (args, actor) => this.deps.messaging.broadcast(actorName(actor), requireString(args, 'message')),
+        handler: (args, actor) =>
+          this.deps.messaging.broadcast(actorName(actor), requireString(args, 'message'), (codename) =>
+            this.isVisible(actor, codename),
+          ),
       },
       {
         name: 'send_to_operator',
         description: 'Send a message, optionally with selectable choices, to the operator.',
         resultDescription: 'Returns an acknowledgement and request id when selectable choices were supplied.',
         audiences: SESSION_ONLY,
+        federation: 'local-only',
         signedIdentity: true,
         inputSchema: schema({ message: stringProperty('Message text'), options: optionsProperty }, ['message']),
         handler: (args, actor) =>
@@ -225,6 +251,7 @@ export class ConductorOperations {
         description: 'Answer one pending selectable request from a session.',
         resultDescription: 'Returns a delivery acknowledgement or reports that the request cannot be claimed.',
         audiences: OPERATOR_ONLY,
+        federation: 'local-only',
         inputSchema: schema(
           {
             requestId: { type: 'number', minimum: 1, description: 'Operator request ID' },
@@ -240,6 +267,7 @@ export class ConductorOperations {
           'Start one registered session, or all registered sessions, with optional runtime and effort overrides.',
         resultDescription: 'Returns one result line per targeted session.',
         audiences: BOTH,
+        federation: 'routable',
         inputSchema: schema(
           {
             codename: stringProperty("Session codename or 'all'"),
@@ -265,6 +293,7 @@ export class ConductorOperations {
         description: 'Stop one running session, or all running sessions.',
         resultDescription: 'Returns one result line per targeted session.',
         audiences: BOTH,
+        federation: 'routable',
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
           this.forTargets(args, actor, 'stop', (codename) => this.deps.lifecycle.stop(codename)),
@@ -275,6 +304,7 @@ export class ConductorOperations {
           "Continue one session's most recent conversation, or all sessions, with optional runtime and effort overrides.",
         resultDescription: 'Returns one result line per targeted session.',
         audiences: BOTH,
+        federation: 'routable',
         inputSchema: schema(
           {
             codename: stringProperty("Session codename or 'all'"),
@@ -301,6 +331,7 @@ export class ConductorOperations {
           "Create, register, and start a session from an empty directory, registered template, or Git worktree. The destination is path or spawn.dirPattern; relative destinations resolve from the fleet directory. A new worktree branch starts at the source repository's current HEAD; existing branches are checked out as-is.",
         resultDescription: 'Returns the new session path and launch result.',
         audiences: BOTH,
+        federation: 'local-only',
         inputSchema: schema(
           {
             codename: stringProperty('New session codename'),
@@ -359,6 +390,7 @@ export class ConductorOperations {
           'Stop and deregister a session, optionally removing its guarded working directory. Git-ignored files do not make a worktree dirty and are deleted with it.',
         resultDescription: 'Returns the teardown result and explains any directory retained for safety.',
         audiences: BOTH,
+        federation: 'local-only',
         inputSchema: schema(
           {
             codename: stringProperty('Session codename'),
@@ -382,6 +414,7 @@ export class ConductorOperations {
         resultDescription:
           'Returns the visible receipt as formatted JSON, or an ambiguity-preserving not-found/not-visible response.',
         audiences: BOTH,
+        federation: 'routable',
         inputSchema: schema({ messageId: { type: 'number', minimum: 1, description: 'Message receipt id' } }, [
           'messageId',
         ]),
@@ -401,6 +434,7 @@ export class ConductorOperations {
         description: 'Cancel a pending direct message by receipt id before it begins writing to the recipient pane.',
         resultDescription: 'Returns the updated receipt as formatted JSON.',
         audiences: BOTH,
+        federation: 'routable',
         inputSchema: schema({ messageId: { type: 'number', minimum: 1, description: 'Message receipt id' } }, [
           'messageId',
         ]),
@@ -420,6 +454,7 @@ export class ConductorOperations {
         description: 'Toggle auto stall handling for one session, or all sessions.',
         resultDescription: 'Returns the resulting auto state for each targeted session.',
         audiences: BOTH,
+        federation: 'routable',
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
           this.forTargets(args, actor, 'toggle auto for', (codename) => {
@@ -433,6 +468,7 @@ export class ConductorOperations {
         description: 'Pause one session, or all sessions: suppress schedules and stall routing.',
         resultDescription: 'Returns the resulting pause state for each targeted session.',
         audiences: BOTH,
+        federation: 'routable',
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
           this.forTargets(args, actor, 'pause', (codename) => {
@@ -446,6 +482,7 @@ export class ConductorOperations {
         description: 'Resume one paused session, or all paused sessions.',
         resultDescription: 'Returns the resulting pause state for each targeted session.',
         audiences: BOTH,
+        federation: 'routable',
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
           this.forTargets(args, actor, 'resume', (codename) => {
@@ -459,6 +496,7 @@ export class ConductorOperations {
         description: 'Designate a registered session as the stall sentinel, or omit codename to clear it.',
         resultDescription: 'Returns the resulting sentinel assignment.',
         audiences: BOTH,
+        federation: 'local-only',
         inputSchema: schema({ codename: stringProperty('Session codename; omit to clear') }),
         handler: (args) => {
           const codename = optionalString(args, 'codename');
@@ -473,6 +511,7 @@ export class ConductorOperations {
         description: 'Toggle detection of all registered non-sentinel sessions being non-working.',
         resultDescription: 'Returns whether fleet watch is now on or off.',
         audiences: BOTH,
+        federation: 'local-only',
         inputSchema: schema(),
         handler: () => Promise.resolve(`Fleet watch ${this.deps.sentinel.toggleFleetWatch() ? 'on' : 'off'}.`),
       },
@@ -481,6 +520,7 @@ export class ConductorOperations {
         description: `Set or clear a session status label (maximum ${String(this.deps.states.tagMaxLength())} characters).`,
         resultDescription: 'Returns the resulting tag state.',
         audiences: BOTH,
+        federation: 'routable',
         inputSchema: schema(
           {
             codename: stringProperty('Session codename'),
@@ -493,8 +533,9 @@ export class ConductorOperations {
           },
           ['codename'],
         ),
-        handler: async (args) => {
+        handler: async (args, actor) => {
           const codename = requireString(args, 'codename');
+          if (!this.isVisible(actor, codename)) return `Unknown session: ${codename}`;
           if (!this.deps.states.has(codename)) throw new InvalidRequestError(`Unknown session: ${codename}`);
           const tag = optionalString(args, 'tag');
           this.deps.states.setTag(codename, tag);
@@ -507,6 +548,7 @@ export class ConductorOperations {
         description: 'Return the calling session identity and status derived from its MCP connection.',
         resultDescription: 'Returns the connection-derived identity and session status as formatted JSON.',
         audiences: SESSION_ONLY,
+        federation: 'local-only',
         inputSchema: schema(),
         handler: (_args, actor) => {
           if (actor.audience !== 'session') throw new InvalidRequestError('whoami requires a session caller');
@@ -537,6 +579,7 @@ export class ConductorOperations {
           'List or lazily read the version-matched Agent Conductor handbook, including runbooks, fleet recipes, configuration paths, adapters, event subscribers, worktrees, scheduling, supervision, and troubleshooting.',
         resultDescription: 'Returns a JSON topic index or the requested handbook topic with authoritative fleet paths.',
         audiences: SESSION_ONLY,
+        federation: 'local-only',
         inputSchema: schema({
           topic: {
             type: 'string',
@@ -552,6 +595,7 @@ export class ConductorOperations {
           'Record explicit operator approval to use one installed runbook version and topic, optionally assigning registered sessions to roles.',
         resultDescription: 'Returns the stable adoption id for the appended provenance record.',
         audiences: OPERATOR_ONLY,
+        federation: 'local-only',
         inputSchema: schema(
           {
             runbookId: stringProperty('Installed namespaced runbook id'),
@@ -582,6 +626,7 @@ export class ConductorOperations {
           'Close one active runbook adoption and record its operator-approved replacement while preserving the prior session-role assignments.',
         resultDescription: 'Returns both the superseded and replacement stable adoption ids.',
         audiences: OPERATOR_ONLY,
+        federation: 'local-only',
         inputSchema: schema(
           {
             adoptionId: stringProperty('Stable id of the active adoption to supersede'),
@@ -606,6 +651,7 @@ export class ConductorOperations {
         description: 'End one active runbook adoption by stable id under explicit operator authority.',
         resultDescription: 'Returns confirmation that the adoption was ended.',
         audiences: OPERATOR_ONLY,
+        federation: 'local-only',
         inputSchema: schema({ adoptionId: stringProperty('Stable id of the active adoption to end') }, ['adoptionId']),
         handler: (args) => Promise.resolve(this.deps.runbookAdoptions.end(requireString(args, 'adoptionId'))),
       },
@@ -615,10 +661,16 @@ export class ConductorOperations {
           'List all registered sessions with runtime status, working-directory path, and current Git branch.',
         resultDescription: 'Returns the rendered fleet status report.',
         audiences: BOTH,
+        federation: 'routable',
         inputSchema: schema(),
-        handler: async () => {
-          await this.deps.lifecycle.reconcile();
-          return this.deps.statusReport();
+        handler: async (_args, actor) => {
+          const visible = this.visibleSessions(actor);
+          if (visible === undefined) {
+            await this.deps.lifecycle.reconcile();
+          } else {
+            for (const codename of visible) await this.deps.lifecycle.reconcile(codename);
+          }
+          return this.deps.statusReport(undefined, visible);
         },
       },
       {
@@ -627,11 +679,13 @@ export class ConductorOperations {
           'Return detailed status for one session as JSON, including its working-directory path, branch, Conductor-resolved model and effort, and a freshly reconciled foreground-process observation.',
         resultDescription: 'Returns the reconciled session status as formatted JSON.',
         audiences: BOTH,
+        federation: 'routable',
         inputSchema: schema({ codename: stringProperty('Session codename') }, ['codename']),
-        handler: async (args) => {
+        handler: async (args, actor) => {
           const codename = requireString(args, 'codename');
+          if (!this.isVisible(actor, codename)) return `Unknown session: ${codename}`;
           await this.deps.lifecycle.reconcile(codename);
-          return this.deps.statusReport(codename);
+          return this.deps.statusReport(codename, this.visibleSessions(actor));
         },
       },
       {
@@ -639,6 +693,7 @@ export class ConductorOperations {
         description: `Read trailing pane output (default ${String(this.deps.tailLimits.defaultLines)} lines, maximum ${String(this.deps.tailLimits.maxLines)}). Reserve this for user-requested inspection or diagnosing unanswered/failed peer communication; use send_to_session for normal agent conversation and status requests.`,
         resultDescription: 'Returns the requested trailing pane text.',
         audiences: BOTH,
+        federation: 'routable',
         inputSchema: schema(
           {
             codename: stringProperty('Session codename'),
@@ -646,10 +701,12 @@ export class ConductorOperations {
           },
           ['codename'],
         ),
-        handler: (args) => {
+        handler: (args, actor) => {
+          const codename = requireString(args, 'codename');
+          if (!this.isVisible(actor, codename)) return Promise.resolve(`Unknown session: ${codename}`);
           const requested = typeof args.lines === 'number' ? Math.floor(args.lines) : this.deps.tailLimits.defaultLines;
           const lines = Math.min(Math.max(requested, 1), this.deps.tailLimits.maxLines);
-          return this.deps.tail(requireString(args, 'codename'), lines);
+          return this.deps.tail(codename, lines);
         },
       },
       {
@@ -658,6 +715,7 @@ export class ConductorOperations {
           "Type raw text immediately into a session's pane without a message envelope or delivery queue. This can overwrite terminal input; use it deliberately for prompts and slash commands.",
         resultDescription: 'Returns a terminal-write confirmation.',
         audiences: BOTH,
+        federation: 'local-only',
         inputSchema: schema({ codename: stringProperty('Session codename'), text: stringProperty('Raw text') }, [
           'codename',
           'text',
@@ -672,6 +730,7 @@ export class ConductorOperations {
         description: "Bring a session's pane into the operator's current view.",
         resultDescription: 'Returns a placement confirmation or capability error.',
         audiences: OPERATOR_ONLY,
+        federation: 'local-only',
         inputSchema: schema({ codename: stringProperty('Session codename') }, ['codename']),
         handler: (args) => {
           const codename = requireString(args, 'codename');
@@ -684,6 +743,7 @@ export class ConductorOperations {
         description: "Move a session's pane into the detached fleet session while it keeps running.",
         resultDescription: 'Returns a placement confirmation or capability error.',
         audiences: OPERATOR_ONLY,
+        federation: 'local-only',
         inputSchema: schema({ codename: stringProperty('Session codename') }, ['codename']),
         handler: (args) => {
           const codename = requireString(args, 'codename');
@@ -692,6 +752,18 @@ export class ConductorOperations {
         },
       },
     ];
+    if (this.deps.listFederation !== undefined) {
+      definitions.push({
+        name: 'list_federation',
+        description: 'List the local federation fleet and every reachable fleet with its exposed sessions.',
+        resultDescription: 'Returns one sorted snapshot containing the local fleet and exposed peer rosters.',
+        audiences: SESSION_ONLY,
+        federation: 'local-only',
+        inputSchema: schema(),
+        handler: () => this.deps.listFederation?.() ?? Promise.reject(new Error('Federation is not enabled.')),
+      });
+    }
+    return definitions;
   }
 
   private async forTargets(
@@ -703,16 +775,26 @@ export class ConductorOperations {
     const target = requireString(args, 'codename');
     if (target !== 'all') {
       this.noSelf(actor, target, verb);
-      if (!this.deps.states.has(target)) return `Unknown session: ${target}`;
+      if (!this.isVisible(actor, target) || !this.deps.states.has(target)) return `Unknown session: ${target}`;
       return action(target);
     }
 
     const results: string[] = [];
     for (const codename of this.deps.sessions().keys()) {
+      if (!this.isVisible(actor, codename)) continue;
       if (actor.audience === 'session' && codename === actor.codename) continue;
       results.push(await action(codename));
     }
     return results.join('\n');
+  }
+
+  private visibleSessions(actor: OperationActor): ReadonlySet<string> | undefined {
+    if (actor.audience !== 'session' || actor.origin === undefined) return undefined;
+    return this.deps.exposedSessions?.() ?? new Set<string>();
+  }
+
+  private isVisible(actor: OperationActor, codename: string): boolean {
+    return this.visibleSessions(actor)?.has(codename) ?? true;
   }
 
   private noSelf(actor: OperationActor, codename: string, verb: string): void {

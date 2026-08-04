@@ -102,7 +102,7 @@ Every event includes:
 | `seq`                 | Monotonic sequence number for this instance              |
 | `occurredAt`          | ISO-8601 time the core fact was emitted                  |
 | `conductorInstanceId` | Fresh identity for this Supervisor construction          |
-| `fleetId`             | Stable, non-secret slug derived from the fleet directory |
+| `fleetId`             | Stable, non-secret mechanical ID for this fleet instance |
 | `type`                | Discriminant for the typed event union                   |
 
 Compatible releases may add event types or optional fields without changing `schemaVersion`.
@@ -162,6 +162,12 @@ delivery confirmation and therefore emit no message event. `launchModel` and `la
 the settings Conductor selected for process launch, not proof of the provider's currently served
 model or retained effort. Workspace events never include local paths. Runbook adoption events are
 emitted only by the operator-authorized provenance operations described in the runbook guide.
+
+With named instances, `fleetId` includes the instance identity so two Conductors in one directory
+cannot share an event ordering or pane-ownership domain. It is not the operator-chosen
+`federation.name` and must not be used as a federation routing address. When a direct message
+arrives through local federation, event `sender` metadata is the qualified mechanical identity
+`<session>@<federation-name>`; the recipient remains the destination fleet's local codename.
 
 ## Consumer checklist
 

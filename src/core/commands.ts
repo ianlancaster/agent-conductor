@@ -1,5 +1,5 @@
 import type { ConductorOperations, OperationActor } from './operations.js';
-import { renderMessageReceipt } from './messaging.js';
+import { isMessageReceipt, renderMessageReceipt } from './messaging.js';
 import type { Placement } from './types.js';
 
 /** Tokenize a command line, honoring double quotes. */
@@ -12,6 +12,11 @@ export function tokenize(line: string): string[] {
 }
 
 export type CommandGroup = 'Sessions' | 'Conversation' | 'Modes' | 'Lifecycle' | 'Runbooks';
+
+function renderOperationResult(result: Awaited<ReturnType<ConductorOperations['invoke']>>): string {
+  if (typeof result === 'string') return result;
+  return isMessageReceipt(result) ? renderMessageReceipt(result) : JSON.stringify(result, null, 2);
+}
 
 export interface OperatorCommandDefinition {
   command: string;
@@ -101,9 +106,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
     ...operationRuntimeChoices.filter((choice) => choice !== 'cc'),
   ].join('|');
   const invoke = (name: string, args: Record<string, unknown>, actor: OperationActor): Promise<string> =>
-    operations
-      .invoke(name, args, actor)
-      .then((result) => (typeof result === 'string' ? result : renderMessageReceipt(result)));
+    operations.invoke(name, args, actor).then(renderOperationResult);
 
   const targetCommand = (
     command: string,
@@ -534,7 +537,7 @@ export class CommandRouter {
         const message = args.join(' ');
         if (message.length === 0) return `Talking to ${commandName}.`;
         const result = await this.operations.invoke('send_to_session', { codename: commandName, message }, actor);
-        return typeof result === 'string' ? result : renderMessageReceipt(result);
+        return renderOperationResult(result);
       }
       return `Unknown command: /${commandName}. Try /help.`;
     } catch (error) {
@@ -549,7 +552,7 @@ export class CommandRouter {
     }
     return this.operations
       .invoke('send_to_session', { codename: target, message: text }, { audience: 'operator', id: interactionId })
-      .then((result) => (typeof result === 'string' ? result : renderMessageReceipt(result)));
+      .then(renderOperationResult);
   }
 
   definitions(): readonly OperatorCommandDefinition[] {

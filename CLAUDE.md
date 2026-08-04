@@ -65,16 +65,20 @@ tested against in-memory fakes (`test/fakes/`).
 - `src/core/` — supervisor (wiring only), lifecycle, delivery (typing-aware queue), health
   (event-driven + pane-diff fallback), sentinel (stall routing), messaging, operations
   (canonical control plane), commands (operator adapter), scheduler, state, status, worktree.
-- `src/mcp/` — HTTP JSON-RPC server. **Identity is mechanical**: the codename comes from the
-  URL path (`/mcp/<codename>`, `/events/<codename>`), never from request contents.
+- `src/mcp/` — HTTP JSON-RPC server plus the optional same-machine federation ingress.
+  Ordinary identity is mechanical: the codename comes from the URL path
+  (`/mcp/<codename>`, `/events/<codename>`), never from request contents.
+- `src/federation/` — direct, non-transitive peer discovery and routing for independently
+  running local Conductors. Exposure is canonical operation policy, not transport policy.
 - `docs/agent-guide.md` + `src/core/documentation.ts` — version-matched, topic-marked operating
   reference exposed lazily to managed sessions through `get_conductor_docs`. Keep the injected
   protocol concise; put extended feature explanations, composition recipes, and troubleshooting
   here. The tool also returns authoritative fleet paths without reading secret values.
 - `src/store/` — single SQLite store (runs, messages, health_log,
   session_state, workspace KV). Migrations are append-only entries in `MIGRATIONS`.
-- `src/config/` — zod schemas; every tunable has a default in `schema.ts`. One mtime watcher
-  feeds both roster reload and scheduler rebuild.
+- `src/config/` — zod schemas; every tunable has a default in `schema.ts`. `ResolvedInstance`
+  gives the default or named instance one coherent path and mechanical-identity value object.
+  One mtime watcher feeds both roster reload and scheduler rebuild.
 
 ## Extension taxonomy
 
@@ -110,8 +114,14 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
 
 ## Key invariants
 
-1. **Never trust request contents for identity.** Tool handlers receive `caller` derived
-   from the URL. No `from` parameters, ever.
+1. **Never trust ordinary request contents for identity.** Tool handlers receive `caller` derived
+   from the URL. No `from` parameters, ever. The sole exception is the private `/federation`
+   ingress: a peer must carry its origin because it cannot use the destination's session URL.
+   This is acceptable only because every local MCP `/cmd` endpoint already grants same-user
+   operator authority without credentials, so federation creates no new trust boundary. Ingress
+   must validate protocol, separately validate fleet and session names, reject `@`, unknown peers,
+   and self-fleet origins, and construct the qualified remote actor itself. Never expose this
+   unauthenticated transport beyond the local machine.
 2. **The conductor makes no LLM calls.** All judgment lives in the sentinel agent;
    the conductor's decisions are mechanical (dedup, watchdog, routing).
 3. **Auto is one boolean, not an autonomy framework.** Auto off is the implicit hand-driven
@@ -136,7 +146,8 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
 ## Adding things
 
 - **New control primitive**: add one definition to `ConductorOperations` with its audiences,
-  schema, and handler; map its operator syntax in `buildOperatorCommands`. MCP rendering is
+  required `federation: 'routable' | 'local-only'` classification, schema, and handler; map its
+  operator syntax in `buildOperatorCommands`. MCP rendering is
   automatic. Update `/help`, README/protocol docs, relevant channel behavior, and the
   surface-contract test. Verify all applicable callers expose the same semantics.
 - **New per-session setting**: `SessionState` in core/types.ts → SessionStateManager (+ persist

@@ -5,9 +5,13 @@ import type { ChannelAdapter, ChannelMessage } from '../channels/types.js';
 import { renderChannelMessage } from '../channels/render.js';
 import { buildConfiguredChannels } from '../channels/configured.js';
 import { resolveFleetEnvironment } from '../config/environment.js';
-import { fleetSlug } from '../config/instance.js';
-import { sessionConfigDir, loadSessionConfigs, loadSupervisorConfig } from '../config/loader.js';
-import { resolveFleetDataDir, resolveFleetPaths } from '../config/paths.js';
+import {
+  sessionConfigDir,
+  loadSessionConfigs,
+  loadSupervisorConfig,
+  validateFederationExposure,
+} from '../config/loader.js';
+import { resolveConductorInstance, resolveFleetDataDir, type ResolvedInstance } from '../config/paths.js';
 import type { SessionConfig, SupervisorConfig } from '../config/schema.js';
 import { ConfigWatcher } from '../config/watcher.js';
 import { initLogger, log } from '../logger.js';
@@ -43,6 +47,8 @@ import { formatFleetStatusReport, resolvedSessionEffort, resolvedSessionModel, s
 import { observePaneActivity } from './activity.js';
 import { ShepherdManager } from './shepherd-manager.js';
 import { IntegrationManager } from './integration-manager.js';
+import { FederationRegistry } from '../federation/registry.js';
+import { FederationRouter } from '../federation/router.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 const SENTINEL_WORKSPACE_KEY = 'sentinel.codename';
@@ -55,6 +61,10 @@ export interface SupervisorStartOptions {
 }
 
 export interface SupervisorOptions {
+  /** Named instance under .conductor/instances; omitted preserves the historical default. */
+  instance?: string;
+  /** Deterministic federation registry seam for embedding and tests. */
+  federationDirectory?: string;
   /** Additional operator adapters. They receive the same canonical command surface as the built-ins. */
   channels?: ChannelAdapter[];
   /** Disable environment-configured built-in adapters, primarily for embedding and tests. */
@@ -78,6 +88,7 @@ export interface SupervisorOptions {
 
 /** Thin orchestrator: constructs the modules, wires the seams, owns the loops. */
 export class Supervisor {
+  readonly baseDir: string;
   readonly config: SupervisorConfig;
   private sessions: Map<string, SessionConfig>;
 
@@ -94,6 +105,8 @@ export class Supervisor {
   private readonly sentinel: StallSentinelRouter;
   private readonly messaging: Messaging;
   private readonly operations: ConductorOperations;
+  private readonly federationRegistry: FederationRegistry | undefined;
+  private readonly federationRouter: FederationRouter | undefined;
   private readonly operatorRequests: OperatorRequests;
   private readonly commands: CommandRouter;
   private readonly mcpServer: ConductorMcpServer;
@@ -105,18 +118,20 @@ export class Supervisor {
   private readonly channels: ChannelAdapter[] = [];
   private readonly channelFailures = new Map<string, string>();
   private readonly env: NodeJS.ProcessEnv;
+  private readonly resolvedInstance: ResolvedInstance;
   private readonly lock: FleetLock;
   private heartbeatTimer: NodeJS.Timeout | undefined;
 
-  constructor(
-    readonly baseDir: string,
-    options: SupervisorOptions = {},
-  ) {
-    this.env = resolveFleetEnvironment(baseDir, options.env ?? process.env);
-    this.config = loadSupervisorConfig(baseDir, this.env);
+  constructor(baseDir: string, options: SupervisorOptions = {}) {
+    this.resolvedInstance = resolveConductorInstance(baseDir, options.instance);
+    this.baseDir = this.resolvedInstance.baseDir;
+    baseDir = this.baseDir;
+    const inheritedEnv = options.env ?? process.env;
+    this.env = resolveFleetEnvironment(this.resolvedInstance, inheritedEnv);
+    this.config = loadSupervisorConfig(this.resolvedInstance, this.env);
     this.shepherd = new ShepherdManager(this.config.shepherd);
     const dataDir = resolveFleetDataDir(baseDir, this.config.paths.dataDir);
-    const fleetPaths = resolveFleetPaths(baseDir);
+    const fleetPaths = this.resolvedInstance.paths;
     initLogger({ level: this.config.supervisor.logLevel, filePath: join(dataDir, 'conductor.log') });
     this.lock = new FleetLock(join(dataDir, 'conductor.lock'), process.pid, baseDir);
     const configuredChannels =
@@ -128,10 +143,29 @@ export class Supervisor {
       this.channelFailures.set(unavailable.name, unavailable.reason);
     }
 
-    this.sessions = loadSessionConfigs(baseDir, {
+    this.sessions = loadSessionConfigs(this.resolvedInstance, {
       tolerant: true,
       defaultRuntime: this.config.defaults.runtime,
     });
+    validateFederationExposure(this.config, this.sessions, fleetPaths.supervisorFile, {
+      sessionsDir: fleetPaths.sessionsDir,
+      // Tolerant startup keeps malformed session files out of the published
+      // roster without turning one editor/save error into a fleet-wide outage.
+      tolerateUnparsed: true,
+    });
+    this.federationRegistry =
+      this.config.federation === undefined
+        ? undefined
+        : new FederationRegistry({
+            name: this.config.federation.name,
+            host: this.config.mcp.host,
+            port: this.config.mcp.port,
+            sessions: () => [...this.exposedSessions()],
+            ...(options.federationDirectory === undefined ? {} : { directory: options.federationDirectory }),
+            // Rendezvous follows the launching user environment. A fleet-local
+            // .env must not silently put one peer in a different registry.
+            env: inheritedEnv,
+          });
     const protocolPath = this.resolveProtocolPath();
     this.runtimes.set(
       'claude-code',
@@ -162,8 +196,14 @@ export class Supervisor {
       this.runtimes.set(name, runtime);
     }
     this.validateRuntimeReferences();
-    const fleetId = fleetSlug(baseDir);
-    this.runbooks = configuredRunbookRegistry(baseDir, this.config, PACKAGE_VERSION, join(PACKAGE_ROOT, 'runbooks'));
+    const fleetId = this.resolvedInstance.fleetId;
+    this.runbooks = configuredRunbookRegistry(
+      baseDir,
+      this.config,
+      PACKAGE_VERSION,
+      join(PACKAGE_ROOT, 'runbooks'),
+      fleetPaths.runbooksDir,
+    );
     this.documentation = new ConductorDocumentation({
       referencePath: join(PACKAGE_ROOT, 'docs', 'agent-guide.md'),
       fleetDir: baseDir,
@@ -277,7 +317,7 @@ export class Supervisor {
         templateCloneTimeoutMs: this.config.spawn.templateCloneTimeoutSeconds * 1000,
       },
       baseDir,
-      sessionConfigDir: sessionConfigDir(baseDir),
+      sessionConfigDir: sessionConfigDir(this.resolvedInstance),
       reloadSessions: (teardownSession) => {
         this.reloadSessions(teardownSession);
       },
@@ -389,6 +429,7 @@ export class Supervisor {
       sentinel: this.sentinel,
       states: this.states,
       sessions: () => this.sessions,
+      ...(this.federationRegistry === undefined ? {} : { exposedSessions: () => this.exposedSessions() }),
       modelHints: {
         'claude-code': this.config.runtimes.claudeCode.availableModels,
         'codex': this.config.runtimes.codex.availableModels,
@@ -400,7 +441,7 @@ export class Supervisor {
         ...Object.fromEntries([...injectedRuntimeNames].map((name) => [name, [] as string[]])),
       },
       runtimeNames: [...this.runtimes.keys()].sort(),
-      statusReport: (codename) => this.statusReport(codename),
+      statusReport: (codename, only) => this.statusReport(codename, only),
       tail: (codename, lines) => this.tail(codename, lines),
       typeInPane: (codename, text) => this.typeInPane(codename, text),
       tailLimits: {
@@ -412,6 +453,14 @@ export class Supervisor {
       banish: (session) => this.paneAction(session, 'banish'),
       setSentinel: (session) => this.setSentinel(session),
       getDocumentation: (topic) => this.documentation.read(topic),
+      ...(this.federationRegistry === undefined
+        ? {}
+        : {
+            listFederation: () => {
+              if (this.federationRouter === undefined) throw new Error('Federation router is unavailable.');
+              return this.federationRouter.listFederation();
+            },
+          }),
       runbookAdoptions: new RunbookAdoptions({
         store: this.store,
         registry: this.runbooks,
@@ -419,6 +468,10 @@ export class Supervisor {
         events: this.eventBus,
       }),
     });
+    this.federationRouter =
+      this.federationRegistry === undefined || this.config.federation === undefined
+        ? undefined
+        : new FederationRouter(this.config.federation.name, this.federationRegistry, this.operations);
     this.commands = new CommandRouter(this.operations);
 
     this.scheduler = new Scheduler({
@@ -445,10 +498,19 @@ export class Supervisor {
         this.handleRuntimeEvent(session, body);
       },
       onCommand: (line, interactionId) => this.commands.route(line, `cli:${interactionId}`),
-      tools: buildMcpTools(this.operations),
+      tools: buildMcpTools(this.operations, this.federationRouter),
+      configPath: fleetPaths.supervisorFile,
+      ...(this.federationRouter === undefined
+        ? {}
+        : {
+            onFederationRequest: (body: unknown) => {
+              if (this.federationRouter === undefined) throw new Error('Federation router is unavailable.');
+              return this.federationRouter.invokeFromPeer(body);
+            },
+          }),
     });
 
-    this.watcher = new ConfigWatcher(sessionConfigDir(baseDir));
+    this.watcher = new ConfigWatcher(sessionConfigDir(this.resolvedInstance));
     this.watcher.onChange(() => this.reloadSessions());
 
     for (const [codename, session] of this.sessions) {
@@ -479,6 +541,7 @@ export class Supervisor {
       await this.startLocked(opts);
     } catch (err) {
       // A failed startup must not leave the fleet dir locked.
+      await this.federationRegistry?.release();
       this.lock.release();
       throw err;
     }
@@ -543,15 +606,30 @@ export class Supervisor {
       // unavailable, so `conductor start` cannot observe a transient false-ready
       // process that is about to roll startup back.
       await this.mcpServer.start();
+      // Publish only after the ingress is listening, so a discoverable fleet is
+      // immediately callable. Registry claim failures share startup rollback.
+      await this.federationRegistry?.claim();
     } catch (error) {
       await this.rollbackChannelStartup();
       await this.mcpServer.stop();
       throw error;
     }
+    if (this.config.federation !== undefined) {
+      log().info(
+        'federation',
+        `Federated as '${this.config.federation.name}'; exposing ${String(this.exposedSessions().size)} session(s).`,
+      );
+    }
 
     const heartbeatMs = this.config.supervisor.heartbeatIntervalSeconds * 1000;
     this.heartbeatTimer = setInterval(() => {
       void this.health.heartbeat();
+      void this.federationRegistry?.list().catch((error: unknown) => {
+        log().warn(
+          'federation',
+          `Could not refresh peer roster: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
     }, heartbeatMs);
     this.heartbeatTimer.unref();
 
@@ -605,6 +683,7 @@ export class Supervisor {
       }
     }
     await this.mcpServer.stop();
+    await this.federationRegistry?.release();
     this.store.close();
     this.lock.release();
     log().info('supervisor', 'Stopped (session panes left running).');
@@ -620,7 +699,7 @@ export class Supervisor {
     this.reloadSessions();
   }
 
-  statusReport(codename?: string): string {
+  statusReport(codename?: string, only?: ReadonlySet<string>): string {
     const report = statusReport(
       {
         sessions: () => this.sessions,
@@ -633,14 +712,28 @@ export class Supervisor {
       },
       codename,
       { shepherdRecipient: this.shepherd.recipientSession() },
+      only,
     );
-    if (codename !== undefined) return report;
+    // A remote list receives only its canonical exposed-session view. The
+    // operator-oriented fleet header carries local companion and peer state.
+    if (codename !== undefined || only !== undefined) return report;
     const shepherd = this.shepherd.status();
     return formatFleetStatusReport(report, {
       fleetWatchActive: this.sentinel.isFleetWatchEnabled(),
       shepherdOnline: shepherd.state === 'healthy',
       eventJournal: this.eventBus.journalStatus(),
       integrations: this.integrations.status(),
+      ...(this.config.federation === undefined || this.federationRegistry === undefined
+        ? {}
+        : {
+            federation: {
+              name: this.config.federation.name,
+              exposedSessions: [...this.exposedSessions()].sort(),
+              peerCount: this.federationRegistry
+                .snapshot()
+                .filter((record) => record.name !== this.config.federation?.name).length,
+            },
+          }),
     });
   }
 
@@ -873,7 +966,7 @@ export class Supervisor {
   }
 
   private reloadSessions(teardownSession?: string): void {
-    const fresh = loadSessionConfigs(this.baseDir, {
+    const fresh = loadSessionConfigs(this.resolvedInstance, {
       tolerant: true,
       defaultRuntime: this.config.defaults.runtime,
     });
@@ -897,7 +990,7 @@ export class Supervisor {
         this.eventBus.emit({ type: 'session.registered', session: codename, cause: 'config-added' });
       }
     }
-    const configDir = sessionConfigDir(this.baseDir);
+    const configDir = sessionConfigDir(this.resolvedInstance);
     for (const codename of this.sessions.keys()) {
       if (fresh.has(codename)) continue;
       const kept = this.sessions.get(codename);
@@ -926,6 +1019,19 @@ export class Supervisor {
     this.sessions = fresh;
     this.sentinel.setRegisteredSessions(fresh.keys());
     this.scheduler.rebuild();
+    void this.federationRegistry?.update().catch((error: unknown) => {
+      log().warn(
+        'federation',
+        `Could not update exposed roster: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }
+
+  private exposedSessions(): ReadonlySet<string> {
+    const exposure = this.config.federation?.expose;
+    if (exposure === undefined) return new Set<string>();
+    if (exposure.includes('*')) return new Set(this.sessions.keys());
+    return new Set(exposure.filter((codename) => this.sessions.has(codename)));
   }
 
   private resolveProtocolPath(): string | undefined {

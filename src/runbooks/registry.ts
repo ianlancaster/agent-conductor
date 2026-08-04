@@ -132,11 +132,12 @@ export function configuredRunbookRegistry(
   config: SupervisorConfig,
   conductorVersion: string,
   builtInDir?: string,
+  fleetRunbooksDir?: string,
 ): RunbookRegistry {
   return new RunbookRegistry({
     conductorVersion,
     fleetDir,
-    fleetRunbooksDir: resolveFleetPaths(fleetDir).runbooksDir,
+    fleetRunbooksDir: fleetRunbooksDir ?? resolveFleetPaths(fleetDir).runbooksDir,
     ...(builtInDir === undefined ? {} : { builtInDir }),
     externalPaths: config.runbooks.paths,
   });

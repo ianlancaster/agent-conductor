@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 
 import { ConfigError } from './loader.js';
-import { resolveFleetPaths } from './paths.js';
+import { resolveConductorInstance, type ResolvedInstance } from './paths.js';
 
 /**
  * Resolve the environment visible to one fleet without mutating process.env.
@@ -12,10 +12,12 @@ import { resolveFleetPaths } from './paths.js';
  * Inherited values remain the fallback for keys omitted from the fleet file.
  */
 export function resolveFleetEnvironment(
-  baseDir: string,
+  source: string | ResolvedInstance,
   inheritedEnv: NodeJS.ProcessEnv = process.env,
+  instance?: string,
 ): NodeJS.ProcessEnv {
-  const file = resolveFleetPaths(baseDir).environmentFile;
+  const resolvedInstance = typeof source === 'string' ? resolveConductorInstance(source, instance) : source;
+  const file = resolvedInstance.paths.environmentFile;
   let fileValues: NodeJS.ProcessEnv = {};
 
   if (existsSync(file)) {

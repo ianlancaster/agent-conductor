@@ -3,11 +3,14 @@ export type { SupervisorOptions } from './core/supervisor.js';
 export type { MessageReceipt } from './core/messaging.js';
 export type {
   ConfiguredIntegration,
+  FederationConfig,
   RuntimeName,
   SessionConfig,
   SpawnTemplate,
   SupervisorConfig,
 } from './config/schema.js';
+export type { FederationListing } from './federation/types.js';
+export type { ResolvedInstance } from './config/paths.js';
 export type { PaneRef, Placement } from './core/types.js';
 export { CONDUCTOR_EVENT_TYPES } from './events/types.js';
 export type {

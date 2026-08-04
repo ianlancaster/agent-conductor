@@ -157,6 +157,60 @@ beforeEach(() => {
 });
 
 describe('surface contract', () => {
+  it('classifies the complete canonical catalog for federation at compile-enforced definitions', () => {
+    const sessionDefinitions = operations.definitions('session');
+    expect(
+      sessionDefinitions
+        .filter((definition) => definition.federation === 'routable')
+        .map((definition) => definition.name)
+        .sort(),
+    ).toEqual(
+      [
+        'broadcast',
+        'cancel_message',
+        'continue_session',
+        'get_message_status',
+        'get_session_status',
+        'list_sessions',
+        'pause_session',
+        'resume_session',
+        'send_to_session',
+        'set_tag',
+        'start_session',
+        'stop_session',
+        'tail_session',
+        'toggle_auto',
+      ].sort(),
+    );
+    expect(
+      sessionDefinitions
+        .filter((definition) => definition.federation === 'local-only')
+        .map((definition) => definition.name)
+        .sort(),
+    ).toEqual(
+      [
+        'get_conductor_docs',
+        'send_to_operator',
+        'set_sentinel',
+        'spawn_session',
+        'teardown_session',
+        'toggle_fleet_watch',
+        'type_in_pane',
+        'whoami',
+      ].sort(),
+    );
+    expect(
+      operations
+        .definitions()
+        .filter((definition) => !definition.audiences.includes('session'))
+        .every((definition) => definition.federation === 'local-only'),
+    ).toBe(true);
+    for (const definition of tools) {
+      expect(definition.inputSchema.properties).not.toHaveProperty('fleet');
+    }
+    expect(tools.map((definition) => definition.name)).not.toContain('list_federation');
+  });
+
   it('renders every shared operation through both MCP and operator adapters', () => {
     const mcpNames = new Set(tools.map((definition) => definition.name));
     const operatorNames = new Set(buildOperatorCommands(operations).flatMap((command) => command.operations));

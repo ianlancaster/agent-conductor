@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { loadSupervisorConfig } from '../config/loader.js';
-import { resolveFleetPaths } from '../config/paths.js';
+import { resolveConductorInstance, type ResolvedInstance } from '../config/paths.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 const CONDUCTOR_GITIGNORE = `.env
@@ -21,16 +21,25 @@ function createFile(file: string, contents: string, mode?: number): boolean {
   }
 }
 
-export function ensureShepherdScaffold(baseDir: string): string | undefined {
-  const paths = resolveFleetPaths(baseDir);
+function asResolvedInstance(source: string | ResolvedInstance, instance?: string): ResolvedInstance {
+  return typeof source === 'string' ? resolveConductorInstance(source, instance) : source;
+}
+
+export function ensureShepherdScaffold(source: string | ResolvedInstance, instance?: string): string | undefined {
+  const paths = asResolvedInstance(source, instance).paths;
   const template = readFileSync(join(PACKAGE_ROOT, 'examples', 'pr-shepherd.scaffold.yaml'), 'utf8');
   return createFile(paths.shepherdConfigFile, template) ? paths.shepherdConfigFile : undefined;
 }
 
 /** Render every effective default, including values derived for this fleet. */
-export function renderSupervisorConfig(baseDir: string, env: NodeJS.ProcessEnv = process.env): string {
-  const config = loadSupervisorConfig(baseDir, env);
-  const paths = resolveFleetPaths(baseDir);
+export function renderSupervisorConfig(
+  source: string | ResolvedInstance,
+  env: NodeJS.ProcessEnv = process.env,
+  instance?: string,
+): string {
+  const resolvedInstance = asResolvedInstance(source, instance);
+  const config = loadSupervisorConfig(resolvedInstance, env);
+  const { paths } = resolvedInstance;
   const rendered = {
     ...config,
     shepherd: {
@@ -51,8 +60,9 @@ export function renderSupervisorConfig(baseDir: string, env: NodeJS.ProcessEnv =
  * new fleets use `.conductor/`. Returns only paths created by this call so
  * routine restarts remain quiet.
  */
-export function ensureFleetScaffold(baseDir: string): string[] {
-  const paths = resolveFleetPaths(baseDir);
+export function ensureFleetScaffold(baseDir: string, instance?: string): string[] {
+  const resolvedInstance = resolveConductorInstance(baseDir, instance);
+  const { paths } = resolvedInstance;
   const created: string[] = [];
 
   if (!existsSync(paths.sessionsDir)) {
@@ -60,8 +70,8 @@ export function ensureFleetScaffold(baseDir: string): string[] {
     created.push(paths.sessionsDir);
   }
 
-  if (createFile(paths.supervisorFile, renderSupervisorConfig(baseDir))) created.push(paths.supervisorFile);
-  const shepherd = ensureShepherdScaffold(baseDir);
+  if (createFile(paths.supervisorFile, renderSupervisorConfig(resolvedInstance))) created.push(paths.supervisorFile);
+  const shepherd = ensureShepherdScaffold(resolvedInstance);
   if (shepherd !== undefined) created.push(shepherd);
 
   const environmentTemplate = readFileSync(join(PACKAGE_ROOT, 'env.template'), 'utf8');

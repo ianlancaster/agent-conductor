@@ -4,8 +4,7 @@ import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import type { ZodError } from 'zod';
 import { log } from '../logger.js';
-import { deriveInstanceDefaults } from './instance.js';
-import { resolveFleetPaths } from './paths.js';
+import { resolveConductorInstance, type ResolvedInstance } from './paths.js';
 import { sessionConfigSchema, supervisorConfigSchema, type SessionConfig, type SupervisorConfig } from './schema.js';
 import { configuredRunbookRegistry } from '../runbooks/registry.js';
 import { PACKAGE_VERSION } from '../version.js';
@@ -19,6 +18,12 @@ export interface LoadedConfig {
   baseDir: string;
 }
 
+type InstanceSource = string | ResolvedInstance;
+
+function asResolvedInstance(source: InstanceSource, instance?: string): ResolvedInstance {
+  return typeof source === 'string' ? resolveConductorInstance(source, instance) : source;
+}
+
 export class ConfigError extends Error {
   constructor(
     message: string,
@@ -26,6 +31,42 @@ export class ConfigError extends Error {
   ) {
     super(message);
     this.name = 'ConfigError';
+  }
+}
+
+export function validateFederationExposure(
+  supervisor: SupervisorConfig,
+  sessions: ReadonlyMap<string, SessionConfig>,
+  file: string,
+  options: { sessionsDir?: string; tolerateUnparsed?: boolean } = {},
+): void {
+  const exposure = supervisor.federation?.expose;
+  if (exposure === undefined) return;
+  if (!['127.0.0.1', 'localhost'].includes(supervisor.mcp.host)) {
+    throw new ConfigError(
+      `Invalid federation transport: mcp.host must be 127.0.0.1 or localhost, got '${supervisor.mcp.host}'`,
+      file,
+    );
+  }
+  if (exposure.includes('*')) return;
+  const unknown = exposure.filter((codename) => !sessions.has(codename));
+  const unparsed =
+    options.sessionsDir === undefined
+      ? []
+      : unknown.filter(
+          (codename) =>
+            existsSync(join(options.sessionsDir!, `${codename}.yaml`)) ||
+            existsSync(join(options.sessionsDir!, `${codename}.yml`)),
+        );
+  if (unparsed.length > 0 && options.tolerateUnparsed !== true) {
+    throw new ConfigError(
+      `Invalid federation exposure: exposed session configuration failed to parse: ${unparsed.join(', ')}; fix the YAML or remove it from federation.expose`,
+      file,
+    );
+  }
+  const missing = unknown.filter((codename) => !unparsed.includes(codename));
+  if (missing.length > 0) {
+    throw new ConfigError(`Invalid federation exposure: unknown session(s): ${missing.join(', ')}`, file);
   }
 }
 
@@ -47,8 +88,13 @@ export function detectBackend(
   return platform === 'darwin' ? 'iterm' : 'tmux';
 }
 
-export function loadSupervisorConfig(baseDir: string, env: NodeJS.ProcessEnv = process.env): SupervisorConfig {
-  const paths = resolveFleetPaths(baseDir);
+export function loadSupervisorConfig(
+  source: InstanceSource,
+  env: NodeJS.ProcessEnv = process.env,
+  instance?: string,
+): SupervisorConfig {
+  const resolvedInstance = asResolvedInstance(source, instance);
+  const { paths } = resolvedInstance;
   const file = paths.supervisorFile;
   let raw: unknown = {};
   if (existsSync(file)) {
@@ -68,7 +114,7 @@ export function loadSupervisorConfig(baseDir: string, env: NodeJS.ProcessEnv = p
   const hasExplicitDataDir =
     typeof rawPaths === 'object' && rawPaths !== null && !Array.isArray(rawPaths) && 'dataDir' in rawPaths;
   if (!hasExplicitDataDir) config.paths.dataDir = paths.dataDirDefault;
-  const derived = deriveInstanceDefaults(baseDir);
+  const derived = resolvedInstance.defaults;
   config.mcp.port ??= derived.port;
   config.terminal.backend ??= detectBackend(env);
   config.terminal.windowName ??= derived.windowName;
@@ -101,8 +147,8 @@ export function parseSessionConfig(
   return session;
 }
 
-export function sessionConfigDir(baseDir: string): string {
-  return resolveFleetPaths(baseDir).sessionsDir;
+export function sessionConfigDir(source: InstanceSource, instance?: string): string {
+  return asResolvedInstance(source, instance).paths.sessionsDir;
 }
 
 /**
@@ -110,10 +156,12 @@ export function sessionConfigDir(baseDir: string): string {
  * throwing — used by hot-reload so one bad YAML can't take the fleet down.
  */
 export function loadSessionConfigs(
-  baseDir: string,
+  source: InstanceSource,
   opts: { tolerant?: boolean; defaultRuntime?: SessionConfig['runtime'] } = {},
 ): Map<string, SessionConfig> {
-  const dir = sessionConfigDir(baseDir);
+  const resolvedInstance = asResolvedInstance(source);
+  const { baseDir } = resolvedInstance;
+  const dir = sessionConfigDir(resolvedInstance);
   const sessions = new Map<string, SessionConfig>();
   if (!existsSync(dir)) return sessions;
   for (const entry of readdirSync(dir).sort()) {
@@ -137,26 +185,40 @@ export function loadSessionConfigs(
   return sessions;
 }
 
-export function loadConfig(baseDir: string, opts: { tolerant?: boolean } = {}): LoadedConfig {
-  const supervisor = loadSupervisorConfig(baseDir);
+export function loadConfig(baseDir: string, opts: { tolerant?: boolean; instance?: string } = {}): LoadedConfig {
+  const resolvedInstance = resolveConductorInstance(baseDir, opts.instance);
+  const supervisor = loadSupervisorConfig(resolvedInstance);
+  const sessions = loadSessionConfigs(resolvedInstance, { ...opts, defaultRuntime: supervisor.defaults.runtime });
+  validateFederationExposure(supervisor, sessions, resolvedInstance.paths.supervisorFile, {
+    sessionsDir: resolvedInstance.paths.sessionsDir,
+    tolerateUnparsed: opts.tolerant === true,
+  });
   return {
     supervisor,
-    sessions: loadSessionConfigs(baseDir, { ...opts, defaultRuntime: supervisor.defaults.runtime }),
-    baseDir,
+    sessions,
+    baseDir: resolvedInstance.baseDir,
   };
 }
 
 export interface ValidateConfigOptions {
   /** Default true. Doctor validates these separately so it can label file failures distinctly. */
   configuredIntegrations?: boolean;
+  /** Optional named instance; undefined validates the historical default. */
+  instance?: string;
 }
 
 /** Validate everything and return human-readable problems (for `conductor validate`). */
 export function validateConfig(baseDir: string, options: ValidateConfigOptions = {}): string[] {
   const problems: string[] = [];
+  let resolvedInstance: ResolvedInstance;
+  try {
+    resolvedInstance = resolveConductorInstance(baseDir, options.instance);
+  } catch (err) {
+    return [err instanceof Error ? err.message : String(err)];
+  }
   let defaultRuntime: SessionConfig['runtime'] = 'claude-code';
   try {
-    const supervisor = loadSupervisorConfig(baseDir);
+    const supervisor = loadSupervisorConfig(resolvedInstance);
     defaultRuntime = supervisor.defaults.runtime;
     if (options.configuredIntegrations !== false) {
       try {
@@ -170,7 +232,7 @@ export function validateConfig(baseDir: string, options: ValidateConfigOptions =
   }
   let dir: string;
   try {
-    dir = sessionConfigDir(baseDir);
+    dir = sessionConfigDir(resolvedInstance);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (!problems.includes(message)) problems.push(message);
@@ -193,12 +255,24 @@ export function validateConfig(baseDir: string, options: ValidateConfigOptions =
   }
   if (problems.length === 0) {
     try {
-      const supervisor = loadSupervisorConfig(baseDir);
+      const supervisor = loadSupervisorConfig(resolvedInstance);
+      const sessions = loadSessionConfigs(resolvedInstance, { defaultRuntime });
+      validateFederationExposure(supervisor, sessions, resolvedInstance.paths.supervisorFile, {
+        sessionsDir: resolvedInstance.paths.sessionsDir,
+      });
+    } catch (err) {
+      problems.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  if (problems.length === 0) {
+    try {
+      const supervisor = loadSupervisorConfig(resolvedInstance);
       for (const diagnostic of configuredRunbookRegistry(
         baseDir,
         supervisor,
         PACKAGE_VERSION,
         join(PACKAGE_ROOT, 'runbooks'),
+        resolvedInstance.paths.runbooksDir,
       ).snapshot().diagnostics) {
         problems.push(`${diagnostic.path}: ${diagnostic.message}`);
       }

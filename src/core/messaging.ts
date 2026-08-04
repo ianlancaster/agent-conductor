@@ -19,14 +19,28 @@ export interface MessagingDeps {
 export interface MessageReceipt {
   messageId: number;
   recipient: string;
+  /** Destination fleet for a remotely routed receipt; absent for local delivery. */
+  fleet?: string;
   status: 'delivered' | 'queued' | 'cancelled';
   deduplicated: boolean;
+}
+
+export function isMessageReceipt(value: unknown): value is MessageReceipt {
+  if (typeof value !== 'object' || value === null) return false;
+  const receipt = value as Partial<MessageReceipt>;
+  return (
+    typeof receipt.messageId === 'number' &&
+    typeof receipt.recipient === 'string' &&
+    (receipt.status === 'delivered' || receipt.status === 'queued' || receipt.status === 'cancelled') &&
+    typeof receipt.deduplicated === 'boolean'
+  );
 }
 
 export function renderMessageReceipt(receipt: MessageReceipt): string {
   const action = receipt.status === 'delivered' ? 'Delivered' : receipt.status === 'cancelled' ? 'Cancelled' : 'Queued';
   const duplicate = receipt.deduplicated ? ' (deduplicated)' : '';
-  return `${action} message #${String(receipt.messageId)} for ${receipt.recipient}${duplicate}.`;
+  const destination = receipt.fleet === undefined ? receipt.recipient : `${receipt.recipient}@${receipt.fleet}`;
+  return `${action} message #${String(receipt.messageId)} for ${destination}${duplicate}.`;
 }
 
 /** Inter-session and session-to-operator messaging primitives behind the MCP tools. */
@@ -259,10 +273,11 @@ export class Messaging {
     };
   }
 
-  async broadcast(from: string, message: string): Promise<string> {
+  async broadcast(from: string, message: string, allowed: (codename: string) => boolean = () => true): Promise<string> {
     const envelope = broadcastEnvelope(from, message);
     let delivered = 0;
     for (const codename of this.deps.states.activeSessions()) {
+      if (!allowed(codename)) continue;
       if (codename === from) continue;
       try {
         await this.deps.delivery.deliverOrQueue(codename, envelope);

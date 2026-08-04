@@ -83,10 +83,16 @@ export interface StatusMarkers {
   shepherdRecipient?: string;
 }
 
-export function statusReport(deps: StatusDeps, codename?: string, markers: StatusMarkers = {}): string {
+export function statusReport(
+  deps: StatusDeps,
+  codename?: string,
+  markers: StatusMarkers = {},
+  only?: ReadonlySet<string>,
+): string {
   const sentinel = deps.sentinelCodename();
 
   if (codename !== undefined) {
+    if (only !== undefined && !only.has(codename)) return `Unknown session: ${codename}`;
     const state = deps.getState(codename);
     const session = deps.sessions().get(codename);
     if (state === undefined || session === undefined) return `Unknown session: ${codename}`;
@@ -116,7 +122,7 @@ export function statusReport(deps: StatusDeps, codename?: string, markers: Statu
     );
   }
 
-  const names = [...deps.sessions().keys()].sort();
+  const names = [...deps.sessions().keys()].filter((name) => only?.has(name) ?? true).sort();
   if (names.length === 0) return 'No sessions configured.';
 
   // Agent projects (repos with the marker file) get their own section.
@@ -156,12 +162,18 @@ export function formatFleetStatusReport(
     shepherdOnline: boolean;
     eventJournal?: ConductorEventJournalStatus;
     integrations?: readonly IntegrationStatus[];
+    federation?: { name: string; exposedSessions: readonly string[]; peerCount: number };
   },
 ): string {
   const heading = `Agent Conductor Status${options.fleetWatchActive ? ' 🔄' : ''}`;
   const integrations = options.integrations ?? [];
   return [
     heading,
+    ...(options.federation === undefined
+      ? []
+      : [
+          `Federation: ${options.federation.name} · exposing ${options.federation.exposedSessions.join(', ') || 'none'} · ${String(options.federation.peerCount)} peer(s)`,
+        ]),
     ...(options.shepherdOnline ? [PR_SHEPHERD_ONLINE_STATUS] : []),
     ...(options.eventJournal?.degraded === true
       ? [

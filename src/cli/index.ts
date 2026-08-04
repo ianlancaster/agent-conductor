@@ -9,7 +9,7 @@ import { createInterface } from 'node:readline';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Command } from 'commander';
 import { validateConfig, loadSupervisorConfig } from '../config/loader.js';
-import { resolveFleetDataDir } from '../config/paths.js';
+import { resolveConductorInstance, resolveFleetDataDir } from '../config/paths.js';
 import { Supervisor } from '../core/supervisor.js';
 import { exportEventJournalJsonl, Store } from '../store/index.js';
 import { PACKAGE_VERSION } from '../version.js';
@@ -33,6 +33,7 @@ program
   .description('Lightweight supervisor for terminal coding agents')
   .version(PACKAGE_VERSION)
   .option('-C, --dir <path>', 'Fleet directory containing .conductor/ (default: current directory)')
+  .option('--instance <name>', 'Named Conductor instance under .conductor/instances/<name>')
   .addHelpText(
     'after',
     '\nFleet controls use the shared operator command language. Run conductor start or conductor console, then /help; for one-shot use, run conductor cmd /help.',
@@ -42,6 +43,23 @@ program
 function baseDir(): string {
   const dir = program.opts<{ dir?: string }>().dir;
   return dir !== undefined ? resolve(dir) : process.cwd();
+}
+
+function instanceName(): string | undefined {
+  return program.opts<{ instance?: string }>().instance;
+}
+
+function resolvedInstance(): ReturnType<typeof resolveConductorInstance> {
+  return resolveConductorInstance(baseDir(), instanceName());
+}
+
+function instanceArgs(): string[] {
+  const name = instanceName();
+  return name === undefined ? [] : ['--instance', name];
+}
+
+function startHint(): string {
+  return `conductor${instanceName() === undefined ? '' : ` --instance ${instanceName() ?? ''}`} start`;
 }
 
 /** Name this terminal's tab/window — otherwise it just shows "node". */
@@ -68,7 +86,7 @@ function ownTty(): string | null {
 }
 
 function cmdUrl(): string {
-  const config = loadSupervisorConfig(baseDir());
+  const config = loadSupervisorConfig(resolvedInstance());
   return `http://${config.mcp.host}:${config.mcp.port}`;
 }
 
@@ -94,7 +112,7 @@ async function sendCommand(line: string, signal?: AbortSignal): Promise<string> 
     });
   } catch {
     throw new Error(
-      `No conductor is running for this fleet (nothing listening on ${url}). Start one with: conductor start`,
+      `No conductor is running for this fleet instance (nothing listening on ${url}). Start one with: ${startHint()}`,
     );
   }
   const payload = (await response.json()) as { reply?: string };
@@ -161,12 +179,14 @@ runbook
   .command('list')
   .description('List built-in, fleet-local, and configured local runbooks')
   .action(() => {
-    const config = loadSupervisorConfig(baseDir());
+    const resolved = resolvedInstance();
+    const config = loadSupervisorConfig(resolved);
     const snapshot = configuredRunbookRegistry(
       baseDir(),
       config,
       PACKAGE_VERSION,
       join(PACKAGE_ROOT, 'runbooks'),
+      resolved.paths.runbooksDir,
     ).snapshot();
     if (snapshot.runbooks.length === 0) process.stdout.write('No valid runbooks discovered.\n');
     for (const item of snapshot.runbooks) {
@@ -191,7 +211,7 @@ events
     ) {
       throw new Error('--since must be a valid ISO-8601 timestamp.');
     }
-    const config = loadSupervisorConfig(baseDir());
+    const config = loadSupervisorConfig(resolvedInstance());
     const dbPath = join(resolveFleetDataDir(baseDir(), config.paths.dataDir), 'conductor.db');
     for (const line of exportEventJournalJsonl(dbPath, opts.since)) process.stdout.write(`${line}\n`);
   });
@@ -224,9 +244,9 @@ async function runForeground(startAll: boolean): Promise<void> {
 
   // This is the single configured-code execution boundary. The non-foreground
   // parent performs only schema/stat preflight before spawning this process.
-  const config = loadSupervisorConfig(baseDir());
+  const config = loadSupervisorConfig(resolvedInstance());
   const integrations = await loadConfiguredIntegrations(baseDir(), config.integrations);
-  const supervisor = new Supervisor(baseDir(), { integrations });
+  const supervisor = new Supervisor(baseDir(), { integrations, instance: instanceName() });
   await supervisor.start({ startAll });
 
   const shutdown = async (): Promise<void> => {
@@ -250,7 +270,7 @@ program
   .option('-a, --start-all', 'Start every configured session immediately')
   .option('-f, --foreground', 'Run the conductor process in this terminal instead (visible log feed, no console)')
   .action(async (opts: { startAll?: boolean; foreground?: boolean }) => {
-    const created = ensureFleetScaffold(baseDir());
+    const created = ensureFleetScaffold(baseDir(), instanceName());
     if (created.length > 0) {
       log('Initialized missing fleet files:');
       for (const file of created) log(`  ${file}`);
@@ -260,7 +280,7 @@ program
     // look like a valid way to attach to an existing conductor merely because
     // this shell is missing one of the configured runtime binaries.
     if (opts.foreground !== true) {
-      const config = loadSupervisorConfig(baseDir());
+      const config = loadSupervisorConfig(resolvedInstance());
       const base = `http://${config.mcp.host}:${config.mcp.port}`;
       if (await conductorUp(base)) {
         throw new Error(
@@ -269,7 +289,7 @@ program
       }
     }
 
-    const checks = await runPreflight(baseDir());
+    const checks = await runPreflight(baseDir(), {}, instanceName());
     const failures = preflightFailures(checks);
     for (const check of checks.filter((item) => item.level === 'warn')) log(`! ${check.label}: ${check.detail}`);
     if (failures.length > 0) {
@@ -284,7 +304,7 @@ program
     }
 
     setTerminalTitle(`conductor — ${basename(baseDir())}`);
-    const config = loadSupervisorConfig(baseDir());
+    const config = loadSupervisorConfig(resolvedInstance());
     const base = `http://${config.mcp.host}:${config.mcp.port}`;
 
     // Spawn the supervisor as a hidden, headless child. Its terminal output
@@ -293,7 +313,14 @@ program
     mkdirSync(dataDir, { recursive: true });
     const outPath = join(dataDir, 'conductor.out.log');
     const out = openSync(outPath, 'a');
-    const args = ['-C', baseDir(), 'start', '--foreground', ...(opts.startAll === true ? ['--start-all'] : [])];
+    const args = [
+      '-C',
+      baseDir(),
+      ...instanceArgs(),
+      'start',
+      '--foreground',
+      ...(opts.startAll === true ? ['--start-all'] : []),
+    ];
     const child = spawn(process.execPath, [process.argv[1] ?? 'conductor', ...args], {
       detached: true,
       stdio: ['ignore', out, out],
@@ -343,7 +370,7 @@ program
   .command('doctor')
   .description('Check fleet configuration and local prerequisites')
   .action(async () => {
-    const results = await runPreflight(baseDir());
+    const results = await runPreflight(baseDir(), {}, instanceName());
     process.stdout.write(`${formatPreflight(results)}\n`);
     if (preflightFailures(results).length > 0) process.exitCode = 1;
   });
@@ -352,7 +379,7 @@ program
   .command('kill')
   .description('Stop the Conductor process owned by this fleet, leaving session panes running')
   .action(async () => {
-    const config = loadSupervisorConfig(baseDir());
+    const config = loadSupervisorConfig(resolvedInstance());
     const dataDir = resolveFleetDataDir(baseDir(), config.paths.dataDir);
     const result = await killFleetConductor(baseDir(), join(dataDir, 'conductor.lock'));
     process.stdout.write(`${result.message}\n`);
@@ -405,7 +432,7 @@ program
   .description('Show recent health events')
   .option('-n, --count <count>', 'Number of events', '20')
   .action((session: string | undefined, opts: { count: string }) => {
-    const config = loadSupervisorConfig(baseDir());
+    const config = loadSupervisorConfig(resolvedInstance());
     const store = new Store(join(resolveFleetDataDir(baseDir(), config.paths.dataDir), 'conductor.db'));
     for (const row of store.getHealthLog(session, Number.parseInt(opts.count, 10)).reverse()) {
       process.stdout.write(
@@ -419,7 +446,7 @@ program
   .command('validate')
   .description('Validate supervisor and session configs')
   .action(() => {
-    const problems = validateConfig(baseDir());
+    const problems = validateConfig(baseDir(), { instance: instanceName() });
     if (problems.length === 0) {
       process.stdout.write('Config OK.\n');
       return;
@@ -433,13 +460,13 @@ daemon
   .command('install')
   .description('Install a launchd (macOS) or systemd (Linux) service')
   .action(() => {
-    process.stdout.write(`${installDaemon(baseDir())}\n`);
+    process.stdout.write(`${installDaemon(baseDir(), instanceName())}\n`);
   });
 daemon
   .command('uninstall')
   .description('Remove the service')
   .action(() => {
-    process.stdout.write(`${uninstallDaemon(baseDir())}\n`);
+    process.stdout.write(`${uninstallDaemon(baseDir(), instanceName())}\n`);
   });
 
 program.parseAsync().catch((err: unknown) => {

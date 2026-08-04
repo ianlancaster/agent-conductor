@@ -89,6 +89,8 @@ For the full walkthrough, including what the generated files mean, continue with
   or registered repository templates without hand-building every terminal session.
 - **Coordinate directly.** Agents send signed messages through mechanically assigned
   identities instead of scraping one another's terminals or relying on a shared chat.
+- **Federate local fleets when needed.** Opt-in same-machine federation exposes a chosen
+  roster and routes the existing agent tools between otherwise independent Conductors.
 - **Keep work observable.** The operator console, live status view, pane output, receipts,
   and logs expose what the fleet is doing and whether communication was delivered.
 - **Add supervision only when useful.** Auto mode, a designated stall sentinel, fleet
@@ -265,6 +267,7 @@ workflow tradeoffs, and source links.
 | Session lifecycle   | Spawn, start, continue, stop, pause, resume, and tear down agents                         | [Lifecycle and status](docs/agent-guide.md#session-lifecycle-placement-models-and-status)            |
 | Claude Code + Codex | Runtime overrides, model and effort selection, isolated runtime configuration             | [Getting Started](docs/getting-started.md#step-1--one-hand-driven-session-the-shakedown)             |
 | Agent messaging     | Direct messages, broadcasts, operator messages, delivery receipts, and cancellation       | [Communication and receipts](docs/agent-guide.md#communication-receipts-and-operator-escalation)     |
+| Local federation    | Opt-in discovery and existing agent operations across same-machine fleets                 | [Local federation](guides/federation.md)                                                             |
 | Parallel workspaces | Empty sessions, registered Git templates, and linked Git worktrees                        | [Worktrees and templates](docs/agent-guide.md#worktrees-templates-and-full-fleet-workspace-patterns) |
 | Shareable runbooks  | Versioned local workflow knowledge built from ordinary primitives                         | [Authoring and sharing runbooks](guides/runbooks.md)                                                 |
 | Stall supervision   | Per-session auto mode, a normal agent acting as sentinel, and fleet-wide stall detection  | [Supervision](docs/agent-guide.md#auto-mode-sentinels-fleet-watch-and-escalation-policy)             |
@@ -280,6 +283,23 @@ authoritative command reference; managed agents can inspect their authoritative 
 schemas directly.
 
 ## Advanced features
+
+### Local federation and named instances
+
+Federation is an opt-in connection between independent Conductors on the same machine. Each
+participating fleet chooses one public name and either an explicit exposed roster or `'*'` for
+its current roster. Managed agents receive one `list_federation` discovery tool and an optional
+`fleet` argument on the existing routable tools; non-federated fleets receive exactly the
+ordinary local tool surface.
+
+Running `conductor start` still selects the historical default instance. When two Conductors
+must share one fleet directory, use `conductor --instance <name> start`; named instances keep
+their configuration, environment, data, pane ownership, port, and daemon identity under
+`.conductor/instances/<name>/`. Federation and named instances are independent: fleets in
+different directories can federate, and same-directory instances need not.
+
+See [Local Conductor Federation](guides/federation.md) for the minimal configuration, routing
+semantics, exposure boundary, and copyable same-directory example.
 
 ### Worktrees, templates, schedules, and headless sessions
 

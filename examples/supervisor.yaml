@@ -7,7 +7,7 @@ supervisor:
   maxTagLength: 50 # hard limit for session status tags; over-limit updates fail instead of truncating
 
 paths:
-  dataDir: ./.conductor/data
+  dataDir: ./.conductor/data # named-instance scaffolds use ./.conductor/instances/<name>/data
 
 # Inert local knowledge bundles. Built-in runbooks and .conductor/runbooks are
 # discovered automatically; list only additional local checkouts here.
@@ -30,6 +30,16 @@ integrations: []
 #       targetSession: coordinator
 #       schedule: "0 9,11,13,15,17 * * 1-5"
 #       timeZone: America/Denver
+
+# Optional direct federation with other Conductors running as the same user on
+# this machine. Omit the block for the ordinary isolated fleet behavior.
+# name is the unique public routing name; expose is either explicit configured
+# codenames, [] for none, or ["*"] for the current roster. Never mix "*" with names.
+# federation:
+#   name: frontend
+#   expose:
+#     - coordinator
+#     - reviewer
 
 terminal:
   # backend: iterm | tmux. Default auto-detects: tmux when the conductor is started

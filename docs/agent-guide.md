@@ -18,6 +18,8 @@ compose:
 - **Lifecycle:** register, start, stop, continue, spawn, and safely tear down sessions.
 - **Communication:** signed messages with persisted receipts, protected process-local queuing, and
   selectable requests to the operator.
+- **Local federation:** optional discovery and the existing routable operations across exposed
+  sessions in same-machine Conductor fleets.
 - **Observability:** structured session status, runtime events, tags, and diagnostic pane tails.
 - **Supervision:** optional auto stall routing to a normal agent designated as the sentinel.
 - **Scheduling:** cron-driven prompts using the same lifecycle and protected delivery mechanisms.
@@ -52,6 +54,7 @@ Authoritative references shipped with the package:
 - `prompts/sentinel.md`: baseline sentinel role
 - `guides/telegram-adapter.md` and `guides/slack-adapter.md`: external operator channels
 - `guides/event-subscribers.md`: typed plugin-event contract and consumer guidance
+- `guides/federation.md`: opt-in local federation and named-instance setup
 - `guides/runbooks.md`: runbook discovery, authoring, provenance, evaluation, and contribution
 - `docs/pr-shepherd.md`: optional standalone or Conductor-managed PR Shepherd
 
@@ -128,6 +131,13 @@ A modern fleet keeps its files under `<fleet>/.conductor/`:
 guess a fleet path from the session working directory: a session may run in a project or worktree
 far from the fleet directory.
 
+The default instance uses the paths above and needs no selector. Operators may add independent
+named instances beneath `.conductor/instances/<name>/` and address them with the global
+`conductor --instance <name> ...` option. The returned paths already reflect the active instance,
+so managed agents should use them directly. Named instances have separate configuration,
+environment, data, pane ownership, port, and daemon identity while session `repo` paths still
+resolve from the shared fleet directory. They are unsupported in the legacy root-level layout.
+
 `conductor start` creates missing scaffold files but never overwrites existing configuration or
 secrets. Session YAML files hot-reload into the roster and schedule policy. Adding, editing, or
 removing a file under
@@ -177,6 +187,12 @@ Important rules:
 - Keep `mcp.host` on loopback. Managed-session identity is mechanically scoped by endpoint, but the
   local HTTP surface is not a security boundary against other processes running as the same user.
   Never expose it publicly or bind it to an untrusted network.
+- Federation is optional and same-machine only. Enabling it requires only a unique lowercase
+  `federation.name` and `federation.expose`, either a list of configured session codenames, `['*']`
+  for the current roster, or `[]` to expose none. The wildcard is resolved against the roster; it
+  does not authorize remote spawn or arbitrary names. Duplicate names, mixed wildcard/explicit
+  lists, unknown exposed sessions, and invalid names fail validation. Supervisor changes require a
+  deliberate restart.
 - Fleet-specific workflow belongs in session prompts, templates, or configuration—not in the
   reusable Conductor source.
 
@@ -211,6 +227,34 @@ send_to_session({
 Conductor mechanically signs the message and starts a stopped local recipient if necessary. The
 receiver sees `[Message from <sender>] ...`. Never add your own signature.
 
+When the `list_federation` tool is present, this Conductor participates in local federation. Call
+it once to receive `localFleet`—the public name of the Conductor you are currently connected to—and
+one direct snapshot of every reachable fleet plus its exposed sessions. The call is deliberately
+local and non-transitive: routing it to another fleet is not supported. To address a discovered
+peer, keep the target codename unqualified and add the optional fleet argument:
+
+```json
+send_to_session({
+  "fleet": "backend",
+  "codename": "reviewer",
+  "message": "Please review the API change.",
+  "idempotencyKey": "api-review-v1"
+})
+```
+
+Omitting `fleet`, or passing `localFleet`, performs the ordinary local operation. A remote receiver
+sees the mechanically qualified sender, such as `[Message from coordinator@frontend]`, and replies
+by splitting that identity into `codename: "coordinator"` and `fleet: "frontend"`. Do not put
+`@fleet` in a codename; the routing argument is separate.
+
+Federation reuses the existing routable operations: direct messages, broadcasts, receipt status
+and cancellation, session listing/status/tail, start/continue/stop, pause/resume, tags, and auto
+mode. Exposure is enforced for direct and aggregate forms, so `all`, broadcasts, listings, and
+status never include a peer's unexposed sessions. Local workspace creation/deletion, raw terminal
+typing, operator escalation, sentinel/fleet-watch control, identity, documentation, and federation
+discovery remain local-only. Unknown or unavailable fleets fail explicitly and never fall back to
+a same-named local session.
+
 After sending, end the turn. The peer's response arrives as a new message and activates the next
 turn. Do not create timers, sleep loops, schedules, or repeated status checks for ordinary agent
 conversation. Use `tail_session` only when the user asks for it or direct communication remains
@@ -223,7 +267,9 @@ Direct-message receipts are observable:
 - A Conductor restart cancels queued local messages rather than replaying stale conversation.
 - `get_message_status` reports `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`, so a
   sender can distinguish a queue that has not run from one waiting on occupied input.
-- Receipt IDs are fleet-wide. A session can inspect only receipts it sent or received, so a
+- Receipt IDs are unique only within the destination fleet. Remote message receipts include a
+  `fleet` field; pass that fleet to status or cancellation calls. A session can inspect only
+  receipts it sent or received, so a
   not-found/not-visible response for a guessed ID cannot be used as a fleet ledger-gap check.
   The operator command can inspect any receipt.
 - `cancel_message` can cancel a pending receipt before its pane write starts.
@@ -874,6 +920,11 @@ IDs, option counts/indexes, byte counts, workspace kinds, runbook IDs, and sched
 do not carry pane captures, transcripts, prompts, message bodies, credentials, paths, or arbitrary
 runtime reason text. Message events cover direct receipts only; broadcasts do not claim
 per-recipient delivery and emit no message events.
+
+`fleetId` is the stable mechanical instance ID used for event ordering and pane ownership, not the
+configured federation name. A remote direct-message sender appears as the qualified identity
+`<session>@<federation-name>` in destination-side message events; do not overload `fleetId` for
+federation routing.
 
 The delivery contract is live, best-effort, and at most once:
 

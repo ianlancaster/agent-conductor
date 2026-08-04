@@ -390,6 +390,33 @@ describe('session state', () => {
     migrated.close();
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it('removes tables left by the reverted federation experiment', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conductor-reverted-schema-migration-'));
+    const dbPath = join(dir, 'conductor.db');
+    const seeded = new Store(dbPath);
+    seeded.close();
+
+    const legacy = openSqliteDatabase(dbPath);
+    const versionRow = legacy.prepare('PRAGMA user_version').get() as { user_version: number };
+    legacy.exec(`
+      CREATE TABLE federation_outbox (message_id TEXT PRIMARY KEY);
+      CREATE TABLE federation_inbox (message_id TEXT PRIMARY KEY);
+      PRAGMA user_version = ${String(versionRow.user_version - 1)};
+    `);
+    legacy.close();
+
+    const migrated = new Store(dbPath);
+    migrated.close();
+
+    const inspected = openSqliteDatabase(dbPath);
+    const tables = inspected
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'federation_%'")
+      .all() as { name: string }[];
+    inspected.close();
+    rmSync(dir, { recursive: true, force: true });
+    expect(tables).toEqual([]);
+  });
 });
 
 describe('workspace KV', () => {

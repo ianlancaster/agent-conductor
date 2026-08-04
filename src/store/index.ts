@@ -276,6 +276,10 @@ const MIGRATIONS: string[] = [
   `
   UPDATE session_state SET activity = 'idle' WHERE activity = 'stalled';
   `,
+  `
+  DROP TABLE IF EXISTS federation_inbox;
+  DROP TABLE IF EXISTS federation_outbox;
+  `,
 ];
 
 export class Store {

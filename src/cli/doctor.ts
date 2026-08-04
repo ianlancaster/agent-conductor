@@ -3,7 +3,7 @@ import { constants, existsSync, accessSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { loadConfig, loadSupervisorConfig, validateConfig } from '../config/loader.js';
-import { resolveFleetDataDir, resolveFleetPaths } from '../config/paths.js';
+import { resolveConductorInstance, resolveFleetDataDir } from '../config/paths.js';
 import { assertShepherdProfileReady } from '../shepherd/config.js';
 import { eventJournalDegradedPath } from '../events/journal.js';
 import { resolveConfiguredIntegrations } from '../integrations/configured.js';
@@ -110,6 +110,7 @@ function tmuxUsable(version: string): boolean {
 export async function runPreflight(
   baseDir: string,
   overrides: Partial<PreflightDependencies> = {},
+  instance?: string,
 ): Promise<PreflightResult[]> {
   const deps = { ...DEFAULT_DEPS, ...overrides };
   const results: PreflightResult[] = [];
@@ -120,10 +121,18 @@ export async function runPreflight(
       : result('fail', 'Node.js', `${deps.nodeVersion} is unsupported; install Node 22.13+ (or 23.4+)`),
   );
 
+  let resolvedInstance: ReturnType<typeof resolveConductorInstance>;
+  try {
+    resolvedInstance = resolveConductorInstance(baseDir, instance);
+  } catch (error) {
+    results.push(result('fail', 'Fleet config', error instanceof Error ? error.message : String(error)));
+    return results;
+  }
+
   // Classify executable-module filesystem failures separately from ordinary
   // YAML errors. Resolution/stat is deliberately non-executing.
   try {
-    const supervisor = loadSupervisorConfig(baseDir);
+    const supervisor = loadSupervisorConfig(resolvedInstance);
     try {
       resolveConfiguredIntegrations(baseDir, supervisor.integrations);
       if (supervisor.integrations.length > 0) {
@@ -142,20 +151,20 @@ export async function runPreflight(
     // validateConfig below owns supervisor YAML/schema diagnostics.
   }
 
-  const problems = validateConfig(baseDir, { configuredIntegrations: false });
+  const problems = validateConfig(baseDir, { configuredIntegrations: false, instance });
   if (problems.length > 0) {
     results.push(result('fail', 'Fleet config', problems.join('; ')));
   }
 
   let loaded: ReturnType<typeof loadConfig>;
   try {
-    loaded = loadConfig(baseDir);
+    loaded = loadConfig(baseDir, { instance });
   } catch {
     // Schema/session errors already have a Fleet config diagnostic and prevent
     // reliable checks that depend on the loaded fleet.
     return results;
   }
-  const paths = resolveFleetPaths(baseDir);
+  const paths = resolvedInstance.paths;
   if (problems.length === 0) {
     results.push(result('pass', 'Fleet config', `${loaded.sessions.size} session(s); ${paths.supervisorFile}`));
   }

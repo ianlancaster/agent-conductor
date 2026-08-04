@@ -103,6 +103,29 @@ mv config .conductor/config
 Run `conductor validate` before starting it again. The next `conductor start` fills in any scaffold files
 that are still missing. Never copy or move `data/` while the old Conductor is running.
 
+### Optional named instances and local federation
+
+The default remains deliberately simple: from a fleet directory, `conductor start` uses
+`.conductor/config/` and `.conductor/data/` exactly as before. A named instance is additive and
+selected with a global option:
+
+```bash
+conductor --instance frontend start
+```
+
+Its files live below `.conductor/instances/frontend/`; every other command for that instance uses
+the same selector, for example `conductor --instance frontend validate` or
+`conductor --instance frontend console`. Each instance has independent configuration, secrets,
+data, ports, pane ownership, and daemon identity. The name `default` is reserved—omit
+`--instance` for the default instance. Named instances require the modern `.conductor/` layout;
+legacy root-level fleets must migrate first.
+
+Local federation is separate and opt-in. It lets managed agents discover exposed sessions in
+other running Conductors owned by the same machine user, then use the existing routable tools
+with an optional `fleet` argument. Nothing changes when `federation` is absent. Follow the
+[Local Conductor Federation guide](../guides/federation.md) for configuration and a two-instance
+shakedown.
+
 ---
 
 ## Optional — richer runtime status lines
@@ -381,8 +404,9 @@ primitive, not an approval or execution queue.
   (Linux) unit that keeps the conductor running across logins. `conductor daemon
 uninstall` removes it. Install the GitHub release tarball globally first so the service has a
   stable executable path; source-checkout and temporary package-runner paths are rejected.
-- **Multiple fleets**: just use separate fleet directories — ports, tmux session names,
-  and daemon service names are derived per fleet dir, so nothing collides. Telegram
+- **Multiple fleets**: use separate fleet directories, or select independent named instances
+  with `conductor --instance <name> ...`. Ports, tmux session names, pane ownership, data,
+  and daemon service names are derived per instance, so nothing collides. Telegram
   needs a distinct bot token per fleet (Telegram allows one poller per token). Slack needs
   a separate app per running fleet because Socket Mode distributes events across connections.
 

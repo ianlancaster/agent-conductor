@@ -31,6 +31,7 @@ export const DEFAULT_MAX_TAG_LENGTH = 50;
 const stringHints = (defaults: readonly string[]) => z.array(z.string().trim().min(1)).default([...defaults]);
 /** Codenames become URL path segments, filenames, and tmux targets — keep them boring. */
 export const CODENAME_PATTERN = /^[a-z0-9][a-z0-9-_]*$/i;
+export const FEDERATION_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 export function isValidCodename(value: string): boolean {
   return CODENAME_PATTERN.test(value);
@@ -72,6 +73,34 @@ export const configuredIntegrationSchema = z
   })
   .strict();
 
+export const federationConfigSchema = z
+  .object({
+    name: z.string().regex(FEDERATION_NAME_PATTERN, 'federation name must match ^[a-z0-9][a-z0-9-]{0,63}$'),
+    expose: z.array(z.string().min(1)),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.expose.includes('*') && value.expose.length !== 1) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expose'],
+        message: "'*' cannot be combined with explicit session names",
+      });
+    }
+    if (new Set(value.expose).size !== value.expose.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['expose'], message: 'session names must be unique' });
+    }
+    for (const codename of value.expose) {
+      if (codename !== '*' && !CODENAME_PATTERN.test(codename)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['expose'],
+          message: `invalid session codename '${codename}'`,
+        });
+      }
+    }
+  });
+
 export const sessionConfigSchema = z
   .object({
     codename: z.string().min(1).regex(CODENAME_PATTERN, 'codename must be alphanumeric with dashes/underscores'),
@@ -96,6 +125,8 @@ export const sessionConfigSchema = z
 
 export const supervisorConfigSchema = z
   .object({
+    /** Optional same-user, same-machine fleet federation. */
+    federation: federationConfigSchema.optional(),
     supervisor: z
       .object({
         heartbeatIntervalSeconds: z.number().int().positive().default(30),
@@ -346,6 +377,7 @@ export type RuntimeName = z.infer<typeof runtimeSchema>;
 export type SessionConfig = z.infer<typeof sessionConfigSchema>;
 export type SpawnTemplate = z.infer<typeof spawnTemplateSchema>;
 export type ConfiguredIntegration = z.infer<typeof configuredIntegrationSchema>;
+export type FederationConfig = z.infer<typeof federationConfigSchema>;
 
 /** Raw parse output — instance-scoped fields may be absent (loader derives them per fleet dir). */
 export type SupervisorConfigInput = z.infer<typeof supervisorConfigSchema>;

@@ -185,4 +185,18 @@ describe('agent documentation', () => {
     expect(events.content).toContain('without a preceding `session.started`');
     expect(events.content).toContain('do not carry pane captures');
   });
+
+  it('teaches named instances and federation through the existing progressive-disclosure topics', async () => {
+    const configuration = JSON.parse(await documentation().read('fleet-configuration')) as { content: string };
+    expect(configuration.content).toContain('.conductor/instances/<name>/');
+    expect(configuration.content).toContain('`conductor --instance <name> ...`');
+    expect(configuration.content).toContain('`federation.name`');
+    expect(configuration.content).toContain("`['*']`");
+
+    const communication = JSON.parse(await documentation().read('communication')) as { content: string };
+    expect(communication.content).toContain('`list_federation`');
+    expect(communication.content).toContain('`localFleet`');
+    expect(communication.content).toContain('`[Message from coordinator@frontend]`');
+    expect(communication.content).toContain('Unknown or unavailable fleets fail explicitly');
+  });
 });
