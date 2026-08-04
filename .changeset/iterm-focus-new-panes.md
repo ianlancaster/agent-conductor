@@ -1,5 +1,5 @@
 ---
-'@ianlancaster/agent-conductor': patch
+'agent-conductor': patch
 ---
 
 Add `terminal.iterm.focusNewPanes` so a fleet can open panes without stealing the operator's
