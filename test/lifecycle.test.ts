@@ -366,6 +366,39 @@ describe('lifecycle edges', () => {
     lifecycle.handleSessionEnd('alpha');
   });
 
+  it('keeps a live session running when the terminal cannot be observed', async () => {
+    // A terminal that cannot answer is not a terminal reporting a dead pane.
+    // Reading the first as the second retires a working session for good:
+    // reconcile only visits mapped panes, so once the mapping is dropped
+    // nothing revisits the seat and it stays stopped until a human notices.
+    await lifecycle.start('alpha');
+    const pane = lifecycle.getPane('alpha');
+    expect(pane).toBeDefined();
+
+    backend.unobservable.add(pane!.id);
+    await lifecycle.reconcile('alpha');
+
+    expect(states.get('alpha')?.running).toBe(true);
+    expect(states.get('alpha')?.activity).not.toBe('stopped');
+    // The mapping survives, so the next tick can still reach the pane.
+    expect(lifecycle.getPane('alpha')).toEqual(pane);
+    expect(store.getActiveRuns()).toHaveLength(1);
+    expect(lifecycleEvents.events).not.toContainEqual({
+      type: 'session.stopped',
+      session: 'alpha',
+      cause: 'pane-missing',
+    });
+
+    // Recorded as an unknown rather than a liveness claim in either direction.
+    expect(lifecycle.processObservation('alpha')?.active).toBeNull();
+
+    // And when the terminal answers again, nothing needed repairing.
+    backend.unobservable.delete(pane!.id);
+    await lifecycle.reconcile('alpha');
+    expect(states.get('alpha')?.running).toBe(true);
+    expect(lifecycle.processObservation('alpha')?.active).toBe(true);
+  });
+
   it('detects Ctrl-C as a stopped runtime and restarts it in the same pane', async () => {
     await lifecycle.start('alpha');
     const pane = lifecycle.getPane('alpha');
