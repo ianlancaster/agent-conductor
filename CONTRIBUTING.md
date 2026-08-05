@@ -139,7 +139,13 @@ clearer than a generic framework; repeated conductor policy is not.
 
 ## Making a change
 
-1. Inspect the current worktree and preserve unrelated changes.
+Repository cleanliness is a hard precondition, not a cleanup step. Before starting any feature or
+request, fetch `origin/main`, confirm the checkout is up to date with it, and require an empty `git
+status --short`. If the branch or worktree is not ready, reconcile it before doing task work.
+Identify and resolve unexpected changes; never discard another person's work without explicit
+authorization.
+
+1. Begin from the clean, current checkout established by the preflight above.
 2. Read the implementation, tests, configuration, help, and docs at the relevant seam before
    proposing a new pattern.
 3. State the general user need and choose the narrowest canonical extension point.
@@ -150,8 +156,10 @@ clearer than a generic framework; repeated conductor policy is not.
    test-only or documentation-only changes generally do not need one.
 8. When the maintainer or operator has authorized shipping directly from this checkout, commit the
    focused change, push it, then run `pnpm build && pnpm add --global .`. All three steps are required
-   for every shipped feature. Stage only the feature in a dirty worktree, and do not restart a live
-   fleet unless that disruption is explicitly in scope.
+   for every shipped feature. Do not restart a live fleet unless that disruption is explicitly in
+   scope.
+9. Fetch `origin/main` again and verify that the completed checkout is synchronized with it and
+   `git status --short` is empty. Do not report the task complete with a dirty or stale worktree.
 
 STOP MODIFYING WHAT THE STATUS COMMAND SHOWS UNLESS THE MAINTAINER OR OPERATOR EXPLICITLY ASKS FOR
 A STATUS-OUTPUT CHANGE. Its content, wording, order, spacing, symbols, and colors are a deliberate

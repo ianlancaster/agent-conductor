@@ -34,6 +34,20 @@ Fleet-specific policy belongs in fleet YAML, environment variables, prompt files
 or an injected adapter—not in the reusable core. If a proposed feature cannot be explained
 without referring to one private deployment, generalize the underlying primitive first.
 
+## Repository hygiene (mandatory)
+
+NEVER BEGIN WORK ON A FEATURE OR REQUEST WHILE THE WORKTREE IS DIRTY OR THE CHECKOUT IS BEHIND
+`origin/main`. Before inspecting, planning, or editing for a new task:
+
+1. Fetch `origin/main`.
+2. Confirm the checkout is up to date with `origin/main` and `git status --short` is empty.
+3. If either check fails, reconcile the branch and worktree before doing task work. Identify and
+   resolve unexpected changes; never discard another person's work without explicit authorization.
+
+At the end of every feature or request, after the required commit, push, and local build/link,
+fetch again and confirm the checkout is synchronized with `origin/main` and the worktree is clean.
+The task is not complete until both postflight checks pass.
+
 ## Quick reference
 
 ```bash
@@ -54,9 +68,8 @@ that disruption is in scope.
 When a new feature is approved to ship directly from this checkout, complete the sequence in
 this order: commit the focused change, push the commit, then run `pnpm build && pnpm add --global .`.
 Do not stop after committing or pushing—the locally linked `conductor` must represent the shipped
-tree. In a dirty worktree, stage only the feature's files and preserve unrelated changes. Building
-and relinking never authorizes restarting a running fleet; restart it only when that disruption is
-explicitly in scope.
+tree. Stage only the feature's files. Building and relinking never authorizes restarting a running
+fleet; restart it only when that disruption is explicitly in scope.
 
 STOP MODIFYING WHAT THE STATUS COMMAND SHOWS UNLESS THE MAINTAINER OR OPERATOR EXPLICITLY ASKS
 FOR A STATUS-OUTPUT CHANGE. Treat its content, wording, order, spacing, symbols, and colors as a
