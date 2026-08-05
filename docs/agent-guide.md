@@ -188,11 +188,11 @@ Important rules:
   local HTTP surface is not a security boundary against other processes running as the same user.
   Never expose it publicly or bind it to an untrusted network.
 - Federation is optional and same-machine only. Enabling it requires only a unique lowercase
-  `federation.name` and `federation.expose`, either a list of configured session codenames, `['*']`
-  for the current roster, or `[]` to expose none. The wildcard is resolved against the roster; it
-  does not authorize remote spawn or arbitrary names. Duplicate names, mixed wildcard/explicit
-  lists, unknown exposed sessions, and invalid names fail validation. Supervisor changes require a
-  deliberate restart.
+  `federation.name` and `federation.expose`, either an explicit codename allowlist, `['*']` for the
+  current roster, or `[]` to expose none. An explicit absent name is a valid reservation: it remains
+  unpublished until that session is registered. Duplicate names, mixed wildcard/explicit lists,
+  malformed reserved session files, and invalid names fail validation. Supervisor changes require
+  a deliberate restart.
 - Fleet-specific workflow belongs in session prompts, templates, or configuration—not in the
   reusable Conductor source.
 
@@ -249,11 +249,14 @@ by splitting that identity into `codename: "coordinator"` and `fleet: "frontend"
 
 Federation reuses the existing routable operations: direct messages, broadcasts, receipt status
 and cancellation, session listing/status/tail, start/continue/stop, pause/resume, tags, and auto
-mode. Exposure is enforced for direct and aggregate forms, so `all`, broadcasts, listings, and
-status never include a peer's unexposed sessions. Local workspace creation/deletion, raw terminal
-typing, operator escalation, sentinel/fleet-watch control, identity, documentation, and federation
-discovery remain local-only. Unknown or unavailable fleets fail explicitly and never fall back to
-a same-named local session.
+mode. It also routes spawn/teardown, raw terminal input, sentinel assignment, and fleet-watch
+control. Exposure is enforced for operations targeting existing sessions, so `all`, broadcasts,
+listings, status, raw input, teardown, and sentinel assignment cannot reveal or affect hidden
+sessions. Any known peer may spawn on the destination; destination-relative paths and configuration
+apply, and the new session is addressable afterward only if `"*"` or an explicit reservation covers
+its name. Remote callers may clear the destination sentinel and toggle destination-wide fleet watch.
+Operator escalation, identity, documentation, and federation discovery remain local-only.
+Unknown or unavailable fleets fail explicitly; they never fall back to a same-named local session.
 
 After sending, end the turn. The peer's response arrives as a new message and activates the next
 turn. Do not create timers, sleep loops, schedules, or repeated status checks for ordinary agent

@@ -64,10 +64,11 @@ export function validateFederationExposure(
       file,
     );
   }
-  const missing = unknown.filter((codename) => !unparsed.includes(codename));
-  if (missing.length > 0) {
-    throw new ConfigError(`Invalid federation exposure: unknown session(s): ${missing.join(', ')}`, file);
-  }
+  // Explicit names are allowlist reservations, not a requirement that every
+  // session already exist. This lets a dynamic fleet pre-authorize a future
+  // spawn and keeps its supervisor configuration valid after teardown. A file
+  // that exists but cannot be parsed remains an error above rather than being
+  // mistaken for an intentionally absent reservation.
 }
 
 function formatZodError(err: ZodError): string {

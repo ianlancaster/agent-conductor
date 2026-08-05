@@ -175,11 +175,16 @@ describe('surface contract', () => {
         'pause_session',
         'resume_session',
         'send_to_session',
+        'set_sentinel',
         'set_tag',
+        'spawn_session',
         'start_session',
         'stop_session',
         'tail_session',
+        'teardown_session',
         'toggle_auto',
+        'toggle_fleet_watch',
+        'type_in_pane',
       ].sort(),
     );
     expect(
@@ -187,18 +192,7 @@ describe('surface contract', () => {
         .filter((definition) => definition.federation === 'local-only')
         .map((definition) => definition.name)
         .sort(),
-    ).toEqual(
-      [
-        'get_conductor_docs',
-        'send_to_operator',
-        'set_sentinel',
-        'spawn_session',
-        'teardown_session',
-        'toggle_fleet_watch',
-        'type_in_pane',
-        'whoami',
-      ].sort(),
-    );
+    ).toEqual(['get_conductor_docs', 'send_to_operator', 'whoami'].sort());
     expect(
       operations
         .definitions()

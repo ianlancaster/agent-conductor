@@ -31,7 +31,7 @@ federation:
 `name` is the fleet's unique public routing name. It must be lowercase letters or digits followed
 by lowercase letters, digits, or hyphens, with a maximum length of 64 characters.
 
-`expose` controls which configured sessions peers may discover and address:
+`expose` controls which sessions peers may discover and address:
 
 ```yaml
 # Expose the entire current roster. The wildcard must be the only item.
@@ -40,10 +40,11 @@ federation:
   expose: ['*']
 ```
 
-Use `expose: []` to participate in discovery without exposing a session. Explicit unknown
-codenames, duplicate entries, invalid codenames, and a wildcard mixed with names fail validation.
-`"*"` means the current configured roster only; it never authorizes a peer to invent or spawn a
-session name.
+Use `expose: []` to participate in discovery without exposing a session. Explicit names are
+allowlist reservations: an absent name is valid but unpublished, becomes exposed if that session is
+later spawned, and becomes unpublished again after teardown. Duplicate entries, invalid codenames,
+malformed session files, and a wildcard mixed with names fail validation. `"*"` exposes the current
+configured roster and follows it as sessions are added or removed.
 
 Supervisor configuration requires a deliberate restart. Session files still hot-reload. With
 wildcard exposure, the published roster follows additions and removals; explicit exposure shows
@@ -107,21 +108,35 @@ Federation reuses these existing session operations:
 
 - messaging: `send_to_session`, `broadcast`, `get_message_status`, `cancel_message`;
 - observation: `list_sessions`, `get_session_status`, `tail_session`;
-- lifecycle: `start_session`, `continue_session`, `stop_session`; and
-- modes and metadata: `pause_session`, `resume_session`, `toggle_auto`, `set_tag`.
+- lifecycle and workspaces: `start_session`, `continue_session`, `stop_session`, `spawn_session`,
+  `teardown_session`;
+- terminal control: `type_in_pane`; and
+- modes and metadata: `pause_session`, `resume_session`, `toggle_auto`, `set_tag`, `set_sentinel`,
+  `toggle_fleet_watch`.
 
-Exposure is canonical policy at the destination. It is applied before direct lookup, `all`
-expansion, broadcasts, aggregate status reconciliation, branch inspection, or pane capture. A peer
-therefore cannot infer or affect unexposed sessions through aggregate operations.
+Exposure is canonical policy at the destination for operations targeting existing sessions. It is
+applied before direct lookup, `all` expansion, broadcasts, aggregate status reconciliation, branch
+inspection, pane capture, raw terminal input, teardown, or sentinel assignment. A peer therefore
+cannot infer or directly control an unexposed existing session.
 
-The following tools remain local-only because routing them would add authority or distributed
-machinery beyond this primitive: `spawn_session`, `teardown_session`, `type_in_pane`,
-`send_to_operator`, `set_sentinel`, `toggle_fleet_watch`, `whoami`, `get_conductor_docs`, and
-`list_federation`. Operator commands remain local to the operator's selected instance.
+`spawn_session` is the exception because its target does not exist yet. Any known federation peer
+may ask the destination to spawn a valid new codename under the destination's ordinary workspace,
+template, runtime, and filesystem rules. Relative paths, worktree repositories, system-prompt
+files, and configured templates are resolved by the destination fleet. A new session is remotely
+addressable afterward only when its name is covered by `"*"` or an explicit exposure reservation;
+Conductor never edits `supervisor.yaml` to expose it automatically.
+
+`type_in_pane` remains the raw escape hatch: routing it does not add a message envelope, composer
+protection, or delivery queue. Use it only for deliberate terminal control. A remote caller may set
+an exposed session as sentinel or clear the destination's sentinel, and may toggle destination-wide
+fleet watch.
+
+`send_to_operator`, `whoami`, `get_conductor_docs`, and `list_federation` remain local-only.
+Operator commands remain local to the operator's selected instance.
 
 If an agent needs a remote operator decision, it should message an exposed peer session and let
 that session compose a local `send_to_operator` request. Federation does not hold an HTTP call open
-while a human decides, proxy raw keystrokes, or delete another fleet's workspace.
+while a human decides.
 
 ## Multiple Conductors in one directory
 

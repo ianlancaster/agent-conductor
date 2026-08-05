@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { validateConfig } from '../src/config/loader.js';
 import { Supervisor } from '../src/core/supervisor.js';
 import { FEDERATION_PROTOCOL_VERSION } from '../src/federation/registry.js';
 import { Store } from '../src/store/index.js';
@@ -300,17 +301,7 @@ describe('local Conductor federation', () => {
       status: 400,
       body: { ok: false, invalid: true },
     });
-    for (const operation of [
-      'get_conductor_docs',
-      'list_federation',
-      'send_to_operator',
-      'set_sentinel',
-      'spawn_session',
-      'teardown_session',
-      'toggle_fleet_watch',
-      'type_in_pane',
-      'whoami',
-    ]) {
+    for (const operation of ['get_conductor_docs', 'list_federation', 'send_to_operator', 'whoami']) {
       await expect(federationPost(backendPort, { ...baseRequest, operation })).resolves.toMatchObject({
         status: 400,
         body: { ok: false, invalid: true },
@@ -351,9 +342,13 @@ describe('local Conductor federation', () => {
     const tools = new Map((listed.result?.tools ?? []).map((tool) => [tool.name, tool]));
     expect(tools.get('send_to_session')?.inputSchema.properties).toHaveProperty('fleet');
     expect(tools.get('list_sessions')?.inputSchema.properties).toHaveProperty('fleet');
+    expect(tools.get('spawn_session')?.inputSchema.properties).toHaveProperty('fleet');
+    expect(tools.get('teardown_session')?.inputSchema.properties).toHaveProperty('fleet');
+    expect(tools.get('type_in_pane')?.inputSchema.properties).toHaveProperty('fleet');
+    expect(tools.get('set_sentinel')?.inputSchema.properties).toHaveProperty('fleet');
+    expect(tools.get('toggle_fleet_watch')?.inputSchema.properties).toHaveProperty('fleet');
     expect(tools.get('whoami')?.inputSchema.properties).not.toHaveProperty('fleet');
     expect(tools.get('send_to_operator')?.inputSchema.properties).not.toHaveProperty('fleet');
-    expect(tools.get('type_in_pane')?.inputSchema.properties).not.toHaveProperty('fleet');
     expect(tools.get('list_federation')?.inputSchema.properties).not.toHaveProperty('fleet');
 
     const unknown = await call(port, 'alpha', 'stop_session', { fleet: 'missing', codename: 'alpha' });
@@ -368,6 +363,118 @@ describe('local Conductor federation', () => {
       message: 'wrong shape',
     });
     expect(qualifiedTarget.error?.message).toContain("pass the local codename and the separate 'fleet' argument");
+  });
+
+  it('routes workspace, raw-input, and fleet supervision controls while preserving exposure', async () => {
+    const frontendDir = join(root, 'control-frontend');
+    const backendDir = join(root, 'control-backend');
+    const frontendPort = await freePort();
+    const backendPort = await freePort();
+    writeFleet(frontendDir, frontendPort, 'frontend', ['alpha'], ['alpha']);
+    writeFleet(backendDir, backendPort, 'backend', ['reserved'], ['hidden']);
+
+    const backendTerminal = new FakeTerminalBackend();
+    const frontend = new Supervisor(frontendDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      runtimes: [new FakeRuntime('claude-code')],
+      includeConfiguredChannels: false,
+      federationDirectory: registryDir,
+      env: {},
+    });
+    const backend = new Supervisor(backendDir, {
+      terminalBackend: backendTerminal,
+      runtimes: [new FakeRuntime('claude-code')],
+      includeConfiguredChannels: false,
+      federationDirectory: registryDir,
+      env: {},
+    });
+    supervisors.push(frontend, backend);
+    await frontend.start();
+    await backend.start();
+
+    const privateSpawn = await call(frontendPort, 'alpha', 'spawn_session', {
+      fleet: 'backend',
+      codename: 'private-worker',
+      path: './private-workspace',
+    });
+    expect(privateSpawn.error).toBeUndefined();
+    expect(privateSpawn.result?.content?.[0]?.text).toContain(join(backendDir, 'private-workspace'));
+    const privateType = await call(frontendPort, 'alpha', 'type_in_pane', {
+      fleet: 'backend',
+      codename: 'private-worker',
+      text: 'must stay hidden',
+    });
+    expect(privateType.result?.content?.[0]?.text).toBe('Unknown session: private-worker');
+
+    const spawn = await call(frontendPort, 'alpha', 'spawn_session', {
+      fleet: 'backend',
+      codename: 'reserved',
+      path: './reserved-workspace',
+    });
+    expect(spawn.error).toBeUndefined();
+    expect(spawn.result?.content?.[0]?.text).toContain(join(backendDir, 'reserved-workspace'));
+    expect(backendTerminal.paneFor('reserved')?.cwd).toBe(join(backendDir, 'reserved-workspace'));
+    await expect
+      .poll(async () => {
+        const discovery = await call(frontendPort, 'alpha', 'list_federation', {});
+        const fleets = discovery.result?.structuredContent as
+          { fleets?: { name: string; sessions: string[] }[] } | undefined;
+        return fleets?.fleets?.find((fleet) => fleet.name === 'backend')?.sessions ?? [];
+      })
+      .toContain('reserved');
+
+    const typed = await call(frontendPort, 'alpha', 'type_in_pane', {
+      fleet: 'backend',
+      codename: 'reserved',
+      text: '/review now',
+    });
+    expect(typed.result?.content?.[0]?.text).toBe("Typed into reserved's pane.");
+    expect(backendTerminal.paneFor('reserved')?.received).toContain('/review now');
+
+    for (const [operation, args] of [
+      ['teardown_session', { codename: 'hidden' }],
+      ['type_in_pane', { codename: 'hidden', text: 'must not arrive' }],
+      ['set_sentinel', { codename: 'hidden' }],
+    ] as const) {
+      const hidden = await call(frontendPort, 'alpha', operation, { fleet: 'backend', ...args });
+      expect(hidden.result?.content?.[0]?.text, operation).toBe('Unknown session: hidden');
+    }
+    const hiddenIdentity = await call(backendPort, 'hidden', 'whoami', {});
+    expect(hiddenIdentity.result?.content?.[0]?.text).toContain('"registered": true');
+    expect(hiddenIdentity.result?.content?.[0]?.text).toContain('"isSentinel": false');
+
+    const sentinel = await call(frontendPort, 'alpha', 'set_sentinel', {
+      fleet: 'backend',
+      codename: 'reserved',
+    });
+    expect(sentinel.result?.content?.[0]?.text).toBe('reserved set as stall sentinel.');
+    let reservedIdentity = await call(backendPort, 'reserved', 'whoami', {});
+    expect(reservedIdentity.result?.content?.[0]?.text).toContain('"isSentinel": true');
+
+    const cleared = await call(frontendPort, 'alpha', 'set_sentinel', { fleet: 'backend' });
+    expect(cleared.result?.content?.[0]?.text).toBe('Stall sentinel cleared.');
+    reservedIdentity = await call(backendPort, 'reserved', 'whoami', {});
+    expect(reservedIdentity.result?.content?.[0]?.text).toContain('"isSentinel": false');
+
+    const watchOn = await call(frontendPort, 'alpha', 'toggle_fleet_watch', { fleet: 'backend' });
+    expect(watchOn.result?.content?.[0]?.text).toBe('Fleet watch on.');
+    const watchOff = await call(frontendPort, 'alpha', 'toggle_fleet_watch', { fleet: 'backend' });
+    expect(watchOff.result?.content?.[0]?.text).toBe('Fleet watch off.');
+
+    const teardown = await call(frontendPort, 'alpha', 'teardown_session', {
+      fleet: 'backend',
+      codename: 'reserved',
+    });
+    expect(teardown.result?.content?.[0]?.text).toBe('reserved deregistered.');
+    expect(validateConfig(backendDir)).toEqual([]);
+    await expect
+      .poll(async () => {
+        const discovery = await call(frontendPort, 'alpha', 'list_federation', {});
+        const fleets = discovery.result?.structuredContent as
+          { fleets?: { name: string; sessions: string[] }[] } | undefined;
+        return fleets?.fleets?.find((fleet) => fleet.name === 'backend')?.sessions ?? [];
+      })
+      .not.toContain('reserved');
   });
 
   it('starts tolerantly when an exposed session configuration is temporarily malformed', async () => {

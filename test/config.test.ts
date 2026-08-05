@@ -97,7 +97,7 @@ describe('loadSupervisorConfig', () => {
     expect(loadConfig(baseDir).supervisor.federation?.expose).toEqual(['*']);
   });
 
-  it('rejects unsafe federation names, mixed wildcards, duplicates, and unknown startup exposure', () => {
+  it('rejects unsafe federation names, mixed wildcards, and duplicates while allowing exposure reservations', () => {
     writeSession('alpha', 'codename: alpha\nrepo: ./alpha\n');
     for (const yaml of [
       'federation:\n  name: ../frontend\n  expose: []\n',
@@ -109,8 +109,8 @@ describe('loadSupervisorConfig', () => {
     }
 
     writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'federation:\n  name: frontend\n  expose: [missing]\n');
-    expect(() => loadConfig(baseDir)).toThrow(/unknown session.*missing/);
-    expect(validateConfig(baseDir)).toEqual([expect.stringMatching(/unknown session.*missing/)]);
+    expect(loadConfig(baseDir).supervisor.federation?.expose).toEqual(['missing']);
+    expect(validateConfig(baseDir)).toEqual([]);
   });
 
   it('requires a loopback MCP bind when federation is enabled', () => {
@@ -122,7 +122,7 @@ describe('loadSupervisorConfig', () => {
     expect(validateConfig(baseDir)).toEqual([expect.stringMatching(/mcp\.host must be 127\.0\.0\.1 or localhost/)]);
   });
 
-  it('distinguishes an unparsed exposed session from a genuinely absent one', () => {
+  it('rejects an unparsed exposed session while allowing a genuinely absent reservation', () => {
     writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'federation:\n  name: frontend\n  expose: [alpha]\n');
     writeSession('alpha', 'codename: [\n');
     const supervisor = loadSupervisorConfig(baseDir);
@@ -138,7 +138,7 @@ describe('loadSupervisorConfig', () => {
       validateFederationExposure(supervisor, sessions, join(baseDir, 'config', 'supervisor.yaml'), {
         sessionsDir: join(baseDir, 'config', 'sessions'),
       }),
-    ).toThrow(/unknown session.*alpha/);
+    ).not.toThrow();
   });
 
   it('preserves an explicit opt-out from the Codex hook-trust default', () => {

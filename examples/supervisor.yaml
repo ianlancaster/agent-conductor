@@ -33,8 +33,9 @@ integrations: []
 
 # Optional direct federation with other Conductors running as the same user on
 # this machine. Omit the block for the ordinary isolated fleet behavior.
-# name is the unique public routing name; expose is either explicit configured
-# codenames, [] for none, or ["*"] for the current roster. Never mix "*" with names.
+# name is the unique public routing name; expose is either an explicit codename
+# allowlist (absent names are valid future reservations), [] for none, or ["*"]
+# for the current roster. Never mix "*" with names.
 # federation:
 #   name: frontend
 #   expose:

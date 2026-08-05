@@ -331,7 +331,7 @@ export class ConductorOperations {
           "Create, register, and start a session from an empty directory, registered template, or Git worktree. The destination is path or spawn.dirPattern; relative destinations resolve from the fleet directory. A new worktree branch starts at the source repository's current HEAD; existing branches are checked out as-is.",
         resultDescription: 'Returns the new session path and launch result.',
         audiences: BOTH,
-        federation: 'local-only',
+        federation: 'routable',
         inputSchema: schema(
           {
             codename: stringProperty('New session codename'),
@@ -390,7 +390,7 @@ export class ConductorOperations {
           'Stop and deregister a session, optionally removing its guarded working directory. Git-ignored files do not make a worktree dirty and are deleted with it.',
         resultDescription: 'Returns the teardown result and explains any directory retained for safety.',
         audiences: BOTH,
-        federation: 'local-only',
+        federation: 'routable',
         inputSchema: schema(
           {
             codename: stringProperty('Session codename'),
@@ -404,6 +404,7 @@ export class ConductorOperations {
         handler: (args, actor) => {
           const codename = requireString(args, 'codename');
           this.noSelf(actor, codename, 'tear down');
+          if (!this.isVisible(actor, codename)) return Promise.resolve(`Unknown session: ${codename}`);
           return this.deps.lifecycle.teardown(codename, args.deleteDir === true);
         },
       },
@@ -496,10 +497,13 @@ export class ConductorOperations {
         description: 'Designate a registered session as the stall sentinel, or omit codename to clear it.',
         resultDescription: 'Returns the resulting sentinel assignment.',
         audiences: BOTH,
-        federation: 'local-only',
+        federation: 'routable',
         inputSchema: schema({ codename: stringProperty('Session codename; omit to clear') }),
-        handler: (args) => {
+        handler: (args, actor) => {
           const codename = optionalString(args, 'codename');
+          if (codename !== undefined && !this.isVisible(actor, codename)) {
+            return Promise.resolve(`Unknown session: ${codename}`);
+          }
           this.deps.setSentinel(codename);
           return Promise.resolve(
             codename === undefined ? 'Stall sentinel cleared.' : `${codename} set as stall sentinel.`,
@@ -511,7 +515,7 @@ export class ConductorOperations {
         description: 'Toggle detection of all registered non-sentinel sessions being non-working.',
         resultDescription: 'Returns whether fleet watch is now on or off.',
         audiences: BOTH,
-        federation: 'local-only',
+        federation: 'routable',
         inputSchema: schema(),
         handler: () => Promise.resolve(`Fleet watch ${this.deps.sentinel.toggleFleetWatch() ? 'on' : 'off'}.`),
       },
@@ -715,13 +719,14 @@ export class ConductorOperations {
           "Type raw text immediately into a session's pane without a message envelope or delivery queue. This can overwrite terminal input; use it deliberately for prompts and slash commands.",
         resultDescription: 'Returns a terminal-write confirmation.',
         audiences: BOTH,
-        federation: 'local-only',
+        federation: 'routable',
         inputSchema: schema({ codename: stringProperty('Session codename'), text: stringProperty('Raw text') }, [
           'codename',
           'text',
         ]),
-        handler: async (args) => {
+        handler: async (args, actor) => {
           const codename = requireString(args, 'codename');
+          if (!this.isVisible(actor, codename)) return `Unknown session: ${codename}`;
           return this.deps.typeInPane(codename, requireString(args, 'text'));
         },
       },
