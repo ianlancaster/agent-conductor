@@ -32,6 +32,7 @@ let operatorMessages: ChannelMessage[];
 let sessions: Map<string, SessionConfig>;
 let events: FakeEventPublisher;
 let runbookCalls: { action: string; input: unknown }[];
+let shepherdPauseChanges: { session: string; paused: boolean }[];
 
 function writeSessionConfig(codename: string): void {
   const repo = join(baseDir, 'repos', codename);
@@ -66,6 +67,7 @@ beforeEach(() => {
   sessions = loadSessionConfigs(baseDir);
   events = new FakeEventPublisher();
   runbookCalls = [];
+  shepherdPauseChanges = [];
 
   delivery = new DeliveryQueue({
     backend,
@@ -171,6 +173,10 @@ beforeEach(() => {
     setSentinel: (codename) => {
       if (codename !== undefined && !states.has(codename)) throw new Error(`Unknown session: ${codename}`);
       sentinel.setSentinel(codename);
+    },
+    setShepherdPausedForSession: (session, paused) => {
+      shepherdPauseChanges.push({ session, paused });
+      return Promise.resolve();
     },
     getDocumentation: async (topic) => `docs:${topic ?? 'index'}`,
     runbookAdoptions: {
@@ -439,6 +445,25 @@ describe('mode commands', () => {
     expect(states.isPaused('alpha')).toBe(true);
     expect(await router.route('/resume alpha')).toBe('alpha: resumed');
     expect(states.isAuto('alpha')).toBe(false);
+  });
+
+  it('applies pause and resume to companion lifecycle hooks for one session or all', async () => {
+    await router.route('/pause alpha');
+    await router.route('/resume alpha');
+    expect(shepherdPauseChanges).toEqual([
+      { session: 'alpha', paused: true },
+      { session: 'alpha', paused: false },
+    ]);
+
+    shepherdPauseChanges = [];
+    await router.route('/pause all');
+    await router.route('/resume all');
+    expect(shepherdPauseChanges).toEqual([
+      { session: 'alpha', paused: true },
+      { session: 'beta', paused: true },
+      { session: 'alpha', paused: false },
+      { session: 'beta', paused: false },
+    ]);
   });
 
   it('sets and clears tags', async () => {

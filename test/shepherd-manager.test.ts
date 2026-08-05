@@ -96,6 +96,82 @@ describe('managed PR Shepherd lifecycle', () => {
     }
   });
 
+  it('stops the managed child while paused and starts a fresh child when resumed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-manager-'));
+    const paths = profile(dir, 'coordinator');
+    const children: ChildProcess[] = [];
+    const spawner: ShepherdProcessSpawner = {
+      spawn: () => {
+        const child = fakeChild(4300 + children.length);
+        children.push(child);
+        return child;
+      },
+    };
+    try {
+      const manager = new ShepherdManager(
+        { enabled: true, presentation: 'headless', configPath: paths.configPath },
+        spawner,
+      );
+      await manager.start();
+      expect(await manager.pause()).toBe(true);
+      expect(manager.status().state).toBe('paused');
+      expect(manager.recipientSession()).toBe('coordinator');
+      expect(children[0]?.signalCode).toBe('SIGTERM');
+      expect(await manager.pause()).toBe(false);
+
+      expect(await manager.resume()).toBe(true);
+      expect(manager.status().state).toBe('starting');
+      expect(children).toHaveLength(2);
+      expect(await manager.resume()).toBe(false);
+      await manager.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not spawn when the persisted coordinator session is paused at startup', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-manager-'));
+    const paths = profile(dir, 'coordinator');
+    const old = new ShepherdRuntimeReporter(paths.databasePath, paths.configPath, 'old-token', 1111);
+    old.pollStarted();
+    old.pollSucceeded();
+    const signals: NodeJS.Signals[] = [];
+    let oldAlive = true;
+    const control: ShepherdProcessControl = {
+      isAlive: (pid) => pid === 1111 && oldAlive,
+      matches: () => true,
+      signal: (_pid, signal) => {
+        signals.push(signal);
+        oldAlive = false;
+      },
+    };
+    let spawns = 0;
+    const spawner: ShepherdProcessSpawner = {
+      spawn: () => {
+        spawns += 1;
+        return fakeChild();
+      },
+    };
+    try {
+      const manager = new ShepherdManager(
+        { enabled: true, presentation: 'headless', configPath: paths.configPath },
+        spawner,
+        control,
+      );
+      await manager.start((recipient) => recipient === 'coordinator');
+      expect(manager.status().state).toBe('paused');
+      expect(manager.recipientSession()).toBe('coordinator');
+      expect(spawns).toBe(0);
+      expect(signals).toEqual(['SIGTERM']);
+
+      await manager.resume();
+      expect(spawns).toBe(1);
+      await manager.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not expose a recipient for stdout delivery or a disabled companion', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'shepherd-manager-'));
     const paths = profile(dir);

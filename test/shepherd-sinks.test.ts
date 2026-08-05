@@ -133,6 +133,7 @@ beforeEach(async () => {
     summon: async () => '',
     banish: async () => '',
     setSentinel: () => undefined,
+    setShepherdPausedForSession: async () => undefined,
     getDocumentation: async (topic) => `docs:${topic ?? 'index'}`,
     runbookAdoptions: {
       adopt: () => 'adopted',

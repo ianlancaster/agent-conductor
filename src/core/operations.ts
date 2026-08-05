@@ -66,6 +66,8 @@ export interface ConductorOperationDeps {
   summon(codename: string): Promise<string>;
   banish(codename: string): Promise<string>;
   setSentinel(codename: string | undefined): void;
+  /** Pause or resume managed PR Shepherd when codename is its configured coordinator session. */
+  setShepherdPausedForSession(codename: string, paused: boolean): Promise<void>;
   getDocumentation(topic?: string): Promise<string>;
   /** Present only when federation is enabled; keeps discovery absent otherwise. */
   listFederation?(): Promise<FederationListing>;
@@ -466,30 +468,34 @@ export class ConductorOperations {
       },
       {
         name: 'pause_session',
-        description: 'Pause one session, or all sessions: suppress schedules and stall routing.',
+        description:
+          'Pause one session, or all sessions: suppress schedules and stall routing, and pause managed PR Shepherd when its coordinator is targeted.',
         resultDescription: 'Returns the resulting pause state for each targeted session.',
         audiences: BOTH,
         federation: 'routable',
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
-          this.forTargets(args, actor, 'pause', (codename) => {
+          this.forTargets(args, actor, 'pause', async (codename) => {
             const paused = this.deps.states.pause(codename);
             if (paused) this.deps.sentinel.resetRouting(codename);
-            return Promise.resolve(paused ? `${codename}: paused` : `${codename}: already paused`);
+            await this.deps.setShepherdPausedForSession(codename, true);
+            return paused ? `${codename}: paused` : `${codename}: already paused`;
           }),
       },
       {
         name: 'resume_session',
-        description: 'Resume one paused session, or all paused sessions.',
+        description:
+          'Resume one paused session, or all paused sessions, and resume managed PR Shepherd when its coordinator is targeted.',
         resultDescription: 'Returns the resulting pause state for each targeted session.',
         audiences: BOTH,
         federation: 'routable',
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
-          this.forTargets(args, actor, 'resume', (codename) => {
+          this.forTargets(args, actor, 'resume', async (codename) => {
             const resumed = this.deps.states.resume(codename);
             if (resumed) this.deps.sentinel.resetRouting(codename);
-            return Promise.resolve(resumed ? `${codename}: resumed` : `${codename}: not paused`);
+            await this.deps.setShepherdPausedForSession(codename, false);
+            return resumed ? `${codename}: resumed` : `${codename}: not paused`;
           }),
       },
       {

@@ -16,6 +16,7 @@ export type ManagedShepherdState =
   | 'disabled'
   | 'config-invalid'
   | 'panel-unsupported'
+  | 'paused'
   | 'starting'
   | 'healthy'
   | 'stale'
@@ -99,7 +100,7 @@ export class ShepherdManager {
     return this.config.enabled ? this.coordinatorSession : undefined;
   }
 
-  async start(): Promise<void> {
+  async start(isRecipientPaused: (recipient: string) => boolean = () => false): Promise<void> {
     if (!this.config.enabled) return;
     this.stopping = false;
     this.restartCount = 0;
@@ -120,6 +121,11 @@ export class ShepherdManager {
     this.pollingIntervalMs = profile.polling.intervalSeconds * 1000;
     try {
       await this.reconcilePriorProcess();
+      if (this.coordinatorSession !== undefined && isRecipientPaused(this.coordinatorSession)) {
+        this.stopping = true;
+        this.setStatus('paused', null);
+        return;
+      }
       this.spawnChild();
     } catch (error) {
       this.classifyLaunchFailure(error);
@@ -128,10 +134,36 @@ export class ShepherdManager {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.clearTimers();
+    await this.terminateChild();
+    if (this.config.enabled) this.setStatus('stopped', null);
+  }
+
+  /** Pause the managed companion without losing its validated delivery recipient. */
+  async pause(): Promise<boolean> {
+    if (!this.config.enabled || this.statusValue.state === 'paused') return false;
+    this.stopping = true;
+    this.clearTimers();
+    await this.terminateChild();
+    this.setStatus('paused', null);
+    return true;
+  }
+
+  /** Restart a companion that was deliberately paused through its coordinator session. */
+  async resume(): Promise<boolean> {
+    if (!this.config.enabled || this.statusValue.state !== 'paused') return false;
+    await this.start();
+    return true;
+  }
+
+  private clearTimers(): void {
     if (this.restartTimer !== undefined) clearTimeout(this.restartTimer);
     if (this.healthTimer !== undefined) clearInterval(this.healthTimer);
     this.restartTimer = undefined;
     this.healthTimer = undefined;
+  }
+
+  private async terminateChild(): Promise<void> {
     const child = this.child;
     this.child = undefined;
     if (child?.exitCode === null && child.pid !== undefined) {
@@ -139,7 +171,6 @@ export class ShepherdManager {
       if (!(await this.waitForExit(child, STOP_TIMEOUT_MS))) child.kill('SIGKILL');
       await this.waitForExit(child, STOP_TIMEOUT_MS);
     }
-    if (this.config.enabled) this.setStatus('stopped', null);
   }
 
   private validateProfile(): ReturnType<typeof loadShepherdConfig> {

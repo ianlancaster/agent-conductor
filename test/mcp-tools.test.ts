@@ -146,6 +146,7 @@ beforeEach(() => {
       store.setWorkspaceValue('sentinel.codename', codename ?? null);
       sentinel.setSentinel(codename);
     },
+    setShepherdPausedForSession: async () => undefined,
     getDocumentation: async (topic) => `docs:${topic ?? 'index'}`,
     runbookAdoptions: {
       adopt: () => 'adopted',

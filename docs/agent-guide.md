@@ -551,8 +551,11 @@ the prompt, the Sentinel may use `type_in_pane`; otherwise it escalates to the o
 can overwrite an operator draft and must never be used as a routine nudge.
 
 `pause_session` is separate from auto. Pause temporarily suppresses both schedules and stall
-routing without changing the configured auto state. Use it for maintenance, intentional waiting,
-or operator review; `resume_session` restores the prior behavior.
+routing without changing the configured auto state. Pausing `all` or the configured PR Shepherd
+coordinator also stops the managed Shepherd process; resuming that target starts Shepherd again.
+The coordinator's persisted pause state suppresses Shepherd startup after a Conductor restart. Use
+pause for maintenance, intentional waiting, or operator review; `resume_session` restores the prior
+behavior.
 
 Fleet watch detects campaign-level darkness when individual idle states are normal but no worker is
 making progress. `toggle_fleet_watch` is a single fleet-level boolean. When enabled, it watches every

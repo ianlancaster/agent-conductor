@@ -83,6 +83,11 @@ Conductor starts Shepherd after its own control plane is ready and stops it duri
 `pr-shepherd init -C <fleet>` recreates only a missing profile and never overwrites one. Profile
 and supervisor changes take effect after a deliberate Conductor restart.
 
+Pausing the configured coordinator session, including through `/pause all`, also stops the managed
+Shepherd process. `/resume <coordinator>` or `/resume all` starts it again. Because session pause
+state is persisted, Conductor does not start Shepherd while its coordinator remains paused after a
+restart.
+
 While the managed companion has a fresh healthy heartbeat, fleet `/status` adds
 `PR Shepherd Status Online` directly below `Agent Conductor Status` and marks the configured
 coordinator session with `🐑`. If Shepherd is disabled or unhealthy, the concise fleet view omits

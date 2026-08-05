@@ -454,6 +454,11 @@ export class Supervisor {
       summon: (session) => this.paneAction(session, 'summon'),
       banish: (session) => this.paneAction(session, 'banish'),
       setSentinel: (session) => this.setSentinel(session),
+      setShepherdPausedForSession: async (session, paused) => {
+        if (this.shepherd.recipientSession() !== session) return;
+        if (paused) await this.shepherd.pause();
+        else await this.shepherd.resume();
+      },
       getDocumentation: (topic) => this.documentation.read(topic),
       ...(this.federationRegistry === undefined
         ? {}
@@ -637,7 +642,7 @@ export class Supervisor {
 
     this.watcher.start(heartbeatMs);
     this.scheduler.rebuild();
-    await this.shepherd.start();
+    await this.shepherd.start((recipient) => this.states.isPaused(recipient));
 
     if (opts.startAll === true) {
       for (const codename of this.sessions.keys()) {
