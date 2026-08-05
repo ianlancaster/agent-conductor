@@ -148,6 +148,10 @@ clearer than a generic framework; repeated conductor policy is not.
 6. Run the full quality gate and review the final diff for unrelated or deployment-specific data.
 7. Add a changeset with `pnpm changeset` for a user-facing change. Internal refactors and
    test-only or documentation-only changes generally do not need one.
+8. When the maintainer or operator has authorized shipping directly from this checkout, commit the
+   focused change, push it, then run `pnpm build && pnpm add --global .`. All three steps are required
+   for every shipped feature. Stage only the feature in a dirty worktree, and do not restart a live
+   fleet unless that disruption is explicitly in scope.
 
 Public package exports live in `src/index.ts`. Treat changes to exported interfaces,
 configuration schemas, operation schemas, command syntax, persisted data, and generated

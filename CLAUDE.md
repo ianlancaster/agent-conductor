@@ -51,6 +51,13 @@ changing package/bin metadata. A running Conductor process keeps its loaded code
 is deliberately restarted—never restart an operator's fleet merely to test a build unless
 that disruption is in scope.
 
+When a new feature is approved to ship directly from this checkout, complete the sequence in
+this order: commit the focused change, push the commit, then run `pnpm build && pnpm add --global .`.
+Do not stop after committing or pushing—the locally linked `conductor` must represent the shipped
+tree. In a dirty worktree, stage only the feature's files and preserve unrelated changes. Building
+and relinking never authorizes restarting a running fleet; restart it only when that disruption is
+explicitly in scope.
+
 ## Architecture
 
 Three seams isolate everything environment-specific; the core is pure orchestration logic
