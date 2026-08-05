@@ -80,6 +80,21 @@ describe('formatFleetStatusReport', () => {
     ).toBe('Agent Conductor Status 🔄\nPR Shepherd Status Online\n\nSessions:\n  alpha - CC 🐑 · 🟢 working');
   });
 
+  it('places Shepherd above federation in the status preamble', () => {
+    expect(
+      formatFleetStatusReport('Sessions:\n  coordinator - CC 🐑 · 🟢 working', {
+        fleetWatchActive: false,
+        shepherdOnline: true,
+        federation: { name: 'reviews', exposedSessions: ['review-coordinator'], peerCount: 1 },
+      }),
+    ).toBe(
+      'Agent Conductor Status\n' +
+        'PR Shepherd Status Online\n' +
+        'Federation: reviews · exposing review-coordinator · 1 peer(s)\n\n' +
+        'Sessions:\n  coordinator - CC 🐑 · 🟢 working',
+    );
+  });
+
   it('surfaces a degraded event journal without exposing its error text', () => {
     expect(
       formatFleetStatusReport('Sessions:\n  alpha - CC · 🟢 working', {

@@ -169,12 +169,12 @@ export function formatFleetStatusReport(
   const integrations = options.integrations ?? [];
   return [
     heading,
+    ...(options.shepherdOnline ? [PR_SHEPHERD_ONLINE_STATUS] : []),
     ...(options.federation === undefined
       ? []
       : [
           `Federation: ${options.federation.name} · exposing ${options.federation.exposedSessions.join(', ') || 'none'} · ${String(options.federation.peerCount)} peer(s)`,
         ]),
-    ...(options.shepherdOnline ? [PR_SHEPHERD_ONLINE_STATUS] : []),
     ...(options.eventJournal?.degraded === true
       ? [
           `Event journal DEGRADED — exported history is incomplete (${String(options.eventJournal.failureCount)} failure(s) this run). Run conductor doctor.`,

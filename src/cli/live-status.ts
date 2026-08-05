@@ -45,16 +45,28 @@ function statusContent(status: string | undefined): {
   body: string | undefined;
   fleetWatchActive: boolean;
   shepherdOnline: boolean;
+  federation: string | undefined;
 } {
-  if (status === undefined) return { body: undefined, fleetWatchActive: false, shepherdOnline: false };
+  if (status === undefined)
+    return { body: undefined, fleetWatchActive: false, shepherdOnline: false, federation: undefined };
   const [firstLine, ...remaining] = status.split('\n');
   if (firstLine !== CANONICAL_STATUS_HEADING && firstLine !== `${CANONICAL_STATUS_HEADING} 🔄`) {
-    return { body: status, fleetWatchActive: false, shepherdOnline: false };
+    return { body: status, fleetWatchActive: false, shepherdOnline: false, federation: undefined };
   }
-  const shepherdOnline = remaining[0] === PR_SHEPHERD_ONLINE_STATUS;
-  if (shepherdOnline) remaining.shift();
+  let shepherdOnline = false;
+  let federation: string | undefined;
+  for (let index = 0; index < 2; index += 1) {
+    if (remaining[0] === PR_SHEPHERD_ONLINE_STATUS) {
+      shepherdOnline = true;
+      remaining.shift();
+    } else if (remaining[0]?.startsWith('Federation: ') === true) {
+      federation = remaining.shift();
+    } else {
+      break;
+    }
+  }
   if (remaining[0] === '') remaining.shift();
-  return { body: remaining.join('\n'), fleetWatchActive: firstLine.endsWith(' 🔄'), shepherdOnline };
+  return { body: remaining.join('\n'), fleetWatchActive: firstLine.endsWith(' 🔄'), shepherdOnline, federation };
 }
 
 /** Parse a dashboard refresh duration such as `2`, `2s`, or `500ms`. */
@@ -116,6 +128,7 @@ export function renderStatusDashboard(
     `${heading}  ${connectionLabel(state.connection, colors)}${fleetWatch}`,
     ...(shepherd === undefined ? [] : [shepherd]),
     metadata,
+    ...(canonical.federation === undefined ? [] : [canonical.federation]),
     ...(retry === undefined ? [] : [retry]),
     '',
     ...(previous === undefined ? [] : [previous]),

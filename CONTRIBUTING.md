@@ -153,6 +153,10 @@ clearer than a generic framework; repeated conductor policy is not.
    for every shipped feature. Stage only the feature in a dirty worktree, and do not restart a live
    fleet unless that disruption is explicitly in scope.
 
+STOP MODIFYING WHAT THE STATUS COMMAND SHOWS UNLESS THE MAINTAINER OR OPERATOR EXPLICITLY ASKS FOR
+A STATUS-OUTPUT CHANGE. Its content, wording, order, spacing, symbols, and colors are a deliberate
+product contract and must not drift as a side effect of unrelated work.
+
 Public package exports live in `src/index.ts`. Treat changes to exported interfaces,
 configuration schemas, operation schemas, command syntax, persisted data, and generated
 files as public compatibility decisions even before the first stable release.

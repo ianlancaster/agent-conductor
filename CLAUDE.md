@@ -58,6 +58,10 @@ tree. In a dirty worktree, stage only the feature's files and preserve unrelated
 and relinking never authorizes restarting a running fleet; restart it only when that disruption is
 explicitly in scope.
 
+STOP MODIFYING WHAT THE STATUS COMMAND SHOWS UNLESS THE MAINTAINER OR OPERATOR EXPLICITLY ASKS
+FOR A STATUS-OUTPUT CHANGE. Treat its content, wording, order, spacing, symbols, and colors as a
+deliberate product contract; unrelated features must leave every status surface unchanged.
+
 ## Architecture
 
 Three seams isolate everything environment-specific; the core is pure orchestration logic
