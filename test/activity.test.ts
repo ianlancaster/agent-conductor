@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { observePaneActivity } from '../src/core/activity.js';
+import { observePaneActivity, observePaneInputState } from '../src/core/activity.js';
+import { CodexRuntime } from '../src/runtimes/codex/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 
@@ -69,5 +70,30 @@ describe('observePaneActivity', () => {
     };
 
     await expect(observePaneActivity(backend, runtime, 'alpha', pane, 40)).resolves.toBe('unknown');
+  });
+});
+
+describe('observePaneInputState', () => {
+  it('uses the runtime parser instead of treating captured placeholder bytes as a draft', async () => {
+    const backend = new FakeTerminalBackend();
+    const pane = await backend.createPane('alpha', 'pane');
+    const runtime = new CodexRuntime({ config: { binary: 'codex', toolTimeoutSec: 600 }, baseDir: '/tmp' });
+    backend.setPaneContent(pane.id, "finished previous turn\n› What's on your mind?\n  gpt-5.6 medium · /repo");
+
+    await expect(observePaneInputState(backend, runtime, 'alpha', pane, 40)).resolves.toBe('clear');
+
+    backend.setPaneContent(pane.id, 'finished previous turn\n› operator is typing a message\n  gpt-5.6 medium · /repo');
+    await expect(observePaneInputState(backend, runtime, 'alpha', pane, 40)).resolves.toBe('draft');
+  });
+
+  it('uses runtime-owned ambiguity resolution', async () => {
+    const backend = new FakeTerminalBackend();
+    const pane = await backend.createPane('alpha', 'pane');
+    const runtime = new FakeRuntime();
+    runtime.parseInputState = () => 'draft';
+    runtime.resolveInputState = vi.fn(async () => 'clear');
+
+    await expect(observePaneInputState(backend, runtime, 'alpha', pane, 40)).resolves.toBe('clear');
+    expect(runtime.resolveInputState).toHaveBeenCalled();
   });
 });

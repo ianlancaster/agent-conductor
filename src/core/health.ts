@@ -1,5 +1,5 @@
 import { log } from '../logger.js';
-import type { SessionRuntime } from '../runtimes/types.js';
+import type { InputState, SessionRuntime } from '../runtimes/types.js';
 import type { TerminalBackend } from '../terminals/types.js';
 import type { PaneActivityEvidence, PaneRef, RuntimeEvent, StallKind } from './types.js';
 
@@ -25,6 +25,8 @@ export interface HealthDeps {
   onRuntimeObserved?(session: string): void;
   /** Runtime-owned execution evidence used to reconcile best-effort lifecycle hooks. */
   observeActivity(session: string, pane: PaneRef): Promise<PaneActivityEvidence>;
+  /** Runtime-owned composer state used to keep human drafts out of idle routing. */
+  observeInputState(session: string, pane: PaneRef): Promise<InputState>;
   onStall(session: string, kind: StallKind, info: StallInfo): void;
   onWorking(session: string): void;
   onSessionEnd(session: string): void;
@@ -119,7 +121,7 @@ export class HealthMonitor {
         this.activeTurnIds.delete(session);
         this.pendingTurnIds.delete(session);
         const info: StallInfo = { reason: event.reason, transcriptPath: event.transcriptPath };
-        this.scheduleIdleReport(session, 'idle', info);
+        void this.scheduleIdleReport(session, 'idle', info);
         return;
       }
       case 'notification':
@@ -277,7 +279,7 @@ export class HealthMonitor {
         this.turnPhases.set(session, 'complete');
         this.activeTurnIds.delete(session);
         this.pendingTurnIds.delete(session);
-        this.scheduleIdleReport(session, 'compaction', compaction);
+        await this.scheduleIdleReport(session, 'compaction', compaction);
       }
       return;
     }
@@ -288,7 +290,7 @@ export class HealthMonitor {
     this.turnPhases.set(session, 'complete');
     this.activeTurnIds.delete(session);
     this.pendingTurnIds.delete(session);
-    this.scheduleIdleReport(session, 'idle', {});
+    await this.scheduleIdleReport(session, 'idle', {});
   }
 
   private recordWorking(session: string): void {
@@ -376,16 +378,16 @@ export class HealthMonitor {
     }
   }
 
-  private scheduleIdleReport(session: string, kind: 'idle' | 'compaction', info: StallInfo): void {
+  private async scheduleIdleReport(session: string, kind: 'idle' | 'compaction', info: StallInfo): Promise<void> {
     if (this.deps.config.idleConfirmMs <= 0) {
-      this.reportStall(session, kind, info);
+      await this.confirmIdleReport(session, kind, info);
       return;
     }
     if (this.idleTimers.has(session)) return;
     const timer = setTimeout(() => {
       this.idleTimers.delete(session);
       if (this.turnPhases.get(session) !== 'complete') return;
-      this.reportStall(session, kind, info);
+      void this.confirmIdleReport(session, kind, info);
     }, this.deps.config.idleConfirmMs);
     timer.unref();
     this.idleTimers.set(session, timer);
@@ -407,7 +409,7 @@ export class HealthMonitor {
       if (activity === 'idle') {
         this.pendingCompactions.delete(session);
         this.turnPhases.set(session, 'complete');
-        this.reportStall(session, 'compaction', info);
+        await this.confirmIdleReport(session, 'compaction', info);
         return;
       }
       if (activity === 'unknown') return;
@@ -420,6 +422,29 @@ export class HealthMonitor {
         `${session}: post-compaction activity check failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  private async confirmIdleReport(session: string, kind: 'idle' | 'compaction', info: StallInfo): Promise<void> {
+    if (this.turnPhases.get(session) !== 'complete') return;
+    const pane = this.deps.getPane(session);
+    if (pane === undefined) {
+      this.reportStall(session, kind, info);
+      return;
+    }
+
+    const eventSequence = this.eventSequences.get(session) ?? 0;
+    const inputState = await this.deps.observeInputState(session, pane);
+    // Composer observation is asynchronous. A newer lifecycle event or
+    // Conductor submission always wins over the older idle candidate.
+    if ((this.eventSequences.get(session) ?? 0) !== eventSequence || this.turnPhases.get(session) !== 'complete')
+      return;
+    if (inputState === 'draft') {
+      this.deps.logEvent(session, 'idle_suppressed', 'composer contains a draft');
+      return;
+    }
+    // Unknown capture evidence does not invent a draft. This preserves the
+    // existing lifecycle-driven idle signal when a pane cannot be inspected.
+    this.reportStall(session, kind, info);
   }
 
   private reportStall(session: string, kind: StallKind, info: StallInfo): void {

@@ -162,6 +162,8 @@ Status reconciliation uses each runtime's own activity parser to repair missed l
 both directions. It is deliberately separate from protected-delivery input detection: Claude Code
 and Codex can expose a composer while a turn is still running, so active-turn evidence wins over
 composer visibility. An inconclusive capture preserves the previous state rather than guessing.
+Before routing a completed turn as idle, Conductor also uses the runtime input parser to suppress
+the stall when a human has text waiting in the composer.
 Session tags are deliberately concise: `/tag` and `set_tag` reject labels longer than 50
 Unicode characters by default without changing the existing tag. Fleets can change the
 mechanical limit with `supervisor.maxTagLength`; supervisor settings apply after restart.

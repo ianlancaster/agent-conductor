@@ -133,8 +133,10 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
    activity parser. Delivery readiness and turn execution are different facts: both runtimes can
    expose a composer while a turn is active, so active-turn chrome takes precedence over composer
    visibility. Capture/runtime failures are unknown and never change activity. Idle evidence uses
-   `idleConfirmMs` debounce. Pane silence, elapsed time, tokens, and animation alone never end a
-   turn. Pane-silence fallback
+   `idleConfirmMs` debounce. At the end of that debounce, a runtime-parsed non-empty composer
+   suppresses idle and compaction stall routing; use the adapter's input parser, never raw captured
+   bytes, because plain terminal captures can make placeholder chrome look like typed input. Pane
+   silence, elapsed time, tokens, and animation alone never end a turn. Pane-silence fallback
    (`eventSilenceMs`) is only for runtimes that explicitly lack authoritative completion. A
    `PreCompact` hook begins compaction; only the matching compact-complete hook plus runtime-owned
    idle evidence can produce compaction-stall evidence. Don't add runtime-specific pane heuristics to

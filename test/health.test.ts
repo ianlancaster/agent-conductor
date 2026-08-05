@@ -45,6 +45,7 @@ beforeEach(async () => {
     getActiveSessions: () => ['alpha'],
     onRuntimeObserved: (session) => observed.push(session),
     observeActivity: async () => paneActivity,
+    observeInputState: async () => runtime.inputState,
     onStall: (session, kind, info) => {
       stalls.push({ session, kind, reason: info.reason });
       if (info.detectedAt !== undefined) stallDetections.push(info.detectedAt);
@@ -69,13 +70,22 @@ function event(
 }
 
 describe('event-driven signals', () => {
-  it('turns a stop event into an idle stall after the quiet period without losing its message', () => {
+  it('turns a stop event into an idle stall after the quiet period without losing its message', async () => {
     vi.setSystemTime(new Date('2026-07-27T07:00:00.000Z'));
     event('stop', 'All tests passed.');
     expect(stalls).toEqual([]);
-    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
     expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'All tests passed.' }]);
     expect(stallDetections).toEqual(['2026-07-27T07:00:15.000Z']);
+  });
+
+  it('suppresses an idle stall when the composer contains a human draft', async () => {
+    event('stop', 'turn complete');
+    runtime.inputState = 'draft';
+
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
+
+    expect(stalls).toEqual([]);
   });
 
   it('cancels the idle timer when another event arrives (session got new work)', () => {
@@ -86,7 +96,7 @@ describe('event-driven signals', () => {
     expect(stalls).toEqual([]);
   });
 
-  it('ignores an out-of-order completion for an older runtime turn', () => {
+  it('ignores an out-of-order completion for an older runtime turn', async () => {
     event('turn-start', undefined, 'turn-1');
     event('turn-start', undefined, 'turn-2');
     event('stop', 'older done', 'turn-1');
@@ -94,7 +104,7 @@ describe('event-driven signals', () => {
     expect(stalls).toEqual([]);
 
     event('stop', 'current done', 'turn-2');
-    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
     expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'current done' }]);
   });
 
@@ -106,24 +116,24 @@ describe('event-driven signals', () => {
     expect(stalls).toEqual([]);
   });
 
-  it('preserves a turn id reported between submission and terminal acknowledgement', () => {
+  it('preserves a turn id reported between submission and terminal acknowledgement', async () => {
     event('turn-start', undefined, 'turn-1');
     const boundary = monitor.captureTurnBoundary();
     event('turn-start', undefined, 'turn-2');
     monitor.markTurnActive('alpha', boundary);
 
     event('stop', 'current done', 'turn-2');
-    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
     expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'current done' }]);
   });
 
-  it('does not resurrect a turn completed before terminal acknowledgement', () => {
+  it('does not resurrect a turn completed before terminal acknowledgement', async () => {
     const boundary = monitor.captureTurnBoundary();
     event('turn-start', undefined, 'turn-2');
     event('stop', 'fast turn done', 'turn-2');
 
     expect(monitor.markTurnActive('alpha', boundary)).toBe(false);
-    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
     expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'fast turn done' }]);
     expect(working).toEqual(['alpha']);
   });
@@ -158,7 +168,7 @@ describe('event-driven signals', () => {
     event('stop', 'done');
     backend.setPaneContent(paneId, 'last assistant text\n› prompt');
     await monitor.heartbeat();
-    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
 
     expect(working).toEqual([]);
     expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'done' }]);
@@ -178,7 +188,7 @@ describe('event-driven signals', () => {
     backend.setPaneContent(paneId, 'permission accepted\ncontinuing');
     await monitor.heartbeat();
     event('stop', 'done', 'turn-1');
-    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
 
     expect(working).toEqual(['alpha', 'alpha']);
     expect(stalls).toEqual([
@@ -196,6 +206,16 @@ describe('event-driven signals', () => {
 
     expect(stalls).toEqual([{ session: 'alpha', kind: 'compaction', reason: undefined }]);
     expect(working).toEqual([]);
+  });
+
+  it('suppresses a completed compaction stall while the composer contains a draft', async () => {
+    runtime.inputState = 'draft';
+    event('compaction');
+    event('compaction-complete');
+
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
+
+    expect(stalls).toEqual([]);
   });
 
   it('keeps an automatically compacted turn working when no composer is visible', async () => {
@@ -227,14 +247,14 @@ describe('event-driven signals', () => {
 
     await monitor.heartbeat();
     expect(stalls).toEqual([]);
-    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
 
     expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: undefined }]);
   });
 
   it('repairs a missed turn-start hook when the composer is hidden', async () => {
     event('stop', 'previous turn done', 'turn-1');
-    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
     expect(stalls).toHaveLength(1);
 
     paneActivity = 'working';
@@ -254,7 +274,7 @@ describe('event-driven signals', () => {
     expect(stalls).toEqual([]);
   });
 
-  it('keeps the pane working when one of multiple overlapping runtime turns completes', () => {
+  it('keeps the pane working when one of multiple overlapping runtime turns completes', async () => {
     event('turn-start', undefined, 'root-turn');
     event('turn-start', undefined, 'nested-turn');
     event('stop', 'nested done', 'nested-turn');
@@ -262,7 +282,7 @@ describe('event-driven signals', () => {
     expect(stalls).toEqual([]);
 
     event('stop', 'root done', 'root-turn');
-    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
     expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'root done' }]);
   });
 
@@ -291,7 +311,7 @@ describe('fallback pane-diff watchdog', () => {
 
   it('never promotes an authoritative completed turn from idle to silent', async () => {
     event('stop', 'done');
-    vi.advanceTimersByTime(CONFIG.idleConfirmMs + 1);
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
     expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'done' }]);
     backend.setPaneContent(paneId, 'completed output');
     vi.advanceTimersByTime(CONFIG.eventSilenceMs * 3);
@@ -345,6 +365,7 @@ describe('fallback pane-diff watchdog', () => {
       getActiveSessions: () => ['alpha'],
       onRuntimeObserved: (session) => observed.push(session),
       observeActivity: async () => paneActivity,
+      observeInputState: async () => silent.inputState,
       onStall: (session, kind, info) => stalls.push({ session, kind, reason: info.reason }),
       onWorking: (session) => working.push(session),
       onSessionEnd: (session) => sessionEnds.push(session),

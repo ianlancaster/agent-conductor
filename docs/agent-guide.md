@@ -357,7 +357,8 @@ was good or its task is complete:
 - `working`: a turn started, Conductor submitted work, or the runtime-owned activity parser found
   positive evidence that a turn is executing.
 - `idle`: the runtime reported a normal completed turn, or its activity parser found positive idle
-  evidence, and no new work evidence arrived during `health.idleConfirmMs`
+  evidence, no new work evidence arrived during `health.idleConfirmMs`, and the runtime input
+  parser did not find a draft waiting in the composer
   (15 seconds by default). The process remains alive. Whether the evidence is actionable is the
   sentinel's decision.
 - `stopped`: no active runtime process is available for that registered session.
@@ -474,8 +475,11 @@ events and may:
 Conductor does not semantically decide whether a completed turn is actionable. A normal runtime
 stop starts the `health.idleConfirmMs` quiet timer. If it expires, Conductor records an `idle` stall,
 captures the last assistant message, and—when auto is enabled—routes that evidence to the sentinel.
-The sentinel then decides whether completed work needs no action, an unfinished plan needs a precise
-nudge, or an ambiguous state needs inspection or operator judgment.
+If a human has text waiting in the composer when the timer expires, Conductor suppresses that idle
+stall instead of inviting the sentinel to interrupt the draft. This check uses the runtime parser,
+not raw pane bytes, so an iTerm capture of placeholder chrome remains distinguishable from typed
+input. The sentinel then decides whether completed work needs no action, an unfinished plan needs a
+precise nudge, or an ambiguous state needs inspection or operator judgment.
 
 Individual stall notifications include `detected-at`, the ISO-8601 UTC instant when Conductor
 mechanically classified the condition after any confirmation delay. They also include up to three
