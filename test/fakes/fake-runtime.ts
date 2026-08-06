@@ -45,6 +45,7 @@ export class FakeRuntime implements SessionRuntime {
     this.launches.push({ session, opts: { ...opts } });
     const parts = [`fake-launch ${session.codename}`];
     if (opts.continueSession) parts.push('--continue');
+    if (opts.resumeSessionId !== undefined) parts.push(`--session-id ${JSON.stringify(opts.resumeSessionId)}`);
     if (opts.prompt !== undefined) parts.push(`--prompt ${JSON.stringify(opts.prompt)}`);
     return parts.join(' ');
   }

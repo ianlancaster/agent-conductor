@@ -272,6 +272,7 @@ describe('surface contract', () => {
     expect(startProperties).toHaveProperty('effort');
     expect(continueProperties).toHaveProperty('runtime');
     expect(continueProperties).toHaveProperty('effort');
+    expect(continueProperties).toHaveProperty('sessionId');
     expect((startProperties.runtime as { enum?: string[] }).enum).toEqual(['claude-code', 'cc', 'codex']);
     expect(spawnProperties).not.toHaveProperty('prompt');
     expect(spawnProperties).toHaveProperty('worktreeRepo');
@@ -435,10 +436,21 @@ describe('surface contract', () => {
     expect(identity.runtime).toBe('codex');
     await tool('stop_session').handler({ codename: 'watch' }, 'alpha');
     expect(
-      await tool('continue_session').handler({ codename: 'watch', runtime: 'codex', effort: 'ultra' }, 'alpha'),
+      await tool('continue_session').handler(
+        { codename: 'watch', runtime: 'codex', effort: 'ultra', sessionId: 'provider-session' },
+        'alpha',
+      ),
     ).toBe('watch continued.');
     expect(states.get('watch')?.runtime).toBe('codex');
     expect(states.get('watch')?.effort).toBe('ultra');
+    expect(runtime.launches.at(-1)?.opts.resumeSessionId).toBe('provider-session');
+  });
+
+  it('rejects an explicit runtime session ID for an all-sessions continuation', async () => {
+    await expect(
+      tool('continue_session').handler({ codename: 'all', sessionId: 'provider-session' }, 'alpha'),
+    ).rejects.toThrow("'sessionId' cannot be used when codename is 'all'");
+    expect(runtime.launches).toHaveLength(0);
   });
 
   it('normalizes the cc runtime shorthand through MCP', async () => {

@@ -313,7 +313,9 @@ lifecycle action that matches the intent:
 
 - `start_session`: start a fresh process for a registered session.
 - `stop_session`: stop its current process but keep registration and workspace.
-- `continue_session`: resume that runtime's most recent conversation.
+- `continue_session`: resume that runtime's most recent conversation, or pass its optional
+  `sessionId` argument to select one specific native runtime conversation. An explicit ID cannot
+  be combined with `codename: "all"`.
 - `spawn_session`: create a workspace, write session configuration, and start it.
 - `teardown_session`: stop and deregister; optionally remove a Conductor-owned safe workspace.
 

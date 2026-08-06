@@ -55,6 +55,16 @@ for a completed or silent turn.
    after `health.idleConfirmMs`; the Sentinel may nudge it, but Conductor must not type directly.
 4. Complete one post-compaction turn and require the normal notify-to-idle sequence again.
 
+## Specific conversation continuation
+
+1. Create two disposable conversations for the same registered Codex session and record their
+   native IDs without copying any transcript content into the results.
+2. Stop the disposable runtime and run `/continue <session> --session-id <older-id>`. Require the
+   older conversation to open, with its own history, rather than the newest conversation selected
+   by ordinary `/continue <session>`.
+3. Repeat ordinary continuation and require it to retain the existing latest-conversation behavior.
+4. Require `/continue all --session-id <id>` to fail before launching any runtime.
+
 ## Evidence and cleanup
 
 Record candidate version, Codex version, bypass/trust lane, event order, and status transitions—never

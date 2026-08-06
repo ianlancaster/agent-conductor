@@ -117,7 +117,10 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     }
 
     const flags: string[] = [];
-    if (opts.continueSession) flags.push('-c');
+    if (opts.continueSession) {
+      if (opts.resumeSessionId === undefined) flags.push('-c');
+      else flags.push('--resume', shellQuote(opts.resumeSessionId));
+    }
     if (opts.bypassPermissions === true) flags.push('--dangerously-skip-permissions');
     const model = session.model ?? this.config.defaultModel;
     if (model !== undefined) flags.push('--model', shellQuote(model));

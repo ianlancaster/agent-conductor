@@ -333,6 +333,14 @@ describe('lifecycle edges', () => {
     });
   });
 
+  it('passes an explicit runtime conversation ID through continuation', async () => {
+    expect(await lifecycle.continue('alpha', { resumeSessionId: 'provider-session' })).toBe('alpha continued.');
+    expect(runtime.launches.at(-1)?.opts).toMatchObject({
+      continueSession: true,
+      resumeSessionId: 'provider-session',
+    });
+  });
+
   it('continues with a per-run runtime override in the existing pane', async () => {
     await lifecycle.start('alpha');
     const pane = lifecycle.getPane('alpha')!;

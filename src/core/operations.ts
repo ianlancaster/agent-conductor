@@ -303,7 +303,7 @@ export class ConductorOperations {
       {
         name: 'continue_session',
         description:
-          "Continue one session's most recent conversation, or all sessions, with optional runtime and effort overrides.",
+          "Continue one session's most recent conversation, a specific runtime conversation by session ID, or all sessions, with optional runtime and effort overrides.",
         resultDescription: 'Returns one result line per targeted session.',
         audiences: BOTH,
         federation: 'routable',
@@ -312,20 +312,29 @@ export class ConductorOperations {
             codename: stringProperty("Session codename or 'all'"),
             runtime: runRuntimeProperty,
             effort: stringProperty(runtimeHintDescription('effort', this.deps.effortHints)),
+            sessionId: stringProperty(
+              "Runtime-native conversation/session ID to resume instead of the most recent conversation; cannot be used with 'all'",
+            ),
             placement: placementProperty,
             headless: headlessProperty,
           },
           ['codename'],
         ),
-        handler: (args, actor) =>
-          this.forTargets(args, actor, 'continue', (codename) =>
+        handler: (args, actor) => {
+          const sessionId = optionalString(args, 'sessionId');
+          if (args.codename === 'all' && sessionId !== undefined) {
+            throw new InvalidRequestError("'sessionId' cannot be used when codename is 'all'");
+          }
+          return this.forTargets(args, actor, 'continue', (codename) =>
             this.deps.lifecycle.continue(codename, {
               runtime: runtime(args),
               effort: optionalString(args, 'effort'),
+              resumeSessionId: sessionId,
               placement: placement(args),
               headless: args.headless === true,
             }),
-          ),
+          );
+        },
       },
       {
         name: 'spawn_session',

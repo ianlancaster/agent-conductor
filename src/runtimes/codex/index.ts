@@ -372,8 +372,10 @@ export class CodexRuntime implements SessionRuntime {
     // `resume --last` picks the newest rollout in CODEX_HOME/sessions. With a
     // per-session CODEX_HOME that set only ever contains THIS session's sessions, so
     // a continue can't accidentally resume another codex session's (or the
-    // operator's own) session.
-    if (opts.continueSession === true) parts.push('resume', '--last');
+    // operator's own) session. An explicit ID deliberately selects that rollout.
+    if (opts.continueSession === true) {
+      parts.push('resume', opts.resumeSessionId === undefined ? '--last' : shellQuote(opts.resumeSessionId));
+    }
 
     const effort = opts.effort ?? session.effort ?? this.settings.defaultEffort;
     const overrides = buildConfigOverrides({

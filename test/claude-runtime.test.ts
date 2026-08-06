@@ -141,6 +141,15 @@ describe('buildLaunchCommand', () => {
     expect(command).not.toContain('echo');
   });
 
+  it('resumes an explicit session ID instead of the most recent conversation', () => {
+    const command = runtime.buildLaunchCommand(session, identity, {
+      continueSession: true,
+      resumeSessionId: "provider'id",
+    });
+    expect(command).toContain("claude --resume 'provider'\\''id'");
+    expect(command).not.toContain('claude -c');
+  });
+
   it('keeps env overrides independent from the launch permission policy', () => {
     const custom = new ClaudeCodeRuntime({
       config: {

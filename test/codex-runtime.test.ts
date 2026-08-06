@@ -233,6 +233,15 @@ describe('buildLaunchCommand', () => {
     expect(cmd).toContain(`-c 'sandbox_mode="danger-full-access"'`);
   });
 
+  it('resumes an explicit session ID instead of the latest rollout', () => {
+    const cmd = runtime.buildLaunchCommand(makeSession(), identity, {
+      continueSession: true,
+      resumeSessionId: "provider'id",
+    });
+    expect(cmd).toContain("'codex' resume 'provider'\\''id' -c ");
+    expect(cmd).not.toContain('resume --last');
+  });
+
   it('bypassPermissions: false omits the bypass flag and the approval overrides', () => {
     const cmd = runtime.buildLaunchCommand(makeSession(), identity, { bypassPermissions: false });
     expect(cmd).not.toContain('--dangerously-bypass-approvals-and-sandbox');

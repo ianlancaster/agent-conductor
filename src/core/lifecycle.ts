@@ -18,6 +18,8 @@ export interface StartOptions {
   prompt?: string;
   placement?: Placement;
   continueSession?: boolean;
+  /** Opaque runtime-native conversation identifier used only for continuation. */
+  resumeSessionId?: string;
   /** Override the session's configured default for this run only. */
   runtime?: SessionConfig['runtime'];
   /** Override the resolved reasoning effort for this run only. */
@@ -258,6 +260,7 @@ export class Lifecycle {
       const command = runtime.buildLaunchCommand(launchSession, identity, {
         prompt: opts.prompt,
         continueSession: opts.continueSession ?? false,
+        resumeSessionId: opts.resumeSessionId,
         effort,
         bypassPermissions: launchSession.bypassPermissions ?? this.deps.config.defaultBypassPermissions,
       });

@@ -36,31 +36,40 @@ interface ParsedPlacement {
 }
 
 function parseSessionLaunch(args: string[], command: 'start' | 'continue'): Record<string, unknown> {
+  const usageText = `/${command} <session|all> [-r runtime] [-e effort]${
+    command === 'continue' ? ' [--session-id id]' : ''
+  } [placement]`;
   const parsed = parsePlacement(args);
   const rest: string[] = [];
   let runtime: string | undefined;
   let effort: string | undefined;
+  let sessionId: string | undefined;
   for (let index = 0; index < parsed.rest.length; index += 1) {
     const arg = parsed.rest[index];
     if (arg === '--runtime' || arg === '-r') {
       runtime = parsed.rest[index + 1];
-      if (runtime === undefined) usage(`/${command} <session|all> [-r runtime] [-e effort] [placement]`);
+      if (runtime === undefined) usage(usageText);
       index += 1;
     } else if (arg === '--effort' || arg === '-e') {
       effort = parsed.rest[index + 1];
-      if (effort === undefined) usage(`/${command} <session|all> [-r runtime] [-e effort] [placement]`);
+      if (effort === undefined) usage(usageText);
+      index += 1;
+    } else if (command === 'continue' && arg === '--session-id') {
+      sessionId = parsed.rest[index + 1];
+      if (sessionId === undefined) usage(usageText);
       index += 1;
     } else if (arg !== undefined) {
       rest.push(arg);
     }
   }
   if (rest.length !== 1 || rest[0] === undefined) {
-    usage(`/${command} <session|all> [-r runtime] [-e effort] [placement]`);
+    usage(usageText);
   }
   return {
     codename: rest[0],
     ...(runtime !== undefined ? { runtime } : {}),
     ...(effort !== undefined ? { effort } : {}),
+    ...(sessionId !== undefined ? { sessionId } : {}),
     ...(parsed.placement !== undefined ? { placement: parsed.placement } : {}),
     ...(parsed.headless === true ? { headless: true } : {}),
   };
@@ -148,7 +157,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       command: 'continue',
       operations: ['continue_session'],
       group: 'Sessions',
-      usage: `/continue <session|all> [-r|--runtime ${runtimeChoices}] [-e|--effort level] [placement]`,
+      usage: `/continue <session|all> [--session-id id] [-r|--runtime ${runtimeChoices}] [-e|--effort level] [placement]`,
       description: operationDescription(operations, 'continue_session'),
       invoke: (args, actor) => invoke('continue_session', parseSessionLaunch(args, 'continue'), actor),
     },

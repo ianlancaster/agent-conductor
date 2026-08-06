@@ -269,7 +269,8 @@ Inject one backend with `new Supervisor(fleetDir, { terminalBackend })`.
 Implement `SessionRuntime` for another agent CLI. A runtime owns:
 
 - per-session identity, hook, and instruction preparation;
-- fresh and resume launch commands;
+- fresh and resume launch commands, including the optional opaque `LaunchOptions.resumeSessionId`
+  used to select a specific native conversation;
 - runtime capability advertisement;
 - input-state parsing and optional ambiguity resolution;
 - terminal-chrome stripping;

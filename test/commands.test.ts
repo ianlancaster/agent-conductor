@@ -298,6 +298,21 @@ describe('session commands', () => {
   it('continues with the continue flag in the launch command', async () => {
     await router.route('/continue alpha');
     expect(backend.paneFor('alpha')?.launched[0]).toContain('--continue');
+    expect(runtime.launches.at(-1)?.opts.resumeSessionId).toBeUndefined();
+  });
+
+  it('continues a specific runtime conversation by session ID', async () => {
+    expect(await router.route('/continue alpha --session-id "provider session"')).toBe('alpha continued.');
+    expect(runtime.launches.at(-1)?.opts.resumeSessionId).toBe('provider session');
+    expect(backend.paneFor('alpha')?.launched[0]).toContain('--session-id "provider session"');
+  });
+
+  it('rejects a session ID without one specific Conductor session', async () => {
+    expect(await router.route('/continue all --session-id provider-session')).toBe(
+      "'sessionId' cannot be used when codename is 'all'",
+    );
+    expect(runtime.launches).toHaveLength(0);
+    expect(await router.route('/continue alpha --session-id')).toContain('Usage: /continue <session|all>');
   });
 
   it('starts and continues with a runtime override', async () => {
@@ -528,7 +543,7 @@ describe('help', () => {
     const help = await router.route('/help');
     expect(help).toContain('Sessions:\n  /status [session] —');
     expect(help).toContain('/start <session|all> [-r|--runtime cc|claude-code|codex]');
-    expect(help).toContain('/continue <session|all> [-r|--runtime cc|claude-code|codex]');
+    expect(help).toContain('/continue <session|all> [--session-id id] [-r|--runtime cc|claude-code|codex]');
     expect(help.match(/-e\|--effort level/gu)).toHaveLength(2);
     expect(help).toContain('Conversation:\n  /tell <session> <message> —');
     expect(help).toContain('  -P/--pane · -T/--tab · -W/--window\n  -H/--headless — detached tmux pane');
