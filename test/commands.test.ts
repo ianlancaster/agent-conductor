@@ -307,6 +307,11 @@ describe('session commands', () => {
     expect(backend.paneFor('alpha')?.launched[0]).toContain('--session-id "provider session"');
   });
 
+  it('accepts -s as the session ID alias', async () => {
+    expect(await router.route('/continue alpha -s provider-session')).toBe('alpha continued.');
+    expect(runtime.launches.at(-1)?.opts.resumeSessionId).toBe('provider-session');
+  });
+
   it('rejects a session ID without one specific Conductor session', async () => {
     expect(await router.route('/continue all --session-id provider-session')).toBe(
       "'sessionId' cannot be used when codename is 'all'",
@@ -543,7 +548,7 @@ describe('help', () => {
     const help = await router.route('/help');
     expect(help).toContain('Sessions:\n  /status [session] —');
     expect(help).toContain('/start <session|all> [-r|--runtime cc|claude-code|codex]');
-    expect(help).toContain('/continue <session|all> [--session-id id] [-r|--runtime cc|claude-code|codex]');
+    expect(help).toContain('/continue <session|all> [-s|--session-id id] [-r|--runtime cc|claude-code|codex]');
     expect(help.match(/-e\|--effort level/gu)).toHaveLength(2);
     expect(help).toContain('Conversation:\n  /tell <session> <message> —');
     expect(help).toContain('  -P/--pane · -T/--tab · -W/--window\n  -H/--headless — detached tmux pane');

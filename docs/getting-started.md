@@ -362,7 +362,7 @@ primitive, not an approval or execution queue.
   other agent. A model configured for the default runtime is ignored during an override so
   the selected runtime can use its own default model. Claude Code and Codex do not share
   conversation history; `continue` resumes the selected runtime's latest conversation. Use
-  `/continue alpha --session-id <id>` to select a specific native runtime conversation instead.
+  `/continue alpha -s <id>` (or `--session-id <id>`) to select a specific native runtime conversation instead.
   Explicit IDs are opaque provider values and cannot be combined with `all`.
   `spawn_session.model` advertises the non-exhaustive lists configured under
   `runtimes.claudeCode.availableModels` and `runtimes.codex.availableModels`; unknown model

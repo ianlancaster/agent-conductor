@@ -102,18 +102,18 @@ For the full walkthrough, including what the generated files mean, continue with
 The operator console uses a small command language. Run `/help` for the complete,
 version-matched reference; these are the commands used most often:
 
-| Task                                      | Command                                                                            |
-| ----------------------------------------- | ---------------------------------------------------------------------------------- |
-| Inspect the fleet or one session          | `/status` · `/status <session>`                                                    |
-| Create a session                          | `/spawn <name> [-r claude-code\|codex] [--path <dir>]`                             |
-| Start, resume, or stop it                 | `/start <session>` · `/continue <session> [--session-id <id>]` · `/stop <session>` |
-| Send a message                            | `/tell <session> <message>` · `/broadcast <message>`                               |
-| Make free text target one session         | `/talk <session>`                                                                  |
-| Inspect recent terminal output            | `/tail <session> [lines]`                                                          |
-| Set or clear a concise status tag         | `/tag <session> [text]`                                                            |
-| Temporarily suspend or restore automation | `/pause <session>` · `/resume <session>`                                           |
-| Record an approved runbook condition      | `/runbook adopt <id> --version <v> --topic <topic>`                                |
-| Remove a spawned session                  | `/teardown <session> [--delete]`                                                   |
+| Task                                      | Command                                                                  |
+| ----------------------------------------- | ------------------------------------------------------------------------ |
+| Inspect the fleet or one session          | `/status` · `/status <session>`                                          |
+| Create a session                          | `/spawn <name> [-r claude-code\|codex] [--path <dir>]`                   |
+| Start, resume, or stop it                 | `/start <session>` · `/continue <session> [-s <id>]` · `/stop <session>` |
+| Send a message                            | `/tell <session> <message>` · `/broadcast <message>`                     |
+| Make free text target one session         | `/talk <session>`                                                        |
+| Inspect recent terminal output            | `/tail <session> [lines]`                                                |
+| Set or clear a concise status tag         | `/tag <session> [text]`                                                  |
+| Temporarily suspend or restore automation | `/pause <session>` · `/resume <session>`                                 |
+| Record an approved runbook condition      | `/runbook adopt <id> --version <v> --topic <topic>`                      |
+| Remove a spawned session                  | `/teardown <session> [--delete]`                                         |
 
 A typical hand-driven session looks like this:
 
@@ -129,7 +129,7 @@ A typical hand-driven session looks like this:
 `/spawn` registers and starts the session. `-r` selects a runtime for the session; if
 omitted, the fleet default is used. Claude Code and Codex retain separate native
 conversation histories, so `continue` resumes the history belonging to the selected
-runtime. Pass `--session-id <id>` to resume a specific native Claude Code or Codex
+runtime. Pass `-s <id>` or `--session-id <id>` to resume a specific native Claude Code or Codex
 conversation instead of that runtime's most recent conversation. An explicit ID targets one
 Conductor session and therefore cannot be combined with `all`.
 

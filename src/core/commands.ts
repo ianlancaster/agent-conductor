@@ -37,7 +37,7 @@ interface ParsedPlacement {
 
 function parseSessionLaunch(args: string[], command: 'start' | 'continue'): Record<string, unknown> {
   const usageText = `/${command} <session|all> [-r runtime] [-e effort]${
-    command === 'continue' ? ' [--session-id id]' : ''
+    command === 'continue' ? ' [-s|--session-id id]' : ''
   } [placement]`;
   const parsed = parsePlacement(args);
   const rest: string[] = [];
@@ -54,7 +54,7 @@ function parseSessionLaunch(args: string[], command: 'start' | 'continue'): Reco
       effort = parsed.rest[index + 1];
       if (effort === undefined) usage(usageText);
       index += 1;
-    } else if (command === 'continue' && arg === '--session-id') {
+    } else if (command === 'continue' && (arg === '--session-id' || arg === '-s')) {
       sessionId = parsed.rest[index + 1];
       if (sessionId === undefined) usage(usageText);
       index += 1;
@@ -157,7 +157,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       command: 'continue',
       operations: ['continue_session'],
       group: 'Sessions',
-      usage: `/continue <session|all> [--session-id id] [-r|--runtime ${runtimeChoices}] [-e|--effort level] [placement]`,
+      usage: `/continue <session|all> [-s|--session-id id] [-r|--runtime ${runtimeChoices}] [-e|--effort level] [placement]`,
       description: operationDescription(operations, 'continue_session'),
       invoke: (args, actor) => invoke('continue_session', parseSessionLaunch(args, 'continue'), actor),
     },
