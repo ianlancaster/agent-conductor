@@ -118,7 +118,7 @@ Configuration is strict, versioned YAML: unknown keys and unknown guidance event
 | `reviews.bots[]`                        | Configurable bot username, actionable and positive patterns, inbox gating, and feedback-attempt limit.                                 |
 | `features.authoredPRs.enabled`          | Monitor authored pull requests; default `true`.                                                                                        |
 | `features.reviewInbox`                  | Optional assigned-review workflow with draft, repository, and age filters; disabled by default.                                        |
-| `features.reviewFollowUp.enabled`       | Emit scoped re-review work after commits address requested changes; disabled by default.                                               |
+| `features.reviewFollowUp.enabled`       | Track actionable requested-change or inline-comment reviews and emit scoped follow-up transitions; disabled by default.                |
 | `features.reviewerNudge`                | Optional reviewer-comment/escalation workflow, including threshold, weekday handling, timezone, and repeat cap; disabled by default.   |
 | `features.staleThresholdHours`          | Authored-PR staleness interval; default `4`. Set `0` for immediate first-cycle staleness.                                              |
 | `automation.autoMerge`                  | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
@@ -155,6 +155,36 @@ Review-inbox completion facts include an outcome: `bot-auto-approved`, `already-
 `assignment-ended`. Once an assignment reaches either of the first two terminal dispositions,
 its later disappearance from GitHub's review-requested search only clears tracking state; it
 does not emit a second generic completion.
+
+### Review follow-up lifecycle
+
+With `features.reviewFollowUp.enabled: true`, Shepherd follows both `CHANGES_REQUESTED` reviews and
+`COMMENTED` reviews that contain at least one inline thread rooted by `profile.githubUser`. An empty
+or body-only `COMMENTED` review is not actionable. A later approval by that reviewer closes all
+earlier findings; inline findings submitted after the approval establish a fresh lifecycle.
+Dismissed findings are likewise removed when no later actionable review remains.
+
+After the lifecycle baseline, Shepherd emits one coalesced `scoped-re-review` event per poll when
+the reviewed head changes, another participant adds an inline-thread reply, a tracked thread
+becomes outdated or resolved, or GitHub explicitly requests the configured reviewer again. The
+reviewer's own replies and replies from `reviews.ignoredActors` advance the baseline without
+emitting work. Ordinary issue comments are not review-thread replies. Persistent heads, thread
+states, replies, and review requests do not repeat events; later heads, reply IDs, and state or
+request transitions remain independently recurrent.
+
+Each event names every triggering reason and active review ID, the reviewed and current heads, and
+the current explicit-request state. Affected-thread facts include the thread and root-comment IDs,
+URL, path, original/current line and side when GitHub provides them, a concise root-finding excerpt,
+current outdated/resolved state, and the author, body, timestamps, and URL of each new reply. The
+coordinator can therefore dispatch a scoped reviewer without first rediscovering the triggering
+comments.
+
+`polling.bootstrap: baseline-only` records existing heads, replies, thread state, and review
+requests without emitting historical follow-up work. The same cursors are persisted in Shepherd's
+SQLite entity state. State, event, and durable outbox insertion share one transaction, so a restart
+cannot separate a delivered transition from its deduplication cursor. `pr-shepherd status` counts
+each open lifecycle under `followUps`; approval, dismissal without a later actionable review, PR
+closure, or merge removes it.
 
 Put private workflow instructions in `guidance`, for example:
 

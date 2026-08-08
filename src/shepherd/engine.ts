@@ -11,6 +11,8 @@ import type {
   PullRequestDetails,
   PullRequestRef,
   Review,
+  ReviewThread,
+  ReviewThreadComment,
   ShepherdEvent,
   ShepherdStore,
 } from './types.js';
@@ -30,12 +32,28 @@ interface InboxState {
 
 type InboxCompletionOutcome = 'bot-auto-approved' | 'already-reviewed';
 
+interface FollowUpThreadState {
+  rootCommentId: string;
+  isOutdated: boolean;
+  isResolved: boolean;
+  seenCommentIds: string[];
+  outdatedCycle: number;
+  resolvedCycle: number;
+}
+
 interface FollowUpState {
-  reviewId: string;
+  /** Legacy single-review cursor retained while upgrading persisted V2 entities. */
+  reviewId?: string;
+  trackedReviewIds?: string[];
   reviewedHeadSha: string;
   notifiedHeadSha: string | null;
+  reviewRequested?: boolean;
+  reviewRequestCycle?: number;
+  threads?: Record<string, FollowUpThreadState>;
   details: PullRequestDetails;
 }
+
+type FollowUpReason = 'head-changed' | 'thread-replied' | 'thread-outdated' | 'thread-resolved' | 'review-requested';
 
 interface NudgeState {
   reviewer: string;
@@ -85,6 +103,22 @@ function sortedComments(comments: Comment[]): Comment[] {
       ? left.id.localeCompare(right.id)
       : left.createdAt.localeCompare(right.createdAt),
   );
+}
+
+function sortedReviews(reviews: Review[]): Review[] {
+  return [...reviews].sort((left, right) => {
+    const byTime = left.submittedAt.localeCompare(right.submittedAt);
+    return byTime === 0 ? left.id.localeCompare(right.id) : byTime;
+  });
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function excerpt(body: string, limit = 240): string {
+  const compact = body.replace(/\s+/g, ' ').trim();
+  return compact.length <= limit ? compact : `${compact.slice(0, limit - 1)}…`;
 }
 
 function inboxCompletionOutcome(disposition: InboxState['disposition']): InboxCompletionOutcome | undefined {
@@ -887,50 +921,149 @@ export class ShepherdEngine {
           if (!repositoryInScope(details.repo, this.config.github)) return;
           const key = prKey('follow-up', details);
           observed.add(key);
-          const ourReviews = details.reviews
-            .filter((review) => review.author.toLowerCase() === this.config.profile.githubUser.toLowerCase())
-            .sort((left, right) => right.submittedAt.localeCompare(left.submittedAt));
-          const ours = ourReviews.find((review) => review.state === 'CHANGES_REQUESTED');
-          const laterApproval = ourReviews.find((review) => review.state === 'APPROVED');
-          if (ours === undefined || (laterApproval !== undefined && laterApproval.submittedAt > ours.submittedAt)) {
+          if (details.state !== 'OPEN') {
             this.store.commit([], [], undefined, [key]);
             return;
           }
+
+          const active = this.activeFollowUp(details);
+          if (active.reviews.length === 0) {
+            this.store.commit([], [], undefined, [key]);
+            return;
+          }
+
           const previous = this.store.getEntity<FollowUpState>(key)?.value;
-          const reviewedCommit = [...details.commits]
-            .filter((commit) => commit.committedAt <= ours.submittedAt)
-            .sort((left, right) => right.committedAt.localeCompare(left.committedAt))[0];
-          const reviewedHeadSha =
-            previous?.reviewId === ours.id ? previous.reviewedHeadSha : (reviewedCommit?.sha ?? details.headSha);
-          const changed = details.headSha !== reviewedHeadSha && previous?.notifiedHeadSha !== details.headSha;
-          const events =
-            !baseline && changed
-              ? [
-                  buildEvent(
-                    this.config,
-                    'scoped-re-review',
-                    details,
-                    { reviewId: ours.id, headSha: details.headSha },
-                    {
-                      previousReviewAt: ours.submittedAt,
-                      reviewedHeadSha,
-                      currentHeadSha: details.headSha,
-                      title: details.title,
-                      url: details.url,
-                    },
-                    this.clock().toISOString(),
-                  ),
-                ]
-              : [];
+          const trackedReviewIds = active.reviews.map((review) => review.id).sort();
+          const previousReviewIds = [
+            ...(previous?.trackedReviewIds ?? (previous?.reviewId === undefined ? [] : [previous.reviewId])),
+          ].sort();
+          const legacyReview =
+            previous !== undefined && previous.trackedReviewIds === undefined && previous.reviewId !== undefined
+              ? previous.details.reviews.find((review) => review.id === previous.reviewId)
+              : undefined;
+          const continuingLegacyLifecycle =
+            legacyReview !== undefined &&
+            active.reviews.some(
+              (review) =>
+                review.author.toLowerCase() === legacyReview.author.toLowerCase() &&
+                review.state === legacyReview.state &&
+                review.submittedAt === legacyReview.submittedAt,
+            );
+          const sameLifecycle =
+            previous !== undefined && (sameStrings(previousReviewIds, trackedReviewIds) || continuingLegacyLifecycle);
+          const reviewedHeadSha = sameLifecycle
+            ? previous.reviewedHeadSha
+            : this.reviewedHead(details, active.reviews.at(-1));
+          const requested = details.requestedReviewers.some(
+            (reviewer) => reviewer.login.toLowerCase() === this.config.profile.githubUser.toLowerCase(),
+          );
+          const previousThreads = sameLifecycle ? (previous.threads ?? {}) : {};
+          const nextThreads: Record<string, FollowUpThreadState> = {};
+          const newReplies = new Map<string, ReviewThreadComment[]>();
+          const outdatedTransitions: { threadId: string; cycle: number }[] = [];
+          const resolvedTransitions: { threadId: string; cycle: number }[] = [];
+
+          for (const thread of active.threads) {
+            const oldThread = previousThreads[thread.id];
+            let outdatedCycle = oldThread?.outdatedCycle ?? 0;
+            let resolvedCycle = oldThread?.resolvedCycle ?? 0;
+            if (sameLifecycle && oldThread !== undefined) {
+              const seen = new Set(oldThread.seenCommentIds ?? []);
+              const replies = thread.comments.filter(
+                (comment) =>
+                  !seen.has(comment.id) &&
+                  comment.id !== thread.rootCommentId &&
+                  !this.ignoredFollowUpReply(comment.author),
+              );
+              if (replies.length > 0) newReplies.set(thread.id, replies);
+              if (!oldThread.isOutdated && thread.isOutdated) {
+                outdatedCycle += 1;
+                outdatedTransitions.push({ threadId: thread.id, cycle: outdatedCycle });
+              }
+              if (!oldThread.isResolved && thread.isResolved) {
+                resolvedCycle += 1;
+                resolvedTransitions.push({ threadId: thread.id, cycle: resolvedCycle });
+              }
+            }
+            nextThreads[thread.id] = {
+              rootCommentId: thread.rootCommentId,
+              isOutdated: thread.isOutdated,
+              isResolved: thread.isResolved,
+              seenCommentIds: thread.comments.map((comment) => comment.id),
+              outdatedCycle,
+              resolvedCycle,
+            };
+          }
+
+          const headChanged = details.headSha !== reviewedHeadSha && previous?.notifiedHeadSha !== details.headSha;
+          let reviewRequestCycle = sameLifecycle ? (previous.reviewRequestCycle ?? 0) : 0;
+          const reviewRequestedTransition = sameLifecycle && previous.reviewRequested === false && requested;
+          if (reviewRequestedTransition) reviewRequestCycle += 1;
+
+          const reasons: FollowUpReason[] = [];
+          if (!baseline && headChanged) reasons.push('head-changed');
+          if (!baseline && newReplies.size > 0) reasons.push('thread-replied');
+          if (!baseline && outdatedTransitions.length > 0) reasons.push('thread-outdated');
+          if (!baseline && resolvedTransitions.length > 0) reasons.push('thread-resolved');
+          if (!baseline && reviewRequestedTransition) reasons.push('review-requested');
+
+          const transitionedThreadIds = new Set([
+            ...newReplies.keys(),
+            ...outdatedTransitions.map((transition) => transition.threadId),
+            ...resolvedTransitions.map((transition) => transition.threadId),
+          ]);
+          const includeAllThreads = reasons.includes('head-changed') || reasons.includes('review-requested');
+          const affectedThreads = active.threads.filter(
+            (thread) => includeAllThreads || transitionedThreadIds.has(thread.id),
+          );
+          const event =
+            reasons.length === 0
+              ? undefined
+              : buildEvent(
+                  this.config,
+                  'scoped-re-review',
+                  details,
+                  {
+                    reviewIds: trackedReviewIds,
+                    headSha: reasons.includes('head-changed') ? details.headSha : undefined,
+                    replyIds: [...newReplies.values()]
+                      .flat()
+                      .map((reply) => reply.id)
+                      .sort(),
+                    outdatedTransitions: outdatedTransitions
+                      .map((transition) => `${transition.threadId}:${String(transition.cycle)}`)
+                      .sort(),
+                    resolvedTransitions: resolvedTransitions
+                      .map((transition) => `${transition.threadId}:${String(transition.cycle)}`)
+                      .sort(),
+                    reviewRequestCycle: reviewRequestedTransition ? reviewRequestCycle : undefined,
+                  },
+                  {
+                    title: details.title,
+                    url: details.url,
+                    triggeringReasons: reasons,
+                    activeReviewIds: trackedReviewIds,
+                    reviewedHeadSha,
+                    currentHeadSha: details.headSha,
+                    reviewRequested: requested,
+                    affectedThreads: affectedThreads.map((thread) =>
+                      this.followUpThreadFacts(thread, newReplies.get(thread.id) ?? []),
+                    ),
+                  },
+                  this.clock().toISOString(),
+                );
           const state: FollowUpState = {
-            reviewId: ours.id,
+            trackedReviewIds,
             reviewedHeadSha,
-            notifiedHeadSha: changed ? details.headSha : (previous?.notifiedHeadSha ?? null),
+            notifiedHeadSha: headChanged ? details.headSha : sameLifecycle ? previous.notifiedHeadSha : null,
+            reviewRequested: requested,
+            reviewRequestCycle,
+            threads: nextThreads,
             details,
           };
           summary.emitted += this.store.commit(
             [{ key, kind: 'review-follow-up', value: state }],
-            events,
+            event === undefined ? [] : [event],
             this.recipient(),
           ).length;
         },
@@ -945,6 +1078,77 @@ export class ShepherdEngine {
       this.store.commit([], [], undefined, missing);
     }
     if (!this.store.hasCompletedBootstrap('review-follow-up')) this.store.markBootstrapComplete('review-follow-up');
+  }
+
+  private activeFollowUp(details: PullRequestDetails): { reviews: Review[]; threads: ReviewThread[] } {
+    const reviewer = this.config.profile.githubUser.toLowerCase();
+    const ours = sortedReviews(details.reviews.filter((review) => review.author.toLowerCase() === reviewer));
+    const latestApproval = ours.filter((review) => review.state === 'APPROVED').at(-1);
+    const candidateReviews = ours.filter(
+      (review) => latestApproval === undefined || review.submittedAt > latestApproval.submittedAt,
+    );
+    const threadsByReview = new Map<string, ReviewThread[]>();
+    for (const thread of details.reviewThreads) {
+      if (thread.rootAuthor.toLowerCase() !== reviewer) continue;
+      const existing = threadsByReview.get(thread.reviewId) ?? [];
+      existing.push(thread);
+      threadsByReview.set(thread.reviewId, existing);
+    }
+    const reviews = candidateReviews.filter(
+      (review) =>
+        review.state === 'CHANGES_REQUESTED' ||
+        (review.state === 'COMMENTED' && (threadsByReview.get(review.id)?.length ?? 0) > 0),
+    );
+    const reviewIds = new Set(reviews.map((review) => review.id));
+    return {
+      reviews,
+      threads: details.reviewThreads.filter(
+        (thread) => reviewIds.has(thread.reviewId) && thread.rootAuthor.toLowerCase() === reviewer,
+      ),
+    };
+  }
+
+  private reviewedHead(details: PullRequestDetails, review: Review | undefined): string {
+    if (review === undefined) return details.headSha;
+    if (review.commitSha !== undefined) return review.commitSha;
+    const reviewedCommit = [...details.commits]
+      .filter((commit) => commit.committedAt <= review.submittedAt)
+      .sort((left, right) => right.committedAt.localeCompare(left.committedAt))[0];
+    return reviewedCommit?.sha ?? details.headSha;
+  }
+
+  private ignoredFollowUpReply(author: string): boolean {
+    const normalized = author.toLowerCase();
+    return (
+      normalized === this.config.profile.githubUser.toLowerCase() ||
+      this.config.reviews.ignoredActors.some((ignored) => ignored.toLowerCase() === normalized)
+    );
+  }
+
+  private followUpThreadFacts(thread: ReviewThread, replies: ReviewThreadComment[]): Record<string, unknown> {
+    const root = thread.comments.find((comment) => comment.id === thread.rootCommentId);
+    return {
+      threadId: thread.id,
+      threadUrl: thread.url,
+      rootCommentId: thread.rootCommentId,
+      reviewId: thread.reviewId,
+      path: thread.path,
+      originalLine: thread.originalLine,
+      originalSide: thread.originalSide,
+      currentLine: thread.currentLine,
+      currentSide: thread.currentSide,
+      rootFinding: root === undefined ? undefined : excerpt(root.body),
+      isOutdated: thread.isOutdated,
+      isResolved: thread.isResolved,
+      newReplies: replies.map((reply) => ({
+        id: reply.id,
+        author: reply.author,
+        body: reply.body,
+        createdAt: reply.createdAt,
+        updatedAt: reply.updatedAt,
+        url: reply.url,
+      })),
+    };
   }
 
   private async pollNudges(summary: PollSummary): Promise<void> {

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseShepherdConfig, type ShepherdConfig } from '../src/shepherd/config.js';
 import { ShepherdEngine } from '../src/shepherd/engine.js';
@@ -10,6 +13,7 @@ import type {
   PullRequestDetails,
   PullRequestRef,
   PullRequestSummary,
+  ReviewThread,
 } from '../src/shepherd/types.js';
 
 class FakeGitHub implements GitHubProvider {
@@ -53,6 +57,8 @@ function pr(overrides: Partial<PullRequestDetails> = {}): PullRequestDetails {
     closedAt: null,
     checks: [],
     reviews: [],
+    reviewThreads: [],
+    requestedReviewers: [],
     comments: [],
     commits: [{ sha: 'head-a', committedAt: '2026-07-20T09:00:00.000Z', message: 'initial' }],
     ...overrides,
@@ -68,6 +74,43 @@ function config(input: Record<string, unknown> = {}): ShepherdConfig {
     ...input,
   });
 }
+
+function reviewThread(overrides: Partial<ReviewThread> = {}): ReviewThread {
+  return {
+    id: 'thread-1',
+    rootCommentId: 'root-1',
+    reviewId: 'review-comment',
+    rootAuthor: 'octocat',
+    path: 'src/api.ts',
+    originalLine: 10,
+    originalSide: 'RIGHT',
+    currentLine: 12,
+    currentSide: 'RIGHT',
+    url: 'https://github.com/acme/api/pull/7#discussion_r1',
+    isOutdated: false,
+    isResolved: false,
+    comments: [
+      {
+        id: 'root-1',
+        author: 'octocat',
+        body: 'Please preserve the API contract.',
+        createdAt: '2026-07-20T09:30:00Z',
+        updatedAt: '2026-07-20T09:30:00Z',
+        url: 'https://github.com/acme/api/pull/7#discussion_r1',
+      },
+    ],
+    ...overrides,
+  };
+}
+
+const commentedReview = {
+  id: 'review-comment',
+  author: 'octocat',
+  state: 'COMMENTED' as const,
+  body: '',
+  submittedAt: '2026-07-20T09:30:00Z',
+  commitSha: 'head-a',
+};
 
 function setDiscovery(github: FakeGitHub, kind: DiscoveryKind, details: PullRequestDetails, exhaustive = true): void {
   github.details.set(`${details.repo}#${String(details.number)}`, details);
@@ -778,6 +821,377 @@ describe('Shepherd engine', () => {
     expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
     expect(store.listEvents()[0]?.type).toBe('scoped-re-review');
     store.close();
+  });
+
+  it('upgrades a persisted single-review cursor without replaying its notified head', async () => {
+    const github = new FakeGitHub();
+    const legacyReview = {
+      id: 'octocat:2026-07-20T09:30:00Z:CHANGES_REQUESTED',
+      author: 'octocat',
+      state: 'CHANGES_REQUESTED' as const,
+      body: 'Fix this',
+      submittedAt: '2026-07-20T09:30:00Z',
+    };
+    const currentReview = { ...legacyReview, id: 'PRR_global' };
+    const details = pr({ headSha: 'head-b', reviews: [currentReview] });
+    setDiscovery(github, 'review-follow-up', details);
+    const store = new SqliteShepherdStore(':memory:');
+    store.commit(
+      [
+        {
+          key: 'follow-up:acme/api#7',
+          kind: 'review-follow-up',
+          value: {
+            reviewId: legacyReview.id,
+            reviewedHeadSha: 'head-a',
+            notifiedHeadSha: 'head-b',
+            details: pr({ headSha: 'head-b', reviews: [legacyReview] }),
+          },
+        },
+      ],
+      [],
+    );
+    store.markBootstrapComplete('review-follow-up');
+    const engine = new ShepherdEngine(
+      config({
+        features: { authoredPRs: { enabled: false }, reviewFollowUp: { enabled: true }, staleThresholdHours: 24 },
+      }),
+      github,
+      store,
+    );
+
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.getEntity<{ trackedReviewIds: string[] }>('follow-up:acme/api#7')?.value.trackedReviewIds).toEqual([
+      'PRR_global',
+    ]);
+    setDiscovery(github, 'review-follow-up', pr({ headSha: 'head-c', reviews: [currentReview] }));
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    store.close();
+  });
+
+  it('baselines actionable COMMENTED findings and emits once for each new head', async () => {
+    const github = new FakeGitHub();
+    const initial = pr({ reviews: [commentedReview], reviewThreads: [reviewThread()] });
+    setDiscovery(github, 'review-follow-up', initial);
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({
+        polling: { bootstrap: 'baseline-only' },
+        features: { authoredPRs: { enabled: false }, reviewFollowUp: { enabled: true }, staleThresholdHours: 24 },
+      }),
+      github,
+      store,
+      () => new Date('2026-07-20T10:00:00Z'),
+    );
+
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEntities('review-follow-up')).toHaveLength(1);
+
+    const headB = pr({ headSha: 'head-b', reviews: [commentedReview], reviewThreads: [reviewThread()] });
+    setDiscovery(github, 'review-follow-up', headB);
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    const first = store.listEvents()[0];
+    expect(first).toMatchObject({ type: 'scoped-re-review' });
+    expect(first?.source).toMatchObject({
+      triggeringReasons: ['head-changed'],
+      activeReviewIds: ['review-comment'],
+      reviewedHeadSha: 'head-a',
+      currentHeadSha: 'head-b',
+    });
+    expect(first?.source.affectedThreads).toEqual([
+      expect.objectContaining({
+        threadId: 'thread-1',
+        path: 'src/api.ts',
+        rootFinding: 'Please preserve the API contract.',
+      }),
+    ]);
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+
+    setDiscovery(
+      github,
+      'review-follow-up',
+      pr({ headSha: 'head-c', reviews: [commentedReview], reviewThreads: [reviewThread()] }),
+    );
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    expect(store.listEvents().filter((event) => event.type === 'scoped-re-review')).toHaveLength(2);
+    store.close();
+  });
+
+  it('coalesces new thread replies while ignoring self, configured actors, and issue comments', async () => {
+    const github = new FakeGitHub();
+    const initial = pr({ reviews: [commentedReview], reviewThreads: [reviewThread()] });
+    setDiscovery(github, 'review-follow-up', initial);
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({
+        polling: { bootstrap: 'baseline-only' },
+        reviews: { ignoredActors: ['automation-bot'] },
+        features: { authoredPRs: { enabled: false }, reviewFollowUp: { enabled: true }, staleThresholdHours: 24 },
+      }),
+      github,
+      store,
+      () => new Date('2026-07-20T11:00:00Z'),
+    );
+    await engine.pollOnce();
+
+    const selfReply = {
+      id: 'reply-self',
+      author: 'octocat',
+      body: 'Additional reviewer context',
+      createdAt: '2026-07-20T10:00:00Z',
+      updatedAt: '2026-07-20T10:00:00Z',
+      url: 'https://github.com/acme/api/pull/7#discussion_r2',
+    };
+    const ignoredReply = { ...selfReply, id: 'reply-bot', author: 'automation-bot' };
+    const quiet = pr({
+      reviews: [commentedReview],
+      reviewThreads: [reviewThread({ comments: [...reviewThread().comments, selfReply, ignoredReply] })],
+      comments: [
+        { id: 'issue-comment', author: 'author', body: 'Unrelated PR comment', createdAt: '2026-07-20T10:05:00Z' },
+      ],
+    });
+    setDiscovery(github, 'review-follow-up', quiet);
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+
+    const authorReply = { ...selfReply, id: 'reply-author', author: 'author', body: 'Fixed in the latest push.' };
+    const teammateReply = { ...selfReply, id: 'reply-teammate', author: 'teammate', body: 'I verified the edge case.' };
+    setDiscovery(
+      github,
+      'review-follow-up',
+      pr({
+        reviews: [commentedReview],
+        reviewThreads: [
+          reviewThread({ comments: [...reviewThread().comments, selfReply, ignoredReply, authorReply, teammateReply] }),
+        ],
+        comments: quiet.comments,
+      }),
+    );
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    const event = store.listEvents()[0];
+    expect(event?.source).toMatchObject({ triggeringReasons: ['thread-replied'] });
+    expect(event?.source.affectedThreads).toEqual([
+      expect.objectContaining({
+        threadId: 'thread-1',
+        newReplies: [
+          expect.objectContaining({ id: 'reply-author', author: 'author', body: 'Fixed in the latest push.' }),
+          expect.objectContaining({ id: 'reply-teammate', author: 'teammate', body: 'I verified the edge case.' }),
+        ],
+      }),
+    ]);
+    expect(store.listOutbox()).toHaveLength(1);
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEvents()).toHaveLength(1);
+    expect(store.listOutbox()).toHaveLength(1);
+    store.close();
+  });
+
+  it('coalesces thread-state and explicit re-review-request transitions recurrently', async () => {
+    const github = new FakeGitHub();
+    const initial = pr({ reviews: [commentedReview], reviewThreads: [reviewThread()] });
+    setDiscovery(github, 'review-follow-up', initial);
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({
+        polling: { bootstrap: 'baseline-only' },
+        features: { authoredPRs: { enabled: false }, reviewFollowUp: { enabled: true }, staleThresholdHours: 24 },
+      }),
+      github,
+      store,
+      () => new Date('2026-07-20T11:00:00Z'),
+    );
+    await engine.pollOnce();
+
+    setDiscovery(
+      github,
+      'review-follow-up',
+      pr({
+        reviews: [commentedReview],
+        reviewThreads: [reviewThread({ isOutdated: true, isResolved: true })],
+        requestedReviewers: [{ login: 'octocat' }],
+      }),
+    );
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    expect(store.listEvents()[0]?.source).toMatchObject({
+      triggeringReasons: ['thread-outdated', 'thread-resolved', 'review-requested'],
+      reviewRequested: true,
+    });
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+
+    setDiscovery(
+      github,
+      'review-follow-up',
+      pr({ reviews: [commentedReview], reviewThreads: [reviewThread({ isOutdated: true })] }),
+    );
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    setDiscovery(
+      github,
+      'review-follow-up',
+      pr({
+        reviews: [commentedReview],
+        reviewThreads: [reviewThread({ isOutdated: true, isResolved: true })],
+        requestedReviewers: [{ login: 'OCTOCAT' }],
+      }),
+    );
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    expect(store.listEvents()[0]?.source).toMatchObject({
+      triggeringReasons: ['thread-resolved', 'review-requested'],
+      reviewRequestCycle: 2,
+    });
+    expect(store.listEvents()).toHaveLength(2);
+    store.close();
+  });
+
+  it('closes on approval or dismissal and starts a fresh lifecycle for later findings', async () => {
+    const github = new FakeGitHub();
+    const initial = pr({ reviews: [commentedReview], reviewThreads: [reviewThread()] });
+    setDiscovery(github, 'review-follow-up', initial);
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({
+        polling: { bootstrap: 'baseline-only' },
+        features: { authoredPRs: { enabled: false }, reviewFollowUp: { enabled: true }, staleThresholdHours: 24 },
+      }),
+      github,
+      store,
+    );
+    await engine.pollOnce();
+    expect(store.listEntities('review-follow-up')).toHaveLength(1);
+
+    const approval = {
+      id: 'approval',
+      author: 'octocat',
+      state: 'APPROVED' as const,
+      body: '',
+      submittedAt: '2026-07-20T10:00:00Z',
+      commitSha: 'head-a',
+    };
+    setDiscovery(
+      github,
+      'review-follow-up',
+      pr({ reviews: [commentedReview, approval], reviewThreads: [reviewThread()] }),
+    );
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEntities('review-follow-up')).toHaveLength(0);
+
+    const laterReview = { ...commentedReview, id: 'review-later', submittedAt: '2026-07-20T11:00:00Z' };
+    const laterThread = reviewThread({
+      id: 'thread-later',
+      rootCommentId: 'root-later',
+      reviewId: 'review-later',
+      comments: [
+        {
+          ...reviewThread().comments[0]!,
+          id: 'root-later',
+          body: 'A new finding after approval.',
+        },
+      ],
+    });
+    setDiscovery(
+      github,
+      'review-follow-up',
+      pr({ reviews: [commentedReview, approval, laterReview], reviewThreads: [reviewThread(), laterThread] }),
+    );
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEntities('review-follow-up')).toHaveLength(1);
+
+    setDiscovery(
+      github,
+      'review-follow-up',
+      pr({
+        headSha: 'head-b',
+        reviews: [commentedReview, approval, laterReview],
+        reviewThreads: [reviewThread(), laterThread],
+      }),
+    );
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+
+    const dismissed = { ...laterReview, state: 'DISMISSED' as const };
+    setDiscovery(
+      github,
+      'review-follow-up',
+      pr({ reviews: [commentedReview, approval, dismissed], reviewThreads: [reviewThread(), laterThread] }),
+    );
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEntities('review-follow-up')).toHaveLength(0);
+    store.close();
+  });
+
+  it('ignores COMMENTED reviews without inline findings', async () => {
+    const github = new FakeGitHub();
+    setDiscovery(github, 'review-follow-up', pr({ reviews: [{ ...commentedReview, body: 'General note' }] }));
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({
+        features: { authoredPRs: { enabled: false }, reviewFollowUp: { enabled: true }, staleThresholdHours: 24 },
+      }),
+      github,
+      store,
+    );
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEntities('review-follow-up')).toHaveLength(0);
+    store.close();
+  });
+
+  it.each(['CLOSED', 'MERGED'] as const)('removes follow-up state when the pull request is %s', async (state) => {
+    const github = new FakeGitHub();
+    const initial = pr({ reviews: [commentedReview], reviewThreads: [reviewThread()] });
+    setDiscovery(github, 'review-follow-up', initial);
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({
+        polling: { bootstrap: 'baseline-only' },
+        features: { authoredPRs: { enabled: false }, reviewFollowUp: { enabled: true }, staleThresholdHours: 24 },
+      }),
+      github,
+      store,
+    );
+    await engine.pollOnce();
+    setDiscovery(github, 'review-follow-up', pr({ ...initial, state }));
+
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEntities('review-follow-up')).toHaveLength(0);
+    store.close();
+  });
+
+  it('persists a complete baseline so restart does not replay historical thread state', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-follow-up-'));
+    const path = join(dir, 'shepherd.db');
+    const github = new FakeGitHub();
+    const historicalReply = {
+      id: 'reply-old',
+      author: 'author',
+      body: 'This reply predates Shepherd startup.',
+      createdAt: '2026-07-20T10:00:00Z',
+      updatedAt: '2026-07-20T10:00:00Z',
+      url: 'https://github.com/acme/api/pull/7#discussion_r2',
+    };
+    const details = pr({
+      reviews: [commentedReview],
+      reviewThreads: [
+        reviewThread({ isOutdated: true, isResolved: true, comments: [...reviewThread().comments, historicalReply] }),
+      ],
+      requestedReviewers: [{ login: 'octocat' }],
+    });
+    setDiscovery(github, 'review-follow-up', details);
+    const resolvedConfig = config({
+      polling: { bootstrap: 'baseline-only' },
+      features: { authoredPRs: { enabled: false }, reviewFollowUp: { enabled: true }, staleThresholdHours: 24 },
+    });
+    try {
+      const firstStore = new SqliteShepherdStore(path);
+      const firstEngine = new ShepherdEngine(resolvedConfig, github, firstStore);
+      expect(await firstEngine.pollOnce()).toMatchObject({ emitted: 0 });
+      firstStore.close();
+
+      const restartedStore = new SqliteShepherdStore(path);
+      const restartedEngine = new ShepherdEngine(resolvedConfig, github, restartedStore);
+      expect(await restartedEngine.pollOnce()).toMatchObject({ emitted: 0 });
+      expect(restartedStore.listEvents()).toEqual([]);
+      expect(restartedStore.listEntities('review-follow-up')).toHaveLength(1);
+      restartedStore.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('uses recurrence discriminators for repeated stale and reviewer escalation events', async () => {

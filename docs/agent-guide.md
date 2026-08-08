@@ -737,6 +737,12 @@ PR facts: inexpensive review for ordinary changes, a specialist review for mater
 paired independent reviewers for critical changes. Keep such judgment in the coordinator's
 instructions, not hard-coded into Shepherd.
 
+When review follow-up is enabled, `scoped-re-review` covers actionable `CHANGES_REQUESTED` reviews
+and inline findings submitted through non-blocking `COMMENTED` reviews. The event carries its head,
+reply, outdated, resolved, and explicit re-request reasons plus the affected thread context. Use
+that factual scope when dispatching a reviewer; do not treat an ordinary PR issue comment as an
+inline-thread reply or redo a full review unless fleet guidance explicitly asks for one.
+
 See `docs/pr-shepherd.md` for the complete schema, delivery contract, event types, automation
 semantics, and operational commands.
 

@@ -49,6 +49,8 @@ export interface Review {
   state: 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | 'DISMISSED' | 'PENDING';
   body: string;
   submittedAt: string;
+  /** Head commit GitHub associated with this review, when the provider exposes it. */
+  commitSha?: string;
 }
 
 export interface Comment {
@@ -64,6 +66,37 @@ export interface Commit {
   message: string;
 }
 
+export type ReviewThreadSide = 'LEFT' | 'RIGHT';
+
+export interface ReviewThreadComment {
+  id: string;
+  author: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  url: string;
+}
+
+export interface ReviewThread {
+  id: string;
+  rootCommentId: string;
+  reviewId: string;
+  rootAuthor: string;
+  path: string;
+  originalLine: number | null;
+  originalSide: ReviewThreadSide | null;
+  currentLine: number | null;
+  currentSide: ReviewThreadSide | null;
+  url: string;
+  isOutdated: boolean;
+  isResolved: boolean;
+  comments: ReviewThreadComment[];
+}
+
+export interface RequestedReviewer {
+  login: string;
+}
+
 export interface PullRequestDetails extends PullRequestSummary {
   state: 'OPEN' | 'CLOSED' | 'MERGED';
   headSha: string;
@@ -74,6 +107,8 @@ export interface PullRequestDetails extends PullRequestSummary {
   closedAt: string | null;
   checks: CheckRun[];
   reviews: Review[];
+  reviewThreads: ReviewThread[];
+  requestedReviewers: RequestedReviewer[];
   comments: Comment[];
   commits: Commit[];
 }

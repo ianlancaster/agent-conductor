@@ -102,6 +102,29 @@ describe('async gh provider', () => {
     const executor: ProcessExecutor = {
       run: async (_file, args, _timeout, acceptedExitCodes) => {
         accepted.push(acceptedExitCodes);
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query ReviewThreads')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+                },
+              },
+            },
+          });
+        }
+        if (query.includes('query ReviewRequests')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  reviewRequests: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+                },
+              },
+            },
+          });
+        }
         if (args[0] === 'pr' && args[1] === 'view') {
           return JSON.stringify({
             number: 1,
@@ -125,9 +148,167 @@ describe('async gh provider', () => {
     };
     const config = parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } });
     const details = await new GhGitHubProvider(config, executor).getPullRequest({ repo: 'acme/api', number: 1 });
-    expect(details).toMatchObject({ repo: 'acme/api', number: 1, state: 'OPEN', headSha: 'abc', checks: [] });
+    expect(details).toMatchObject({
+      repo: 'acme/api',
+      number: 1,
+      state: 'OPEN',
+      headSha: 'abc',
+      checks: [],
+      reviewThreads: [],
+      requestedReviewers: [],
+    });
     expect(accepted).toContainEqual([0, 1, 8]);
     expect(accepted.filter((value) => value !== undefined)).toHaveLength(1);
+  });
+
+  it('exhaustively paginates review threads, replies, and requested reviewers', async () => {
+    const calls: string[][] = [];
+    const pageInfo = (hasNextPage: boolean, endCursor: string | null) => ({ hasNextPage, endCursor });
+    const comment = (id: string, author: string, reviewId: string, createdAt: string) => ({
+      id,
+      author: { login: author },
+      body: `${id} body`,
+      createdAt,
+      updatedAt: createdAt,
+      url: `https://github.com/acme/api/pull/1#discussion_r${id}`,
+      pullRequestReview: { id: reviewId },
+    });
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        const cursor = args.find((arg) => arg.startsWith('cursor='));
+        if (query.includes('query ReviewThreadComments')) {
+          return JSON.stringify({
+            data: {
+              node: {
+                comments: {
+                  nodes: [comment('reply-1', 'author', 'PRR_1', '2026-07-20T10:01:00Z')],
+                  pageInfo: pageInfo(false, null),
+                },
+              },
+            },
+          });
+        }
+        if (query.includes('query ReviewThreads')) {
+          const second = cursor === 'cursor=thread-page-2';
+          const nodes = second
+            ? [
+                {
+                  id: 'thread-2',
+                  path: 'src/two.ts',
+                  line: null,
+                  originalLine: 8,
+                  diffSide: 'LEFT',
+                  isOutdated: true,
+                  isResolved: false,
+                  comments: {
+                    nodes: [comment('root-2', 'octocat', 'PRR_2', '2026-07-20T10:02:00Z')],
+                    pageInfo: pageInfo(false, null),
+                  },
+                },
+              ]
+            : [
+                {
+                  id: 'thread-1',
+                  path: 'src/one.ts',
+                  line: 12,
+                  originalLine: 10,
+                  diffSide: 'RIGHT',
+                  isOutdated: false,
+                  isResolved: false,
+                  comments: {
+                    nodes: [comment('root-1', 'octocat', 'PRR_1', '2026-07-20T10:00:00Z')],
+                    pageInfo: pageInfo(true, 'comment-page-2'),
+                  },
+                },
+              ];
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    nodes,
+                    pageInfo: second ? pageInfo(false, null) : pageInfo(true, 'thread-page-2'),
+                  },
+                },
+              },
+            },
+          });
+        }
+        if (query.includes('query ReviewRequests')) {
+          const second = cursor === 'cursor=request-page-2';
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  reviewRequests: {
+                    nodes: second
+                      ? [{ requestedReviewer: { login: 'reviewer-two' } }]
+                      : [{ requestedReviewer: { login: 'octocat' } }, { requestedReviewer: {} }],
+                    pageInfo: second ? pageInfo(false, null) : pageInfo(true, 'request-page-2'),
+                  },
+                },
+              },
+            },
+          });
+        }
+        if (args[0] === 'pr' && args[1] === 'view') {
+          return JSON.stringify({
+            number: 1,
+            title: 'PR',
+            url: 'https://github.com/acme/api/pull/1',
+            isDraft: false,
+            updatedAt: '2026-07-20T00:00:00Z',
+            state: 'OPEN',
+            headRefOid: 'abc',
+            mergeable: 'MERGEABLE',
+            mergeStateStatus: 'CLEAN',
+            autoMergeRequest: null,
+            mergedAt: null,
+            closedAt: null,
+            reviews: [
+              {
+                id: 'PRR_1',
+                author: { login: 'octocat' },
+                state: 'COMMENTED',
+                body: '',
+                submittedAt: '2026-07-20T10:00:00Z',
+                commit: { oid: 'abc' },
+              },
+            ],
+            commits: [],
+          });
+        }
+        return args.includes('checks') ? '[]' : '[[]]';
+      },
+    };
+    const config = parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } });
+
+    const details = await new GhGitHubProvider(config, executor).getPullRequest({ repo: 'acme/api', number: 1 });
+
+    expect(details.reviews[0]).toMatchObject({ id: 'PRR_1', commitSha: 'abc' });
+    expect(details.reviewThreads).toHaveLength(2);
+    expect(details.reviewThreads[0]).toMatchObject({
+      id: 'thread-1',
+      rootCommentId: 'root-1',
+      reviewId: 'PRR_1',
+      originalLine: 10,
+      originalSide: 'RIGHT',
+      currentLine: 12,
+      currentSide: 'RIGHT',
+    });
+    expect(details.reviewThreads[0]?.comments.map((item) => item.id)).toEqual(['root-1', 'reply-1']);
+    expect(details.requestedReviewers).toEqual([{ login: 'octocat' }, { login: 'reviewer-two' }]);
+    expect(
+      calls.filter((args) => (args.find((arg) => arg.startsWith('query=')) ?? '').includes('ReviewThreads')),
+    ).toHaveLength(2);
+    expect(
+      calls.filter((args) => (args.find((arg) => arg.startsWith('query=')) ?? '').includes('ReviewThreadComments')),
+    ).toHaveLength(1);
+    expect(
+      calls.filter((args) => (args.find((arg) => arg.startsWith('query=')) ?? '').includes('ReviewRequests')),
+    ).toHaveLength(2);
   });
 
   it('does not repost a durable reviewer comment after an ambiguous first response', async () => {

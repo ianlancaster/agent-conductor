@@ -13,7 +13,11 @@ import type {
   PullRequestDetails,
   PullRequestRef,
   PullRequestSummary,
+  RequestedReviewer,
   Review,
+  ReviewThread,
+  ReviewThreadComment,
+  ReviewThreadSide,
 } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -80,11 +84,13 @@ interface RawView {
   mergedAt: string | null;
   closedAt: string | null;
   reviews: {
+    id?: string;
     databaseId?: number;
     author: { login: string };
     state: Review['state'];
     body: string;
     submittedAt: string;
+    commit?: { oid: string };
   }[];
   commits: { oid: string; committedDate: string; messageHeadline: string }[];
 }
@@ -104,8 +110,145 @@ interface RawComment {
   created_at: string;
 }
 
+interface RawPageInfo {
+  hasNextPage: boolean;
+  endCursor: string | null;
+}
+
+interface RawReviewThreadComment {
+  id: string;
+  author: { login: string } | null;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  url: string;
+  pullRequestReview: { id: string } | null;
+}
+
+interface RawReviewThread {
+  id: string;
+  path: string;
+  line: number | null;
+  originalLine: number | null;
+  diffSide: ReviewThreadSide | null;
+  isOutdated: boolean;
+  isResolved: boolean;
+  comments: {
+    nodes: RawReviewThreadComment[];
+    pageInfo: RawPageInfo;
+  };
+}
+
+interface RawReviewThreadPage {
+  data: {
+    repository: {
+      pullRequest: {
+        reviewThreads: {
+          nodes: RawReviewThread[];
+          pageInfo: RawPageInfo;
+        };
+      } | null;
+    } | null;
+  };
+}
+
+interface RawReviewThreadCommentsPage {
+  data: {
+    node: {
+      comments: {
+        nodes: RawReviewThreadComment[];
+        pageInfo: RawPageInfo;
+      };
+    } | null;
+  };
+}
+
+interface RawReviewRequestPage {
+  data: {
+    repository: {
+      pullRequest: {
+        reviewRequests: {
+          nodes: { requestedReviewer: { login?: string } | null }[];
+          pageInfo: RawPageInfo;
+        };
+      } | null;
+    } | null;
+  };
+}
+
 const SEARCH_PAGE_SIZE = 50;
 const SEARCH_RESULT_CAP = 1_000;
+const GRAPHQL_PAGE_SIZE = 100;
+
+const REVIEW_THREADS_QUERY = `
+query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: ${String(GRAPHQL_PAGE_SIZE)}, after: $cursor) {
+        nodes {
+          id
+          path
+          line
+          originalLine
+          diffSide
+          isOutdated
+          isResolved
+          comments(first: ${String(GRAPHQL_PAGE_SIZE)}) {
+            nodes {
+              id
+              author { login }
+              body
+              createdAt
+              updatedAt
+              url
+              pullRequestReview { id }
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`;
+
+const REVIEW_THREAD_COMMENTS_QUERY = `
+query ReviewThreadComments($id: ID!, $cursor: String) {
+  node(id: $id) {
+    ... on PullRequestReviewThread {
+      comments(first: ${String(GRAPHQL_PAGE_SIZE)}, after: $cursor) {
+        nodes {
+          id
+          author { login }
+          body
+          createdAt
+          updatedAt
+          url
+          pullRequestReview { id }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`;
+
+const REVIEW_REQUESTS_QUERY = `
+query ReviewRequests($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewRequests(first: ${String(GRAPHQL_PAGE_SIZE)}, after: $cursor) {
+        nodes {
+          requestedReviewer {
+            ... on User { login }
+            ... on Bot { login }
+            ... on Mannequin { login }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`;
 
 export class GhGitHubProvider implements GitHubProvider {
   constructor(
@@ -155,13 +298,15 @@ export class GhGitHubProvider implements GitHubProvider {
       'reviews',
       'commits',
     ].join(',');
-    const [viewRaw, checksRaw, commentsRaw] = await Promise.all([
+    const [viewRaw, checksRaw, commentsRaw, reviewThreads, requestedReviewers] = await Promise.all([
       this.gh(['pr', 'view', String(pr.number), '-R', pr.repo, '--json', fields]),
       this.gh(
         ['pr', 'checks', String(pr.number), '-R', pr.repo, '--json', 'name,state,bucket,workflow,link'],
         [0, 1, 8],
       ),
       this.gh(['api', `repos/${pr.repo}/issues/${String(pr.number)}/comments`, '--paginate', '--slurp']),
+      this.reviewThreads(pr),
+      this.requestedReviewers(pr),
     ]);
     const view = this.json<RawView>(viewRaw, `${pr.repo}#${String(pr.number)} view`);
     const rawChecks = this.json<RawCheck[]>(checksRaw || '[]', `${pr.repo}#${String(pr.number)} checks`);
@@ -174,13 +319,15 @@ export class GhGitHubProvider implements GitHubProvider {
       .filter((review) => !this.ignoredActor(review.author.login))
       .map((review) => ({
         id:
-          review.databaseId === undefined
+          review.id ??
+          (review.databaseId === undefined
             ? `${review.author.login}:${review.submittedAt}:${review.state}`
-            : String(review.databaseId),
+            : String(review.databaseId)),
         author: review.author.login,
         state: review.state,
         body: review.body,
         submittedAt: review.submittedAt,
+        ...(review.commit === undefined ? {} : { commitSha: review.commit.oid }),
       }));
     const comments: Comment[] = rawComments.map((comment) => ({
       id: String(comment.id),
@@ -209,6 +356,8 @@ export class GhGitHubProvider implements GitHubProvider {
       closedAt: view.closedAt,
       checks,
       reviews,
+      reviewThreads,
+      requestedReviewers,
       comments,
       commits,
     };
@@ -298,6 +447,126 @@ export class GhGitHubProvider implements GitHubProvider {
     if (kind === 'authored' || kind === 'reviewer-nudge') return `is:pr state:open author:${user}`;
     if (kind === 'review-inbox') return `is:pr state:open review-requested:${user}`;
     return `is:pr state:open reviewed-by:${user}`;
+  }
+
+  private async reviewThreads(pr: PullRequestRef): Promise<ReviewThread[]> {
+    const { owner, name } = this.repoParts(pr.repo);
+    const threads: ReviewThread[] = [];
+    let cursor: string | undefined;
+    do {
+      const raw = await this.graphql(REVIEW_THREADS_QUERY, { owner, name, number: pr.number, cursor });
+      const response = this.json<RawReviewThreadPage>(raw, `${pr.repo}#${String(pr.number)} review threads`);
+      const connection = response.data.repository?.pullRequest?.reviewThreads;
+      if (connection === undefined)
+        throw new Error(`GitHub returned no pull request for ${pr.repo}#${String(pr.number)}.`);
+      for (const thread of connection.nodes) {
+        const comments = [...thread.comments.nodes];
+        let commentPage = thread.comments.pageInfo;
+        while (commentPage.hasNextPage) {
+          const commentCursor = this.nextCursor(commentPage, `review thread ${thread.id} comments`);
+          const commentsRaw = await this.graphql(REVIEW_THREAD_COMMENTS_QUERY, {
+            id: thread.id,
+            cursor: commentCursor,
+          });
+          const commentsResponse = this.json<RawReviewThreadCommentsPage>(
+            commentsRaw,
+            `${pr.repo}#${String(pr.number)} review thread ${thread.id} comments`,
+          );
+          if (commentsResponse.data.node === null) throw new Error(`GitHub review thread ${thread.id} disappeared.`);
+          comments.push(...commentsResponse.data.node.comments.nodes);
+          commentPage = commentsResponse.data.node.comments.pageInfo;
+        }
+        const normalized = comments
+          .map((comment) => this.reviewThreadComment(comment))
+          .sort((left, right) => {
+            const byTime = left.createdAt.localeCompare(right.createdAt);
+            return byTime === 0 ? left.id.localeCompare(right.id) : byTime;
+          });
+        const root = comments
+          .map((comment) => ({ raw: comment, normalized: this.reviewThreadComment(comment) }))
+          .sort((left, right) => {
+            const byTime = left.normalized.createdAt.localeCompare(right.normalized.createdAt);
+            return byTime === 0 ? left.normalized.id.localeCompare(right.normalized.id) : byTime;
+          })[0];
+        const rootReview = root?.raw.pullRequestReview;
+        if (root === undefined || rootReview === null || rootReview === undefined) {
+          throw new Error(`GitHub review thread ${thread.id} has no root review comment.`);
+        }
+        threads.push({
+          id: thread.id,
+          rootCommentId: root.normalized.id,
+          reviewId: rootReview.id,
+          rootAuthor: root.normalized.author,
+          path: thread.path,
+          originalLine: thread.originalLine,
+          originalSide: thread.originalLine === null ? null : thread.diffSide,
+          currentLine: thread.line,
+          currentSide: thread.line === null ? null : thread.diffSide,
+          url: root.normalized.url,
+          isOutdated: thread.isOutdated,
+          isResolved: thread.isResolved,
+          comments: normalized,
+        });
+      }
+      cursor = connection.pageInfo.hasNextPage
+        ? this.nextCursor(connection.pageInfo, `${pr.repo}#${String(pr.number)} review threads`)
+        : undefined;
+    } while (cursor !== undefined);
+    return threads;
+  }
+
+  private async requestedReviewers(pr: PullRequestRef): Promise<RequestedReviewer[]> {
+    const { owner, name } = this.repoParts(pr.repo);
+    const reviewers = new Map<string, RequestedReviewer>();
+    let cursor: string | undefined;
+    do {
+      const raw = await this.graphql(REVIEW_REQUESTS_QUERY, { owner, name, number: pr.number, cursor });
+      const response = this.json<RawReviewRequestPage>(raw, `${pr.repo}#${String(pr.number)} review requests`);
+      const connection = response.data.repository?.pullRequest?.reviewRequests;
+      if (connection === undefined)
+        throw new Error(`GitHub returned no pull request for ${pr.repo}#${String(pr.number)}.`);
+      for (const node of connection.nodes) {
+        const login = node.requestedReviewer?.login;
+        if (login !== undefined) reviewers.set(login.toLowerCase(), { login });
+      }
+      cursor = connection.pageInfo.hasNextPage
+        ? this.nextCursor(connection.pageInfo, `${pr.repo}#${String(pr.number)} review requests`)
+        : undefined;
+    } while (cursor !== undefined);
+    return [...reviewers.values()];
+  }
+
+  private reviewThreadComment(comment: RawReviewThreadComment): ReviewThreadComment {
+    return {
+      id: comment.id,
+      author: comment.author?.login ?? 'ghost',
+      body: comment.body,
+      createdAt: comment.createdAt,
+      updatedAt: comment.updatedAt,
+      url: comment.url,
+    };
+  }
+
+  private repoParts(repo: string): { owner: string; name: string } {
+    const [owner, name, extra] = repo.split('/');
+    if (owner === undefined || name === undefined || extra !== undefined || owner === '' || name === '') {
+      throw new Error(`Invalid GitHub repository name: ${repo}`);
+    }
+    return { owner, name };
+  }
+
+  private nextCursor(page: RawPageInfo, label: string): string {
+    if (page.endCursor === null) throw new Error(`GitHub pagination for ${label} has no end cursor.`);
+    return page.endCursor;
+  }
+
+  private graphql(query: string, variables: Record<string, string | number | undefined>): Promise<string> {
+    const args = ['api', 'graphql', '-f', `query=${query}`];
+    for (const [name, value] of Object.entries(variables)) {
+      if (value === undefined) continue;
+      args.push(typeof value === 'number' ? '-F' : '-f', `${name}=${String(value)}`);
+    }
+    return this.gh(args);
   }
 
   private scopeQueries(): string[] {

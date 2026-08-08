@@ -244,6 +244,8 @@ describe('Shepherd-to-Conductor compatibility contract', () => {
       closedAt: null,
       checks: [{ id: 'run-1', name: 'test', state: 'FAILURE', bucket: 'fail', workflow: 'CI' }],
       reviews: [],
+      reviewThreads: [],
+      requestedReviewers: [],
       comments: [],
       commits: [],
     };
