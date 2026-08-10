@@ -297,6 +297,7 @@ export class CodexRuntime implements SessionRuntime {
   readonly name = 'codex';
   readonly capabilities: RuntimeCapabilities = {
     lifecycleEvents: true,
+    targetedResume: true,
     authoritativeTurnCompletion: true,
     contextProbe: false,
     styledCapture: true,

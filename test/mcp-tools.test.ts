@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -283,6 +283,7 @@ describe('surface contract', () => {
     expect(spawnProperties).toHaveProperty('branch');
     expect(spawnProperties).toHaveProperty('bypassPermissions');
     expect(spawnProperties).toHaveProperty('effort');
+    expect(spawnProperties.sessionId).toMatchObject({ type: 'string', minLength: 1 });
     expect(spawnProperties).toHaveProperty('additionalDirs');
     expect(spawnProperties).toHaveProperty('systemPromptFile');
   });
@@ -456,6 +457,28 @@ describe('surface contract', () => {
   it('normalizes the cc runtime shorthand through MCP', async () => {
     expect(await tool('start_session').handler({ codename: 'watch', runtime: 'cc' }, 'alpha')).toBe('watch started.');
     expect(states.get('watch')?.runtime).toBe('claude-code');
+  });
+
+  it('routes a targeted native conversation through spawn_session', async () => {
+    const spawn = vi.spyOn(Lifecycle.prototype, 'spawn').mockResolvedValue('spawned and resumed');
+
+    await expect(
+      tool('spawn_session').handler(
+        { codename: 'restored', runtime: 'codex', effort: 'high', sessionId: 'provider-session' },
+        'alpha',
+      ),
+    ).resolves.toBe('spawned and resumed');
+    expect(spawn).toHaveBeenCalledWith(
+      'restored',
+      expect.objectContaining({ runtime: 'codex', effort: 'high', resumeSessionId: 'provider-session' }),
+    );
+    spawn.mockRestore();
+  });
+
+  it('rejects an empty targeted spawn session ID', async () => {
+    await expect(tool('spawn_session').handler({ codename: 'restored', sessionId: '   ' }, 'alpha')).rejects.toThrow(
+      "'sessionId' must be a non-empty string",
+    );
   });
 
   it('documents worktree destination and new-branch base semantics on the MCP surface', () => {

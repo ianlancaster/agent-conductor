@@ -116,27 +116,27 @@ paths, or arbitrary runtime reason strings.
 
 ## Event catalog
 
-| Event                       | Payload beyond the envelope                                                       |
-| --------------------------- | --------------------------------------------------------------------------------- |
-| `session.registered`        | `session`; `cause: startup \| config-added`                                       |
-| `session.deregistered`      | `session`; `cause: config-removed \| teardown`                                    |
-| `session.started`           | `session`; `runtime`; cause; optional configured `launchModel` and `launchEffort` |
-| `session.ready`             | `session`; emitted once when a run is first proven ready                          |
-| `session.stopped`           | `session`; `cause: requested \| runtime-exit \| pane-missing \| launch-failed`    |
-| `session.activity.changed`  | `session`; `previous`; `activity`; transition-only                                |
-| `stall`                     | `session`; `kind`; `detectedAt`; mechanical `disposition`                         |
-| `fleet.stalled`             | `sessions`; `detectedAt`; routed/operator/sentinel-down `disposition`             |
-| `schedule`                  | `session`; `label`; `outcome: fired \| fired-fresh \| deferred-paused \| failed`  |
-| `operator.request.created`  | `session`; `requestId`; `optionCount`                                             |
-| `operator.request.resolved` | `session`; `requestId`; one-based `selectedOption`                                |
-| `runbook.adopted`           | adoption/runbook IDs, version, source, topic, operator approval, session roles    |
-| `runbook.superseded`        | prior/replacement adoption IDs and replacement runbook metadata                   |
-| `runbook.adoption.ended`    | `adoptionId`; `approvedBy: operator`                                              |
-| `message.created`           | direct receipt ID, sender, recipient, UTF-8 `byteCount`                           |
-| `message.delivered`         | direct receipt ID, sender, recipient                                              |
-| `message.cancelled`         | direct receipt metadata; `reason: requested \| conductor-restarted`               |
-| `workspace.provisioned`     | `session`; `kind: empty \| template \| worktree`                                  |
-| `workspace.removed`         | `session`; `kind: directory \| worktree`                                          |
+| Event                       | Payload beyond the envelope                                                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `session.registered`        | `session`; `cause: startup \| config-added`                                                                                       |
+| `session.deregistered`      | `session`; `cause: config-removed \| teardown`                                                                                    |
+| `session.started`           | `session`; `runtime`; cause (`start`, `continue`, `adopt`, or `discovered`); optional configured `launchModel` and `launchEffort` |
+| `session.ready`             | `session`; emitted once when a run is first proven ready                                                                          |
+| `session.stopped`           | `session`; `cause: requested \| runtime-exit \| pane-missing \| launch-failed`                                                    |
+| `session.activity.changed`  | `session`; `previous`; `activity`; transition-only                                                                                |
+| `stall`                     | `session`; `kind`; `detectedAt`; mechanical `disposition`                                                                         |
+| `fleet.stalled`             | `sessions`; `detectedAt`; routed/operator/sentinel-down `disposition`                                                             |
+| `schedule`                  | `session`; `label`; `outcome: fired \| fired-fresh \| deferred-paused \| failed`                                                  |
+| `operator.request.created`  | `session`; `requestId`; `optionCount`                                                                                             |
+| `operator.request.resolved` | `session`; `requestId`; one-based `selectedOption`                                                                                |
+| `runbook.adopted`           | adoption/runbook IDs, version, source, topic, operator approval, session roles                                                    |
+| `runbook.superseded`        | prior/replacement adoption IDs and replacement runbook metadata                                                                   |
+| `runbook.adoption.ended`    | `adoptionId`; `approvedBy: operator`                                                                                              |
+| `message.created`           | direct receipt ID, sender, recipient, UTF-8 `byteCount`                                                                           |
+| `message.delivered`         | direct receipt ID, sender, recipient                                                                                              |
+| `message.cancelled`         | direct receipt metadata; `reason: requested \| conductor-restarted`                                                               |
+| `workspace.provisioned`     | `session`; `kind: empty \| template \| worktree`                                                                                  |
+| `workspace.removed`         | `session`; `kind: directory \| worktree`                                                                                          |
 
 The `stall` dispositions are `routed`, `suppressed`, `reported-to-operator`, `sentinel-down`,
 `ignored-auto-off`, and `ignored-paused`. Pause takes precedence when a session is both paused and
@@ -162,6 +162,8 @@ delivery confirmation and therefore emit no message event. `launchModel` and `la
 the settings Conductor selected for process launch, not proof of the provider's currently served
 model or retained effort. Workspace events never include local paths. Runbook adoption events are
 emitted only by the operator-authorized provenance operations described in the runbook guide.
+`spawn_session` with a targeted native `sessionId` uses `session.started(cause=continue)`, while an
+ordinary spawn uses `cause=start`.
 
 With named instances, `fleetId` includes the instance identity so two Conductors in one directory
 cannot share an event ordering or pane-ownership domain. It is not the operator-chosen

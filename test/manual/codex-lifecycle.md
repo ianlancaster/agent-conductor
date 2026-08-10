@@ -64,6 +64,12 @@ for a completed or silent turn.
    by ordinary `/continue <session>`.
 3. Repeat ordinary continuation and require it to retain the existing latest-conversation behavior.
 4. Require `/continue all --session-id <id>` to fail before launching any runtime.
+5. Tear down the disposable session with workspace deletion, then run `/spawn <same-session>
+--session-id <older-id>` with the original runtime and workspace-source options. Require the
+   workspace to be recreated and the older conversation to open without an intervening fresh
+   rollout.
+6. Repeat with an invalid ID. Require the Codex process to fail visibly and verify that no fresh
+   conversation was created as a fallback.
 
 ## Evidence and cleanup
 

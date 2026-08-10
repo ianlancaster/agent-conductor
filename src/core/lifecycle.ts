@@ -48,6 +48,8 @@ export interface SpawnOptions {
   placement?: Placement;
   /** Runtime for the new session (default: the supervisor's configured runtime). */
   runtime?: string;
+  /** Opaque runtime-native conversation identifier resumed on the first launch. */
+  resumeSessionId?: string;
   /** Per-session override of the fleet's approval/sandbox bypass default. */
   bypassPermissions?: boolean;
   /** Create the session's directory as a git worktree of this repository. */
@@ -227,6 +229,9 @@ export class Lifecycle {
     const runtimeName = opts.runtime ?? session.runtime;
     const runtime = this.deps.runtimes.get(runtimeName);
     if (runtime === undefined) return `No runtime registered for '${runtimeName}'.`;
+    if (opts.resumeSessionId !== undefined && runtime.capabilities.targetedResume !== true) {
+      return `Runtime '${runtimeName}' does not support resuming a specific native conversation.`;
+    }
 
     // Model and effort pins for the configured runtime are not portable across
     // agent CLIs. An override uses the selected runtime's own defaults unless
@@ -348,6 +353,13 @@ export class Lifecycle {
     if (opts.runtime !== undefined && !this.deps.runtimes.has(opts.runtime)) {
       return `Unknown runtime '${opts.runtime}'. Available: ${[...this.deps.runtimes.keys()].sort().join(', ')}.`;
     }
+    const runtimeName = opts.runtime ?? this.deps.config.defaultRuntime;
+    if (
+      opts.resumeSessionId !== undefined &&
+      this.deps.runtimes.get(runtimeName)?.capabilities.targetedResume !== true
+    ) {
+      return `Runtime '${runtimeName}' does not support resuming a specific native conversation.`;
+    }
     if (opts.template !== undefined && opts.worktreeRepo !== undefined) {
       return 'Template and worktree sources are mutually exclusive.';
     }
@@ -400,6 +412,8 @@ export class Lifecycle {
     this.deps.reloadSessions();
     const started = await this.start(codename, {
       prompt: opts.prompt,
+      continueSession: opts.resumeSessionId !== undefined,
+      resumeSessionId: opts.resumeSessionId,
       placement: opts.placement,
       headless: opts.headless,
     });
@@ -442,6 +456,11 @@ export class Lifecycle {
         dirNote = ` Directory deleted.`;
       }
     }
+
+    // Teardown owns registration and, when requested, the workspace. Runtime
+    // data under identityFor(codename).configDir is intentionally retained so
+    // the same codename can later resume its provider-native conversations.
+    // Removing conversation history requires a separate explicit operation.
 
     // Session configs may be hand-authored as either extension. Remove both
     // only after guarded directory/worktree deletion has succeeded.

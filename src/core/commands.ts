@@ -352,7 +352,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       usage: '/spawn <name> [flags] [placement]',
       description: operationDescription(operations, 'spawn_session'),
       details: [
-        `    -r/--runtime ${runtimeChoices} · -m/--model <model> · -e/--effort <level>`,
+        `    -r/--runtime ${runtimeChoices} · -m/--model <model> · -e/--effort <level> · -s/--session-id <id>`,
         '    -d/--path <dir> · -t/--template <name> · -w/--worktree <repo> · -b/--branch <name>',
         '    -a/--add-dir <dir> (repeatable) · --system-prompt <file> (durable across compaction; max 5 KiB)',
         '    --bypass-permissions · --require-permissions',
@@ -394,6 +394,8 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     '-m': 'model',
     '--effort': 'effort',
     '-e': 'effort',
+    '--session-id': 'sessionId',
+    '-s': 'sessionId',
     '--worktree': 'worktreeRepo',
     '-w': 'worktreeRepo',
     '--template': 'template',
@@ -424,7 +426,7 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     const value = parsed.rest[index + 1];
     if (flag === undefined || value === undefined || flags[flag] === undefined) {
       usage(
-        '/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-t template] [-w repo] [-b branch] [-a dir] [--system-prompt file] [placement]',
+        '/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-s session-id] [-t template] [-w repo] [-b branch] [-a dir] [--system-prompt file] [placement]',
       );
     }
     output[flags[flag]] = value;

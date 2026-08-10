@@ -345,7 +345,7 @@ primitive, not an approval or execution queue.
   and starts it; then `/tell scratch investigate X` gives it work. `/teardown scratch
 --delete` reverses it. Every common flag has a short alias (`-r` runtime, `-m` model, `-e` effort,
   `-d` path, `-t` template, `-w` worktree, `-b` branch, `-a` additional directory, `-D` delete;
-  placement `-P`/`-T`/`-W`) — `/help` lists them. `--system-prompt` attaches a durable role prompt
+  `-s` native session ID, placement `-P`/`-T`/`-W`) — `/help` lists them. `--system-prompt` attaches a durable role prompt
   (maximum 5 KiB UTF-8) that is refreshed on start/continue and retained across compaction.
   `--runtime codex` spawns a Codex session instead of Claude Code; `--runtime cc` is shorthand
   for `--runtime claude-code` on spawn, start, and continue commands.
@@ -364,6 +364,9 @@ primitive, not an approval or execution queue.
   conversation history; `continue` resumes the selected runtime's latest conversation. Use
   `/continue alpha -s <id>` (or `--session-id <id>`) to select a specific native runtime conversation instead.
   Explicit IDs are opaque provider values and cannot be combined with `all`.
+  `/spawn alpha -s <id>` applies the same targeted resume while creating a new registration and
+  workspace. Reuse the original codename and runtime; teardown retains native conversation data
+  even when it removes the prior workspace.
   `spawn_session.model` advertises the non-exhaustive lists configured under
   `runtimes.claudeCode.availableModels` and `runtimes.codex.availableModels`; unknown model
   strings remain valid for newly released or third-party models. Detailed session status reports

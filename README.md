@@ -105,7 +105,7 @@ version-matched reference; these are the commands used most often:
 | Task                                      | Command                                                                  |
 | ----------------------------------------- | ------------------------------------------------------------------------ |
 | Inspect the fleet or one session          | `/status` · `/status <session>`                                          |
-| Create a session                          | `/spawn <name> [-r claude-code\|codex] [--path <dir>]`                   |
+| Create or restore a session               | `/spawn <name> [-r claude-code\|codex] [-s <id>] [--path <dir>]`         |
 | Start, resume, or stop it                 | `/start <session>` · `/continue <session> [-s <id>]` · `/stop <session>` |
 | Send a message                            | `/tell <session> <message>` · `/broadcast <message>`                     |
 | Make free text target one session         | `/talk <session>`                                                        |
@@ -126,12 +126,12 @@ A typical hand-driven session looks like this:
 /continue api-helper
 ```
 
-`/spawn` registers and starts the session. `-r` selects a runtime for the session; if
-omitted, the fleet default is used. Claude Code and Codex retain separate native
-conversation histories, so `continue` resumes the history belonging to the selected
-runtime. Pass `-s <id>` or `--session-id <id>` to resume a specific native Claude Code or Codex
-conversation instead of that runtime's most recent conversation. An explicit ID targets one
-Conductor session and therefore cannot be combined with `all`.
+`/spawn` registers the session and starts a fresh conversation by default. `-r` selects a runtime;
+if omitted, the fleet default is used. Pass `-s <id>` or `--session-id <id>` to materialize the
+workspace and resume that exact native conversation on the first launch. The same flags on
+`/continue` select a specific conversation for an existing registration instead of that runtime's
+most recent conversation. Explicit IDs are opaque, runtime-specific values. A respawn must reuse
+the original codename and runtime; `continue all` cannot accept one.
 
 Messages sent with `/tell` or the agent-facing `send_to_session` operation are signed with
 mechanical sender identity and return observable delivery receipts. `/type` is intentionally
@@ -313,7 +313,10 @@ flags expose shared records outside the workspace, and `--system-prompt` attache
 5 KiB role script without writing generated instructions into the worktree. Missing, unreadable,
 non-file, invalid UTF-8, or oversized instruction sources fail the start visibly rather than being
 silently skipped. `/teardown --delete`
-removes only safe, Conductor-owned directories and refuses dirty worktrees. Session YAML
+removes only safe, Conductor-owned directories and refuses dirty worktrees. Teardown retains the
+codename's native conversation data; deleting that history is not implicit in workspace or
+registration cleanup. A later `/spawn <same-name> --session-id <id>` can therefore rebuild a
+disposable workspace and resume that conversation without an intervening fresh launch. Session YAML
 can also define Croner-compatible `schedules`; an inactive session starts with the prompt,
 while an active session receives it through the normal protected delivery path.
 

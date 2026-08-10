@@ -22,6 +22,7 @@ const EVENT_TYPES = new Set([
 export class FakeRuntime implements SessionRuntime {
   readonly capabilities: RuntimeCapabilities = {
     lifecycleEvents: true,
+    targetedResume: true,
     authoritativeTurnCompletion: true,
     contextProbe: false,
     styledCapture: false,

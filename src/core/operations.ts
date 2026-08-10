@@ -339,7 +339,7 @@ export class ConductorOperations {
       {
         name: 'spawn_session',
         description:
-          "Create, register, and start a session from an empty directory, registered template, or Git worktree. The destination is path or spawn.dirPattern; relative destinations resolve from the fleet directory. A new worktree branch starts at the source repository's current HEAD; existing branches are checked out as-is.",
+          "Create and register a session from an empty directory, registered template, or Git worktree, then start a fresh conversation or resume a specific native conversation. The destination is path or spawn.dirPattern; relative destinations resolve from the fleet directory. A new worktree branch starts at the source repository's current HEAD; existing branches are checked out as-is.",
         resultDescription: 'Returns the new session path and launch result.',
         audiences: BOTH,
         federation: 'routable',
@@ -356,6 +356,9 @@ export class ConductorOperations {
             bypassPermissions: bypassPermissionsProperty,
             model: stringProperty(runtimeHintDescription('model', this.deps.modelHints)),
             effort: stringProperty(runtimeHintDescription('effort', this.deps.effortHints)),
+            sessionId: stringProperty(
+              'Runtime-native conversation/session ID to resume on the first launch instead of starting a fresh conversation',
+            ),
             additionalDirs: {
               type: 'array',
               description: 'Directories outside the workspace that the runtime may access',
@@ -386,6 +389,7 @@ export class ConductorOperations {
             bypassPermissions: typeof args.bypassPermissions === 'boolean' ? args.bypassPermissions : undefined,
             model: optionalString(args, 'model'),
             effort: optionalString(args, 'effort'),
+            resumeSessionId: optionalString(args, 'sessionId'),
             additionalDirs: optionalStringArray(args, 'additionalDirs'),
             systemPromptFile: optionalString(args, 'systemPromptFile'),
             template: optionalString(args, 'template'),

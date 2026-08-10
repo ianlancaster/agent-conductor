@@ -4,6 +4,8 @@ import type { SessionConfig } from '../config/schema.js';
 export interface RuntimeCapabilities {
   /** Runtime can push lifecycle events (hooks / notify). */
   lifecycleEvents: boolean;
+  /** Runtime can resume one explicitly identified native conversation. */
+  targetedResume?: boolean;
   /** Runtime provides a positive, authoritative end-of-turn event. */
   authoritativeTurnCompletion?: boolean;
   /** Runtime supports an interactive context probe (e.g. Claude's /context). */

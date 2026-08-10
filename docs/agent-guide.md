@@ -316,7 +316,8 @@ lifecycle action that matches the intent:
 - `continue_session`: resume that runtime's most recent conversation, or pass its optional
   `sessionId` argument to select one specific native runtime conversation. An explicit ID cannot
   be combined with `codename: "all"`.
-- `spawn_session`: create a workspace, write session configuration, and start it.
+- `spawn_session`: create a workspace and registration, then start a fresh conversation or pass its
+  optional `sessionId` to resume a specific native conversation on the first launch.
 - `teardown_session`: stop and deregister; optionally remove a Conductor-owned safe workspace.
 
 Claude Code and Codex maintain separate conversation histories. Continuing with a runtime override
@@ -409,6 +410,25 @@ spawn_session({
 })
 ```
 
+To rebuild a disposable lane while retaining its exact native conversation, tear it down and later
+spawn the same codename and runtime with its opaque ID:
+
+```json
+spawn_session({
+  "codename": "reviewer",
+  "runtime": "codex",
+  "worktreeRepo": "/path/to/canonical-repo",
+  "branch": "review-pass",
+  "sessionId": "provider-native-conversation-id"
+})
+```
+
+The resumed spawn prepares the current mandatory protocol, runtime integration, permission policy,
+and newly snapshotted `systemPromptFile` before launching. It emits
+`session.started(cause=continue)` and never substitutes a fresh conversation when the supplied ID
+cannot be loaded. The ID must belong to the same runtime and codename; cross-runtime and
+cross-codename migration are not supported.
+
 If the branch does not exist, it is created from the source repository's current `HEAD`. Conductor
 does not fetch or silently update the base. If freshness matters, update the canonical source
 before spawning or explicitly prepare the new branch afterward.
@@ -428,6 +448,9 @@ Worktree practices:
 - Gitignored files do not make Git report the worktree dirty. They are deleted when the worktree
   is successfully removed; archive anything durable first.
 - A successful worktree teardown removes the worktree but keeps its Git branch.
+- Teardown removes registration and optionally the workspace, but deliberately retains native
+  conversation data. Deleting provider history requires a separate explicit action; respawning the
+  same codename reuses the same isolated runtime home.
 - Current Codex sessions keep their generated override inside the isolated session home and do not
   dirty the worktree. Fleets upgraded from an earlier release may retain an obsolete
   `AGENTS.override.md` entry in `.gitignore`; remove that ignore line manually when convenient.

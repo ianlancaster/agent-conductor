@@ -554,6 +554,7 @@ describe('help', () => {
     expect(help).toContain('  -P/--pane · -T/--tab · -W/--window\n  -H/--headless — detached tmux pane');
     expect(help).toContain('    -r/--runtime cc|claude-code|codex');
     expect(help).toContain('-e/--effort <level>');
+    expect(help).toContain('-s/--session-id <id>');
     expect(help).toContain('-t/--template <name>');
     expect(help).toContain('-a/--add-dir <dir> (repeatable)');
     expect(help).toContain('--system-prompt <file>');
@@ -616,6 +617,30 @@ describe('spawn and teardown', () => {
     const config = readFileSync(join(baseDir, 'config', 'sessions', 'codexer.yaml'), 'utf8');
     expect(config).toContain('runtime: codex');
     await router.route('/teardown codexer --delete');
+  });
+
+  it('spawns directly into a targeted native conversation with either session ID flag', async () => {
+    const long = await router.route('/spawn restored-long --runtime codex --session-id "provider session"');
+    expect(long).toContain('Spawned restored-long');
+    expect(long).toContain('restored-long continued.');
+    expect(codexRuntime.launches.at(-1)?.opts).toMatchObject({
+      continueSession: true,
+      resumeSessionId: 'provider session',
+    });
+    expect(backend.paneFor('restored-long')?.launched[0]).toContain('--session-id "provider session"');
+    await router.route('/teardown restored-long --delete');
+
+    const short = await router.route('/spawn restored-short -r codex -s provider-session');
+    expect(short).toContain('restored-short continued.');
+    expect(codexRuntime.launches.at(-1)?.opts.resumeSessionId).toBe('provider-session');
+    await router.route('/teardown restored-short --delete');
+  });
+
+  it('rejects a missing or empty targeted spawn session ID before creating a workspace', async () => {
+    expect(await router.route('/spawn missing-id --session-id')).toContain('Usage: /spawn');
+    expect(await router.route('/spawn empty-id --session-id ""')).toContain("'sessionId' must be a non-empty string");
+    expect(existsSync(join(baseDir, 'spawned', 'missing-id'))).toBe(false);
+    expect(existsSync(join(baseDir, 'spawned', 'empty-id'))).toBe(false);
   });
 
   it('spawns with a persisted arbitrary effort default and applies it immediately', async () => {
@@ -748,6 +773,10 @@ describe('spawn and teardown', () => {
     expect(git(worktree, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('worker-branch');
     expect(events.events).toContainEqual({ type: 'workspace.provisioned', session: 'worker', kind: 'worktree' });
 
+    const runtimeData = join(baseDir, 'data', 'sessions', 'worker');
+    mkdirSync(runtimeData, { recursive: true });
+    writeFileSync(join(runtimeData, 'native-conversation'), 'provider-session\n');
+
     writeFileSync(join(worktree, 'dirty.txt'), 'do not lose me\n');
     const refused = await router.route('/teardown worker --delete');
     expect(refused).toContain('NOT deregistered');
@@ -762,7 +791,26 @@ describe('spawn and teardown', () => {
     expect(existsSync(worktree)).toBe(false);
     expect(git(repo, 'show-ref', '--verify', 'refs/heads/worker-branch')).toContain('refs/heads/worker-branch');
     expect(git(repo, 'status', '--porcelain')).toBe('');
+    expect(readFileSync(join(runtimeData, 'native-conversation'), 'utf8')).toBe('provider-session\n');
     expect(events.events).toContainEqual({ type: 'workspace.removed', session: 'worker', kind: 'worktree' });
     expect(JSON.stringify(events.events)).not.toContain(worktree);
+
+    const launchesBeforeResume = runtime.launches.length;
+    expect(await router.route(`/spawn worker --worktree ${repo} --branch worker-branch -s provider-session`)).toContain(
+      'worker continued.',
+    );
+    expect(runtime.launches).toHaveLength(launchesBeforeResume + 1);
+    expect(runtime.launches.at(-1)?.opts).toMatchObject({
+      continueSession: true,
+      resumeSessionId: 'provider-session',
+    });
+    expect(git(worktree, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('worker-branch');
+    expect(events.events).toContainEqual({
+      type: 'session.started',
+      session: 'worker',
+      cause: 'continue',
+      runtime: 'claude-code',
+    });
+    await router.route('/teardown worker --delete');
   });
 });

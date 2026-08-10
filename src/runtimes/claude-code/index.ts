@@ -72,6 +72,7 @@ export class ClaudeCodeRuntime implements SessionRuntime {
   readonly name = 'claude-code';
   readonly capabilities: RuntimeCapabilities = {
     lifecycleEvents: true,
+    targetedResume: true,
     authoritativeTurnCompletion: true,
     contextProbe: true,
     styledCapture: false,

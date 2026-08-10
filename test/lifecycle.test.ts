@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -402,6 +402,67 @@ describe('lifecycle edges', () => {
       kind: 'directory',
     });
     expect(JSON.stringify(lifecycleEvents.events)).not.toContain(join(baseDir, 'spawned', 'worker'));
+  });
+
+  it('preserves runtime data through teardown and resumes it when respawning the same codename', async () => {
+    expect(await lifecycle.spawn('worker')).toContain('worker started.');
+    expect(runtime.launches.at(-1)?.opts.continueSession).toBe(false);
+
+    const runtimeData = join(baseDir, 'data', 'sessions', 'worker');
+    mkdirSync(runtimeData, { recursive: true });
+    writeFileSync(join(runtimeData, 'native-conversation'), 'provider-session\n');
+
+    expect(await lifecycle.teardown('worker', true)).toContain('Directory deleted');
+    expect(readFileSync(join(runtimeData, 'native-conversation'), 'utf8')).toBe('provider-session\n');
+
+    const launchesBeforeResume = runtime.launches.length;
+    const result = await lifecycle.spawn('worker', { resumeSessionId: 'provider-session' });
+    expect(result).toContain('worker continued.');
+    expect(runtime.launches).toHaveLength(launchesBeforeResume + 1);
+    expect(runtime.launches.at(-1)?.opts).toMatchObject({
+      continueSession: true,
+      resumeSessionId: 'provider-session',
+    });
+    expect(runtime.prepared.at(-1)?.identity.configDir).toBe(runtimeData);
+    expect(lifecycleEvents.events).toContainEqual({
+      type: 'session.started',
+      session: 'worker',
+      cause: 'continue',
+      runtime: 'claude-code',
+    });
+  });
+
+  it('rejects targeted spawn for an unsupported runtime before materializing a workspace', async () => {
+    runtime.capabilities.targetedResume = false;
+
+    expect(await lifecycle.spawn('worker', { resumeSessionId: 'provider-session' })).toBe(
+      "Runtime 'claude-code' does not support resuming a specific native conversation.",
+    );
+    expect(existsSync(join(baseDir, 'spawned', 'worker'))).toBe(false);
+    expect(sessions.has('worker')).toBe(false);
+    expect(runtime.launches).toHaveLength(0);
+  });
+
+  it('never falls back to a fresh conversation when targeted spawn launch setup fails', async () => {
+    runtime.buildLaunchCommand = (session, _identity, opts) => {
+      runtime.launches.push({ session, opts: { ...opts } });
+      throw new Error('targeted native conversation could not be loaded');
+    };
+
+    await expect(lifecycle.spawn('worker', { resumeSessionId: 'missing-provider-session' })).rejects.toThrow(
+      'targeted native conversation could not be loaded',
+    );
+    expect(runtime.launches).toHaveLength(1);
+    expect(runtime.launches[0]?.opts).toMatchObject({
+      continueSession: true,
+      resumeSessionId: 'missing-provider-session',
+    });
+    expect(lifecycleEvents.events).toContainEqual({
+      type: 'session.stopped',
+      session: 'worker',
+      cause: 'launch-failed',
+    });
+    expect(states.get('worker')?.running).toBe(false);
   });
 
   it('restart cycles the pane', async () => {
