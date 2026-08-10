@@ -117,6 +117,61 @@ describe('Scheduler', () => {
     });
   });
 
+  it('rechecks pause after asynchronous activity reconciliation before delivering', async () => {
+    let finishInspection: ((active: boolean) => void) | undefined;
+    scheduler = new Scheduler({
+      sessions: () => sessions,
+      isActive: () =>
+        new Promise<boolean>((resolve) => {
+          finishInspection = resolve;
+        }),
+      isPaused: () => paused,
+      startSession: async (session, opts) => {
+        started.push({ session, prompt: opts.prompt });
+        return 'started';
+      },
+      stopSession: async () => 'stopped',
+      deliver: async (session, text) => {
+        delivered.push({ session, text });
+      },
+      events,
+    });
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: false, freshContext: false }]));
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+    paused = true;
+    finishInspection?.(true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(started).toEqual([]);
+    expect(delivered).toEqual([]);
+    expect(events.events).toContainEqual({
+      type: 'schedule',
+      session: 'alpha',
+      label: EVERY_SECOND,
+      outcome: 'deferred-paused',
+    });
+  });
+
+  it('rechecks pause before restarting a fresh-context schedule after its settle delay', async () => {
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'nightly', paused: false, freshContext: true }]));
+    active = true;
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(stopped).toEqual(['alpha']);
+
+    paused = true;
+    await vi.advanceTimersByTimeAsync(3100);
+    expect(started).toEqual([]);
+    expect(delivered).toEqual([]);
+    expect(events.events).toContainEqual({
+      type: 'schedule',
+      session: 'alpha',
+      label: EVERY_SECOND,
+      outcome: 'deferred-paused',
+    });
+  });
+
   it('skips schedule entries marked paused', async () => {
     sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: true, freshContext: false }]));
     scheduler.rebuild();

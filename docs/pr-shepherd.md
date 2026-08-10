@@ -86,7 +86,8 @@ and supervisor changes take effect after a deliberate Conductor restart.
 Pausing the configured coordinator session, including through `/pause all`, also stops the managed
 Shepherd process. `/resume <coordinator>` or `/resume all` starts it again. Because session pause
 state is persisted, Conductor does not start Shepherd while its coordinator remains paused after a
-restart.
+restart. Conductor also rejects a delivery request that reaches it while the coordinator is paused
+as retryable, so Shepherd retains it in the outbox for delivery after resume.
 
 While the managed companion has a fresh healthy heartbeat, fleet `/status` adds
 `PR Shepherd Status Online` directly below `Agent Conductor Status` and marks the configured

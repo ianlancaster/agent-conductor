@@ -482,7 +482,7 @@ export class ConductorOperations {
       {
         name: 'pause_session',
         description:
-          'Pause one session, or all sessions: suppress schedules and stall routing, and pause managed PR Shepherd when its coordinator is targeted.',
+          'Pause one session, or all sessions: suppress automated delivery from schedules, stalls, background integrations, and PR Shepherd without blocking human messages.',
         resultDescription: 'Returns the resulting pause state for each targeted session.',
         audiences: BOTH,
         federation: 'routable',
@@ -498,7 +498,7 @@ export class ConductorOperations {
       {
         name: 'resume_session',
         description:
-          'Resume one paused session, or all paused sessions, and resume managed PR Shepherd when its coordinator is targeted.',
+          'Resume one paused session, or all paused sessions, restoring automated delivery and managed PR Shepherd when its coordinator is targeted.',
         resultDescription: 'Returns the resulting pause state for each targeted session.',
         audiences: BOTH,
         federation: 'routable',

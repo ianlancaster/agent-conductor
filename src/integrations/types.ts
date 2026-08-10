@@ -36,7 +36,10 @@ export interface ConductorIntegrationContext {
   readonly signal: AbortSignal;
   /** Durable, private namespace owned by this integration. */
   readonly stateDir: string;
-  /** Protected session delivery with a mechanically assigned integration identity. */
+  /**
+   * Protected session delivery with a mechanically assigned integration identity.
+   * New logical deliveries reject as retryable while the target session is paused.
+   */
   sendToSession(codename: string, message: string, options: IntegrationDeliveryOptions): Promise<MessageReceipt>;
   /** Publish bounded, operator-safe health without exposing Conductor internals. */
   reportHealth(update: IntegrationHealthUpdate): void;

@@ -176,6 +176,44 @@ describe('Supervisor construction', () => {
     expect(terminal.paneFor('alpha')?.received).toEqual(['[Integration: water-cooler] bulletins changed']);
   });
 
+  it('suppresses integration delivery to a paused session and restores it on resume', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\nruntime: claude-code\n`,
+    });
+    const terminal = new FakeTerminalBackend();
+    let context: ConductorIntegrationContext | undefined;
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      runtimes: [new FakeRuntime()],
+      integrations: [
+        {
+          name: 'water-cooler',
+          start: (value) => {
+            context = value;
+            value.reportHealth({ state: 'healthy' });
+          },
+          stop: () => undefined,
+        },
+      ],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start({ startAll: true });
+    await expect(supervisor.command('/pause alpha')).resolves.toBe('alpha: paused');
+    await expect(
+      context?.sendToSession('alpha', 'scheduled bulletin', { idempotencyKey: 'bulletin:paused' }),
+    ).rejects.toThrow('alpha is paused');
+    expect(terminal.paneFor('alpha')?.received).toEqual([]);
+
+    await expect(supervisor.command('/resume alpha')).resolves.toBe('alpha: resumed');
+    await expect(
+      context?.sendToSession('alpha', 'scheduled bulletin', { idempotencyKey: 'bulletin:paused' }),
+    ).resolves.toMatchObject({ status: 'delivered' });
+    expect(terminal.paneFor('alpha')?.received).toEqual(['[Integration: water-cooler] scheduled bulletin']);
+  });
+
   it('aborts integrations and stops Shepherd before protected delivery and MCP teardown', async () => {
     const port = await freePort();
     writeConfig(`mcp:\n  port: ${String(port)}\n`, {});

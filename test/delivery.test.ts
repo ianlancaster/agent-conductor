@@ -14,6 +14,7 @@ let queue: DeliveryQueue;
 let pane: PaneRef;
 let deliveryEvents: string[];
 let runtimeObservations: string[];
+let paused: boolean;
 
 beforeEach(async () => {
   vi.useFakeTimers();
@@ -21,6 +22,7 @@ beforeEach(async () => {
   runtime = new FakeRuntime();
   deliveryEvents = [];
   runtimeObservations = [];
+  paused = false;
   pane = await backend.createPane('alpha', 'pane');
   queue = new DeliveryQueue({
     backend,
@@ -28,6 +30,7 @@ beforeEach(async () => {
     getPane: (session) => (session === 'alpha' ? pane : undefined),
     onRuntimeObserved: (session) => runtimeObservations.push(session),
     onDelivered: (session) => deliveryEvents.push(session),
+    isPaused: () => paused,
     config: CONFIG,
   });
 });
@@ -167,6 +170,23 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['one', 'two']);
     expect(queue.pendingCount('alpha')).toBe(0);
     expect(deliveryEvents).toEqual(['alpha', 'alpha']);
+  });
+
+  it('holds queued automated delivery for the full pause interval and drains after resume', async () => {
+    runtime.inputState = 'draft';
+    expect(await queue.deliverOrQueue('alpha', 'scheduled', { automated: true })).toBe('queued');
+
+    paused = true;
+    runtime.inputState = 'clear';
+    expect(await queue.deliverOrQueue('alpha', 'human follow-up')).toBe('queued');
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['human follow-up']);
+    expect(queue.pendingCount('alpha')).toBe(1);
+
+    paused = false;
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['human follow-up', 'scheduled']);
+    expect(queue.pendingCount('alpha')).toBe(0);
   });
 
   it('does not clobber text typed after the clear-composer capture', async () => {

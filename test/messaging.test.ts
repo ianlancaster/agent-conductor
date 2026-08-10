@@ -117,6 +117,33 @@ describe('Messaging delivery receipts', () => {
     });
   });
 
+  it('refuses new integration delivery while the recipient is paused without suppressing human messages', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const messaging = makeMessaging(makeQueue(new FakeRuntime(), pane.id));
+    states.pause('beta');
+
+    await expect(
+      messaging.sendIntegrationToSession('water-cooler', 'beta', 'scheduled bulletin', 'bulletin:paused'),
+    ).rejects.toThrow('beta is paused');
+    await expect(messaging.sendToSession('alpha', 'beta', 'human follow-up')).resolves.toMatchObject({
+      status: 'delivered',
+    });
+    expect(store.getMessage(1)?.sender).toBe('alpha');
+    expect(store.getMessage(2)).toBeUndefined();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] human follow-up']);
+
+    states.resume('beta');
+    await expect(
+      messaging.sendIntegrationToSession('water-cooler', 'beta', 'scheduled bulletin', 'bulletin:paused'),
+    ).resolves.toMatchObject({ status: 'delivered' });
+    expect(backend.panes.get(pane.id)?.received).toEqual([
+      '[Message from alpha] human follow-up',
+      '[Integration: water-cooler] scheduled bulletin',
+    ]);
+  });
+
   it('revives a restart-cancelled integration delivery with the same identity and envelope', async () => {
     const pane = await backend.createPane('beta', 'pane');
     states.setSession('beta', pane.id);

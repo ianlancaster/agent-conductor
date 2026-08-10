@@ -12,6 +12,7 @@ export type DeliverySkipReason =
   | 'capture-failed'
   | 'composer-not-visible'
   | 'input-occupied'
+  | 'recipient-paused'
   | 'pane-changed'
   | 'write-failed';
 
@@ -36,12 +37,15 @@ interface TypingObservation {
 
 interface QueuedMessage {
   text: string;
+  automated: boolean;
   deliveryId?: number;
   onAttempt?: (skipReason: DeliverySkipReason | null) => void;
   onDelivered?: () => void;
 }
 
 export interface DeliveryOptions {
+  /** Automated work is held while the recipient's temporary pause flag is set. */
+  automated?: boolean;
   /** Durable receipt id, used to cancel a queued delivery without matching text. */
   deliveryId?: number;
   /** Receipt callback invoked for every classification/write attempt. */
@@ -60,6 +64,8 @@ export interface DeliveryDeps {
    */
   runtimeCandidates?(session: string): readonly SessionRuntime[];
   getPane(session: string): PaneRef | undefined;
+  /** Temporary per-session automation suppression. Manual delivery remains available. */
+  isPaused?(session: string): boolean;
   /** Visible runtime input chrome is an independent readiness proof. */
   onRuntimeObserved?(session: string): void;
   /** A non-primary parser uniquely recognized the live runtime's composer. */
@@ -105,6 +111,11 @@ export class DeliveryQueue {
 
   async deliverOrQueue(session: string, text: string, options: DeliveryOptions = {}): Promise<DeliveryResult> {
     if (options.deliveryId !== undefined) this.assessing.add(options.deliveryId);
+    if (this.automationPaused(session, options.automated === true)) {
+      this.assessing.delete(options.deliveryId ?? -1);
+      this.recordAttempt(session, options.onAttempt, 'recipient-paused');
+      return this.enqueue(session, text, options);
+    }
     const pane = this.deps.getPane(session);
     if (pane === undefined) {
       this.assessing.delete(options.deliveryId ?? -1);
@@ -129,7 +140,13 @@ export class DeliveryQueue {
         this.delivering.add(options.deliveryId);
       }
       try {
-        const writeSkipReason = await this.submitIfStillClear(session, pane, text, classification);
+        const writeSkipReason = await this.submitIfStillClear(
+          session,
+          pane,
+          text,
+          classification,
+          options.automated === true,
+        );
         if (writeSkipReason !== null) {
           this.recordAttempt(session, options.onAttempt, writeSkipReason);
           return this.enqueue(session, text, options, existing);
@@ -207,20 +224,27 @@ export class DeliveryQueue {
         this.recordAttempt(session, queue[0]?.onAttempt, pane === undefined ? 'no-pane' : 'pane-not-alive');
         continue;
       }
-      const oldest = queue[0];
+      const oldestIndex = queue.findIndex((message) => !this.automationPaused(session, message.automated));
+      const oldest = oldestIndex < 0 ? undefined : queue[oldestIndex];
       if (oldest === undefined) {
-        this.queues.delete(session);
+        this.recordAttempt(session, queue[0]?.onAttempt, 'recipient-paused');
         continue;
       }
       const classification = await this.typingState(session, pane);
       // Cancellation can remove the item while capture is in flight.
-      if (queue[0] !== oldest) continue;
+      if (queue[oldestIndex] !== oldest) continue;
       if (classification.state === 'clear') {
         // One message per pass: each submit gets a full drain interval to be
         // processed before the next one is typed.
         try {
           if (oldest.deliveryId !== undefined) this.delivering.add(oldest.deliveryId);
-          const writeSkipReason = await this.submitIfStillClear(session, pane, oldest.text, classification);
+          const writeSkipReason = await this.submitIfStillClear(
+            session,
+            pane,
+            oldest.text,
+            classification,
+            oldest.automated,
+          );
           if (writeSkipReason !== null) {
             this.recordAttempt(session, oldest.onAttempt, writeSkipReason);
             continue;
@@ -228,7 +252,7 @@ export class DeliveryQueue {
           this.recordAttempt(session, oldest.onAttempt, null);
           // Remove only AFTER a successful write. Shifting first silently lost
           // the message whenever iTerm/osascript failed during a drain.
-          queue.shift();
+          queue.splice(oldestIndex, 1);
           this.recordDelivered(session, oldest.onDelivered);
         } catch (err) {
           this.recordAttempt(session, oldest.onAttempt, 'write-failed');
@@ -266,6 +290,7 @@ export class DeliveryQueue {
     const queue = existing ?? [];
     queue.push({
       text,
+      automated: options.automated === true,
       ...(options.deliveryId !== undefined ? { deliveryId: options.deliveryId } : {}),
       ...(options.onAttempt !== undefined ? { onAttempt: options.onAttempt } : {}),
       ...(options.onDelivered !== undefined ? { onDelivered: options.onDelivered } : {}),
@@ -341,7 +366,9 @@ export class DeliveryQueue {
     pane: PaneRef,
     text: string,
     observation: TypingObservation,
+    automated: boolean,
   ): Promise<DeliverySkipReason | null> {
+    if (this.automationPaused(session, automated)) return 'recipient-paused';
     if (observation.token !== undefined && this.deps.backend.submitIfUnchanged !== undefined) {
       const confirmSubmission = this.prepareSubmission(session);
       if (!(await this.deps.backend.submitIfUnchanged(pane, text, observation.token))) return 'pane-changed';
@@ -351,10 +378,15 @@ export class DeliveryQueue {
 
     const confirmation = await this.typingState(session, pane);
     if (confirmation.state !== 'clear') return confirmation.skipReason ?? 'pane-changed';
+    if (this.automationPaused(session, automated)) return 'recipient-paused';
     const confirmSubmission = this.prepareSubmission(session);
     await this.deps.backend.run(pane, text);
     this.confirmSubmission(session, confirmSubmission);
     return null;
+  }
+
+  private automationPaused(session: string, automated: boolean): boolean {
+    return automated && this.deps.isPaused?.(session) === true;
   }
 
   private prepareSubmission(session: string): (() => void) | undefined {

@@ -272,6 +272,7 @@ export class Supervisor {
       runtimeFor: (session) => this.runtimeFor(session),
       runtimeCandidates: (session) => this.runtimeCandidates(session),
       getPane: (session) => this.lifecycle.getPane(session),
+      isPaused: (session) => this.states.isPaused(session),
       onRuntimeObserved: (session) => {
         this.markRuntimeObserved(session);
       },
@@ -379,7 +380,7 @@ export class Supervisor {
         await this.lifecycle.reconcile(session);
         return this.states.get(session)?.running === true;
       },
-      deliver: (session, text) => this.delivery.deliverOrQueue(session, text),
+      deliver: (session, text) => this.delivery.deliverOrQueue(session, text, { automated: true }),
       notifyOperator: (text) => this.channelSend({ text }),
       logEvent: (session, event, detail) => {
         this.store.logHealthEvent(session, event, detail);
@@ -493,7 +494,7 @@ export class Supervisor {
       isPaused: (session) => this.states.isPaused(session),
       startSession: (session, opts) => this.lifecycle.start(session, opts),
       stopSession: (session) => this.lifecycle.stop(session),
-      deliver: (session, text) => this.delivery.deliverOrQueue(session, text),
+      deliver: (session, text) => this.delivery.deliverOrQueue(session, text, { automated: true }),
       events: this.eventBus,
     });
 

@@ -575,12 +575,13 @@ unavailable. If fleet policy explicitly authorizes one safe response and pane in
 the prompt, the Sentinel may use `type_in_pane`; otherwise it escalates to the operator. Raw input
 can overwrite an operator draft and must never be used as a routine nudge.
 
-`pause_session` is separate from auto. Pause temporarily suppresses both schedules and stall
-routing without changing the configured auto state. Pausing `all` or the configured PR Shepherd
+`pause_session` is separate from auto. Pause temporarily suppresses automated messages to the
+target from schedules, stall routing, background integrations, and PR Shepherd without changing
+the configured auto state or blocking human messages. Pausing `all` or the configured PR Shepherd
 coordinator also stops the managed Shepherd process; resuming that target starts Shepherd again.
-The coordinator's persisted pause state suppresses Shepherd startup after a Conductor restart. Use
-pause for maintenance, intentional waiting, or operator review; `resume_session` restores the prior
-behavior.
+The coordinator's persisted pause state suppresses Shepherd startup after a Conductor restart.
+Use pause for maintenance, intentional waiting, or operator review; `resume_session` restores the
+prior behavior.
 
 Fleet watch detects campaign-level darkness when individual idle states are normal but no worker is
 making progress. `toggle_fleet_watch` is a single fleet-level boolean. When enabled, it watches every
@@ -916,6 +917,10 @@ timers, overlap prevention, provider credentials, reconciliation, and cursor sch
 hints rather than replayable truth. Advance a cursor only after a delivered or
 deduplicated-delivered receipt, using an immutable change identity as the retry key. This is
 at-least-once processing: pane delivery is not proof the model completed the work.
+
+A paused target rejects new integration delivery as a retryable failure. Keep the provider cursor
+unchanged and retry the same immutable idempotency key after resume. If an automated delivery was
+already waiting in Conductor's protected queue when pause began, it remains held until resume.
 
 Integrations are trusted in-process code, not sandboxed plugins. They receive no operator
 authority, raw terminal, fleet store, environment, lifecycle commands, or event publication.

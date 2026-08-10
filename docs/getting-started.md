@@ -340,7 +340,8 @@ primitive, not an approval or execution queue.
 
 - **Scheduled prompts**: add a `schedules:` block to a session (see
   [examples/sessions/example-claude.yaml](../examples/sessions/example-claude.yaml)). An inactive
-  runtime is restarted automatically; `/pause` suppresses its schedules until `/resume`.
+  runtime is restarted automatically; `/pause` suppresses its schedules and other automated
+  delivery until `/resume`, while human messages remain available.
 - **Spawn a throwaway session**: `/spawn scratch` makes a directory, registers a config,
   and starts it; then `/tell scratch investigate X` gives it work. `/teardown scratch
 --delete` reverses it. Every common flag has a short alias (`-r` runtime, `-m` model, `-e` effort,

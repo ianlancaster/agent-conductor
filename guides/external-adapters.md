@@ -121,6 +121,12 @@ and make `stop()` safe after partial initialization. A startup or shutdown failu
 from the core and shown in fleet status. A resolved `start()` does not imply health; the
 integration remains `starting` until it calls `reportHealth`.
 
+When the target session is paused, `sendToSession` rejects before creating a new receipt. Treat
+that as retryable: retain the provider cursor and retry the same immutable idempotency key after
+resume. An automated delivery already waiting in Conductor's protected queue when pause begins is
+held for the full pause interval and may drain only after resume. Human-authored messages remain
+available while the session is paused.
+
 Integration names are lowercase alphanumeric identifiers with internal dashes. Conductor derives
 the sender mechanically as `integration:<name>` and renders `[Integration: <name>]`; the
 integration cannot impersonate an operator or session. The context exposes no

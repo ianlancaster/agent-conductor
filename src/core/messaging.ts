@@ -55,7 +55,14 @@ export class Messaging {
   constructor(private readonly deps: MessagingDeps) {}
 
   async sendToSession(from: string, target: string, message: string, idempotencyKey?: string): Promise<MessageReceipt> {
-    return this.sendProtected(from, target, message, (content) => messageEnvelope(from, content), idempotencyKey);
+    return this.sendProtected(
+      from,
+      target,
+      message,
+      (content) => messageEnvelope(from, content),
+      idempotencyKey,
+      from === 'pr-shepherd',
+    );
   }
 
   /** Narrow trusted path used only by IntegrationManager. */
@@ -71,6 +78,7 @@ export class Messaging {
       message,
       (content) => integrationEnvelope(integrationName, content),
       idempotencyKey,
+      true,
     );
   }
 
@@ -80,6 +88,7 @@ export class Messaging {
     message: string,
     envelopeFor: (persistedContent: string) => string,
     idempotencyKey?: string,
+    automated = false,
   ): Promise<MessageReceipt> {
     if (idempotencyKey !== undefined) {
       const existing = this.deps.store.getDirectMessageByIdempotencyKey(from, idempotencyKey);
@@ -95,6 +104,9 @@ export class Messaging {
     }
     if (!this.deps.sessions().has(target)) throw new InvalidRequestError(`Unknown session: ${target}`);
     if (target === from) throw new InvalidRequestError('Cannot send a message to yourself.');
+    if (automated && this.deps.states.isPaused(target)) {
+      throw new Error(`${target} is paused; automated delivery from ${from} is deferred until it resumes.`);
+    }
     const inserted = this.deps.store.insertDirectMessage(from, target, message, idempotencyKey);
     const id = inserted.row.id;
     const envelope = envelopeFor(inserted.row.content);
@@ -112,7 +124,7 @@ export class Messaging {
     });
 
     if (this.deps.states.get(target)?.running === true) {
-      const result = await this.schedule(id, target, envelope);
+      const result = await this.schedule(id, target, envelope, automated);
       return {
         messageId: id,
         recipient: target,
@@ -131,7 +143,7 @@ export class Messaging {
       if (started === `${target} is already running.`) {
         this.scheduled.delete(id);
         releaseStartReservation = false; // schedule() now owns this id until its receipt fires.
-        const result = await this.schedule(id, target, envelope);
+        const result = await this.schedule(id, target, envelope, automated);
         return {
           messageId: id,
           recipient: target,
@@ -164,6 +176,7 @@ export class Messaging {
         row.id,
         row.recipient,
         this.pendingEnvelopes.get(row.id) ?? messageEnvelope(row.sender, row.content),
+        row.sender === 'pr-shepherd' || row.sender.startsWith('integration:'),
       );
     }
     await this.deps.delivery.drainNow();
@@ -226,10 +239,11 @@ export class Messaging {
     return `Message #${String(id)} cancelled.`;
   }
 
-  private async schedule(id: number, target: string, envelope: string): Promise<DeliveryResult> {
+  private async schedule(id: number, target: string, envelope: string, automated = false): Promise<DeliveryResult> {
     this.scheduled.add(id);
     try {
       const result = await this.deps.delivery.deliverOrQueue(target, envelope, {
+        automated,
         deliveryId: id,
         onAttempt: (skipReason) => {
           this.deps.store.recordMessageFlushAttempt(id, skipReason);

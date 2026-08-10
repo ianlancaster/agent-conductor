@@ -217,8 +217,9 @@ Auto and fleet watch are independent. Auto routes an individual session's stalls
 watch alerts when no registered non-sentinel session is working for the configured
 confirmation interval—15 seconds by default. A one-session fleet is valid; an empty fleet
 does not alert.
-Both settings survive Conductor restarts. `/pause` suppresses schedules and stall routing
-temporarily without changing a session's saved auto setting; `/resume` restores them.
+Both settings survive Conductor restarts. `/pause` suppresses automated messages to the target
+from schedules, stall routing, background integrations, and PR Shepherd without changing its
+saved auto setting or blocking human messages; `/resume` restores that automation.
 
 ### What the stall sentinel does
 
@@ -318,7 +319,8 @@ codename's native conversation data; deleting that history is not implicit in wo
 registration cleanup. A later `/spawn <same-name> --session-id <id>` can therefore rebuild a
 disposable workspace and resume that conversation without an intervening fresh launch. Session YAML
 can also define Croner-compatible `schedules`; an inactive session starts with the prompt,
-while an active session receives it through the normal protected delivery path.
+while an active session receives it through the normal protected delivery path. Pausing the
+session defers cron occurrences, including one that was reconciling activity when pause began.
 
 The tmux backend supports `--headless` sessions and unattended operation over SSH.
 `conductor daemon install` creates a user-level launchd or systemd service for a globally
@@ -381,7 +383,8 @@ directory, and mechanically identified protected delivery:
 
 The integration owns timers, provider credentials, reconciliation, overlap policy, and cursor
 schema. It receives no operator authority, raw terminal access, fleet store, secrets, or general
-control operations.
+control operations. A paused target rejects new integration delivery as retryable work, and an
+automated message already waiting in Conductor's protected queue remains held until resume.
 
 The stock CLI can load an explicit trusted local ESM file during foreground startup:
 

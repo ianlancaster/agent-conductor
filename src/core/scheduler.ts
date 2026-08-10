@@ -69,22 +69,23 @@ export class Scheduler {
   private async fire(codename: string, entry: ScheduleEntry): Promise<void> {
     const label = entry.label ?? entry.cron;
     try {
-      if (this.deps.isPaused(codename)) {
-        log().info('scheduler', `${codename}: '${label}' deferred (session is paused)`);
-        this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'deferred-paused' });
-        return;
-      }
+      if (this.deferPaused(codename, label)) return;
       if (entry.freshContext) {
         if (await this.deps.isActive(codename)) {
+          if (this.deferPaused(codename, label)) return;
           await this.deps.stopSession(codename);
           await sleep(FRESH_SESSION_SETTLE_MS);
+          if (this.deferPaused(codename, label)) return;
         }
+        if (this.deferPaused(codename, label)) return;
         await this.deps.startSession(codename, { prompt: entry.prompt });
         log().info('scheduler', `${codename}: '${label}' fired (fresh session)`);
         this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'fired-fresh' });
         return;
       }
-      if (await this.deps.isActive(codename)) {
+      const active = await this.deps.isActive(codename);
+      if (this.deferPaused(codename, label)) return;
+      if (active) {
         await this.deps.deliver(codename, entry.prompt);
       } else {
         await this.deps.startSession(codename, { prompt: entry.prompt });
@@ -95,5 +96,12 @@ export class Scheduler {
       log().error('scheduler', `${codename}: '${label}' failed: ${err instanceof Error ? err.message : String(err)}`);
       this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'failed' });
     }
+  }
+
+  private deferPaused(codename: string, label: string): boolean {
+    if (!this.deps.isPaused(codename)) return false;
+    log().info('scheduler', `${codename}: '${label}' deferred (session is paused)`);
+    this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'deferred-paused' });
+    return true;
   }
 }

@@ -29,6 +29,7 @@ let server: ConductorMcpServer;
 let store: Store;
 let delivery: DeliveryQueue;
 let backend: FakeTerminalBackend;
+let states: SessionStateManager;
 
 const item: OutboxItem = {
   id: 1,
@@ -44,7 +45,7 @@ beforeEach(async () => {
   store = new Store(':memory:');
   backend = new FakeTerminalBackend();
   const runtime = new FakeRuntime();
-  const states = new SessionStateManager(store, false);
+  states = new SessionStateManager(store, false);
   const sessions = new Map<string, SessionConfig>([
     [
       'coordinator',
@@ -181,6 +182,19 @@ describe('Shepherd-to-Conductor compatibility contract', () => {
   it('parks unknown-recipient validation errors as permanent', async () => {
     const sink = new ConductorCoordinatorSink(`http://127.0.0.1:${String(PORT)}`);
     await expect(sink.send({ ...item, recipient: 'missing' })).rejects.toBeInstanceOf(PermanentDeliveryError);
+  });
+
+  it('keeps a paused-recipient delivery retryable until the coordinator resumes', async () => {
+    const sink = new ConductorCoordinatorSink(`http://127.0.0.1:${String(PORT)}`);
+    states.pause('coordinator');
+
+    const paused = await sink.send(item).catch((error: unknown) => error);
+    expect(paused).toBeInstanceOf(Error);
+    expect(paused).not.toBeInstanceOf(PermanentDeliveryError);
+    expect(store.getMessage(1)).toBeUndefined();
+
+    states.resume('coordinator');
+    await expect(sink.send(item)).resolves.toMatchObject({ status: 'delivered' });
   });
 
   it('rejects a persisted receipt for the wrong recipient', async () => {
