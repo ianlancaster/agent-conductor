@@ -33,6 +33,18 @@ export function broadcastEnvelope(from: string, message: string): string {
   return `[Broadcast from ${from}] ${message}`;
 }
 
+export function roomEnvelope(room: string, from: string, message: string): string {
+  return `[Room: ${room} from ${from}] ${message}`;
+}
+
+/**
+ * Membership notices carry their own no-op instruction so an agent behaves
+ * correctly even when the injected protocol is not in its context.
+ */
+export function roomNoticeEnvelope(room: string, notice: string): string {
+  return `[Room: ${room}] ${notice} No action required — this notice is informational.`;
+}
+
 export function conductorEnvelope(message: string): string {
   return `[Message from conductor] ${message}`;
 }

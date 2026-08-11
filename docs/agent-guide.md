@@ -184,6 +184,12 @@ Important rules:
 - `defaults.bypassPermissions` controls the fleet launch default, and a session's
   `bypassPermissions` may override it. Bypassing removes the runtime's approval and sandbox
   protections; preserve or change it only as an explicit operator security decision.
+- `defaults.allowSelfAuto` controls whether a session may call `toggle_auto` on itself, and a
+  session's `allowSelfAuto` may override it in either direction. Both settings follow the same
+  two-level rule: an explicit session value always wins, and only its absence falls back to the
+  fleet default. `bypassPermissions` is read when a session launches, so it needs a restart to take
+  effect; `allowSelfAuto` is read at call time, so a session file edit applies at the next config
+  reload.
 - Keep `mcp.host` on loopback. Managed-session identity is mechanically scoped by endpoint, but the
   local HTTP surface is not a security boundary against other processes running as the same user.
   Never expose it publicly or bind it to an untrusted network.
@@ -248,11 +254,13 @@ by splitting that identity into `codename: "coordinator"` and `fleet: "frontend"
 `@fleet` in a codename; the routing argument is separate.
 
 Federation reuses the existing routable operations: direct messages, broadcasts, receipt status
-and cancellation, session listing/status/tail, start/continue/stop, pause/resume, tags, and auto
-mode. Exposure is enforced for direct and aggregate forms, so `all`, broadcasts, listings, and
-status never include a peer's unexposed sessions. Local workspace creation/deletion, raw terminal
-typing, operator escalation, sentinel/fleet-watch control, identity, documentation, and federation
-discovery remain local-only. Unknown or unavailable fleets fail explicitly and never fall back to
+and cancellation, session listing/status/tail, start/continue/stop, pause/resume, tags, auto mode,
+and room membership, speech, and teardown. Exposure is enforced for direct and aggregate forms, so
+`all`, broadcasts, listings, status, and room fan-out never include a peer's unexposed sessions.
+Local workspace creation/deletion, raw terminal typing, operator escalation, sentinel/fleet-watch
+control, identity, documentation, room creation, room listing, and federation discovery remain
+local-only — `create_room` and `list_rooms` because a routed join already creates the room it needs
+and the listing is federation-wide already. Unknown or unavailable fleets fail explicitly and never fall back to
 a same-named local session.
 
 After sending, end the turn. The peer's response arrives as a new message and activates the next
@@ -282,6 +290,58 @@ runtime prompt or entering a slash command; it can clobber operator input.
 
 Use `broadcast` only when every active session genuinely needs the same information. Prefer direct
 messages for assignments, answers, and coordination.
+
+### Rooms: group conversation
+
+A room is a named group with an explicit member list. It exists so several sessions can hold one
+conversation instead of a mesh of direct messages: everything said in a room reaches every member,
+so a reply lands in front of the whole group rather than one peer.
+
+```json
+create_room({ "room": "design-review", "members": ["alpha", "beta"] })
+join_room({ "room": "design-review", "codename": "reviewer" })
+send_to_room({ "room": "design-review", "message": "Here is the proposed API boundary." })
+list_rooms({ "room": "design-review" })
+close_room({ "room": "design-review" })
+```
+
+Room names are lowercase slugs (`^[a-z0-9][a-z0-9-]{0,63}$`). A room must be created before it can
+be used, so a mistyped name fails loudly instead of dropping a conversation. `join_room` and
+`leave_room` act on you when `codename` is omitted, and on another session when it is supplied —
+that is how you pull a specialist into a discussion already in progress.
+
+Behavior worth knowing before you rely on it:
+
+- **Reply into the room.** When you receive `[Room: <name> from <sender>]`, answer with
+  `send_to_room` for that room. A `send_to_session` reply is a side conversation the other members
+  never see, which is how a group discussion silently fragments.
+- **Membership notices are no-ops.** `[Room: <name>]` with no sender means you were added, you were
+  removed, or the room closed. Do not reply to it, acknowledge it, or start work because of it.
+  Note the membership and continue what you were doing.
+- **Rooms broadcast; they do not wake anyone.** A room message reaches members that are running.
+  Members that are stopped are skipped and named in the result rather than launched, so convening a
+  room never starts four sessions behind your back. Start the sessions you need first.
+- **No receipts.** Room messages are ephemeral like `broadcast`: no message id, no
+  `get_message_status`, no `cancel_message`, and nothing is redelivered after a Conductor restart.
+  Use `send_to_session` when you need a durable, cancellable, addressed message.
+- **Conductor runs no meeting.** There is no agenda, turn-taking, moderation, quorum, or summary.
+  Whoever convened the room facilitates it.
+
+Rooms span federated fleets. Each fleet owns its own members and publishes them to peers, so a room
+name shared by two fleets is one conversation. Add a remote member by routing the membership call,
+then speak normally — your Conductor delivers to each participating fleet directly:
+
+```json
+join_room({ "fleet": "backend", "room": "design-review", "codename": "api" })
+send_to_room({ "room": "design-review", "message": "Both sides please confirm the contract." })
+```
+
+A remote member appears as `alpha@backend` in envelopes and in `list_rooms`. Only
+federation-exposed sessions take part in cross-fleet traffic: an unexposed member is a full
+participant locally and invisible to peers, and `join_room` says so when it applies. `close_room`
+tears the room down in every participating fleet. A message crosses at most one fleet boundary —
+Conductor never relays one fleet's room traffic onward to a third — so a peer that is unreachable
+is reported in the result rather than retried or queued.
 
 Use `send_to_operator` when a decision, credential, approval, policy choice, or human-only action is
 required:
@@ -516,7 +576,16 @@ The runtime's visual status line is operator-facing context, not a lifecycle API
 infers turn completion from tokens, elapsed time, spinner text, or a frozen/animated Codex footer.
 
 `toggle_auto` controls per-session routing, while `set_sentinel` selects the destination and
-`toggle_fleet_watch` enables or disables campaign-level escalation. These operations do not change
+`toggle_fleet_watch` enables or disables campaign-level escalation.
+
+By default a session cannot aim `toggle_auto` at itself: supervision policy is something set for a
+session rather than by it. A fleet that wants self-managing agents sets `defaults.allowSelfAuto:
+true`, and any session may override that either way with its own `allowSelfAuto`, so opening the
+policy for one worker never opens it for the whole fleet. Check `whoami` or `get_session_status`
+for the resolved `allowSelfAuto` before assuming you may turn your own auto mode on. The permission
+is deliberately narrow — it never allows a session to start, stop, continue, pause, resume, or tear
+down itself — and a same-named session in another fleet is a different session, so it is governed by
+the ordinary peer rules instead. These operations do not change
 the underlying mechanical health classification. The fleet-watch boolean persists across Conductor
 restarts; runtime observations and partially elapsed confirmation timers do not.
 
@@ -763,6 +832,17 @@ These are patterns built from primitives, not special workflow features.
 3. Have it directly message relevant sessions or send a concise operator summary.
 4. Use `freshContext` only when each run must be independent.
 5. Avoid schedules for peer-response polling.
+
+### Convened design review
+
+1. Start the sessions that should take part; a room skips members that are not running.
+2. `create_room` with the local participants, then `join_room` with a `fleet` argument for each
+   remote participant.
+3. Have the convener state the question and the decision needed with `send_to_room`.
+4. Let participants answer with `send_to_room`, each ending its turn afterwards — a room is still
+   event-driven conversation, so nobody polls.
+5. Use `list_rooms` if you need to know who is actually present before reading silence as consent.
+6. `close_room` when the decision is recorded, so members stop receiving a conversation that ended.
 
 ### Shared-worktree advisors
 
@@ -1038,6 +1118,16 @@ operator to inspect a known receipt through `/message-status`.
 First use direct communication and end the turn. If no reply arrives after a meaningful interval,
 check `get_session_status`. Tail only for explicit user-requested inspection or to diagnose failed
 communication. Do not install a polling timer.
+
+### A room member never answers
+
+Call `list_rooms`. A member that is not running is skipped by every room message rather than
+started, so silence there means "stopped", not "ignoring you" — start the session and repeat the
+point. A member shown under another fleet only receives room traffic when it is federation-exposed;
+an unexposed member takes part in its own fleet's local room traffic only. If the result of your
+`send_to_room` reported a fleet it could not reach, that fleet heard nothing at all and nothing was
+queued — say it again once the fleet is back. Do not fall back to direct messages for the room's
+subject matter; that fragments the discussion.
 
 ### A worktree cannot be removed
 

@@ -217,6 +217,22 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       },
     },
     {
+      command: 'room',
+      operations: ['list_rooms', 'create_room', 'join_room', 'leave_room', 'close_room', 'send_to_room'],
+      group: 'Conversation',
+      usage: '/room <list|create|join|leave|close|say> ...',
+      description: 'Convene and drive a group conversation across sessions, and across federated fleets.',
+      details: [
+        '    list [name] · create <name> [session ...] · close <name>',
+        '    join <name> [session] · leave <name> [session] — omit session to act as the operator',
+        '    say <name> <message>',
+      ],
+      invoke: (args, actor) => {
+        const parsed = parseRoomCommand(args);
+        return invoke(parsed.operation, parsed.input, actor);
+      },
+    },
+    {
       command: 'respond',
       operations: ['respond_to_operator_request'],
       group: 'Conversation',
@@ -422,6 +438,42 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     index += 2;
   }
   return output;
+}
+
+function parseRoomCommand(args: string[]): { operation: string; input: Record<string, unknown> } {
+  const action = args[0];
+  const room = args[1];
+  if (action === 'list') {
+    if (args.length > 2) usage('/room list [name]');
+    return { operation: 'list_rooms', input: room === undefined ? {} : { room } };
+  }
+  if (room === undefined) usage('/room <list|create|join|leave|close|say> ...');
+  switch (action) {
+    case 'create': {
+      const members = args.slice(2);
+      return { operation: 'create_room', input: { room, ...(members.length > 0 ? { members } : {}) } };
+    }
+    case 'join':
+    case 'leave': {
+      if (args.length > 3) usage(`/room ${action} <name> [session]`);
+      const codename = args[2];
+      return {
+        operation: action === 'join' ? 'join_room' : 'leave_room',
+        input: { room, ...(codename !== undefined ? { codename } : {}) },
+      };
+    }
+    case 'close': {
+      if (args.length !== 2) usage('/room close <name>');
+      return { operation: 'close_room', input: { room } };
+    }
+    case 'say': {
+      const message = args.slice(2).join(' ');
+      if (message.length === 0) usage('/room say <name> <message>');
+      return { operation: 'send_to_room', input: { room, message } };
+    }
+    default:
+      usage('/room <list|create|join|leave|close|say> ...');
+  }
 }
 
 function parseRunbookCommand(args: string[]): { operation: string; input: Record<string, unknown> } {

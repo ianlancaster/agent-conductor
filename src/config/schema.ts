@@ -32,6 +32,8 @@ const stringHints = (defaults: readonly string[]) => z.array(z.string().trim().m
 /** Codenames become URL path segments, filenames, and tmux targets — keep them boring. */
 export const CODENAME_PATTERN = /^[a-z0-9][a-z0-9-_]*$/i;
 export const FEDERATION_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** Room names travel in envelopes and peer registry records — keep them a boring shared slug. */
+export const ROOM_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 export function isValidCodename(value: string): boolean {
   return CODENAME_PATTERN.test(value);
@@ -109,6 +111,8 @@ export const sessionConfigSchema = z
     runtime: runtimeSchema.default('claude-code'),
     /** Override the fleet default for approval/sandbox bypass when this session launches. */
     bypassPermissions: z.boolean().optional(),
+    /** Override defaults.allowSelfAuto: may this session turn its own auto stall handling on or off? */
+    allowSelfAuto: z.boolean().optional(),
     model: z.string().optional(),
     /** Per-session effort default. Runtime/model support is intentionally not validated here. */
     effort: z.string().min(1).optional(),
@@ -207,6 +211,12 @@ export const supervisorConfigSchema = z
         runtime: runtimeSchema.default('claude-code'),
         /** Launch sessions without approval prompts or sandbox restrictions. */
         bypassPermissions: z.boolean().default(true),
+        /**
+         * Let a session change its own auto stall handling. Off keeps the
+         * historical rule that supervision policy is set for a session, not by
+         * it. Individual sessions may override this either way.
+         */
+        allowSelfAuto: z.boolean().default(false),
         placement: z.enum(['pane', 'tab', 'window']).default('pane'),
       })
       .strict()
@@ -378,6 +388,18 @@ export type SessionConfig = z.infer<typeof sessionConfigSchema>;
 export type SpawnTemplate = z.infer<typeof spawnTemplateSchema>;
 export type ConfiguredIntegration = z.infer<typeof configuredIntegrationSchema>;
 export type FederationConfig = z.infer<typeof federationConfigSchema>;
+
+/**
+ * May this session change its own auto stall handling?
+ *
+ * This is the canonical two-level resolution used by every session-overridable
+ * fleet setting: an explicit session value always wins, and its absence — not a
+ * sentinel value — is what falls back to the fleet default. An unregistered
+ * codename has no override and therefore takes the fleet default too.
+ */
+export function allowsSelfAuto(session: SessionConfig | undefined, fleetDefault: boolean): boolean {
+  return session?.allowSelfAuto ?? fleetDefault;
+}
 
 /** Raw parse output — instance-scoped fields may be absent (loader derives them per fleet dir). */
 export type SupervisorConfigInput = z.infer<typeof supervisorConfigSchema>;

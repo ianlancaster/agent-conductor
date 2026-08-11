@@ -11,6 +11,7 @@ import { Lifecycle } from '../src/core/lifecycle.js';
 import { Messaging } from '../src/core/messaging.js';
 import { ConductorOperations } from '../src/core/operations.js';
 import { OperatorRequests } from '../src/core/operator-requests.js';
+import { Rooms } from '../src/core/rooms.js';
 import type { ChannelMessage } from '../src/channels/types.js';
 import { StallSentinelRouter } from '../src/core/sentinel.js';
 import { SessionStateManager } from '../src/core/state.js';
@@ -150,10 +151,22 @@ beforeEach(() => {
   const operations = new ConductorOperations({
     lifecycle,
     messaging,
+    rooms: new Rooms({
+      store,
+      delivery,
+      states,
+      sessions: () => sessions,
+      channelSend: async (message) => {
+        operatorMessages.push(message);
+        return true;
+      },
+      events,
+    }),
     operatorRequests,
     sentinel,
     states,
     sessions: () => sessions,
+    allowsSelfAuto: () => false,
     modelHints: { 'claude-code': [], 'codex': [] },
     effortHints: { 'claude-code': [], 'codex': [] },
     statusReport: (codename) => (codename !== undefined ? `status:${codename}` : 'status:all'),
@@ -411,6 +424,49 @@ describe('conversation commands', () => {
   });
 });
 
+describe('room commands', () => {
+  it('convenes a room, speaks into it, and tears it down', async () => {
+    await router.route('/start alpha');
+    await router.route('/start beta');
+
+    expect(await router.route('/room create standup alpha beta')).toBe(
+      'Room standup created with members: alpha, beta.',
+    );
+    expect(await router.route('/room say standup what changed overnight?')).toBe(
+      'Room standup: delivered to 2 member(s).',
+    );
+    expect(backend.paneFor('alpha')?.received).toContain('[Room: standup from operator] what changed overnight?');
+    expect(await router.route('/room close standup')).toBe('Room standup closed; notified 2 member(s).');
+  });
+
+  it('puts the operator in a room so room traffic reaches the channels', async () => {
+    await router.route('/start alpha');
+    await router.route('/room create standup alpha');
+
+    expect(await router.route('/room join standup')).toBe('The operator joined room standup.');
+    expect(await router.route('/room leave standup')).toBe('The operator left room standup.');
+  });
+
+  it('adds and removes a named session', async () => {
+    await router.route('/room create standup');
+
+    expect(await router.route('/room join standup alpha')).toBe('alpha joined room standup.');
+    expect(JSON.parse(await router.route('/room list standup'))).toEqual({
+      rooms: [{ room: 'standup', members: [{ member: 'alpha', kind: 'session', running: false }] }],
+    });
+    expect(await router.route('/room leave standup alpha')).toBe('alpha left room standup.');
+  });
+
+  it('reports usage for every malformed room subcommand', async () => {
+    expect(await router.route('/room')).toBe('Usage: /room <list|create|join|leave|close|say> ...');
+    expect(await router.route('/room sing standup hello')).toBe('Usage: /room <list|create|join|leave|close|say> ...');
+    expect(await router.route('/room say standup')).toBe('Usage: /room say <name> <message>');
+    expect(await router.route('/room close')).toBe('Usage: /room <list|create|join|leave|close|say> ...');
+    expect(await router.route('/room close standup extra')).toBe('Usage: /room close <name>');
+    expect(await router.route('/room join standup alpha extra')).toBe('Usage: /room join <name> [session]');
+  });
+});
+
 describe('mode commands', () => {
   it('toggles auto for one or all sessions', async () => {
     expect(await router.route('/auto alpha')).toBe('alpha: auto on');
@@ -506,6 +562,8 @@ describe('help', () => {
     expect(help).toContain('/continue <session|all> [-r|--runtime cc|claude-code|codex]');
     expect(help.match(/-e\|--effort level/gu)).toHaveLength(2);
     expect(help).toContain('Conversation:\n  /tell <session> <message> —');
+    expect(help).toContain('/room <list|create|join|leave|close|say> ...');
+    expect(help).toContain('    join <name> [session] · leave <name> [session] — omit session to act as the operator');
     expect(help).toContain('  -P/--pane · -T/--tab · -W/--window\n  -H/--headless — detached tmux pane');
     expect(help).toContain('    -r/--runtime cc|claude-code|codex');
     expect(help).toContain('-e/--effort <level>');

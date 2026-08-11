@@ -108,6 +108,7 @@ version-matched reference; these are the commands used most often:
 | Create a session                          | `/spawn <name> [-r claude-code\|codex] [--path <dir>]`         |
 | Start, resume, or stop it                 | `/start <session>` · `/continue <session>` · `/stop <session>` |
 | Send a message                            | `/tell <session> <message>` · `/broadcast <message>`           |
+| Hold a group conversation                 | `/room create <name> <session...>` · `/room say <name> <msg>`  |
 | Make free text target one session         | `/talk <session>`                                              |
 | Inspect recent terminal output            | `/tail <session> [lines]`                                      |
 | Set or clear a concise status tag         | `/tag <session> [text]`                                        |
@@ -130,6 +131,24 @@ A typical hand-driven session looks like this:
 omitted, the fleet default is used. Claude Code and Codex retain separate native
 conversation histories, so `continue` resumes the history belonging to the selected
 runtime.
+
+When several sessions need one conversation rather than a mesh of direct messages, convene a
+room. Everything said in a room reaches every member, so replies land in front of the whole
+group:
+
+```text
+/room create design-review implementer reviewer
+/room join design-review
+/room say design-review settle the API boundary before implementation starts
+/room list design-review
+/room close design-review
+```
+
+`/room join` with no session name puts the operator in the room, so room traffic reaches the
+console and any connected channel. Rooms broadcast to members that are running and skip members
+that are stopped rather than starting them, and membership changes are informational — agents are
+instructed to treat them as a no-op. Rooms span federated fleets; see
+[Local federation](guides/federation.md).
 
 Messages sent with `/tell` or the agent-facing `send_to_session` operation are signed with
 mechanical sender identity and return observable delivery receipts. `/type` is intentionally
@@ -269,6 +288,7 @@ workflow tradeoffs, and source links.
 | Session lifecycle   | Spawn, start, continue, stop, pause, resume, and tear down agents                         | [Lifecycle and status](docs/agent-guide.md#session-lifecycle-placement-models-and-status)            |
 | Claude Code + Codex | Runtime overrides, model and effort selection, isolated runtime configuration             | [Getting Started](docs/getting-started.md#step-1--one-hand-driven-session-the-shakedown)             |
 | Agent messaging     | Direct messages, broadcasts, operator messages, delivery receipts, and cancellation       | [Communication and receipts](docs/agent-guide.md#communication-receipts-and-operator-escalation)     |
+| Rooms               | Named group conversations across sessions and federated fleets, with the operator present | [Rooms](docs/agent-guide.md#rooms-group-conversation)                                                |
 | Local federation    | Opt-in discovery and existing agent operations across same-machine fleets                 | [Local federation](guides/federation.md)                                                             |
 | Parallel workspaces | Empty sessions, registered Git templates, and linked Git worktrees                        | [Worktrees and templates](docs/agent-guide.md#worktrees-templates-and-full-fleet-workspace-patterns) |
 | Shareable runbooks  | Versioned local workflow knowledge built from ordinary primitives                         | [Authoring and sharing runbooks](guides/runbooks.md)                                                 |

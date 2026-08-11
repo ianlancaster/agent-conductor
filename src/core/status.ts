@@ -28,6 +28,8 @@ export interface StatusDeps {
   effortFor(codename: string): string | undefined;
   sentinelCodename(): string | undefined;
   processObservation(codename: string): ProcessObservation | undefined;
+  /** Resolved fleet default plus any session override. */
+  allowsSelfAuto(codename: string): boolean;
 }
 
 export type RuntimeSettingDefaults = Record<string, string | undefined>;
@@ -106,6 +108,7 @@ export function statusReport(
         model: deps.modelFor(codename) ?? null,
         effort: deps.effortFor(codename) ?? null,
         auto: state.auto,
+        allowSelfAuto: deps.allowsSelfAuto(codename),
         paused: state.paused,
         tag: state.tag ?? null,
         running: state.running,

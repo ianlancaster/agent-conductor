@@ -3,6 +3,7 @@ import type { Lifecycle } from './lifecycle.js';
 import type { Messaging } from './messaging.js';
 import type { MessageReceipt } from './messaging.js';
 import type { OperatorRequests } from './operator-requests.js';
+import type { RoomCaller, Rooms } from './rooms.js';
 import type { StallSentinelRouter } from './sentinel.js';
 import type { SessionStateManager } from './state.js';
 import { InvalidRequestError } from './errors.js';
@@ -26,6 +27,11 @@ export type OperationAudience = 'operator' | 'session';
 export interface RemoteOrigin {
   fleet: string;
   session: string;
+  /**
+   * The role the caller holds in its own fleet. Peer callers are authorized as
+   * peer sessions either way — this only makes the mechanical signature honest.
+   */
+  kind: 'session' | 'operator';
 }
 
 export type OperationActor =
@@ -48,10 +54,13 @@ export interface OperationDefinition {
 export interface ConductorOperationDeps {
   lifecycle: Lifecycle;
   messaging: Messaging;
+  rooms: Rooms;
   operatorRequests: OperatorRequests;
   sentinel: StallSentinelRouter;
   states: SessionStateManager;
   sessions(): Map<string, SessionConfig>;
+  /** Resolved defaults.allowSelfAuto plus any session override, for one codename. */
+  allowsSelfAuto(codename: string): boolean;
   /** Current sessions published to peers. Undefined when federation is disabled. */
   exposedSessions?(): ReadonlySet<string>;
   modelHints: Record<string, readonly string[]>;
@@ -70,6 +79,19 @@ export interface ConductorOperationDeps {
   /** Present only when federation is enabled; keeps discovery absent otherwise. */
   listFederation?(): Promise<FederationListing>;
   runbookAdoptions: RunbookAdoptionActions;
+}
+
+/**
+ * Whether a session may aim one target-taking operation at itself. Self-action
+ * is refused by default because most of these operations are meaningless or
+ * destructive when self-applied (stopping your own process mid-turn, tearing
+ * down your own workspace). Operations whose self-application is a legitimate
+ * fleet choice opt in with a policy.
+ */
+interface SelfTargetPolicy {
+  selfAllowed?(codename: string): boolean;
+  /** Replaces the generic refusal so a policy denial explains itself. */
+  selfDenied?: string;
 }
 
 const BOTH = ['operator', 'session'] as const;
@@ -128,6 +150,33 @@ function placement(args: Record<string, unknown>): Placement | undefined {
 function actorName(actor: OperationActor): string {
   return actor.audience === 'operator' ? 'operator' : actor.codename;
 }
+
+/** Mechanical identity for room membership and envelopes; never taken from arguments. */
+function roomCaller(actor: OperationActor): RoomCaller {
+  if (actor.audience === 'operator') return { name: 'operator', localOperator: true };
+  if (actor.origin !== undefined) {
+    return {
+      name: actor.codename,
+      localOperator: false,
+      remote: { fleet: actor.origin.fleet, kind: actor.origin.kind },
+    };
+  }
+  return { name: actor.codename, localSession: actor.codename, localOperator: false };
+}
+
+const roomProperty: JsonPropertySchema = {
+  type: 'string',
+  minLength: 1,
+  maxLength: 64,
+  description: 'Room name: lowercase letters or digits, then letters, digits, or hyphens',
+};
+
+const roomMembersProperty: JsonPropertySchema = {
+  type: 'array',
+  description: 'Registered session codenames in this fleet to add as the first members',
+  maxItems: 64,
+  items: { type: 'string', minLength: 1 },
+};
 
 function runtimeHintDescription(setting: 'model' | 'effort', hints: Record<string, readonly string[]>): string {
   const runtimeHints = Object.entries(hints)
@@ -230,6 +279,86 @@ export class ConductorOperations {
           this.deps.messaging.broadcast(actorName(actor), requireString(args, 'message'), (codename) =>
             this.isVisible(actor, codename),
           ),
+      },
+      {
+        name: 'create_room',
+        description:
+          'Create a named room for group conversation, optionally adding registered sessions as its first members.',
+        resultDescription: 'Returns whether the room was created and which members were added.',
+        audiences: BOTH,
+        federation: 'local-only',
+        inputSchema: schema({ room: roomProperty, members: roomMembersProperty }, ['room']),
+        handler: (args, actor) =>
+          this.deps.rooms.create(requireString(args, 'room'), optionalStringArray(args, 'members'), roomCaller(actor)),
+      },
+      {
+        name: 'join_room',
+        description:
+          'Add a session to an existing room, or join one yourself by omitting codename. Members receive everything said in the room.',
+        resultDescription: 'Returns the resulting membership, including any federation-exposure caveat.',
+        audiences: BOTH,
+        federation: 'routable',
+        inputSchema: schema(
+          {
+            room: roomProperty,
+            codename: stringProperty(
+              'Session to add; omit to add yourself, or the operator when called by an operator',
+            ),
+          },
+          ['room'],
+        ),
+        handler: (args, actor) =>
+          this.deps.rooms.join(requireString(args, 'room'), optionalString(args, 'codename'), roomCaller(actor)),
+      },
+      {
+        name: 'leave_room',
+        description: 'Remove a session from a room, or leave one yourself by omitting codename.',
+        resultDescription: 'Returns the resulting membership.',
+        audiences: BOTH,
+        federation: 'routable',
+        inputSchema: schema(
+          {
+            room: roomProperty,
+            codename: stringProperty(
+              'Session to remove; omit to remove yourself, or the operator when called by an operator',
+            ),
+          },
+          ['room'],
+        ),
+        handler: (args, actor) =>
+          this.deps.rooms.leave(requireString(args, 'room'), optionalString(args, 'codename'), roomCaller(actor)),
+      },
+      {
+        name: 'close_room',
+        description:
+          'Tear a room down: notify its members and delete it, in every fleet that takes part in the conversation.',
+        resultDescription: 'Returns how many members were notified and which peer fleets were reached.',
+        audiences: BOTH,
+        federation: 'routable',
+        inputSchema: schema({ room: roomProperty }, ['room']),
+        handler: (args, actor) => this.deps.rooms.close(requireString(args, 'room'), roomCaller(actor)),
+      },
+      {
+        name: 'send_to_room',
+        description:
+          'Send a message to every member of a room except you. When you receive a room message, reply here rather than by direct message so the whole room stays in one conversation. Members that are not running are skipped, not started.',
+        resultDescription: 'Returns a delivery summary for the room, including skipped members and peer fleets.',
+        audiences: BOTH,
+        federation: 'routable',
+        signedIdentity: true,
+        inputSchema: schema({ room: roomProperty, message: stringProperty('Message text') }, ['room', 'message']),
+        handler: (args, actor) =>
+          this.deps.rooms.say(requireString(args, 'room'), requireString(args, 'message'), roomCaller(actor)),
+      },
+      {
+        name: 'list_rooms',
+        description:
+          'List rooms and their members, including members that peer fleets publish. Use it to see who is in a conversation before speaking.',
+        resultDescription: 'Returns the local and peer-published room membership as formatted JSON.',
+        audiences: BOTH,
+        federation: 'local-only',
+        inputSchema: schema({ room: { ...roomProperty, description: 'Limit the result to one room' } }),
+        handler: (args) => this.deps.rooms.list(optionalString(args, 'room')),
       },
       {
         name: 'send_to_operator',
@@ -403,7 +532,7 @@ export class ConductorOperations {
         ),
         handler: (args, actor) => {
           const codename = requireString(args, 'codename');
-          this.noSelf(actor, codename, 'tear down');
+          this.guardSelf(actor, codename, 'tear down');
           return this.deps.lifecycle.teardown(codename, args.deleteDir === true);
         },
       },
@@ -451,17 +580,30 @@ export class ConductorOperations {
       },
       {
         name: 'toggle_auto',
-        description: 'Toggle auto stall handling for one session, or all sessions.',
+        description:
+          "Toggle auto stall handling for one session, or all sessions. A session may target itself only when the fleet's defaults.allowSelfAuto, or that session's allowSelfAuto override, permits it.",
         resultDescription: 'Returns the resulting auto state for each targeted session.',
         audiences: BOTH,
         federation: 'routable',
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
-          this.forTargets(args, actor, 'toggle auto for', (codename) => {
-            const auto = this.deps.states.toggleAuto(codename);
-            this.deps.sentinel.resetRouting(codename);
-            return Promise.resolve(`${codename}: auto ${auto ? 'on' : 'off'}`);
-          }),
+          this.forTargets(
+            args,
+            actor,
+            'toggle auto for',
+            (codename) => {
+              const auto = this.deps.states.toggleAuto(codename);
+              this.deps.sentinel.resetRouting(codename);
+              return Promise.resolve(`${codename}: auto ${auto ? 'on' : 'off'}`);
+            },
+            {
+              selfAllowed: (codename) => this.deps.allowsSelfAuto(codename),
+              // State the policy without coaching an agent to grant itself
+              // autonomy by editing the configuration that withholds it.
+              selfDenied:
+                'You cannot toggle auto for yourself: this fleet does not allow this session to set its own auto mode. Ask the operator to change it.',
+            },
+          ),
       },
       {
         name: 'pause_session',
@@ -561,6 +703,7 @@ export class ConductorOperations {
                 runtime: this.deps.lifecycle.runtimeNameFor(actor.codename) ?? null,
                 isSentinel: this.deps.sentinel.isSentinel(actor.codename),
                 auto: state?.auto ?? null,
+                allowSelfAuto: this.deps.allowsSelfAuto(actor.codename),
                 activity: state?.activity ?? null,
                 running: state?.running ?? false,
                 ready: state?.ready ?? false,
@@ -771,10 +914,11 @@ export class ConductorOperations {
     actor: OperationActor,
     verb: string,
     action: (codename: string) => Promise<string>,
+    options: SelfTargetPolicy = {},
   ): Promise<string> {
     const target = requireString(args, 'codename');
     if (target !== 'all') {
-      this.noSelf(actor, target, verb);
+      this.guardSelf(actor, target, verb, options);
       if (!this.isVisible(actor, target) || !this.deps.states.has(target)) return `Unknown session: ${target}`;
       return action(target);
     }
@@ -782,7 +926,7 @@ export class ConductorOperations {
     const results: string[] = [];
     for (const codename of this.deps.sessions().keys()) {
       if (!this.isVisible(actor, codename)) continue;
-      if (actor.audience === 'session' && codename === actor.codename) continue;
+      if (this.isSelf(actor, codename) && !this.selfPermitted(codename, options)) continue;
       results.push(await action(codename));
     }
     return results.join('\n');
@@ -797,9 +941,21 @@ export class ConductorOperations {
     return this.visibleSessions(actor)?.has(codename) ?? true;
   }
 
-  private noSelf(actor: OperationActor, codename: string, verb: string): void {
-    if (actor.audience === 'session' && actor.codename === codename) {
-      throw new InvalidRequestError(`You cannot ${verb} yourself.`);
-    }
+  /**
+   * A remote peer is never "self": `alpha@backend` and a local `alpha` are
+   * different sessions, so a qualified caller keeps the ordinary peer rules.
+   */
+  private isSelf(actor: OperationActor, codename: string): boolean {
+    return actor.audience === 'session' && actor.origin === undefined && actor.codename === codename;
+  }
+
+  private selfPermitted(codename: string, options: SelfTargetPolicy): boolean {
+    return options.selfAllowed?.(codename) ?? false;
+  }
+
+  private guardSelf(actor: OperationActor, codename: string, verb: string, options: SelfTargetPolicy = {}): void {
+    if (!this.isSelf(actor, codename)) return;
+    if (this.selfPermitted(codename, options)) return;
+    throw new InvalidRequestError(options.selfDenied ?? `You cannot ${verb} yourself.`);
   }
 }

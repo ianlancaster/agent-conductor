@@ -13,6 +13,12 @@ export interface FederationRequest {
   arguments: Record<string, unknown>;
   originFleet: string;
   originSession: string;
+  /**
+   * Additive; absent means 'session'. An operator origin carries the operator's
+   * mechanical signature across a room fan-out. It grants no extra authority:
+   * peer callers reach only routable operations and stay exposure-filtered.
+   */
+  originKind?: 'session' | 'operator';
 }
 
 interface FederationResponse {
@@ -35,6 +41,48 @@ export class FederationRouter {
       localFleet: this.localFleet,
       fleets: peers.map((peer) => ({ name: peer.name, sessions: [...peer.sessions].sort() })),
     };
+  }
+
+  /** Re-read the rendezvous directory so a room fan-out targets the live peer set. */
+  async refresh(): Promise<void> {
+    await this.registry.list();
+  }
+
+  /** Room membership peers publish about themselves, excluding this fleet. */
+  peerRooms(): { fleet: string; room: string; members: string[] }[] {
+    return this.registry
+      .snapshot()
+      .filter((peer) => peer.name !== this.localFleet)
+      .flatMap((peer) => peer.rooms.map((room) => ({ fleet: peer.name, room: room.name, members: [...room.members] })));
+  }
+
+  /**
+   * Call one already-identified peer. Used by room fan-out, which has resolved
+   * its destinations from published membership rather than a `fleet` argument.
+   */
+  async invokeOnPeer(
+    fleet: string,
+    operationName: string,
+    args: Record<string, unknown>,
+    origin: { session: string; kind: 'session' | 'operator' },
+  ): Promise<unknown> {
+    const definition = this.operations.definition(operationName);
+    if (!definition?.audiences.includes('session')) {
+      throw new InvalidRequestError(`Unknown session operation: ${operationName}`);
+    }
+    if (definition.federation !== 'routable') {
+      throw new InvalidRequestError(`${operationName} is local-only and cannot be routed to fleet '${fleet}'.`);
+    }
+    const peer = await this.registry.peer(fleet);
+    if (peer === undefined) throw new InvalidRequestError(`Unknown or unavailable federation fleet: ${fleet}`);
+    return this.callPeer(peer, {
+      protocol: FEDERATION_PROTOCOL_VERSION,
+      operation: operationName,
+      arguments: args,
+      originFleet: this.localFleet,
+      originSession: origin.session,
+      ...(origin.kind === 'operator' ? { originKind: 'operator' as const } : {}),
+    });
   }
 
   async invokeFromSession(operationName: string, args: Record<string, unknown>, caller: string): Promise<unknown> {
@@ -89,6 +137,15 @@ export class FederationRouter {
     if (!FEDERATION_NAME_PATTERN.test(request.originFleet)) {
       throw new InvalidRequestError('Invalid federation origin fleet.');
     }
+    const originKind = request.originKind ?? 'session';
+    if (originKind !== 'session' && originKind !== 'operator') {
+      throw new InvalidRequestError('Invalid federation origin kind.');
+    }
+    // Keep the signature unambiguous: an operator origin is spelled exactly one
+    // way, so `operator@fleet` can never be confused with a session codename.
+    if (originKind === 'operator' && request.originSession !== 'operator') {
+      throw new InvalidRequestError("A federation operator origin must use originSession 'operator'.");
+    }
     if (request.originFleet === this.localFleet) {
       throw new InvalidRequestError('Federation origin fleet cannot equal the destination fleet.');
     }
@@ -100,10 +157,12 @@ export class FederationRouter {
     if (definition === undefined || !definition.audiences.includes('session') || definition.federation !== 'routable') {
       throw new InvalidRequestError(`Operation '${request.operation}' is not routable through federation.`);
     }
+    // A peer is always authorized as a peer session, whatever role it holds at
+    // home: routable operations only, and always exposure-filtered.
     const actor: OperationActor = {
       audience: 'session',
       codename: `${request.originSession}@${request.originFleet}`,
-      origin: { fleet: request.originFleet, session: request.originSession },
+      origin: { fleet: request.originFleet, session: request.originSession, kind: originKind },
     };
     return this.operations.invoke(request.operation, request.arguments, actor);
   }

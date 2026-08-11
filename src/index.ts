@@ -10,6 +10,9 @@ export type {
   SupervisorConfig,
 } from './config/schema.js';
 export type { FederationListing } from './federation/types.js';
+export { ROOM_NAME_PATTERN } from './config/schema.js';
+export type { RoomCaller, RoomFederation } from './core/rooms.js';
+export type { RoomMemberKind } from './store/index.js';
 export type { ResolvedInstance } from './config/paths.js';
 export type { PaneRef, Placement } from './core/types.js';
 export { CONDUCTOR_EVENT_TYPES } from './events/types.js';

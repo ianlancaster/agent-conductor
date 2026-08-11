@@ -5,6 +5,7 @@ import { Lifecycle } from '../src/core/lifecycle.js';
 import { Messaging } from '../src/core/messaging.js';
 import { ConductorOperations } from '../src/core/operations.js';
 import { OperatorRequests } from '../src/core/operator-requests.js';
+import { Rooms } from '../src/core/rooms.js';
 import { StallSentinelRouter } from '../src/core/sentinel.js';
 import { SessionStateManager } from '../src/core/state.js';
 import { ConductorMcpServer } from '../src/mcp/server.js';
@@ -119,10 +120,18 @@ beforeEach(async () => {
   const operations = new ConductorOperations({
     lifecycle,
     messaging,
+    rooms: new Rooms({
+      store,
+      delivery,
+      states,
+      sessions: () => sessions,
+      channelSend: async () => true,
+    }),
     operatorRequests,
     sentinel,
     states,
     sessions: () => sessions,
+    allowsSelfAuto: () => false,
     modelHints: { 'claude-code': [], 'codex': [] },
     effortHints: { 'claude-code': [], 'codex': [] },
     statusReport: () => '',

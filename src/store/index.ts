@@ -20,7 +20,8 @@ export interface MessageRow {
   id: number;
   sender: string;
   recipient: string;
-  type: 'message' | 'broadcast';
+  /** `room` rows record one fan-out utterance; the recipient column holds the room name. */
+  type: 'message' | 'broadcast' | 'room';
   content: string;
   status: 'pending' | 'delivered' | 'cancelled';
   idempotency_key: string | null;
@@ -71,6 +72,22 @@ export interface OperatorRequestRow {
   resolvedAt: string | null;
 }
 
+/** A room member is either one local session or this fleet's operator. */
+export type RoomMemberKind = 'session' | 'operator';
+
+export interface RoomMemberRow {
+  room: string;
+  kind: RoomMemberKind;
+  member: string;
+  joined_at: string;
+}
+
+export interface RoomRow {
+  room: string;
+  created_at: string;
+  members: RoomMemberRow[];
+}
+
 export interface RunbookAdoptionSessionRole {
   codename: string;
   role: string;
@@ -106,8 +123,13 @@ function normalizedActivity(value: string): Activity {
   return 'stopped';
 }
 
-/** Versioned migrations. Append only — never edit an existing entry (post first release). */
-const MIGRATIONS: string[] = [
+/**
+ * Versioned migrations. Append only — never edit an existing entry (post first release).
+ *
+ * Exported so tests can build a genuine older schema from a prefix rather than
+ * rewinding `user_version` and re-running migrations that are not idempotent.
+ */
+export const MIGRATIONS: string[] = [
   `
   CREATE TABLE runs (
     id TEXT PRIMARY KEY,
@@ -280,6 +302,21 @@ const MIGRATIONS: string[] = [
   DROP TABLE IF EXISTS federation_inbox;
   DROP TABLE IF EXISTS federation_outbox;
   `,
+  `
+  CREATE TABLE rooms (
+    room TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE room_members (
+    room TEXT NOT NULL REFERENCES rooms(room) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('session', 'operator')),
+    member TEXT NOT NULL,
+    joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (room, kind, member)
+  );
+  CREATE INDEX idx_room_members_member ON room_members(kind, member);
+  `,
 ];
 
 export class Store {
@@ -435,6 +472,70 @@ export class Store {
         )
         .run();
       return pending;
+    });
+  }
+
+  // ── rooms ─────────────────────────────────────────────────────────────────
+
+  /** Returns false when the room already existed, so convening stays idempotent. */
+  createRoom(room: string): boolean {
+    return this.db.prepare('INSERT OR IGNORE INTO rooms (room) VALUES (?)').run(room).changes === 1;
+  }
+
+  hasRoom(room: string): boolean {
+    return this.db.prepare('SELECT 1 FROM rooms WHERE room = ?').get(room) !== undefined;
+  }
+
+  /** Deletes the room and, through the foreign key, its membership. */
+  deleteRoom(room: string): boolean {
+    return this.db.prepare('DELETE FROM rooms WHERE room = ?').run(room).changes === 1;
+  }
+
+  /** Returns false when the member was already present. */
+  addRoomMember(room: string, kind: RoomMemberKind, member: string): boolean {
+    return (
+      this.db
+        .prepare('INSERT OR IGNORE INTO room_members (room, kind, member) VALUES (?, ?, ?)')
+        .run(room, kind, member).changes === 1
+    );
+  }
+
+  removeRoomMember(room: string, kind: RoomMemberKind, member: string): boolean {
+    return (
+      this.db.prepare('DELETE FROM room_members WHERE room = ? AND kind = ? AND member = ?').run(room, kind, member)
+        .changes === 1
+    );
+  }
+
+  getRoomMembers(room: string): RoomMemberRow[] {
+    return this.db
+      .prepare('SELECT room, kind, member, joined_at FROM room_members WHERE room = ? ORDER BY kind, member')
+      .all(room) as unknown as RoomMemberRow[];
+  }
+
+  getRoom(room: string): RoomRow | undefined {
+    const row = this.db.prepare('SELECT room, created_at FROM rooms WHERE room = ?').get(room) as
+      { room: string; created_at: string } | undefined;
+    if (row === undefined) return undefined;
+    return { room: row.room, created_at: row.created_at, members: this.getRoomMembers(row.room) };
+  }
+
+  getRooms(): RoomRow[] {
+    const rows = this.db.prepare('SELECT room, created_at FROM rooms ORDER BY room').all() as {
+      room: string;
+      created_at: string;
+    }[];
+    return rows.map((row) => ({ room: row.room, created_at: row.created_at, members: this.getRoomMembers(row.room) }));
+  }
+
+  /** Drop one session from every room it belongs to; used when a session is deregistered. */
+  removeSessionFromRooms(codename: string): string[] {
+    return withTransaction(this.db, () => {
+      const rooms = this.db
+        .prepare("SELECT room FROM room_members WHERE kind = 'session' AND member = ? ORDER BY room")
+        .all(codename) as { room: string }[];
+      this.db.prepare("DELETE FROM room_members WHERE kind = 'session' AND member = ?").run(codename);
+      return rooms.map((row) => row.room);
     });
   }
 

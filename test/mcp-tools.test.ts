@@ -9,6 +9,7 @@ import { Lifecycle } from '../src/core/lifecycle.js';
 import { Messaging } from '../src/core/messaging.js';
 import { ConductorOperations } from '../src/core/operations.js';
 import { OperatorRequests } from '../src/core/operator-requests.js';
+import { Rooms } from '../src/core/rooms.js';
 import { StallSentinelRouter } from '../src/core/sentinel.js';
 import { SessionStateManager } from '../src/core/state.js';
 import { statusReport } from '../src/core/status.js';
@@ -25,6 +26,8 @@ let tools: McpToolDefinition[];
 let sentinel: StallSentinelRouter;
 let operations: ConductorOperations;
 let runtime: FakeRuntime;
+/** Sessions this fleet permits to set their own auto mode. */
+let selfAutoSessions: Set<string>;
 
 function tool(name: string): McpToolDefinition {
   const found = tools.find((t) => t.name === name);
@@ -41,6 +44,7 @@ beforeEach(() => {
   const backend = new FakeTerminalBackend();
   runtime = new FakeRuntime();
   states = new SessionStateManager(store, false);
+  selfAutoSessions = new Set<string>();
   sessions = new Map([
     ['alpha', sessionConfig('alpha')],
     ['beta', sessionConfig('beta')],
@@ -111,10 +115,21 @@ beforeEach(() => {
   operations = new ConductorOperations({
     lifecycle,
     messaging,
+    rooms: new Rooms({
+      store,
+      delivery,
+      states,
+      sessions: () => sessions,
+      channelSend: async () => true,
+    }),
     operatorRequests,
     sentinel,
     states,
     sessions: () => sessions,
+    allowsSelfAuto: (codename) => selfAutoSessions.has(codename),
+    // Model a federated fleet exposing its whole roster, so peer-origin actors
+    // exercise the real visibility path instead of an empty exposure set.
+    exposedSessions: () => new Set(sessions.keys()),
     modelHints: { 'claude-code': ['claude-test'], 'codex': ['codex-test', 'custom-provider/model'] },
     effortHints: { 'claude-code': ['low', 'max'], 'codex': ['minimal', 'xhigh', 'ultra'] },
     statusReport: (c) =>
@@ -127,6 +142,7 @@ beforeEach(() => {
           effortFor: (n) => states.get(n)?.effort ?? sessions.get(n)?.effort,
           sentinelCodename: () => sentinel.sentinelCodename(),
           processObservation: (n) => lifecycle.processObservation(n),
+          allowsSelfAuto: (n) => selfAutoSessions.has(n),
         },
         c,
       ),
@@ -168,12 +184,16 @@ describe('surface contract', () => {
       [
         'broadcast',
         'cancel_message',
+        'close_room',
         'continue_session',
         'get_message_status',
         'get_session_status',
+        'join_room',
+        'leave_room',
         'list_sessions',
         'pause_session',
         'resume_session',
+        'send_to_room',
         'send_to_session',
         'set_tag',
         'start_session',
@@ -189,7 +209,9 @@ describe('surface contract', () => {
         .sort(),
     ).toEqual(
       [
+        'create_room',
         'get_conductor_docs',
+        'list_rooms',
         'send_to_operator',
         'set_sentinel',
         'spawn_session',
@@ -557,6 +579,75 @@ describe('surface contract', () => {
 
 afterEach(() => {
   store.close();
+});
+
+describe('self-targeted auto mode', () => {
+  const DENIED = /this fleet does not allow this session to set its own auto mode/u;
+
+  it('refuses a session that targets its own auto mode by default', async () => {
+    await expect(tool('toggle_auto').handler({ codename: 'alpha' }, 'alpha')).rejects.toThrow(DENIED);
+    expect(states.isAuto('alpha')).toBe(false);
+  });
+
+  it('lets a permitted session turn its own auto mode on and off', async () => {
+    selfAutoSessions.add('alpha');
+    expect(await tool('toggle_auto').handler({ codename: 'alpha' }, 'alpha')).toBe('alpha: auto on');
+    expect(states.isAuto('alpha')).toBe(true);
+    expect(await tool('toggle_auto').handler({ codename: 'alpha' }, 'alpha')).toBe('alpha: auto off');
+    expect(states.isAuto('alpha')).toBe(false);
+  });
+
+  it('resolves the permission per session rather than fleet-wide', async () => {
+    selfAutoSessions.add('alpha');
+    await expect(tool('toggle_auto').handler({ codename: 'beta' }, 'beta')).rejects.toThrow(DENIED);
+    expect(states.isAuto('beta')).toBe(false);
+  });
+
+  it("includes a permitted session in its own 'all' sweep and keeps skipping a denied one", async () => {
+    expect(await tool('toggle_auto').handler({ codename: 'all' }, 'alpha')).toBe('beta: auto on\nwatch: auto on');
+    expect(states.isAuto('alpha')).toBe(false);
+
+    selfAutoSessions.add('alpha');
+    expect(await tool('toggle_auto').handler({ codename: 'all' }, 'alpha')).toBe(
+      'alpha: auto on\nbeta: auto off\nwatch: auto off',
+    );
+    expect(states.isAuto('alpha')).toBe(true);
+  });
+
+  it('does not leak the permission into any other self-targeted operation', async () => {
+    selfAutoSessions.add('alpha');
+    for (const operation of ['start_session', 'stop_session', 'continue_session', 'pause_session', 'resume_session']) {
+      await expect(tool(operation).handler({ codename: 'alpha' }, 'alpha'), operation).rejects.toThrow(
+        /^You cannot .+ yourself\.$/u,
+      );
+    }
+    await expect(tool('teardown_session').handler({ codename: 'alpha' }, 'alpha')).rejects.toThrow(
+      'You cannot tear down yourself.',
+    );
+  });
+
+  it('never treats a federated peer sharing a codename as self', async () => {
+    await expect(
+      operations.invoke(
+        'toggle_auto',
+        { codename: 'alpha' },
+        {
+          audience: 'session',
+          codename: 'alpha@backend',
+          origin: { fleet: 'backend', session: 'alpha', kind: 'session' },
+        },
+      ),
+    ).resolves.toBe('alpha: auto on');
+  });
+
+  it('reports the resolved policy through whoami and session status', async () => {
+    expect(await tool('whoami').handler({}, 'alpha')).toContain('"allowSelfAuto": false');
+    expect(await tool('get_session_status').handler({ codename: 'alpha' }, 'beta')).toContain('"allowSelfAuto": false');
+
+    selfAutoSessions.add('alpha');
+    expect(await tool('whoami').handler({}, 'alpha')).toContain('"allowSelfAuto": true');
+    expect(await tool('get_session_status').handler({ codename: 'alpha' }, 'beta')).toContain('"allowSelfAuto": true');
+  });
 });
 
 describe('whoami', () => {

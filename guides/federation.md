@@ -106,6 +106,7 @@ lookup never falls back to a same-named local session.
 Federation reuses these existing session operations:
 
 - messaging: `send_to_session`, `broadcast`, `get_message_status`, `cancel_message`;
+- rooms: `join_room`, `leave_room`, `send_to_room`, `close_room`;
 - observation: `list_sessions`, `get_session_status`, `tail_session`;
 - lifecycle: `start_session`, `continue_session`, `stop_session`; and
 - modes and metadata: `pause_session`, `resume_session`, `toggle_auto`, `set_tag`.
@@ -116,8 +117,48 @@ therefore cannot infer or affect unexposed sessions through aggregate operations
 
 The following tools remain local-only because routing them would add authority or distributed
 machinery beyond this primitive: `spawn_session`, `teardown_session`, `type_in_pane`,
-`send_to_operator`, `set_sentinel`, `toggle_fleet_watch`, `whoami`, `get_conductor_docs`, and
-`list_federation`. Operator commands remain local to the operator's selected instance.
+`send_to_operator`, `set_sentinel`, `toggle_fleet_watch`, `whoami`, `get_conductor_docs`,
+`create_room`, `list_rooms`, and `list_federation`. `create_room` and `list_rooms` are local-only
+for a narrower reason: a routed `join_room` already creates the room it needs at the destination,
+and a room listing is federation-wide before it is routed anywhere.
+
+Operator commands remain local to the operator's selected instance, with one deliberate exception
+described under [Rooms across fleets](#rooms-across-fleets).
+
+## Rooms across fleets
+
+A room is a named group conversation. Cross-fleet rooms are decentralized: each fleet owns its own
+members and publishes them in its own registry record, so a room name shared by two participating
+fleets is one conversation. There is no host fleet, no room owner, and no shared database.
+
+Add a remote member by routing the membership call, then speak normally:
+
+```json
+join_room({ "fleet": "backend", "room": "design-review", "codename": "api" })
+send_to_room({ "room": "design-review", "message": "Both sides please confirm the contract." })
+```
+
+The speaker's Conductor delivers to its own members and then calls each participating fleet
+directly. A peer-originated room call acts on that fleet's local members only and is never routed
+onward, so **a room message crosses at most one fleet boundary**. That keeps the topology loop-free
+without message identity, deduplication tables, or a time-to-live, and it preserves the same
+non-transitive property discovery has. A fleet that cannot be reached is reported in the result;
+room traffic is a broadcast, so nothing is retried or queued for it.
+
+Exposure governs cross-fleet participation. Only federation-exposed sessions are published as room
+members and only they receive peer-originated room traffic; an unexposed member takes part in its
+own fleet's local room traffic and stays invisible to peers, and `join_room` says so when that
+applies. `close_room` tears the room down in every participating fleet.
+
+Peer records gained an additive `rooms` field for this. A record written by an older peer has no
+such field, contributes no room members, and is otherwise fully compatible — the federation
+protocol version is unchanged.
+
+Room fan-out is the one place a Conductor acts across fleets on the operator's behalf, so
+`/room say` and `/room close` reach remote members. Those calls carry an explicit operator origin
+and a remote member sees `operator@<fleet>`. This grants no additional authority: a peer-originated
+call is authorized as a peer session whatever role it holds at home, so it still reaches only
+routable operations and is still exposure-filtered. Every other operator command remains local.
 
 If an agent needs a remote operator decision, it should message an exposed peer session and let
 that session compose a local `send_to_operator` request. Federation does not hold an HTTP call open
@@ -188,6 +229,13 @@ same-directory instances may stay isolated.
 5. Confirm each operator `/status` contains its federation name, exposed roster, and peer count.
 6. From a managed session, call `list_federation`, send one cross-fleet message, and inspect its
    receipt with the destination fleet argument.
+7. In the frontend console, run `/room create shakedown <local session>`, then have that session
+   call `join_room` with `fleet: "backend"` for an exposed backend session.
+8. Run `/room list shakedown` in both consoles and confirm each shows the other fleet's member.
+9. Run `/room say shakedown hello` from frontend and confirm the backend member receives
+   `[Room: shakedown from operator@frontend]`.
+10. Run `/room close shakedown` and confirm both fleets report the room gone and each member
+    received one closure notice.
 
 ## Limitations and troubleshooting
 
