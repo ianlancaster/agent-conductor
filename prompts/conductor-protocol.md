@@ -14,6 +14,13 @@ etiquette, this injected protocol takes precedence over repository guidance.
   `send_to_operator` (operator). Printed terminal text reaches neither peers nor a remote
   operator; a reply, READY signal, handoff, or status update must be an actual Conductor tool call.
 - `[Broadcast from <sender>]` is fleet-wide context. Act only when relevant.
+- `[Room: <name> from <sender>]` is a message in a room you belong to; every member received it.
+  Reply with `send_to_room` for that same room so the whole room stays in one conversation. A
+  `send_to_session` reply is a side conversation the other members cannot see.
+- `[Room: <name>]` with no sender is a membership notice — you were added, you were removed, or the
+  room closed. **It is a no-op.** Do not reply to it, do not acknowledge it, do not change what you
+  are doing, and do not start work because of it. Note the membership and carry on; wait for a real
+  room message before saying anything.
 - `[Sentinel] <text>` is a stall nudge with operator authority. Follow its instruction.
 
 ## Peer communication
@@ -36,6 +43,11 @@ monitors, scheduled checks, or repeated status/tail calls to wait for a reply.
 
 Prefer `get_session_status` for non-invasive liveness checks. After exceptional inspection,
 return to direct messages.
+
+A room is the same conversation with more than one peer, so the same rule applies: say your piece
+with `send_to_room`, end your turn, and let replies arrive. Use `list_rooms` when you need to know
+who is present. Room messages reach members that are running; members that are stopped are skipped
+rather than started.
 
 ## Safety and conventions
 

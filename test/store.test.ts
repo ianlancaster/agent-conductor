@@ -2,10 +2,16 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { exportEventJournalJsonl, Store } from '../src/store/index.js';
+import { exportEventJournalJsonl, MIGRATIONS, Store } from '../src/store/index.js';
 import { ConductorEventBus } from '../src/events/bus.js';
-import { openSqliteDatabase } from '../src/store/sqlite.js';
+import { applyMigrations, openSqliteDatabase } from '../src/store/sqlite.js';
 import { evaluateEventJsonl } from './fakes/fake-event-evaluator.js';
+
+/** Prefix lengths that reproduce the schema immediately before a specific migration. */
+const STALLED_ACTIVITY_MIGRATION = MIGRATIONS.findIndex((migration) => migration.includes("activity = 'stalled'"));
+const REVERTED_FEDERATION_MIGRATION = MIGRATIONS.findIndex((migration) =>
+  migration.includes('DROP TABLE IF EXISTS federation_outbox'),
+);
 
 let store: Store;
 
@@ -366,23 +372,15 @@ describe('session state', () => {
   it('normalizes the retired stalled activity when opening the preceding beta schema', () => {
     const dir = mkdtempSync(join(tmpdir(), 'conductor-activity-migration-'));
     const dbPath = join(dir, 'conductor.db');
-    const seeded = new Store(dbPath);
-    seeded.upsertSessionState({
-      session: 'alpha',
-      auto: false,
-      tag: null,
-      paused: false,
-      activeRuntime: 'codex',
-      activeEffort: null,
-      activity: 'idle',
-    });
-    seeded.close();
 
+    // Build the real schema as of the release before the activity migration, so
+    // appending a later migration cannot invalidate this fixture.
     const legacy = openSqliteDatabase(dbPath);
-    const versionRow = legacy.prepare('PRAGMA user_version').get() as { user_version: number };
-    const currentVersion = versionRow.user_version;
-    legacy.exec("UPDATE session_state SET activity = 'stalled' WHERE session = 'alpha'");
-    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 1)}`);
+    applyMigrations(legacy, MIGRATIONS.slice(0, STALLED_ACTIVITY_MIGRATION));
+    legacy.exec(
+      'INSERT INTO session_state (session, auto, tag, is_paused, active_runtime, active_effort, activity) ' +
+        "VALUES ('alpha', 0, NULL, 0, 'codex', NULL, 'stalled')",
+    );
     legacy.close();
 
     const migrated = new Store(dbPath);
@@ -394,17 +392,14 @@ describe('session state', () => {
   it('removes tables left by the reverted federation experiment', () => {
     const dir = mkdtempSync(join(tmpdir(), 'conductor-reverted-schema-migration-'));
     const dbPath = join(dir, 'conductor.db');
-    const seeded = new Store(dbPath);
-    seeded.close();
 
     const legacy = openSqliteDatabase(dbPath);
-    const versionRow = legacy.prepare('PRAGMA user_version').get() as { user_version: number };
-    legacy.exec(`
-      CREATE TABLE federation_outbox (message_id TEXT PRIMARY KEY);
-      CREATE TABLE federation_inbox (message_id TEXT PRIMARY KEY);
-      PRAGMA user_version = ${String(versionRow.user_version - 1)};
-    `);
+    applyMigrations(legacy, MIGRATIONS.slice(0, REVERTED_FEDERATION_MIGRATION));
+    const seeded = legacy
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'federation_%'")
+      .all() as { name: string }[];
     legacy.close();
+    expect(seeded.map((table) => table.name).sort()).toEqual(['federation_inbox', 'federation_outbox']);
 
     const migrated = new Store(dbPath);
     migrated.close();
@@ -416,6 +411,56 @@ describe('session state', () => {
     inspected.close();
     rmSync(dir, { recursive: true, force: true });
     expect(tables).toEqual([]);
+  });
+});
+
+describe('rooms', () => {
+  it('creates a room idempotently and keeps operator membership distinct from a session codename', () => {
+    expect(store.createRoom('design-review')).toBe(true);
+    expect(store.createRoom('design-review')).toBe(false);
+
+    expect(store.addRoomMember('design-review', 'session', 'operator')).toBe(true);
+    expect(store.addRoomMember('design-review', 'operator', 'operator')).toBe(true);
+    expect(store.addRoomMember('design-review', 'operator', 'operator')).toBe(false);
+
+    expect(store.getRoomMembers('design-review')).toEqual([
+      expect.objectContaining({ kind: 'operator', member: 'operator' }),
+      expect.objectContaining({ kind: 'session', member: 'operator' }),
+    ]);
+  });
+
+  it('deletes membership with the room through the foreign key', () => {
+    store.createRoom('design-review');
+    store.addRoomMember('design-review', 'session', 'alpha');
+
+    expect(store.deleteRoom('design-review')).toBe(true);
+    expect(store.hasRoom('design-review')).toBe(false);
+    expect(store.getRoomMembers('design-review')).toEqual([]);
+    expect(store.deleteRoom('design-review')).toBe(false);
+  });
+
+  it('removes one session from every room and reports which rooms changed', () => {
+    for (const room of ['design-review', 'planning', 'unrelated']) store.createRoom(room);
+    store.addRoomMember('design-review', 'session', 'alpha');
+    store.addRoomMember('planning', 'session', 'alpha');
+    store.addRoomMember('planning', 'session', 'beta');
+    store.addRoomMember('unrelated', 'session', 'beta');
+
+    expect(store.removeSessionFromRooms('alpha')).toEqual(['design-review', 'planning']);
+    expect(store.getRooms().map((room) => [room.room, room.members.map((member) => member.member)])).toEqual([
+      ['design-review', []],
+      ['planning', ['beta']],
+      ['unrelated', ['beta']],
+    ]);
+    expect(store.removeSessionFromRooms('alpha')).toEqual([]);
+  });
+
+  it('keeps room utterances out of direct-message recovery and stall diagnostics', () => {
+    store.insertMessage('alpha', 'design-review', 'room', 'hello room');
+    store.insertMessage('alpha', 'beta', 'message', 'a direct message');
+
+    expect(store.getPendingMessages().map((row) => row.recipient)).toEqual(['beta']);
+    expect(store.getRecentMessageActivity('alpha').map((row) => row.recipient)).toEqual(['beta']);
   });
 });
 

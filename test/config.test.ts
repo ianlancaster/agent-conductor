@@ -13,6 +13,7 @@ import {
   validateFederationExposure,
 } from '../src/config/loader.js';
 import { resolveConductorInstance, resolveFleetPaths } from '../src/config/paths.js';
+import { allowsSelfAuto } from '../src/config/schema.js';
 import { ConfigWatcher } from '../src/config/watcher.js';
 import {
   DEFAULT_CLAUDE_CODE_EFFORTS,
@@ -57,6 +58,7 @@ describe('loadSupervisorConfig', () => {
     expect(config.defaults.auto).toBe(false);
     expect(config.defaults.runtime).toBe('claude-code');
     expect(config.defaults.bypassPermissions).toBe(true);
+    expect(config.defaults.allowSelfAuto).toBe(false);
     expect(config.health.fleetStallConfirmMs).toBe(15_000);
     expect(config.terminal.iterm.badge).toBe(true);
     expect(config.runtimes.claudeCode.binary).toBe('claude');
@@ -319,6 +321,8 @@ describe('loadSupervisorConfig', () => {
   it('allows the fleet permission bypass default to be disabled', () => {
     writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'defaults:\n  bypassPermissions: false\n');
     expect(loadSupervisorConfig(baseDir).defaults.bypassPermissions).toBe(false);
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'defaults:\n  allowSelfAuto: true\n');
+    expect(loadSupervisorConfig(baseDir).defaults.allowSelfAuto).toBe(true);
   });
 
   it('accepts replacement model-hint lists without restricting model IDs', () => {
@@ -393,6 +397,25 @@ describe('loadSessionConfigs', () => {
     expect(alpha?.repo).toBe(join(baseDir, 'alpha-repo'));
     expect(alpha?.runtime).toBe('claude-code');
     expect(alpha?.schedules).toEqual([]);
+  });
+
+  it('resolves the self-auto policy from the session first and the fleet default second', () => {
+    writeSession('inherits', 'codename: inherits\nrepo: /tmp/inherits\n');
+    writeSession('grants', 'codename: grants\nrepo: /tmp/grants\nallowSelfAuto: true\n');
+    writeSession('withholds', 'codename: withholds\nrepo: /tmp/withholds\nallowSelfAuto: false\n');
+    const sessions = loadSessionConfigs(baseDir);
+
+    expect(sessions.get('inherits')?.allowSelfAuto).toBeUndefined();
+    expect(allowsSelfAuto(sessions.get('inherits'), false)).toBe(false);
+    expect(allowsSelfAuto(sessions.get('inherits'), true)).toBe(true);
+
+    // An explicit session value wins in both directions, so a fleet can open the
+    // policy and still withhold it from one session.
+    expect(allowsSelfAuto(sessions.get('grants'), false)).toBe(true);
+    expect(allowsSelfAuto(sessions.get('withholds'), true)).toBe(false);
+
+    // An unregistered codename has no override and takes the fleet default.
+    expect(allowsSelfAuto(undefined, true)).toBe(true);
   });
 
   it('keeps absolute repo paths untouched', () => {

@@ -12,7 +12,7 @@ import {
   validateFederationExposure,
 } from '../config/loader.js';
 import { resolveConductorInstance, resolveFleetDataDir, type ResolvedInstance } from '../config/paths.js';
-import type { SessionConfig, SupervisorConfig } from '../config/schema.js';
+import { allowsSelfAuto, type SessionConfig, type SupervisorConfig } from '../config/schema.js';
 import { ConfigWatcher } from '../config/watcher.js';
 import { initLogger, log } from '../logger.js';
 import { ConductorMcpServer } from '../mcp/server.js';
@@ -40,6 +40,7 @@ import { FleetLock } from './lock.js';
 import { Messaging } from './messaging.js';
 import { ConductorOperations } from './operations.js';
 import { OperatorRequests } from './operator-requests.js';
+import { Rooms } from './rooms.js';
 import { RunbookAdoptions } from './runbook-adoptions.js';
 import { StallSentinelRouter } from './sentinel.js';
 import { SessionStateManager } from './state.js';
@@ -104,6 +105,7 @@ export class Supervisor {
   private readonly health: HealthMonitor;
   private readonly sentinel: StallSentinelRouter;
   private readonly messaging: Messaging;
+  private readonly rooms: Rooms;
   private readonly operations: ConductorOperations;
   private readonly federationRegistry: FederationRegistry | undefined;
   private readonly federationRouter: FederationRouter | undefined;
@@ -161,6 +163,7 @@ export class Supervisor {
             host: this.config.mcp.host,
             port: this.config.mcp.port,
             sessions: () => [...this.exposedSessions()],
+            rooms: () => this.rooms.publishedRooms(),
             ...(options.federationDirectory === undefined ? {} : { directory: options.federationDirectory }),
             // Rendezvous follows the launching user environment. A fleet-local
             // .env must not silently put one peer in a different registry.
@@ -344,6 +347,27 @@ export class Supervisor {
       startSession: (codename, opts) => this.lifecycle.start(codename, opts),
       events: this.eventBus,
     });
+    this.rooms = new Rooms({
+      store: this.store,
+      delivery: this.delivery,
+      states: this.states,
+      sessions: () => this.sessions,
+      channelSend: (message) => this.channelSend(message),
+      ...(this.federationRegistry === undefined ? {} : { exposedSessions: () => this.exposedSessions() }),
+      onMembershipChanged: () =>
+        this.federationRegistry?.update().catch((error: unknown) => {
+          // A record that cannot be republished leaves peers with a stale view;
+          // it must not fail the membership change the operator just made.
+          log().warn(
+            'federation',
+            `Could not publish room membership: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }),
+      events: this.eventBus,
+      // Resolved lazily: the federation router is constructed after the
+      // operations registry, which in turn depends on this module.
+      federation: () => this.federationRouter,
+    });
     this.integrations = new IntegrationManager({
       integrations: options.integrations,
       dataDir,
@@ -428,10 +452,12 @@ export class Supervisor {
     this.operations = new ConductorOperations({
       lifecycle: this.lifecycle,
       messaging: this.messaging,
+      rooms: this.rooms,
       operatorRequests: this.operatorRequests,
       sentinel: this.sentinel,
       states: this.states,
       sessions: () => this.sessions,
+      allowsSelfAuto: (codename) => this.allowsSelfAuto(codename),
       ...(this.federationRegistry === undefined ? {} : { exposedSessions: () => this.exposedSessions() }),
       modelHints: {
         'claude-code': this.config.runtimes.claudeCode.availableModels,
@@ -717,6 +743,7 @@ export class Supervisor {
         effortFor: (name) => this.displayEffortFor(name),
         sentinelCodename: () => this.sentinel.sentinelCodename(),
         processObservation: (name) => this.lifecycle.processObservation(name),
+        allowsSelfAuto: (name) => this.allowsSelfAuto(name),
       },
       codename,
       { shepherdRecipient: this.shepherd.recipientSession() },
@@ -1017,6 +1044,7 @@ export class Supervisor {
       } else {
         log().info('supervisor', `Session deregistered: ${codename}`);
         this.states.deregister(codename);
+        this.rooms.removeSession(codename);
         this.eventBus.emit({
           type: 'session.deregistered',
           session: codename,
@@ -1033,6 +1061,15 @@ export class Supervisor {
         `Could not update exposed roster: ${error instanceof Error ? error.message : String(error)}`,
       );
     });
+  }
+
+  /**
+   * Single resolution point for the session-overridable self-auto policy, so
+   * the operation guard, `whoami`, and session status can never disagree about
+   * what this fleet actually allows.
+   */
+  private allowsSelfAuto(codename: string): boolean {
+    return allowsSelfAuto(this.sessions.get(codename), this.config.defaults.allowSelfAuto);
   }
 
   private exposedSessions(): ReadonlySet<string> {

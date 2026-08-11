@@ -3,6 +3,8 @@ codename: alpha
 repo: ../my-project # absolute, or relative to the conductor directory
 runtime: claude-code # default
 # bypassPermissions: false # optional override of defaults.bypassPermissions
+# allowSelfAuto: true # optional override of defaults.allowSelfAuto; lets this session
+# call toggle_auto on itself. Takes effect on the next config reload — no restart.
 model: claude-opus-4-8 # optional; falls back to runtimes.claudeCode.defaultModel, then the CLI default
 # effort: xhigh # optional; falls back to runtimes.claudeCode.defaultEffort, then the CLI default
 additionalDirs:

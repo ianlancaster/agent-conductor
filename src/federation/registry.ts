@@ -3,9 +3,15 @@ import { access, mkdir, readFile, readdir, rename, unlink, writeFile } from 'nod
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { log } from '../logger.js';
-import { CODENAME_PATTERN, FEDERATION_NAME_PATTERN } from '../config/schema.js';
+import { CODENAME_PATTERN, FEDERATION_NAME_PATTERN, ROOM_NAME_PATTERN } from '../config/schema.js';
 
 export const FEDERATION_PROTOCOL_VERSION = 1;
+
+/** Exposed session members this fleet contributes to one shared room. */
+export interface FederationRoomRecord {
+  name: string;
+  members: string[];
+}
 
 export interface FederationPeerRecord {
   name: string;
@@ -14,6 +20,11 @@ export interface FederationPeerRecord {
   pid: number;
   protocol: number;
   sessions: string[];
+  /**
+   * Additive since the rooms feature. Absent in records written by older peers,
+   * which simply contribute no room members — so no protocol bump is needed.
+   */
+  rooms: FederationRoomRecord[];
 }
 
 export interface FederationRegistryOptions {
@@ -21,6 +32,8 @@ export interface FederationRegistryOptions {
   host: string;
   port: number;
   sessions(): readonly string[];
+  /** Exposed room membership published to peers. Omitted when the fleet has no rooms. */
+  rooms?(): readonly FederationRoomRecord[];
   /** Deterministic test/embedding seam; production resolves XDG-or-home. */
   directory?: string;
   env?: NodeJS.ProcessEnv;
@@ -37,9 +50,32 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+/** Returns [] for an absent field and undefined for a malformed one, which invalidates the record. */
+function parseRooms(value: unknown): FederationRoomRecord[] | undefined {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return undefined;
+  const rooms: FederationRoomRecord[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined;
+    const room = entry as Partial<FederationRoomRecord>;
+    if (
+      typeof room.name !== 'string' ||
+      !ROOM_NAME_PATTERN.test(room.name) ||
+      !Array.isArray(room.members) ||
+      room.members.some((member) => typeof member !== 'string' || !CODENAME_PATTERN.test(member))
+    ) {
+      return undefined;
+    }
+    rooms.push({ name: room.name, members: [...new Set(room.members)].sort() });
+  }
+  return rooms.sort((left, right) => left.name.localeCompare(right.name));
+}
+
 function parseRecord(raw: string): FederationPeerRecord | undefined {
   try {
     const value = JSON.parse(raw) as Partial<FederationPeerRecord>;
+    const rooms = parseRooms(value.rooms);
+    if (rooms === undefined) return undefined;
     if (
       typeof value.name !== 'string' ||
       !FEDERATION_NAME_PATTERN.test(value.name) ||
@@ -66,6 +102,7 @@ function parseRecord(raw: string): FederationPeerRecord | undefined {
       pid: value.pid,
       protocol: value.protocol,
       sessions: [...new Set(value.sessions)].sort(),
+      rooms,
     };
   } catch {
     return undefined;
@@ -170,7 +207,11 @@ export class FederationRegistry {
   }
 
   snapshot(): FederationPeerRecord[] {
-    return this.snapshotRecords.map((record) => ({ ...record, sessions: [...record.sessions] }));
+    return this.snapshotRecords.map((record) => ({
+      ...record,
+      sessions: [...record.sessions],
+      rooms: record.rooms.map((room) => ({ name: room.name, members: [...room.members] })),
+    }));
   }
 
   async peer(name: string): Promise<FederationPeerRecord | undefined> {
@@ -193,6 +234,9 @@ export class FederationRegistry {
       pid: this.pid,
       protocol: FEDERATION_PROTOCOL_VERSION,
       sessions: [...new Set(this.options.sessions())].sort(),
+      rooms: (this.options.rooms?.() ?? [])
+        .map((room) => ({ name: room.name, members: [...new Set(room.members)].sort() }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
     };
   }
 

@@ -107,6 +107,10 @@ describe('ConductorEventBus', () => {
       'message.created',
       'message.delivered',
       'message.cancelled',
+      'room.created',
+      'room.closed',
+      'room.membership.changed',
+      'room.message',
       'workspace.provisioned',
       'workspace.removed',
     ]);

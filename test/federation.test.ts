@@ -301,7 +301,37 @@ describe('local Conductor federation', () => {
       status: 400,
       body: { ok: false, invalid: true },
     });
-    for (const operation of ['get_conductor_docs', 'list_federation', 'send_to_operator', 'whoami']) {
+    // An operator origin has exactly one spelling, so `operator@fleet` can never
+    // be forged from, or confused with, an ordinary session codename.
+    await expect(
+      federationPost(backendPort, { ...baseRequest, originKind: 'operator', originSession: 'alpha' }),
+    ).resolves.toMatchObject({
+      status: 400,
+      body: { ok: false, invalid: true, error: "A federation operator origin must use originSession 'operator'." },
+    });
+    await expect(federationPost(backendPort, { ...baseRequest, originKind: 'admin' })).resolves.toMatchObject({
+      status: 400,
+      body: { ok: false, invalid: true, error: 'Invalid federation origin kind.' },
+    });
+    // A remote operator is still authorized as a peer session: routable
+    // operations only, and still exposure-filtered.
+    await expect(
+      federationPost(backendPort, {
+        ...baseRequest,
+        operation: 'send_to_operator',
+        originKind: 'operator',
+        originSession: 'operator',
+        arguments: { message: 'should not cross' },
+      }),
+    ).resolves.toMatchObject({ status: 400, body: { ok: false, invalid: true } });
+    for (const operation of [
+      'create_room',
+      'get_conductor_docs',
+      'list_federation',
+      'list_rooms',
+      'send_to_operator',
+      'whoami',
+    ]) {
       await expect(federationPost(backendPort, { ...baseRequest, operation })).resolves.toMatchObject({
         status: 400,
         body: { ok: false, invalid: true },
@@ -322,6 +352,100 @@ describe('local Conductor federation', () => {
     });
     const ordinaryPayload = (await ordinary.json()) as RpcResponse;
     expect(ordinaryPayload.result?.content?.[0]?.text).toContain('"codename": "alpha"');
+  });
+
+  it('holds one room conversation across two fleets without relaying or exposing hidden sessions', async () => {
+    const frontendDir = join(root, 'room-frontend');
+    const backendDir = join(root, 'room-backend');
+    const frontendPort = await freePort();
+    const backendPort = await freePort();
+    writeFleet(frontendDir, frontendPort, 'frontend', ['alpha'], ['alpha', 'local']);
+    writeFleet(backendDir, backendPort, 'backend', ['beta'], ['beta', 'secret']);
+
+    const frontendTerminal = new FakeTerminalBackend();
+    const backendTerminal = new FakeTerminalBackend();
+    const frontend = new Supervisor(frontendDir, {
+      terminalBackend: frontendTerminal,
+      runtimes: [new FakeRuntime('claude-code')],
+      includeConfiguredChannels: false,
+      federationDirectory: registryDir,
+      env: {},
+    });
+    const backend = new Supervisor(backendDir, {
+      terminalBackend: backendTerminal,
+      runtimes: [new FakeRuntime('claude-code')],
+      includeConfiguredChannels: false,
+      federationDirectory: registryDir,
+      env: {},
+    });
+    supervisors.push(frontend, backend);
+    await frontend.start();
+    await backend.start();
+
+    await call(frontendPort, 'local', 'start_session', { codename: 'alpha' });
+    await call(backendPort, 'secret', 'start_session', { codename: 'beta' });
+    await call(backendPort, 'beta', 'start_session', { codename: 'secret' });
+
+    await call(frontendPort, 'alpha', 'create_room', { room: 'design' });
+    await call(frontendPort, 'alpha', 'join_room', { room: 'design' });
+
+    // A routed join creates the room it needs at the destination; create_room
+    // itself never federates.
+    const remoteJoin = await call(frontendPort, 'alpha', 'join_room', {
+      fleet: 'backend',
+      room: 'design',
+      codename: 'beta',
+    });
+    expect(remoteJoin.result?.content?.[0]?.text).toBe('beta joined room design.');
+    expect(backendTerminal.paneFor('beta')?.received.join('\n')).toContain(
+      'No action required — this notice is informational.',
+    );
+
+    const hiddenJoin = await call(frontendPort, 'alpha', 'join_room', {
+      fleet: 'backend',
+      room: 'design',
+      codename: 'secret',
+    });
+    expect(hiddenJoin.result?.content?.[0]?.text).toBe('Unknown session: secret');
+
+    const listed = JSON.parse(
+      (await call(frontendPort, 'alpha', 'list_rooms', { room: 'design' })).result?.content?.[0]?.text ?? '{}',
+    ) as { rooms: { room: string; members: { member: string; fleet?: string }[] }[] };
+    expect(listed.rooms[0]?.members.map((member) => `${member.member}@${member.fleet ?? '?'}`)).toEqual([
+      'alpha@frontend',
+      'beta@backend',
+    ]);
+
+    const said = await call(frontendPort, 'alpha', 'send_to_room', {
+      room: 'design',
+      message: 'confirm the API contract',
+    });
+    expect(said.result?.content?.[0]?.text).toBe(
+      'Room design: delivered to 0 member(s). Routed to 1 peer fleet(s): backend.',
+    );
+    expect(backendTerminal.paneFor('beta')?.received.join('\n')).toContain(
+      '[Room: design from alpha@frontend] confirm the API contract',
+    );
+    // The peer fans out locally only: an unexposed session is never reached,
+    // and nothing is relayed back to the originating fleet.
+    expect(backendTerminal.paneFor('secret')?.received.join('\n')).not.toContain('confirm the API contract');
+    expect(frontendTerminal.paneFor('alpha')?.received.join('\n')).not.toContain('confirm the API contract');
+
+    const replied = await call(backendPort, 'beta', 'send_to_room', { room: 'design', message: 'contract confirmed' });
+    expect(replied.result?.content?.[0]?.text).toContain('Routed to 1 peer fleet(s): frontend.');
+    expect(frontendTerminal.paneFor('alpha')?.received.join('\n')).toContain(
+      '[Room: design from beta@backend] contract confirmed',
+    );
+
+    const closed = await call(frontendPort, 'alpha', 'close_room', { room: 'design' });
+    expect(closed.result?.content?.[0]?.text).toContain('Routed to 1 peer fleet(s): backend.');
+    expect(backendTerminal.paneFor('beta')?.received.join('\n')).toContain(
+      '[Room: design] Room closed by alpha@frontend.',
+    );
+    const afterClose = JSON.parse(
+      (await call(backendPort, 'beta', 'list_rooms', {})).result?.content?.[0]?.text ?? '{}',
+    ) as { rooms: unknown[] };
+    expect(afterClose.rooms).toEqual([]);
   });
 
   it('decorates only routable tools and rejects unknown fleets without local fallback', async () => {
@@ -350,6 +474,10 @@ describe('local Conductor federation', () => {
     expect(tools.get('whoami')?.inputSchema.properties).not.toHaveProperty('fleet');
     expect(tools.get('send_to_operator')?.inputSchema.properties).not.toHaveProperty('fleet');
     expect(tools.get('list_federation')?.inputSchema.properties).not.toHaveProperty('fleet');
+    expect(tools.get('send_to_room')?.inputSchema.properties).toHaveProperty('fleet');
+    expect(tools.get('join_room')?.inputSchema.properties).toHaveProperty('fleet');
+    expect(tools.get('create_room')?.inputSchema.properties).not.toHaveProperty('fleet');
+    expect(tools.get('list_rooms')?.inputSchema.properties).not.toHaveProperty('fleet');
 
     const unknown = await call(port, 'alpha', 'stop_session', { fleet: 'missing', codename: 'alpha' });
     expect(unknown.error).toEqual({ code: -32602, message: 'Unknown or unavailable federation fleet: missing' });
@@ -357,6 +485,12 @@ describe('local Conductor federation', () => {
 
     const localOnly = await call(port, 'alpha', 'whoami', { fleet: 'solo' });
     expect(localOnly.error?.message).toContain("Unknown argument 'fleet'");
+
+    // Naming your own fleet routes locally, so it cannot launder a self-targeted
+    // operation past the guard that refuses it.
+    const selfViaOwnFleet = await call(port, 'alpha', 'toggle_auto', { fleet: 'solo', codename: 'alpha' });
+    expect(selfViaOwnFleet.error?.message).toContain('does not allow this session to set its own auto mode');
+    expect(supervisor.statusReport('alpha')).toContain('"auto": false');
 
     const qualifiedTarget = await call(port, 'alpha', 'send_to_session', {
       codename: 'beta@backend',

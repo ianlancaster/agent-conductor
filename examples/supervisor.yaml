@@ -83,6 +83,10 @@ defaults:
   runtime: claude-code # built-ins: claude-code | codex; embedding hosts may register more
   # Bypass runtime approval prompts and sandbox restrictions. Session files can override.
   bypassPermissions: true
+  # May a session turn its own auto stall handling on or off? Off keeps supervision
+  # policy something set for a session rather than by it. Session files can override
+  # this either way, so one self-managing agent does not require opening the fleet.
+  allowSelfAuto: false
   placement: pane # pane | tab | window
 
 mcp:

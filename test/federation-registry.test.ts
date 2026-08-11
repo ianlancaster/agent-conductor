@@ -20,12 +20,17 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function registry(name: string, sessions: string[] = ['beta']): FederationRegistry {
+function registry(
+  name: string,
+  sessions: string[] = ['beta'],
+  rooms: FederationPeerRecord['rooms'] = [],
+): FederationRegistry {
   return new FederationRegistry({
     name,
     host: '127.0.0.1',
     port: 3456,
     sessions: () => sessions,
+    rooms: () => rooms,
     directory: registryDir,
   });
 }
@@ -38,6 +43,7 @@ function record(overrides: Partial<FederationPeerRecord> = {}): FederationPeerRe
     pid: process.pid,
     protocol: FEDERATION_PROTOCOL_VERSION,
     sessions: ['reviewer'],
+    rooms: [],
     ...overrides,
   };
 }
@@ -49,7 +55,7 @@ describe('FederationRegistry', () => {
     await first.claim();
 
     const published = JSON.parse(readFileSync(join(registryDir, 'frontend.json'), 'utf8')) as Record<string, unknown>;
-    expect(Object.keys(published).sort()).toEqual(['host', 'name', 'pid', 'port', 'protocol', 'sessions']);
+    expect(Object.keys(published).sort()).toEqual(['host', 'name', 'pid', 'port', 'protocol', 'rooms', 'sessions']);
     expect(JSON.stringify(published)).not.toContain(root);
 
     await expect(second.claim()).rejects.toThrow(/already registered by live process/);
@@ -61,6 +67,7 @@ describe('FederationRegistry', () => {
         pid: process.pid,
         protocol: FEDERATION_PROTOCOL_VERSION,
         sessions: ['beta'],
+        rooms: [],
       },
     ]);
 
@@ -79,6 +86,35 @@ describe('FederationRegistry', () => {
     expect((await active.list()).map((peer) => peer.name)).toEqual(['frontend']);
     expect(existsSync(join(registryDir, 'backend.json'))).toBe(false);
     expect(existsSync(join(registryDir, 'broken.json'))).toBe(false);
+    await active.release();
+  });
+
+  it('publishes room membership and stays compatible with a peer that predates rooms', async () => {
+    const active = registry('frontend', ['alpha'], [{ name: 'design-review', members: ['beta', 'alpha', 'alpha'] }]);
+    await active.claim();
+    // A record written before the rooms feature has no `rooms` field at all; it
+    // must still parse and simply contribute no members.
+    const { rooms: _omitted, ...legacy } = record();
+    writeFileSync(join(registryDir, 'backend.json'), `${JSON.stringify(legacy)}\n`);
+
+    const peers = await active.list();
+    expect(peers.find((peer) => peer.name === 'frontend')?.rooms).toEqual([
+      { name: 'design-review', members: ['alpha', 'beta'] },
+    ]);
+    expect(peers.find((peer) => peer.name === 'backend')?.rooms).toEqual([]);
+    await active.release();
+  });
+
+  it('rejects a record whose room membership is malformed', async () => {
+    const active = registry('frontend');
+    await active.claim();
+    writeFileSync(
+      join(registryDir, 'backend.json'),
+      `${JSON.stringify(record({ rooms: [{ name: 'Design Review', members: ['beta'] }] }))}\n`,
+    );
+
+    expect((await active.list()).map((peer) => peer.name)).toEqual(['frontend']);
+    expect(existsSync(join(registryDir, 'backend.json'))).toBe(false);
     await active.release();
   });
 

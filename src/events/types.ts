@@ -22,6 +22,10 @@ export const CONDUCTOR_EVENT_TYPES = [
   'message.created',
   'message.delivered',
   'message.cancelled',
+  'room.created',
+  'room.closed',
+  'room.membership.changed',
+  'room.message',
   'workspace.provisioned',
   'workspace.removed',
 ] as const;
@@ -152,6 +156,30 @@ export type ConductorEvent = ConductorEventEnvelope &
         readonly sender: string;
         readonly recipient: string;
         readonly reason: 'requested' | 'conductor-restarted';
+      }
+    | { readonly type: 'room.created'; readonly room: string; readonly by: string }
+    | {
+        readonly type: 'room.closed';
+        readonly room: string;
+        readonly by: string;
+        /** Local members notified before teardown. */
+        readonly memberCount: number;
+      }
+    | {
+        readonly type: 'room.membership.changed';
+        readonly room: string;
+        readonly member: string;
+        readonly kind: 'session' | 'operator';
+        readonly change: 'joined' | 'left';
+        readonly by: string;
+      }
+    | {
+        readonly type: 'room.message';
+        readonly room: string;
+        readonly sender: string;
+        /** Local members the fan-out reached; peer fleets are counted separately. */
+        readonly recipientCount: number;
+        readonly byteCount: number;
       }
     | {
         readonly type: 'workspace.provisioned';
