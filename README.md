@@ -79,7 +79,18 @@ configuration paths. It will guide you through a minimal manual session before o
 automation, remote channels, or other optional features.
 
 Run `conductor doctor` whenever you want an actionable environment and configuration
-check. The console opened by `conductor start` owns its Conductor process, so `Ctrl+C`
+check. A Git-source installation can be safely refreshed with `conductor update`: it fetches the
+source remote, fast-forwards only when history is unambiguous, rebuilds and verifies the package,
+refreshes the global CLI link, and migrates the selected fleet database. Run it from the fleet
+directory (or pass `-C`) while that fleet's Conductor is stopped. Dirty, detached, or diverged
+source is never rewritten automatically.
+
+On startup, a behind database is migrated before the supervisor child launches. If the database
+is newer than the loaded binary, Conductor attempts that same safe source refresh and restarts
+under the rebuilt CLI; when the source cannot be updated without choosing a merge or rebase, startup
+stops with the exact schema mismatch and remediation instead of hiding it in the child log.
+
+The console opened by `conductor start` owns its Conductor process, so `Ctrl+C`
 stops it. Use `conductor console` only when you intentionally want an additional,
 non-owning console. If a crashed or forcibly closed owning console leaves its process behind,
 run `conductor kill` from the fleet directory; it stops only that fleet's recorded Conductor and

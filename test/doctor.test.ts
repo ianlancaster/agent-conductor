@@ -12,6 +12,8 @@ import {
 } from '../src/cli/doctor.js';
 import { ensureFleetScaffold } from '../src/cli/scaffold.js';
 import { eventJournalDegradedPath } from '../src/events/journal.js';
+import { openSqliteDatabase } from '../src/store/sqlite.js';
+import { STORE_SCHEMA_VERSION } from '../src/store/schema-version.js';
 
 let baseDir: string;
 
@@ -95,6 +97,30 @@ describe('conductor doctor', () => {
     expect(journal?.detail).not.toContain('{}');
     expect(journal?.detail).toContain(eventJournalDegradedPath(dataDir));
     expect(journal?.detail).toContain('remove');
+  });
+
+  it('reports behind and ahead fleet database schemas without mutating them', async () => {
+    const databasePath = join(baseDir, '.conductor', 'data', 'conductor.db');
+    const database = openSqliteDatabase(databasePath);
+    database.exec(`PRAGMA user_version = ${String(STORE_SCHEMA_VERSION - 1)}`);
+    database.close();
+
+    const behind = await runPreflight(baseDir, dependencies());
+    expect(behind).toContainEqual({
+      level: 'warn',
+      label: 'Database schema',
+      detail: `version ${String(STORE_SCHEMA_VERSION - 1)} will migrate forward to ${String(STORE_SCHEMA_VERSION)} on start or update`,
+    });
+
+    const aheadDatabase = openSqliteDatabase(databasePath);
+    aheadDatabase.exec(`PRAGMA user_version = ${String(STORE_SCHEMA_VERSION + 1)}`);
+    aheadDatabase.close();
+    const ahead = await runPreflight(baseDir, dependencies());
+    expect(ahead).toContainEqual({
+      level: 'fail',
+      label: 'Database schema',
+      detail: `version ${String(STORE_SCHEMA_VERSION + 1)} is newer than this Conductor's supported version ${String(STORE_SCHEMA_VERSION)}; run conductor update`,
+    });
   });
 
   it('reports unsupported Node and malformed config as blockers', async () => {

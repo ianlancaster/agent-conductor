@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { exportEventJournalJsonl, MIGRATIONS, Store } from '../src/store/index.js';
+import { exportEventJournalJsonl, MIGRATIONS, STORE_SCHEMA_VERSION, Store } from '../src/store/index.js';
 import { ConductorEventBus } from '../src/events/bus.js';
 import { applyMigrations, openSqliteDatabase } from '../src/store/sqlite.js';
 import { evaluateEventJsonl } from './fakes/fake-event-evaluator.js';
@@ -12,6 +12,8 @@ const STALLED_ACTIVITY_MIGRATION = MIGRATIONS.findIndex((migration) => migration
 const REVERTED_FEDERATION_MIGRATION = MIGRATIONS.findIndex((migration) =>
   migration.includes('DROP TABLE IF EXISTS federation_outbox'),
 );
+
+expect(MIGRATIONS).toHaveLength(STORE_SCHEMA_VERSION);
 
 let store: Store;
 

@@ -86,6 +86,11 @@ pnpm add --global .
 conductor --help
 ```
 
+Once a clean source change is committed, `conductor update` performs the fetch, safe-history check,
+locked install, build, package verification, global link refresh, and selected fleet migration as
+one operation. It deliberately refuses dirty or diverged feature branches rather than choosing a
+merge or rebase policy for the contributor.
+
 The global link usually needs to be created only once per checkout, but running both commands
 is the reliable refresh after a pull, a new checkout, or changes to package/bin metadata.
 Rebuilding does not update a process that is already running; restart the intended fleet

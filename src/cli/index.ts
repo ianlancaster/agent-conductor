@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, openSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
@@ -11,7 +11,8 @@ import { Command } from 'commander';
 import { validateConfig, loadSupervisorConfig } from '../config/loader.js';
 import { resolveConductorInstance, resolveFleetDataDir } from '../config/paths.js';
 import { Supervisor } from '../core/supervisor.js';
-import { exportEventJournalJsonl, Store } from '../store/index.js';
+import { exportEventJournalJsonl, migrateStoreDatabase, STORE_SCHEMA_VERSION, Store } from '../store/index.js';
+import { readDatabaseSchemaVersion } from '../store/sqlite.js';
 import { PACKAGE_VERSION } from '../version.js';
 import { configuredRunbookRegistry } from '../runbooks/registry.js';
 import { initializeRunbook, validateRunbookPath } from '../runbooks/authoring.js';
@@ -24,6 +25,7 @@ import { ensureFleetScaffold } from './scaffold.js';
 import { DEFAULT_STATUS_INTERVAL, parseStatusInterval, runStatusDashboard } from './live-status.js';
 import { configureStatusLines } from './statusline.js';
 import { formatTerminalReply } from './terminal-format.js';
+import { updateSourceInstallation } from './update.js';
 
 const program = new Command();
 const interactionId = randomUUID();
@@ -97,6 +99,63 @@ async function conductorUp(base: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function fleetConfigurationAvailable(): boolean {
+  return existsSync(resolvedInstance().paths.supervisorFile);
+}
+
+function fleetDatabase(): { path: string; url: string } {
+  const config = loadSupervisorConfig(resolvedInstance());
+  return {
+    path: join(resolveFleetDataDir(baseDir(), config.paths.dataDir), 'conductor.db'),
+    url: `http://${config.mcp.host}:${config.mcp.port}`,
+  };
+}
+
+async function runUpdatedCli(): Promise<number> {
+  return await new Promise((resolveExit, reject) => {
+    const child = spawn(process.execPath, [join(PACKAGE_ROOT, 'dist', 'cli', 'index.js'), ...process.argv.slice(2)], {
+      stdio: 'inherit',
+    });
+    child.once('error', reject);
+    child.once('close', (status) => resolveExit(status ?? 1));
+  });
+}
+
+/** Migrate behind schemas and replace this process after a safe source repair. */
+async function prepareDatabaseForStart(): Promise<boolean> {
+  const database = fleetDatabase();
+  const version = readDatabaseSchemaVersion(database.path);
+  if (version === null) return false;
+  if (version < STORE_SCHEMA_VERSION) {
+    migrateStoreDatabase(database.path);
+    log(`Migrated database schema ${String(version)} → ${String(STORE_SCHEMA_VERSION)}.`);
+    return false;
+  }
+  if (version === STORE_SCHEMA_VERSION) return false;
+
+  log(
+    `Database schema ${String(version)} is newer than this Conductor's supported version ${String(STORE_SCHEMA_VERSION)}; attempting a safe source update.`,
+  );
+  try {
+    await updateSourceInstallation({
+      packageRoot: PACKAGE_ROOT,
+      fleetDir: baseDir(),
+      instance: instanceName(),
+      requiredSchemaVersion: version,
+      automatic: true,
+      fleetRunning: () => conductorUp(database.url),
+      log,
+    });
+  } catch (error) {
+    throw new Error(
+      `Database schema version ${String(version)} is newer than supported version ${String(STORE_SCHEMA_VERSION)}, and automatic update was not safe: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  log('Conductor updated; restarting start with the new binary.');
+  process.exitCode = await runUpdatedCli();
+  return true;
 }
 
 /** POST one command line to a running conductor's /cmd endpoint. */
@@ -265,6 +324,50 @@ program
   });
 
 program
+  .command('update')
+  .description('Safely refresh a Git-source installation, global CLI link, and selected fleet schema')
+  .action(async () => {
+    let fleetDir: string | undefined;
+    let requiredSchemaVersion: number | undefined;
+    let running: (() => Promise<boolean>) | undefined;
+    if (fleetConfigurationAvailable()) {
+      const database = fleetDatabase();
+      fleetDir = baseDir();
+      requiredSchemaVersion = readDatabaseSchemaVersion(database.path) ?? undefined;
+      running = () => conductorUp(database.url);
+    } else {
+      log('No fleet configuration is selected; the CLI will update without creating or migrating a fleet.');
+    }
+
+    const updated = await updateSourceInstallation({
+      packageRoot: PACKAGE_ROOT,
+      fleetDir,
+      instance: instanceName(),
+      requiredSchemaVersion,
+      fleetRunning: running,
+      log,
+    });
+    log(
+      `Conductor is current at ${updated.branch}@${updated.commit} (database schema ${String(updated.schemaVersion)}${updated.migratedFleet ? '; selected fleet synchronized' : ''}).`,
+    );
+  });
+
+program
+  .command('_migrate', { hidden: true })
+  .description('Internal: migrate the selected fleet database')
+  .action(() => {
+    if (!fleetConfigurationAvailable()) return;
+    const database = fleetDatabase();
+    const before = readDatabaseSchemaVersion(database.path);
+    migrateStoreDatabase(database.path);
+    log(
+      before === null
+        ? `Initialized database schema ${String(STORE_SCHEMA_VERSION)}.`
+        : `Database schema ${String(before)} → ${String(STORE_SCHEMA_VERSION)}.`,
+    );
+  });
+
+program
   .command('start')
   .description('Initialize missing fleet files, launch the conductor, and open the operator console')
   .option('-a, --start-all', 'Start every configured session immediately')
@@ -288,6 +391,8 @@ program
         );
       }
     }
+
+    if (await prepareDatabaseForStart()) return;
 
     const checks = await runPreflight(baseDir(), {}, instanceName());
     const failures = preflightFailures(checks);

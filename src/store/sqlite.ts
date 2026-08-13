@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -72,6 +72,22 @@ export function openSqliteDatabaseReadOnly(dbPath: string): DatabaseSync {
   } catch (error) {
     db.close();
     throw error;
+  }
+}
+
+/** Read an existing fleet database's migration level without changing it. */
+export function readDatabaseSchemaVersion(dbPath: string): number | null {
+  if (!existsSync(dbPath)) return null;
+  const db = openSqliteDatabaseReadOnly(dbPath);
+  try {
+    const row = db.prepare('PRAGMA user_version').get() as { user_version?: unknown } | undefined;
+    const version = row?.user_version;
+    if (typeof version !== 'number' || !Number.isInteger(version) || version < 0) {
+      throw new Error('SQLite returned an invalid user_version.');
+    }
+    return version;
+  } finally {
+    db.close();
   }
 }
 

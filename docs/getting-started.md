@@ -42,6 +42,22 @@ conductor doctor
 
 Failures block startup and include remediation. Warnings identify actionable configuration or
 environment concerns, such as an unselected runtime or daemon installation from a source checkout.
+The report also shows the selected fleet database's schema level. `conductor start` migrates a
+behind database before launching the supervisor, so migration errors appear directly in the
+terminal. If the database is ahead of the loaded binary, startup tries a safe source update and
+restarts with the rebuilt CLI; it never downgrades the database or invents a merge/rebase.
+
+For a Conductor installed from a Git checkout, refresh the source, compiled global command, and
+selected fleet schema together while the fleet is stopped:
+
+```bash
+conductor update
+```
+
+The command requires a clean attached branch. It fetches `origin`, rebuilds the current branch
+when it already contains the latest default branch, or performs an unambiguous fast-forward. A
+diverged feature branch is left untouched with an instruction to integrate the remote default
+manually. Release-tarball installations should continue to use their package manager to update.
 
 When using the iTerm2 backend, macOS may request Automation permission the first time your terminal
 controls iTerm2. Grant that permission in the system prompt or in Privacy & Security settings. This
@@ -443,6 +459,7 @@ snapshot. Piped or redirected status output is automatically one-shot.
 | Symptom                                                 | Likely cause                                                                                                       |
 | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `command not found: conductor`                          | Install the GitHub release tarball globally; then confirm its bin directory is on PATH                             |
+| Database schema is newer than the loaded Conductor      | Stop the fleet and run `conductor update`; integrate the named remote branch manually if source history diverged   |
 | `conductor validate` says OK but nothing is configured  | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                                                   |
 | Pane never launches / hangs on start                    | `claude`/`codex` not on PATH, or bad `repo:` path                                                                  |
 | Start/continue rejects `systemPromptFile`               | Fix the reported path, permissions, UTF-8 encoding, file type, or 5 KiB size limit                                 |

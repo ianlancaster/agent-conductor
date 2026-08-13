@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
-import { applyMigrations, openSqliteDatabase, withTransaction } from '../src/store/sqlite.js';
+import {
+  applyMigrations,
+  openSqliteDatabase,
+  readDatabaseSchemaVersion,
+  withTransaction,
+} from '../src/store/sqlite.js';
 
 const tempDirs: string[] = [];
 
@@ -83,6 +88,12 @@ describe('SQLite support', () => {
     applyMigrations(reopened, migrations);
     expect(reopened.prepare('SELECT value FROM migrated').get()).toMatchObject({ value: 'ready' });
     reopened.close();
+    expect(readDatabaseSchemaVersion(dbPath)).toBe(2);
+  });
+
+  it('reports a missing database without creating it', () => {
+    const dbPath = tempDatabase();
+    expect(readDatabaseSchemaVersion(dbPath)).toBeNull();
   });
 
   it('does not advance user_version when a migration fails', () => {

@@ -7,6 +7,8 @@ import { resolveConductorInstance, resolveFleetDataDir } from '../config/paths.j
 import { assertShepherdProfileReady } from '../shepherd/config.js';
 import { eventJournalDegradedPath } from '../events/journal.js';
 import { resolveConfiguredIntegrations } from '../integrations/configured.js';
+import { STORE_SCHEMA_VERSION } from '../store/schema-version.js';
+import { readDatabaseSchemaVersion } from '../store/sqlite.js';
 
 export type PreflightLevel = 'pass' | 'warn' | 'fail';
 
@@ -179,6 +181,34 @@ export async function runPreflight(
         ? result('pass', label, path)
         : result('fail', label, `${path} is not writable; correct its ownership or permissions`),
     );
+  }
+
+  const databasePath = resolve(dataDir, 'conductor.db');
+  try {
+    const databaseVersion = readDatabaseSchemaVersion(databasePath);
+    results.push(
+      databaseVersion === null
+        ? result(
+            'pass',
+            'Database schema',
+            `not created yet; start will initialize version ${String(STORE_SCHEMA_VERSION)}`,
+          )
+        : databaseVersion > STORE_SCHEMA_VERSION
+          ? result(
+              'fail',
+              'Database schema',
+              `version ${String(databaseVersion)} is newer than this Conductor's supported version ${String(STORE_SCHEMA_VERSION)}; run conductor update`,
+            )
+          : databaseVersion < STORE_SCHEMA_VERSION
+            ? result(
+                'warn',
+                'Database schema',
+                `version ${String(databaseVersion)} will migrate forward to ${String(STORE_SCHEMA_VERSION)} on start or update`,
+              )
+            : result('pass', 'Database schema', `version ${String(databaseVersion)} is current`),
+    );
+  } catch (error) {
+    results.push(result('fail', 'Database schema', error instanceof Error ? error.message : String(error)));
   }
 
   if (!loaded.supervisor.events.journal.enabled) {

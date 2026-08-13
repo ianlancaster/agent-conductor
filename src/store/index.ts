@@ -4,6 +4,9 @@ import type { Activity } from '../core/types.js';
 import type { ConductorEvent } from '../events/types.js';
 import type { RunbookSource } from '../runbooks/types.js';
 import { applyMigrations, openSqliteDatabase, openSqliteDatabaseReadOnly, withTransaction } from './sqlite.js';
+import { STORE_SCHEMA_VERSION } from './schema-version.js';
+
+export { STORE_SCHEMA_VERSION } from './schema-version.js';
 
 /** One launch of a session's CLI (start → stop). A session has many runs over time. */
 export interface RunRow {
@@ -318,6 +321,19 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX idx_room_members_member ON room_members(kind, member);
   `,
 ];
+
+if (MIGRATIONS.length !== STORE_SCHEMA_VERSION) {
+  throw new Error(
+    `Store migration count ${String(MIGRATIONS.length)} does not match declared schema version ${String(STORE_SCHEMA_VERSION)}.`,
+  );
+}
+
+/** Apply every supported forward migration and return the resulting version. */
+export function migrateStoreDatabase(dbPath: string): number {
+  const store = new Store(dbPath);
+  store.close();
+  return STORE_SCHEMA_VERSION;
+}
 
 export class Store {
   private readonly db: DatabaseSync;
