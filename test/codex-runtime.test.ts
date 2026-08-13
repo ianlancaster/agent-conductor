@@ -222,6 +222,16 @@ describe('buildLaunchCommand', () => {
     expect(cmd).not.toContain(' -- ');
   });
 
+  it('pins the native Codex command string without wrapper exports', () => {
+    expect(runtime.buildLaunchCommand(makeSession(), identity, {})).toBe(
+      `cd '/repos/sample' && export CODEX_HOME='/cfg/sample/codex-home' && 'codex' ` +
+        `-c 'mcp_servers.conductor.url="http://127.0.0.1:3456/mcp/sample"' ` +
+        `-c 'mcp_servers.conductor.tool_timeout_sec=600' ` +
+        `-c 'notify=["/bin/sh","/cfg/sample/notify.sh"]' ` +
+        `-c 'disable_paste_burst=true'`,
+    );
+  });
+
   it('uses resume --last when continuing a session', () => {
     const cmd = runtime.buildLaunchCommand(makeSession(), identity, {
       continueSession: true,

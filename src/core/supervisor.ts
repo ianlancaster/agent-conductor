@@ -19,6 +19,7 @@ import { ConductorMcpServer } from '../mcp/server.js';
 import { buildMcpTools } from '../mcp/tools.js';
 import { ClaudeCodeRuntime } from '../runtimes/claude-code/index.js';
 import { CodexRuntime } from '../runtimes/codex/index.js';
+import { SpartanRuntime } from '../runtimes/spartan/index.js';
 import type { SessionRuntime } from '../runtimes/types.js';
 import { Store } from '../store/index.js';
 import { ITermBackend } from '../terminals/iterm/index.js';
@@ -187,6 +188,17 @@ export class Supervisor {
         sessionDataDir: join(dataDir, 'sessions'),
       }),
     );
+    this.runtimes.set(
+      'spartan',
+      new SpartanRuntime({
+        config: this.config.runtimes.spartan,
+        codexConfig: this.config.runtimes.codex,
+        baseDir,
+        protocolPath,
+        sessionDataDir: join(dataDir, 'sessions'),
+        env: this.env,
+      }),
+    );
     const injectedRuntimeNames = new Set<string>();
     for (const runtime of options.runtimes ?? []) {
       const name = runtime.name.trim();
@@ -307,12 +319,14 @@ export class Supervisor {
         defaultModels: {
           'claude-code': this.config.runtimes.claudeCode.defaultModel,
           'codex': this.config.runtimes.codex.defaultModel,
+          'spartan': this.config.runtimes.codex.defaultModel,
         },
         defaultEfforts: {
           'claude-code':
             this.config.runtimes.claudeCode.defaultEffort ??
             this.config.runtimes.claudeCode.env.CLAUDE_CODE_EFFORT_LEVEL,
           'codex': this.config.runtimes.codex.defaultEffort,
+          'spartan': this.config.runtimes.codex.defaultEffort,
         },
         defaultBypassPermissions: this.config.defaults.bypassPermissions,
         markerFile: this.config.spawn.markerFile,
@@ -462,11 +476,13 @@ export class Supervisor {
       modelHints: {
         'claude-code': this.config.runtimes.claudeCode.availableModels,
         'codex': this.config.runtimes.codex.availableModels,
+        'spartan': this.config.runtimes.codex.availableModels,
         ...Object.fromEntries([...injectedRuntimeNames].map((name) => [name, [] as string[]])),
       },
       effortHints: {
         'claude-code': this.config.runtimes.claudeCode.availableEfforts,
         'codex': this.config.runtimes.codex.availableEfforts,
+        'spartan': this.config.runtimes.codex.availableEfforts,
         ...Object.fromEntries([...injectedRuntimeNames].map((name) => [name, [] as string[]])),
       },
       runtimeNames: [...this.runtimes.keys()].sort(),
@@ -850,6 +866,7 @@ export class Supervisor {
     return resolvedSessionModel(configured, runtime, {
       'claude-code': this.config.runtimes.claudeCode.defaultModel,
       'codex': this.config.runtimes.codex.defaultModel,
+      'spartan': this.config.runtimes.codex.defaultModel,
     });
   }
 
@@ -862,6 +879,7 @@ export class Supervisor {
       'claude-code':
         this.config.runtimes.claudeCode.defaultEffort ?? this.config.runtimes.claudeCode.env.CLAUDE_CODE_EFFORT_LEVEL,
       'codex': this.config.runtimes.codex.defaultEffort,
+      'spartan': this.config.runtimes.codex.defaultEffort,
     });
     const state = this.states.get(session);
     return state?.running === true ? (state.effort ?? resolved) : resolved;

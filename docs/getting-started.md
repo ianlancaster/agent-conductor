@@ -7,7 +7,7 @@ Do them in order — each step assumes the previous one worked.
 Prerequisites and install are in the [README](../README.md). This guide assumes
 `conductor` is on your PATH. Create a fleet directory and start it:
 
-Managed Claude Code and Codex sessions receive a small mandatory protocol plus the session-only
+Managed Claude Code, Codex, and Codex-compatible SPARTAN sessions receive a small mandatory protocol plus the session-only
 `get_conductor_docs` tool. The tool lists version-matched handbook topics and the active fleet's
 authoritative configuration paths, so an agent can help operate or maintain Conductor without
 preloading the full [managed-agent handbook](agent-guide.md).
@@ -25,7 +25,8 @@ conductor start
 
 Before launch, `conductor start` runs the same blocking checks as `conductor doctor`. At the new
 `conductor>` prompt, run `/spawn onboarding-helper` for Claude Code or
-`/spawn onboarding-helper -r codex` for Codex. Move to the agent pane Conductor opens and paste the
+`/spawn onboarding-helper -r codex` for Codex, or `/spawn onboarding-helper -r spartan` for
+SPARTAN when both SPARTAN and Codex are installed. Move to the agent pane Conductor opens and paste the
 onboarding brief from the [README quick start](../README.md#quick-start) directly into the assistant.
 The agent will interview you one decision at a time and will keep optional automation off until one
 hand-driven session works. It can then offer the live runbook catalog. To request the built-in
@@ -162,8 +163,10 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    That writes `.conductor/config/sessions/alpha.yaml` and starts the session. Open the YAML to see the
    optional knobs (`runtime: codex`, `model:`, `effort:`, `schedules:`).
 
-   To use Codex immediately, add `--runtime codex` to `/spawn`. To make it the fleet default, set
-   `defaults.runtime: codex` in `.conductor/config/supervisor.yaml` and restart before spawning;
+   To use Codex immediately, add `--runtime codex` to `/spawn`. If both `spartan` and `codex` are
+   installed, `--runtime spartan` launches that same native Codex experience through SPARTAN.
+   To make either one the fleet default, set `defaults.runtime: codex` or
+   `defaults.runtime: spartan` in `.conductor/config/supervisor.yaml` and restart before spawning;
    a session-level `runtime` still overrides it.
 
 2. Leave auto off for the shakedown (the default). To make the default explicit in
@@ -348,7 +351,8 @@ primitive, not an approval or execution queue.
   `-d` path, `-t` template, `-w` worktree, `-b` branch, `-a` additional directory, `-D` delete;
   `-s` native session ID, placement `-P`/`-T`/`-W`) — `/help` lists them. `--system-prompt` attaches a durable role prompt
   (maximum 5 KiB UTF-8) that is refreshed on start/continue and retained across compaction.
-  `--runtime codex` spawns a Codex session instead of Claude Code; `--runtime cc` is shorthand
+  `--runtime codex` spawns a Codex session instead of Claude Code; `--runtime spartan` wraps the
+  same Codex harness with SPARTAN support; `--runtime cc` is shorthand
   for `--runtime claude-code` on spawn, start, and continue commands.
 - **Template sessions**: `/spawn researcher --template agent` clones a registered Git source,
   registers the normal session config, and starts it. The `agent` template is configured by
@@ -369,8 +373,8 @@ primitive, not an approval or execution queue.
   workspace. Reuse the original codename and runtime; teardown retains native conversation data
   even when it removes the prior workspace.
   `spawn_session.model` advertises the non-exhaustive lists configured under
-  `runtimes.claudeCode.availableModels` and `runtimes.codex.availableModels`; unknown model
-  strings remain valid for newly released or third-party models. Detailed session status reports
+  `runtimes.claudeCode.availableModels` and `runtimes.codex.availableModels`; SPARTAN deliberately
+  shares the latter. Unknown model strings remain valid for newly released or third-party models. Detailed session status reports
   the model Conductor resolved, or `null` when model selection belongs to the runtime.
 - **Pin reasoning effort**: use `/spawn scratch --effort xhigh` for a persisted session default,
   or `/start alpha --effort low` and `/continue alpha --effort max` for one process. MCP callers
@@ -398,6 +402,12 @@ primitive, not an approval or execution queue.
   restoration output. Repository instruction files still load through Codex normally; Conductor does
   not edit the repository or its `.gitignore`. The session also receives a mechanically scoped
   Conductor MCP endpoint and lifecycle notify hook.
+- **SPARTAN sessions**: install both CLIs and set `runtime: spartan`. Conductor uses the complete
+  Codex harness above, resolves the configured `runtimes.codex.binary` to an absolute executable,
+  and launches `runtimes.spartan.binary` with that target. Codex and SPARTAN therefore share the
+  session's isolated `CODEX_HOME`, native CLI settings, hooks, and `resume --last` history. Conductor
+  remains the sole owner of the generated `hooks.json`; SPARTAN support observes the isolated
+  rollout behind the scenes without rewriting it.
 
 ---
 

@@ -213,7 +213,7 @@ export class ConductorOperations {
   }
 
   runtimeChoices(): readonly string[] {
-    return runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex']).enum ?? [];
+    return runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex', 'spartan']).enum ?? [];
   }
 
   hasSession(codename: string): boolean {
@@ -236,7 +236,7 @@ export class ConductorOperations {
 
   private buildDefinitions(): OperationDefinition[] {
     const templateNames = this.deps.lifecycle.templateNames();
-    const runRuntimeProperty = runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex']);
+    const runRuntimeProperty = runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex', 'spartan']);
     const definitions: OperationDefinition[] = [
       {
         name: 'send_to_session',

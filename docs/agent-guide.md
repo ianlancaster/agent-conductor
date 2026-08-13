@@ -72,7 +72,8 @@ files they approve, and validate each layer before adding the next:
 
 1. Ask which repositories and workflows this fleet will manage. Establish whether the fleet
    directory itself or another repository is the right working directory for the first session.
-2. Confirm which of Claude Code and Codex are installed. Choose the default runtime, optional model
+2. Confirm which of Claude Code, Codex, and SPARTAN are installed. SPARTAN requires Codex as its
+   underlying CLI. Choose the default runtime, optional model
    and effort preferences, permission-bypass posture, and whether minimal runtime UI is desirable.
    Claude Code native auto-memory is disabled by default so Conductor-managed sessions do not write
    implicit project memory. Preserve that default unless the operator asks to override
@@ -158,6 +159,10 @@ additionalDirs: []
 systemPromptFile: /optional/path/to/instructions.md
 schedules: []
 ```
+
+Use `runtime: spartan` for the Codex-compatible SPARTAN launcher. It inherits all
+`runtimes.codex` model, effort, permission, hook-trust, timeout, and UI configuration;
+`runtimes.spartan.binary` configures only the wrapper executable.
 
 Important rules:
 
@@ -378,8 +383,10 @@ lifecycle action that matches the intent:
   optional `sessionId` to resume a specific native conversation on the first launch.
 - `teardown_session`: stop and deregister; optionally remove a Conductor-owned safe workspace.
 
-Claude Code and Codex maintain separate conversation histories. Continuing with a runtime override
-resumes that runtime's history, not the other runtime's conversation.
+Claude Code and Codex maintain separate conversation histories. SPARTAN uses Codex's same isolated
+`CODEX_HOME`, so `codex` and `spartan` continuation for one session intentionally share Codex
+history. Continuing with any other runtime override resumes that runtime's history, not the prior
+runtime's conversation.
 
 Model and effort resolution:
 

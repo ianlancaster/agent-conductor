@@ -80,7 +80,7 @@ terminal:
 
 defaults:
   auto: false
-  runtime: claude-code # built-ins: claude-code | codex; embedding hosts may register more
+  runtime: claude-code # built-ins: claude-code | codex | spartan; embedding hosts may register more
   # Bypass runtime approval prompts and sandbox restrictions. Session files can override.
   bypassPermissions: true
   # May a session turn its own auto stall handling on or off? Off keeps supervision
@@ -152,6 +152,10 @@ runtimes:
     # Managed launches trust hooks by default so they do not stop for review. This trusts EVERY hook Codex
     # discovers from the shared config, repository, and plugins; set false to require /hooks review instead.
     bypassHookTrust: true
+  # SPARTAN is a Codex-compatible launcher. It inherits every Codex model,
+  # effort, permission, hook, CODEX_HOME, and CLI setting above.
+  spartan:
+    binary: spartan
 
 channels:
   telegram:

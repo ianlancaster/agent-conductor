@@ -293,7 +293,7 @@ describe('surface contract', () => {
     expect(continueProperties).toHaveProperty('runtime');
     expect(continueProperties).toHaveProperty('effort');
     expect(continueProperties).toHaveProperty('sessionId');
-    expect((startProperties.runtime as { enum?: string[] }).enum).toEqual(['claude-code', 'cc', 'codex']);
+    expect((startProperties.runtime as { enum?: string[] }).enum).toEqual(['claude-code', 'cc', 'codex', 'spartan']);
     expect(spawnProperties).not.toHaveProperty('prompt');
     expect(spawnProperties).toHaveProperty('worktreeRepo');
     expect(spawnProperties.template).toMatchObject({

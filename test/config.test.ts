@@ -70,6 +70,7 @@ describe('loadSupervisorConfig', () => {
     expect(config.runtimes.codex.availableModels).toEqual(DEFAULT_CODEX_MODELS);
     expect(config.runtimes.codex.availableEfforts).toEqual(DEFAULT_CODEX_EFFORTS);
     expect(config.runtimes.codex.defaultEffort).toBeUndefined();
+    expect(config.runtimes.spartan.binary).toBe('spartan');
     expect(config.spawn.markerFile).toBe('.agent-marker');
     expect(config.spawn.templates).toEqual(DEFAULT_SPAWN_TEMPLATES);
     expect(config.spawn.templateCloneTimeoutSeconds).toBe(120);

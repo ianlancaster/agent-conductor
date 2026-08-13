@@ -76,6 +76,7 @@ describe('ensureFleetScaffold', () => {
     expect(config.terminal.windowName).toBe(derived.windowName);
     expect(config.terminal.tmux.sessionName).toBe(derived.tmuxSessionName);
     expect(config.runtimes.codex.bypassHookTrust).toBe(true);
+    expect(config.runtimes.spartan.binary).toBe('spartan');
     expect(config.integrations).toEqual([]);
     expect(text).not.toContain('federation:');
   });

@@ -24,6 +24,7 @@ You need:
 
 - Node.js 22.13 or newer (or Node 23.4 or newer on the non-LTS Node 23 line)
 - Claude Code (`claude`) and/or OpenAI Codex (`codex`)
+- SPARTAN (`spartan`) plus Codex when using the optional SPARTAN runtime
 - iTerm2 on macOS, or tmux on macOS/Linux
 - `curl`
 
@@ -60,6 +61,12 @@ To use Codex instead:
 /spawn onboarding-helper -r codex
 ```
 
+To use the Codex-compatible SPARTAN launcher instead:
+
+```text
+/spawn onboarding-helper -r spartan
+```
+
 Conductor opens the assistant in a new pane. Move to that pane and paste this prompt
 directly into the assistant:
 
@@ -83,7 +90,7 @@ For the full walkthrough, including what the generated files mean, continue with
 
 ## Why use it?
 
-- **Run mixed fleets.** Claude Code and Codex share one runtime-neutral control plane
+- **Run mixed fleets.** Claude Code, Codex, and the Codex-compatible SPARTAN launcher share one runtime-neutral control plane
   while retaining their native terminals, settings, and conversation histories.
 - **Delegate in parallel.** Spawn persistent agents, disposable workers, Git worktrees,
   or registered repository templates without hand-building every terminal session.
@@ -102,19 +109,19 @@ For the full walkthrough, including what the generated files mean, continue with
 The operator console uses a small command language. Run `/help` for the complete,
 version-matched reference; these are the commands used most often:
 
-| Task                                      | Command                                                                  |
-| ----------------------------------------- | ------------------------------------------------------------------------ |
-| Inspect the fleet or one session          | `/status` · `/status <session>`                                          |
-| Create or restore a session               | `/spawn <name> [-r claude-code\|codex] [-s <id>] [--path <dir>]`         |
-| Start, resume, or stop it                 | `/start <session>` · `/continue <session> [-s <id>]` · `/stop <session>` |
-| Send a message                            | `/tell <session> <message>` · `/broadcast <message>`                     |
-| Hold a group conversation                 | `/room create <name> <session...>` · `/room say <name> <msg>`            |
-| Make free text target one session         | `/talk <session>`                                                        |
-| Inspect recent terminal output            | `/tail <session> [lines]`                                                |
-| Set or clear a concise status tag         | `/tag <session> [text]`                                                  |
-| Temporarily suspend or restore automation | `/pause <session>` · `/resume <session>`                                 |
-| Record an approved runbook condition      | `/runbook adopt <id> --version <v> --topic <topic>`                      |
-| Remove a spawned session                  | `/teardown <session> [--delete]`                                         |
+| Task                                      | Command                                                                   |
+| ----------------------------------------- | ------------------------------------------------------------------------- |
+| Inspect the fleet or one session          | `/status` · `/status <session>`                                           |
+| Create or restore a session               | `/spawn <name> [-r claude-code\|codex\|spartan] [-s <id>] [--path <dir>]` |
+| Start, resume, or stop it                 | `/start <session>` · `/continue <session> [-s <id>]` · `/stop <session>`  |
+| Send a message                            | `/tell <session> <message>` · `/broadcast <message>`                      |
+| Hold a group conversation                 | `/room create <name> <session...>` · `/room say <name> <msg>`             |
+| Make free text target one session         | `/talk <session>`                                                         |
+| Inspect recent terminal output            | `/tail <session> [lines]`                                                 |
+| Set or clear a concise status tag         | `/tag <session> [text]`                                                   |
+| Temporarily suspend or restore automation | `/pause <session>` · `/resume <session>`                                  |
+| Record an approved runbook condition      | `/runbook adopt <id> --version <v> --topic <topic>`                       |
+| Remove a spawned session                  | `/teardown <session> [--delete]`                                          |
 
 A typical hand-driven session looks like this:
 
@@ -151,6 +158,12 @@ console and any connected channel. Rooms broadcast to members that are running a
 that are stopped rather than starting them, and membership changes are informational — agents are
 instructed to treat them as a no-op. Rooms span federated fleets; see
 [Local federation](guides/federation.md).
+
+When `spartan` and `codex` are installed, `/spawn api-helper -r spartan` launches the same
+managed Codex experience through SPARTAN. Conductor preserves its isolated `CODEX_HOME`, native
+Codex options, model and effort controls, continuation history, hooks, and readiness detection.
+SPARTAN-specific support runs behind the wrapper; configure Codex behavior under `runtimes.codex`
+and only the launcher path under `runtimes.spartan.binary`.
 
 Messages sent with `/tell` or the agent-facing `send_to_session` operation are signed with
 mechanical sender identity and return observable delivery receipts. `/type` is intentionally

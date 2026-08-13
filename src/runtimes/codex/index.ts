@@ -37,6 +37,12 @@ export interface CodexRuntimeOptions {
   protocolPath?: string;
   /** Fleet data/sessions directory, used to inspect this runtime's isolated rollout. */
   sessionDataDir?: string;
+  /** Runtime registry name when a Codex-compatible launcher decorates this harness. */
+  runtimeName?: string;
+  /** User-facing launcher binary; defaults to runtimes.codex.binary. */
+  launcherBinary?: string;
+  /** Resolve managed launcher environment during prepare(), before a pane is created. */
+  prepareLaunchEnvironment?: () => Promise<Readonly<Record<string, string>>>;
 }
 
 const PROTOCOL_PLACEHOLDER =
@@ -294,7 +300,7 @@ function visibleInputBlock(capture: string): string | null {
  * guidance, then appends the mandatory protocol and session instructions.
  */
 export class CodexRuntime implements SessionRuntime {
-  readonly name = 'codex';
+  readonly name: string;
   readonly capabilities: RuntimeCapabilities = {
     lifecycleEvents: true,
     targetedResume: true,
@@ -307,16 +313,23 @@ export class CodexRuntime implements SessionRuntime {
   private readonly baseDir: string;
   private readonly protocolPath: string | undefined;
   private readonly sessionDataDir: string | undefined;
+  private readonly launcherBinary: string;
+  private readonly prepareLaunchEnvironment: CodexRuntimeOptions['prepareLaunchEnvironment'];
+  private launchEnvironment: Readonly<Record<string, string>> = {};
   private readonly rolloutInputCache = new Map<string, CachedRolloutInputEvidence>();
 
   constructor(opts: CodexRuntimeOptions) {
+    this.name = opts.runtimeName ?? 'codex';
     this.settings = opts.config;
     this.baseDir = opts.baseDir;
     this.protocolPath = opts.protocolPath;
     this.sessionDataDir = opts.sessionDataDir;
+    this.launcherBinary = opts.launcherBinary ?? opts.config.binary;
+    this.prepareLaunchEnvironment = opts.prepareLaunchEnvironment;
   }
 
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
+    this.launchEnvironment = (await this.prepareLaunchEnvironment?.()) ?? {};
     const repo = this.resolvePath(session.repo);
     await mkdir(identity.configDir, { recursive: true });
     const protocolText = await this.readProtocolText();
@@ -369,7 +382,7 @@ export class CodexRuntime implements SessionRuntime {
 
   buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, opts: LaunchOptions): string {
     const repo = this.resolvePath(session.repo);
-    const parts: string[] = [shellQuote(this.settings.binary)];
+    const parts: string[] = [shellQuote(this.launcherBinary)];
     // `resume --last` picks the newest rollout in CODEX_HOME/sessions. With a
     // per-session CODEX_HOME that set only ever contains THIS session's sessions, so
     // a continue can't accidentally resume another codex session's (or the
@@ -400,7 +413,16 @@ export class CodexRuntime implements SessionRuntime {
     if (opts.prompt !== undefined) parts.push('--', shellQuote(opts.prompt));
 
     const codexHome = this.codexHomePath(identity);
-    return `cd ${shellQuote(repo)} && export CODEX_HOME=${shellQuote(codexHome)} && ${parts.join(' ')}`;
+    for (const key of Object.keys(this.launchEnvironment)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) throw new Error(`Invalid launch environment key '${key}'.`);
+    }
+    const exports = [
+      `export CODEX_HOME=${shellQuote(codexHome)}`,
+      ...Object.entries(this.launchEnvironment)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => `export ${key}=${shellQuote(value)}`),
+    ];
+    return `cd ${shellQuote(repo)} && ${exports.join(' && ')} && ${parts.join(' ')}`;
   }
 
   /**

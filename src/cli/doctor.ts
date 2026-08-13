@@ -200,20 +200,28 @@ export async function runPreflight(
     loaded.supervisor.defaults.runtime,
     ...[...loaded.sessions.values()].map((s) => s.runtime),
   ]);
-  const runtimeBins = new Map([
-    ['claude-code', loaded.supervisor.runtimes.claudeCode.binary],
-    ['codex', loaded.supervisor.runtimes.codex.binary],
-  ]);
-  for (const [runtime, binary] of runtimeBins) {
-    const available = deps.command(binary, ['--version']).ok;
-    const selected = selectedRuntimes.has(runtime);
+  const runtimeBins = [
+    { runtime: 'claude-code', binary: loaded.supervisor.runtimes.claudeCode.binary, args: ['--version'] },
+    { runtime: 'codex', binary: loaded.supervisor.runtimes.codex.binary, args: ['--version'] },
+    { runtime: 'spartan', binary: loaded.supervisor.runtimes.spartan.binary, args: ['admin', '--version'] },
+  ] as const;
+  for (const { runtime, binary, args } of runtimeBins) {
+    const available = deps.command(binary, [...args]).ok;
+    const selected = selectedRuntimes.has(runtime) || (runtime === 'codex' && selectedRuntimes.has('spartan'));
+    const dependency = runtime === 'codex' && !selectedRuntimes.has('codex') && selectedRuntimes.has('spartan');
     results.push(
       available
         ? result('pass', `${runtime} runtime`, `${binary} is available`)
         : result(
             selected ? 'fail' : 'warn',
             `${runtime} runtime`,
-            `${binary} is not on PATH${selected ? '; install it or select another runtime' : ' (not currently selected)'}`,
+            `${binary} is not on PATH${
+              dependency
+                ? '; install it because the spartan runtime wraps Codex'
+                : selected
+                  ? '; install it or select another runtime'
+                  : ' (not currently selected)'
+            }`,
           ),
     );
   }

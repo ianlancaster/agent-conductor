@@ -358,6 +358,13 @@ export const supervisorConfigSchema = z
           })
           .strict()
           .default({}),
+        spartan: z
+          .object({
+            /** SPARTAN launcher; all Codex-native settings remain under runtimes.codex. */
+            binary: z.string().default('spartan'),
+          })
+          .strict()
+          .default({}),
       })
       .strict()
       .default({}),

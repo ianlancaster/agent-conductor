@@ -84,6 +84,7 @@ beforeEach(() => {
     runtimes: new Map([
       ['claude-code', runtime],
       ['codex', codexRuntime],
+      ['spartan', codexRuntime],
     ]),
     sessions: () => sessions,
     identityFor: (codename) => ({
@@ -94,7 +95,7 @@ beforeEach(() => {
     config: {
       defaultPlacement: 'pane',
       defaultRuntime: 'claude-code',
-      defaultEfforts: { 'claude-code': undefined, 'codex': undefined },
+      defaultEfforts: { 'claude-code': undefined, 'codex': undefined, 'spartan': undefined },
       defaultBypassPermissions: true,
       markerFile: '.agent-marker',
       spawnDirPattern: './spawned/{codename}',
@@ -169,8 +170,8 @@ beforeEach(() => {
     states,
     sessions: () => sessions,
     allowsSelfAuto: () => false,
-    modelHints: { 'claude-code': [], 'codex': [] },
-    effortHints: { 'claude-code': [], 'codex': [] },
+    modelHints: { 'claude-code': [], 'codex': [], 'spartan': [] },
+    effortHints: { 'claude-code': [], 'codex': [], 'spartan': [] },
     statusReport: (codename) => (codename !== undefined ? `status:${codename}` : 'status:all'),
     tail: async (codename, lines) => `tail:${codename}:${lines}`,
     typeInPane: async (codename, text) => {
@@ -603,14 +604,14 @@ describe('help', () => {
   it('renders plain headers and indents commands without Markdown noise', async () => {
     const help = await router.route('/help');
     expect(help).toContain('Sessions:\n  /status [session] —');
-    expect(help).toContain('/start <session|all> [-r|--runtime cc|claude-code|codex]');
-    expect(help).toContain('/continue <session|all> [-s|--session-id id] [-r|--runtime cc|claude-code|codex]');
+    expect(help).toContain('/start <session|all> [-r|--runtime cc|claude-code|codex|spartan]');
+    expect(help).toContain('/continue <session|all> [-s|--session-id id] [-r|--runtime cc|claude-code|codex|spartan]');
     expect(help.match(/-e\|--effort level/gu)).toHaveLength(2);
     expect(help).toContain('Conversation:\n  /tell <session> <message> —');
     expect(help).toContain('/room <list|create|join|leave|close|say> ...');
     expect(help).toContain('    join <name> [session] · leave <name> [session] — omit session to act as the operator');
     expect(help).toContain('  -P/--pane · -T/--tab · -W/--window\n  -H/--headless — detached tmux pane');
-    expect(help).toContain('    -r/--runtime cc|claude-code|codex');
+    expect(help).toContain('    -r/--runtime cc|claude-code|codex|spartan');
     expect(help).toContain('-e/--effort <level>');
     expect(help).toContain('-s/--session-id <id>');
     expect(help).toContain('-t/--template <name>');
@@ -701,6 +702,15 @@ describe('spawn and teardown', () => {
     expect(existsSync(join(baseDir, 'spawned', 'empty-id'))).toBe(false);
   });
 
+  it('spawns a native spartan session via -r and round-trips it through YAML', async () => {
+    const reply = await router.route('/spawn new-proj -r spartan');
+    expect(reply).toContain('Spawned new-proj');
+    expect(sessions.get('new-proj')?.runtime).toBe('spartan');
+    expect(codexRuntime.launches.at(-1)?.session.runtime).toBe('spartan');
+    expect(readFileSync(join(baseDir, 'config', 'sessions', 'new-proj.yaml'), 'utf8')).toContain('runtime: spartan');
+    await router.route('/teardown new-proj --delete');
+  });
+
   it('spawns with a persisted arbitrary effort default and applies it immediately', async () => {
     const reply = await router.route('/spawn thinker --effort future-provider-level');
     expect(reply).toContain('Spawned thinker');
@@ -781,7 +791,7 @@ describe('spawn and teardown', () => {
 
   it('refuses an unknown runtime without creating anything', async () => {
     const reply = await router.route('/spawn oops --runtime banana');
-    expect(reply).toContain("'runtime' must be one of: claude-code, cc, codex");
+    expect(reply).toContain("'runtime' must be one of: claude-code, cc, codex, spartan");
     expect(sessions.has('oops')).toBe(false);
     expect(existsSync(join(baseDir, 'spawned', 'oops'))).toBe(false);
   });

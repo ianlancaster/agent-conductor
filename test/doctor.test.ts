@@ -32,7 +32,7 @@ function dependencies(overrides: Partial<PreflightDependencies> = {}): Partial<P
     platform: 'linux',
     executablePath: '/opt/agent-conductor/dist/cli/index.js',
     command: (name) => ({
-      ok: ['claude', 'codex', 'git', 'curl', 'tmux', 'gh'].includes(name),
+      ok: ['claude', 'codex', 'spartan', 'git', 'curl', 'tmux', 'gh'].includes(name),
       stdout: name === 'tmux' ? 'tmux 3.4' : `${name} test`,
     }),
     writable: () => true,
@@ -152,6 +152,41 @@ describe('conductor doctor', () => {
     expect(preflightFailures(results).map((item) => item.label)).toEqual(
       expect.arrayContaining(['Config directory', 'Data directory', 'claude-code runtime']),
     );
+  });
+
+  it('distinguishes a missing spartan launcher from a missing underlying Codex CLI', async () => {
+    writeFileSync(
+      join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
+      'terminal:\n  backend: tmux\ndefaults:\n  runtime: spartan\nruntimes:\n  codex:\n    binary: codex\n  spartan:\n    binary: spartan\n',
+    );
+
+    const withoutSpartan = await runPreflight(
+      baseDir,
+      dependencies({
+        command: (name, args) => ({
+          ok: name !== 'spartan',
+          stdout: `${name} ${args.join(' ')}`,
+        }),
+      }),
+    );
+    const spartanFailure = preflightFailures(withoutSpartan).find((item) => item.label === 'spartan runtime');
+    expect(spartanFailure?.detail).toContain('install it');
+    expect(withoutSpartan).toContainEqual(expect.objectContaining({ label: 'codex runtime', level: 'pass' }));
+
+    const calls: { name: string; args: string[] }[] = [];
+    const withoutCodex = await runPreflight(
+      baseDir,
+      dependencies({
+        command: (name, args) => {
+          calls.push({ name, args });
+          return { ok: name !== 'codex', stdout: `${name} test` };
+        },
+      }),
+    );
+    const codexFailure = preflightFailures(withoutCodex).find((item) => item.label === 'codex runtime');
+    expect(codexFailure?.detail).toContain('spartan runtime wraps Codex');
+    expect(withoutCodex).toContainEqual(expect.objectContaining({ label: 'spartan runtime', level: 'pass' }));
+    expect(calls).toContainEqual({ name: 'spartan', args: ['admin', '--version'] });
   });
 
   it('blocks an unavailable selected backend and occupied fleet port', async () => {

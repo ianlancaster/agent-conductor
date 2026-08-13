@@ -64,6 +64,9 @@ export type { ClaudeCodeRuntimeOptions } from './runtimes/claude-code/index.js';
 /** Experimental during beta: runtime harness details may evolve from provider testing. */
 export { CodexRuntime } from './runtimes/codex/index.js';
 export type { CodexRuntimeOptions, CodexRuntimeSettings } from './runtimes/codex/index.js';
+/** Experimental during beta: SPARTAN is a Codex-compatible managed launcher. */
+export { SpartanRuntime } from './runtimes/spartan/index.js';
+export type { SpartanRuntimeOptions, SpartanRuntimeSettings } from './runtimes/spartan/index.js';
 export type {
   ChannelAction,
   ChannelAdapter,

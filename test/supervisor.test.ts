@@ -528,7 +528,7 @@ describe('Supervisor construction', () => {
       "Duplicate injected runtime name 'one'",
     );
     expect(() => new Supervisor(baseDir, { runtimes: [new FakeRuntime('one')] })).toThrow(
-      "Fleet default selects unknown runtime 'missing'. Registered runtimes: claude-code, codex, one.",
+      "Fleet default selects unknown runtime 'missing'. Registered runtimes: claude-code, codex, one, spartan.",
     );
   });
 
