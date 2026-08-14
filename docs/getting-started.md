@@ -180,7 +180,8 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    optional knobs (`runtime: codex`, `model:`, `effort:`, `schedules:`).
 
    To use Codex immediately, add `--runtime codex` to `/spawn`. If both `spartan` and `codex` are
-   installed, `--runtime spartan` launches that same native Codex experience through SPARTAN.
+   installed, `--runtime spartan` launches Codex through the SPARTAN harness. SPARTAN supplies its
+   platform context and project tools on every launch, including managed Conductor sessions.
    To make either one the fleet default, set `defaults.runtime: codex` or
    `defaults.runtime: spartan` in `.conductor/config/supervisor.yaml` and restart before spawning;
    a session-level `runtime` still overrides it.

@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import type { PaneActivityEvidence, RuntimeEvent } from '../../core/types.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
-import { MAX_SESSION_INSTRUCTION_BYTES, prepareInstructionLayers, writeAtomicFile } from '../instructions.js';
+import { prepareInstructionLayers, writeAtomicFile } from '../instructions.js';
 import { log } from '../../logger.js';
 import {
   GENERATED_MARKER,
@@ -43,14 +43,6 @@ export interface CodexRuntimeOptions {
   launcherBinary?: string;
   /** Resolve managed launcher environment during prepare(), before a pane is created. */
   prepareLaunchEnvironment?: () => Promise<Readonly<Record<string, string>>>;
-  /** Runtime-owned instructions composed into Conductor's isolated-home override. */
-  runtimeInstructionText?: string;
-  /** Runtime-owned Codex config overrides. Conductor remains their sole delivery owner. */
-  buildAdditionalConfigOverrides?: (context: {
-    repo: string;
-    session: SessionConfig;
-    identity: IdentityEndpoints;
-  }) => readonly string[];
 }
 
 const PROTOCOL_PLACEHOLDER =
@@ -323,8 +315,6 @@ export class CodexRuntime implements SessionRuntime {
   private readonly sessionDataDir: string | undefined;
   private readonly launcherBinary: string;
   private readonly prepareLaunchEnvironment: CodexRuntimeOptions['prepareLaunchEnvironment'];
-  private readonly runtimeInstructionText: string | undefined;
-  private readonly buildAdditionalConfigOverrides: CodexRuntimeOptions['buildAdditionalConfigOverrides'];
   private launchEnvironment: Readonly<Record<string, string>> = {};
   private readonly rolloutInputCache = new Map<string, CachedRolloutInputEvidence>();
 
@@ -336,14 +326,6 @@ export class CodexRuntime implements SessionRuntime {
     this.sessionDataDir = opts.sessionDataDir;
     this.launcherBinary = opts.launcherBinary ?? opts.config.binary;
     this.prepareLaunchEnvironment = opts.prepareLaunchEnvironment;
-    if (
-      opts.runtimeInstructionText !== undefined &&
-      Buffer.byteLength(opts.runtimeInstructionText, 'utf8') > MAX_SESSION_INSTRUCTION_BYTES
-    ) {
-      throw new Error(`Runtime instructions exceed the ${MAX_SESSION_INSTRUCTION_BYTES} UTF-8 byte limit.`);
-    }
-    this.runtimeInstructionText = opts.runtimeInstructionText;
-    this.buildAdditionalConfigOverrides = opts.buildAdditionalConfigOverrides;
   }
 
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
@@ -358,20 +340,14 @@ export class CodexRuntime implements SessionRuntime {
       sessionSourcePath:
         session.systemPromptFile === undefined ? undefined : this.resolvePath(session.systemPromptFile),
       validate: (layers) => {
-        const combinedSessionInstructions = [this.runtimeInstructionText, layers.session?.content]
-          .filter((entry): entry is string => entry !== undefined && entry.length > 0)
-          .join('\n\n');
         reminderScript = renderProtocolReminderScript(
           layers.protocol?.content ?? protocolText,
-          combinedSessionInstructions.length > 0 ? combinedSessionInstructions : null,
+          layers.session?.content ?? null,
         );
       },
     });
     const preparedProtocolText = preparedInstructions.protocol?.content ?? protocolText;
-    const combinedSessionInstructions = [this.runtimeInstructionText, preparedInstructions.session?.content]
-      .filter((entry): entry is string => entry !== undefined && entry.length > 0)
-      .join('\n\n');
-    const sessionPromptText = combinedSessionInstructions.length > 0 ? combinedSessionInstructions : null;
+    const sessionPromptText = preparedInstructions.session?.content ?? null;
     const sharedHome = this.sharedCodexHome();
     const inheritedGuidance = await this.readActiveGlobalGuidance(sharedHome);
     const rendered = renderHomeAgentsOverride(inheritedGuidance, preparedProtocolText, sessionPromptText);
@@ -424,7 +400,6 @@ export class CodexRuntime implements SessionRuntime {
       bareUi: this.settings.bareUi,
       effort,
     });
-    overrides.push(...(this.buildAdditionalConfigOverrides?.({ repo, session, identity }) ?? []));
     for (const override of overrides) parts.push('-c', shellQuote(override));
 
     if (opts.bypassPermissions === true) parts.push('--dangerously-bypass-approvals-and-sandbox');
