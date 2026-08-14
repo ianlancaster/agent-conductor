@@ -1,11 +1,11 @@
-import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sessionConfigSchema } from '../src/config/schema.js';
 import { CodexRuntime, type CodexRuntimeSettings } from '../src/runtimes/codex/index.js';
 import { resolveExecutable } from '../src/runtimes/executable.js';
-import { SpartanRuntime } from '../src/runtimes/spartan/index.js';
+import { SPARTAN_MANAGED_INSTRUCTIONS, SpartanRuntime } from '../src/runtimes/spartan/index.js';
 import type { IdentityEndpoints } from '../src/runtimes/types.js';
 
 const CODEX_SETTINGS: CodexRuntimeSettings = {
@@ -81,11 +81,28 @@ describe('SpartanRuntime', () => {
     );
 
     expect(runtime.name).toBe('spartan');
-    expect(command).toBe(expected);
+    const managedOverrides = [
+      `mcp_servers.spartan.command="spartan-mcp"`,
+      `mcp_servers.spartan.args=["--project",".","--delivery-owner","conductor-rendered"]`,
+      `mcp_servers.spartan.cwd="${repo}"`,
+      'mcp_servers.spartan.required=true',
+      'mcp_servers.spartan.startup_timeout_sec=10',
+      'mcp_servers.spartan.default_tools_approval_mode="writes"',
+    ];
+    const withoutAwareness = managedOverrides.reduce(
+      (value, override) => value.replace(` -c '${override}'`, ''),
+      command,
+    );
+    expect(withoutAwareness).toBe(expected);
     expect(command).toContain("'" + launcher + "' resume --last");
     expect(command).toContain("--model 'gpt-test'");
     expect(command).toContain("--add-dir '" + path.join(root, 'shared dir') + "'");
     expect(command.endsWith("-- 'fix o'\\''brien'")).toBe(true);
+    expect(command).toContain('mcp_servers.spartan.command="spartan-mcp"');
+    expect(command).toContain('mcp_servers.spartan.required=true');
+    expect(await readFile(path.join(configDir, 'codex-home', 'AGENTS.override.md'), 'utf8')).toContain(
+      SPARTAN_MANAGED_INSTRUCTIONS,
+    );
   });
 
   it('inherits Codex ready, busy, and composer detection through the wrapper layer', () => {
@@ -111,6 +128,17 @@ describe('SpartanRuntime', () => {
     await expect(runtime.prepare(session, identity())).rejects.toThrow(
       "SPARTAN requires the configured Codex CLI 'missing-codex'",
     );
+  });
+
+  it('rejects an oversized runtime-owned instruction contribution before prepare', () => {
+    expect(
+      () =>
+        new CodexRuntime({
+          config: CODEX_SETTINGS,
+          baseDir: root,
+          runtimeInstructionText: 'x'.repeat(5 * 1024 + 1),
+        }),
+    ).toThrow(/UTF-8 byte limit/);
   });
 });
 

@@ -162,7 +162,10 @@ schedules: []
 
 Use `runtime: spartan` for the Codex-compatible SPARTAN launcher. It inherits all
 `runtimes.codex` model, effort, permission, hook-trust, timeout, and UI configuration;
-`runtimes.spartan.binary` configures only the wrapper executable.
+`runtimes.spartan.binary` configures only the wrapper executable. For this topology Conductor is
+the exclusive awareness-delivery owner: it adds SPARTAN's bounded runtime instructions to the
+isolated-home override and registers the project-pinned `spartan-mcp` stdio server through Codex
+CLI overrides. Standalone SPARTAN installation refuses to rewrite the managed home.
 
 Important rules:
 

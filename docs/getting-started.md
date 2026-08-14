@@ -423,7 +423,10 @@ primitive, not an approval or execution queue.
   and launches `runtimes.spartan.binary` with that target. Codex and SPARTAN therefore share the
   session's isolated `CODEX_HOME`, native CLI settings, hooks, and `resume --last` history. Conductor
   remains the sole owner of the generated `hooks.json`; SPARTAN support observes the isolated
-  rollout behind the scenes without rewriting it.
+  rollout behind the scenes without rewriting it. Conductor also injects SPARTAN's compact runtime
+  context and project-pinned stdio MCP registration. The MCP exposes version-matched documentation,
+  portable mistake knowledge, and guided onboarding tools; it deliberately exposes no publish,
+  approve, qualify, sign, or activate operation.
 
 ---
 

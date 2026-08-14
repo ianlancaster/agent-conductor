@@ -174,7 +174,9 @@ When `spartan` and `codex` are installed, `/spawn api-helper -r spartan` launche
 managed Codex experience through SPARTAN. Conductor preserves its isolated `CODEX_HOME`, native
 Codex options, model and effort controls, continuation history, hooks, and readiness detection.
 SPARTAN-specific support runs behind the wrapper; configure Codex behavior under `runtimes.codex`
-and only the launcher path under `runtimes.spartan.binary`.
+and only the launcher path under `runtimes.spartan.binary`. Conductor owns the managed session's
+SPARTAN instruction contribution and project-pinned `spartan-mcp` registration, so SPARTAN never
+competes for the isolated home.
 
 Messages sent with `/tell` or the agent-facing `send_to_session` operation are signed with
 mechanical sender identity and return observable delivery receipts. `/type` is intentionally
