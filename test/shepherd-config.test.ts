@@ -11,20 +11,28 @@ describe('PR Shepherd V2 configuration', () => {
     const config = parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } });
     expect(config.features.authoredPRs.enabled).toBe(true);
     expect(config.features.trackedPRs.enabled).toBe(false);
+    expect(config.features.trackedPRs.releaseGate).toBe('none');
     expect(config.features.reviewInbox.enabled).toBe(false);
     expect(config.automation).toEqual({ autoMerge: 'notify', branchUpdate: 'notify', reviewerComment: 'notify' });
     expect(config.delivery).toEqual({ type: 'stdout' });
     expect(config.github.mergeMethod).toBe('squash');
   });
 
-  it('accepts only the inert tracked-PR feature flag in the first tracked-lane stage', () => {
+  it('keeps the exact-head gate inert by default and rejects narrower selector policy', () => {
     expect(
       parseShepherdConfig({
         version: 2,
         profile: { githubUser: 'octocat' },
         features: { trackedPRs: { enabled: true } },
       }).features.trackedPRs,
-    ).toEqual({ enabled: true });
+    ).toEqual({ enabled: true, releaseGate: 'none' });
+    expect(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        features: { trackedPRs: { enabled: true, releaseGate: 'exact-head-attestation' } },
+      }).features.trackedPRs,
+    ).toEqual({ enabled: true, releaseGate: 'exact-head-attestation' });
     expect(() =>
       parseShepherdConfig({
         version: 2,

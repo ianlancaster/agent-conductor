@@ -9,6 +9,12 @@ import type {
   OutboxItem,
   PullRequestDetails,
   PullRequestRef,
+  ReleaseControlRequest,
+  ReleaseControlResult,
+  ReleaseControlAuditRecord,
+  ReleaseAttestation,
+  ReleaseGateStore,
+  ReleaseGateStatus,
   ShepherdEvent,
   ShepherdEventType,
   StoredEntity,
@@ -18,7 +24,6 @@ import type {
   TrackedControlResult,
   TrackedObservationResult,
   TrackedPullRequest,
-  TrackedPullRequestStore,
   TrackedPullRequestStatus,
 } from './types.js';
 
@@ -61,6 +66,7 @@ interface TrackedPullRequestRow {
   unclaimed_at: string | null;
   terminal_state: 'CLOSED' | 'MERGED' | null;
   baseline_pending: number;
+  release_gate: TrackedPullRequest['releaseGate'];
 }
 
 interface TrackedControlOperationRow {
@@ -72,6 +78,34 @@ interface TrackedControlOperationRow {
   evidence_json: string;
   request_hash: string;
   outcome: TrackedControlAuditRecord['outcome'];
+  result_json: string;
+  created_at: string;
+}
+
+interface ReleaseAttestationRow {
+  idempotency_key: string;
+  repo: string;
+  pr_number: number;
+  generation: number;
+  head_sha: string;
+  status: 'active' | 'revoked';
+  actor: string;
+  evidence_json: string;
+  attested_at: string;
+  revoked_at: string | null;
+  revoke_reason: string | null;
+}
+
+interface ReleaseOperationRow {
+  idempotency_key: string;
+  operation: ReleaseControlRequest['operation'];
+  repo: string;
+  pr_number: number;
+  actor: string;
+  evidence_json: string;
+  reason: string | null;
+  head_sha: string | null;
+  request_hash: string;
   result_json: string;
   created_at: string;
 }
@@ -159,6 +193,49 @@ const MIGRATIONS = [
   CREATE INDEX idx_shepherd_control_operations_pr
     ON shepherd_control_operations(lower(repo), pr_number, created_at);
   `,
+  `
+  ALTER TABLE shepherd_tracked_prs
+    ADD COLUMN release_gate TEXT NOT NULL DEFAULT 'none'
+    CHECK (release_gate IN ('none', 'exact-head-attestation'));
+
+  CREATE TABLE shepherd_release_attestations (
+    repo_key TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    pr_number INTEGER NOT NULL,
+    generation INTEGER NOT NULL,
+    head_sha TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'revoked')),
+    actor TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    attested_at TEXT NOT NULL,
+    revoked_at TEXT,
+    revoke_reason TEXT,
+    PRIMARY KEY (repo_key, pr_number, generation, head_sha)
+  );
+
+  CREATE TABLE shepherd_release_operations (
+    idempotency_key TEXT PRIMARY KEY,
+    operation TEXT NOT NULL CHECK (operation IN ('attest', 'revoke')),
+    repo TEXT NOT NULL,
+    pr_number INTEGER NOT NULL,
+    actor TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    reason TEXT,
+    head_sha TEXT,
+    request_hash TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_shepherd_release_operations_pr
+    ON shepherd_release_operations(lower(repo), pr_number, created_at);
+
+  CREATE TABLE shepherd_mutation_mutex (
+    name TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+  `,
 ] as const;
 
 function parseJson<T>(raw: string, label: string): T {
@@ -206,6 +283,7 @@ function trackedFromRow(row: TrackedPullRequestRow): TrackedPullRequest {
     unclaimedAt: row.unclaimed_at,
     terminalState: row.terminal_state,
     baselinePending: row.baseline_pending === 1,
+    releaseGate: row.release_gate,
   };
 }
 
@@ -213,7 +291,7 @@ function repoKey(repo: string): string {
   return repo.toLowerCase();
 }
 
-export class SqliteShepherdStore implements TrackedPullRequestStore {
+export class SqliteShepherdStore implements ReleaseGateStore {
   private readonly db: DatabaseSync;
 
   constructor(dbPath: string) {
@@ -338,12 +416,13 @@ export class SqliteShepherdStore implements TrackedPullRequestStore {
         .prepare(
           `INSERT INTO shepherd_tracked_prs
             (repo_key, repo, pr_number, status, generation, actor, evidence_json, claimed_at, updated_at,
-             unclaimed_at, terminal_state, baseline_pending)
-           VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, NULL, NULL, 0)
+             unclaimed_at, terminal_state, baseline_pending, release_gate)
+           VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, NULL, NULL, 0, ?)
            ON CONFLICT(repo_key, pr_number) DO UPDATE SET
              repo = excluded.repo, status = 'active', generation = excluded.generation,
              actor = excluded.actor, evidence_json = excluded.evidence_json, claimed_at = excluded.claimed_at,
-             updated_at = excluded.updated_at, unclaimed_at = NULL, terminal_state = NULL, baseline_pending = 0`,
+             updated_at = excluded.updated_at, unclaimed_at = NULL, terminal_state = NULL, baseline_pending = 0,
+             release_gate = excluded.release_gate`,
         )
         .run(
           repoKey(request.repo),
@@ -354,6 +433,7 @@ export class SqliteShepherdStore implements TrackedPullRequestStore {
           JSON.stringify(request.evidence),
           request.occurredAt,
           request.occurredAt,
+          request.releaseGate ?? 'none',
         );
       const lifecycleKey = `authored:${repoKey(request.repo)}#${String(request.number)}`;
       const existingLifecycle = this.db.prepare('SELECT * FROM shepherd_entities WHERE key = ?').get(lifecycleKey) as
@@ -445,6 +525,369 @@ export class SqliteShepherdStore implements TrackedPullRequestStore {
     });
   }
 
+  getReleaseGateStatus(pr: PullRequestRef, generation: number, headSha: string): ReleaseGateStatus {
+    const rows = this.db
+      .prepare(
+        `SELECT head_sha, status FROM shepherd_release_attestations
+         WHERE repo_key = ? AND pr_number = ? AND generation = ?`,
+      )
+      .all(repoKey(pr.repo), pr.number, generation) as unknown as ReleaseAttestationRow[];
+    const exact = rows.find((row) => row.head_sha === headSha);
+    if (exact?.status === 'active') return 'applicable';
+    if (exact?.status === 'revoked') return 'revoked';
+    return rows.length === 0 ? 'missing' : 'stale';
+  }
+
+  getReleaseAttestation(pr: PullRequestRef, generation: number, headSha: string): ReleaseAttestation | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM shepherd_release_attestations
+         WHERE repo_key = ? AND pr_number = ? AND generation = ? AND head_sha = ?`,
+      )
+      .get(repoKey(pr.repo), pr.number, generation, headSha) as ReleaseAttestationRow | undefined;
+    if (row === undefined) return undefined;
+    return {
+      idempotencyKey: row.idempotency_key,
+      repo: row.repo,
+      number: row.pr_number,
+      generation: row.generation,
+      headSha: row.head_sha,
+      status: row.status,
+      actor: row.actor,
+      evidence: parseJson<unknown>(row.evidence_json, `release attestation ${row.idempotency_key}`),
+      attestedAt: row.attested_at,
+      revokedAt: row.revoked_at,
+      revokeReason: row.revoke_reason,
+    };
+  }
+
+  listReleaseControlOperations(limit: number, offset = 0): ReleaseControlAuditRecord[] {
+    const rows = this.db
+      .prepare(
+        'SELECT * FROM shepherd_release_operations ORDER BY created_at DESC, idempotency_key DESC LIMIT ? OFFSET ?',
+      )
+      .all(limit, offset) as unknown as ReleaseOperationRow[];
+    return rows.map((row) => ({
+      idempotencyKey: row.idempotency_key,
+      operation: row.operation,
+      repo: row.repo,
+      number: row.pr_number,
+      actor: row.actor,
+      evidence: parseJson<unknown>(row.evidence_json, `release operation ${row.idempotency_key} evidence`),
+      reason: row.reason,
+      headSha: row.head_sha,
+      result: parseJson<ReleaseControlResult>(row.result_json, `release operation ${row.idempotency_key}`),
+      createdAt: row.created_at,
+    }));
+  }
+
+  countReleaseControlOperations(): number {
+    const row = this.db.prepare('SELECT count(*) AS count FROM shepherd_release_operations').get() as {
+      count: number;
+    };
+    return row.count;
+  }
+
+  canUnclaimReleaseGate(pr: PullRequestRef, generation: number): boolean {
+    const active = this.db
+      .prepare(
+        `SELECT 1 FROM shepherd_release_attestations
+         WHERE repo_key = ? AND pr_number = ? AND generation = ? AND status = 'active' LIMIT 1`,
+      )
+      .get(repoKey(pr.repo), pr.number, generation);
+    if (active !== undefined) return false;
+    const queueActions = new Set<string>();
+    const autoMergeActions = new Set<string>();
+    const compensatedActions = new Set<string>();
+    for (const action of this.listEntities<Record<string, unknown>>('action')) {
+      const value = action.value;
+      const mutation = value.mutation;
+      if (typeof mutation !== 'object' || mutation === null || Array.isArray(mutation)) continue;
+      const mutationRecord = mutation as Record<string, unknown>;
+      const actionPr = mutationRecord.pr;
+      if (typeof actionPr !== 'object' || actionPr === null || Array.isArray(actionPr)) continue;
+      const ref = actionPr as Record<string, unknown>;
+      const mutationType = String(mutationRecord.type);
+      const generationScoped = ['merge-exact-head', 'enqueue-exact-head', 'dequeue', 'disable-auto-merge'].includes(
+        mutationType,
+      );
+      if (
+        ref.number !== pr.number ||
+        typeof ref.repo !== 'string' ||
+        repoKey(ref.repo) !== repoKey(pr.repo) ||
+        (generationScoped && value.trackedGeneration !== generation)
+      )
+        continue;
+      if (
+        value.status === 'pending' &&
+        ['enable-auto-merge', 'merge-exact-head', 'enqueue-exact-head', 'dequeue', 'disable-auto-merge'].includes(
+          mutationType,
+        )
+      )
+        return false;
+      if (value.status === 'completed' && mutationRecord.type === 'enqueue-exact-head') queueActions.add(action.key);
+      if (value.status === 'completed' && mutationRecord.type === 'enable-auto-merge') autoMergeActions.add(action.key);
+      if (
+        value.status === 'completed' &&
+        ['dequeue', 'disable-auto-merge'].includes(mutationType) &&
+        typeof value.compensatesActionKey === 'string'
+      )
+        compensatedActions.add(value.compensatesActionKey);
+    }
+    return [...queueActions, ...autoMergeActions].every((key) => compensatedActions.has(key));
+  }
+
+  getReleaseControlResult(request: ReleaseControlRequest): ReleaseControlResult | undefined {
+    return this.releaseReplay(request);
+  }
+
+  attestRelease(
+    request: ReleaseControlRequest,
+    generation: number,
+    event: ShepherdEvent,
+    recipient?: string,
+  ): ReleaseControlResult {
+    if (request.headSha === undefined) throw new Error('Attestation requires a head SHA.');
+    const headSha = request.headSha;
+    return withTransaction(this.db, () => {
+      const replay = this.releaseReplay(request);
+      if (replay !== undefined) return replay;
+      const existing = this.db
+        .prepare(
+          `SELECT * FROM shepherd_release_attestations
+           WHERE repo_key = ? AND pr_number = ? AND generation = ? AND head_sha = ?`,
+        )
+        .get(repoKey(request.repo), request.number, generation, headSha) as ReleaseAttestationRow | undefined;
+      const outcome = existing?.status === 'active' ? 'already-attested' : 'attested';
+      if (outcome === 'attested') {
+        this.db
+          .prepare(
+            `INSERT INTO shepherd_release_attestations
+              (repo_key, repo, pr_number, generation, head_sha, idempotency_key, status, actor, evidence_json, attested_at,
+               revoked_at, revoke_reason)
+             VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, NULL)
+             ON CONFLICT(repo_key, pr_number, generation, head_sha) DO UPDATE SET
+               idempotency_key = excluded.idempotency_key, status = 'active', actor = excluded.actor,
+               evidence_json = excluded.evidence_json,
+               attested_at = excluded.attested_at, revoked_at = NULL, revoke_reason = NULL`,
+          )
+          .run(
+            repoKey(request.repo),
+            request.repo,
+            request.number,
+            generation,
+            headSha,
+            request.idempotencyKey,
+            request.actor,
+            JSON.stringify(request.evidence),
+            request.occurredAt,
+          );
+        this.insertEvent(event, recipient, request.occurredAt);
+      }
+      const result: ReleaseControlResult = {
+        operation: 'attest',
+        outcome,
+        repo: request.repo,
+        number: request.number,
+        generation,
+        headSha,
+        idempotentReplay: false,
+        compensation: 'none',
+        compensationActionKeys: [],
+      };
+      this.insertReleaseOperation(request, result);
+      return result;
+    });
+  }
+
+  revokeRelease(
+    request: ReleaseControlRequest,
+    generation: number,
+    event: ShepherdEvent | undefined,
+    recipient?: string,
+  ): ReleaseControlResult {
+    return withTransaction(this.db, () => {
+      const replay = this.releaseReplay(request);
+      if (replay !== undefined) return replay;
+      const revoked = this.db
+        .prepare(
+          `UPDATE shepherd_release_attestations
+           SET status = 'revoked', revoked_at = ?, revoke_reason = ?
+           WHERE repo_key = ? AND pr_number = ? AND generation = ? AND status = 'active'`,
+        )
+        .run(request.occurredAt, request.reason ?? '', repoKey(request.repo), request.number, generation).changes;
+      const actionEntities = this.listEntities<Record<string, unknown>>('action');
+      const queueActions = new Map<string, { key: string; completedAt: string }>();
+      const autoMergeActions = new Map<string, { key: string; completedAt: string }>();
+      const compensatedActions = new Set<string>();
+      const pendingCompensations = new Set<string>();
+      for (const action of actionEntities) {
+        const value = action.value;
+        const mutation = value.mutation;
+        if (typeof mutation !== 'object' || mutation === null || Array.isArray(mutation)) continue;
+        const mutationRecord = mutation as Record<string, unknown>;
+        const pr = mutationRecord.pr;
+        if (typeof pr !== 'object' || pr === null || Array.isArray(pr)) continue;
+        const ref = pr as Record<string, unknown>;
+        const mutationType = String(mutationRecord.type);
+        const generationScoped = ['merge-exact-head', 'enqueue-exact-head', 'dequeue', 'disable-auto-merge'].includes(
+          mutationType,
+        );
+        if (
+          ref.number !== request.number ||
+          typeof ref.repo !== 'string' ||
+          repoKey(ref.repo) !== repoKey(request.repo) ||
+          (generationScoped && value.trackedGeneration !== generation)
+        )
+          continue;
+        if (
+          value.status === 'pending' &&
+          ['enable-auto-merge', 'merge-exact-head', 'enqueue-exact-head'].includes(mutationType)
+        ) {
+          if (mutationType === 'enqueue-exact-head') {
+            // A process can crash after GitHub accepted enqueue but before local completion.
+            // Conservatively compensate the pending enqueue; the provider makes dequeue a no-op
+            // when no queue entry exists.
+            queueActions.set(action.key, { key: action.key, completedAt: action.updatedAt });
+          }
+          if (mutationType === 'enable-auto-merge') {
+            // The same crash window exists for the legacy persistent auto-merge action.
+            autoMergeActions.set(action.key, { key: action.key, completedAt: action.updatedAt });
+          }
+          this.db
+            .prepare('UPDATE shepherd_entities SET value_json = ?, updated_at = ? WHERE key = ?')
+            .run(
+              JSON.stringify({ ...value, status: 'cancelled', completedAt: request.occurredAt }),
+              request.occurredAt,
+              action.key,
+            );
+        }
+        if (value.status === 'completed' && mutationType === 'enqueue-exact-head') {
+          queueActions.set(action.key, {
+            key: action.key,
+            completedAt: typeof value.completedAt === 'string' ? value.completedAt : action.updatedAt,
+          });
+        }
+        if (value.status === 'completed' && mutationType === 'enable-auto-merge') {
+          autoMergeActions.set(action.key, {
+            key: action.key,
+            completedAt: typeof value.completedAt === 'string' ? value.completedAt : action.updatedAt,
+          });
+        }
+        if (
+          ['dequeue', 'disable-auto-merge'].includes(mutationType) &&
+          typeof value.compensatesActionKey === 'string'
+        ) {
+          if (value.status === 'completed') compensatedActions.add(value.compensatesActionKey);
+          if (value.status === 'pending') pendingCompensations.add(value.compensatesActionKey);
+        }
+      }
+      const lifecycle = this.getEntity<{ details?: { autoMergeRequest?: unknown } }>(
+        `authored:${repoKey(request.repo)}#${String(request.number)}`,
+      );
+      if (
+        lifecycle?.value.details?.autoMergeRequest !== null &&
+        lifecycle?.value.details?.autoMergeRequest !== undefined
+      ) {
+        const key = `provider:auto-merge:${repoKey(request.repo)}#${String(request.number)}:${String(generation)}`;
+        autoMergeActions.set(key, { key, completedAt: lifecycle.updatedAt });
+      }
+      const newestUncompensated = (candidates: Map<string, { key: string; completedAt: string }>) =>
+        [...candidates.values()]
+          .filter((action) => !compensatedActions.has(action.key) && !pendingCompensations.has(action.key))
+          .sort((left, right) =>
+            left.completedAt < right.completedAt ? 1 : left.completedAt > right.completedAt ? -1 : 0,
+          )[0];
+      const compensations = [
+        { source: newestUncompensated(queueActions), type: 'dequeue' as const },
+        { source: newestUncompensated(autoMergeActions), type: 'disable-auto-merge' as const },
+      ].filter(
+        (item): item is { source: { key: string; completedAt: string }; type: 'dequeue' | 'disable-auto-merge' } =>
+          item.source !== undefined,
+      );
+      const compensationActionKeys: string[] = [];
+      for (const compensation of compensations) {
+        const compensationKey = `${compensation.source.key}:${compensation.type}:${request.idempotencyKey}`;
+        this.db.prepare('INSERT INTO shepherd_entities (key, kind, value_json, updated_at) VALUES (?, ?, ?, ?)').run(
+          compensationKey,
+          'action',
+          JSON.stringify({
+            status: 'pending',
+            mutation: { type: compensation.type, pr: { repo: request.repo, number: request.number } },
+            trackedGeneration: generation,
+            compensationFor: request.idempotencyKey,
+            compensatesActionKey: compensation.source.key,
+          }),
+          request.occurredAt,
+        );
+        compensationActionKeys.push(compensationKey);
+      }
+      const compensation = compensationActionKeys.length === 0 ? 'none' : 'pending';
+      const result: ReleaseControlResult = {
+        operation: 'revoke',
+        outcome: revoked > 0 ? 'revoked' : 'already-revoked',
+        repo: request.repo,
+        number: request.number,
+        generation,
+        headSha: null,
+        idempotentReplay: false,
+        compensation,
+        compensationActionKeys,
+      };
+      this.insertReleaseOperation(request, result);
+      if (revoked > 0 && event !== undefined) this.insertEvent(event, recipient, request.occurredAt);
+      return result;
+    });
+  }
+
+  completeReleaseCompensation(
+    idempotencyKey: string,
+    actionKey: string,
+    completedAt: string,
+  ): ReleaseControlResult | undefined {
+    return withTransaction(this.db, () => {
+      const row = this.db
+        .prepare('SELECT result_json FROM shepherd_release_operations WHERE idempotency_key = ?')
+        .get(idempotencyKey) as { result_json: string } | undefined;
+      const action = this.getEntity<Record<string, unknown>>(actionKey);
+      if (action !== undefined) {
+        this.db
+          .prepare('UPDATE shepherd_entities SET value_json = ?, updated_at = ? WHERE key = ?')
+          .run(JSON.stringify({ ...action.value, status: 'completed', completedAt }), completedAt, actionKey);
+      }
+      if (row === undefined) return undefined;
+      const result = parseJson<ReleaseControlResult>(row.result_json, `release operation ${idempotencyKey}`);
+      const completed = result.compensationActionKeys.every(
+        (key) => this.getEntity<Record<string, unknown>>(key)?.value.status === 'completed',
+      );
+      const updated = { ...result, compensation: completed ? ('completed' as const) : ('pending' as const) };
+      this.db
+        .prepare('UPDATE shepherd_release_operations SET result_json = ? WHERE idempotency_key = ?')
+        .run(JSON.stringify(updated), idempotencyKey);
+      if (completed && this.trackedRow(updated)?.status === 'terminal') {
+        const remove = this.db.prepare('DELETE FROM shepherd_entities WHERE key = ?');
+        for (const key of updated.compensationActionKeys) remove.run(key);
+      }
+      return updated;
+    });
+  }
+
+  tryAcquireMutationLock(owner: string, now: string, expiresAt: string): boolean {
+    return withTransaction(this.db, () => {
+      const row = this.db
+        .prepare("SELECT owner, expires_at FROM shepherd_mutation_mutex WHERE name = 'github'")
+        .get() as { owner: string; expires_at: string } | undefined;
+      if (row !== undefined && row.owner !== owner && row.expires_at > now) return false;
+      this.db
+        .prepare("INSERT OR REPLACE INTO shepherd_mutation_mutex (name, owner, expires_at) VALUES ('github', ?, ?)")
+        .run(owner, expiresAt);
+      return true;
+    });
+  }
+
+  releaseMutationLock(owner: string): void {
+    this.db.prepare("DELETE FROM shepherd_mutation_mutex WHERE name = 'github' AND owner = ?").run(owner);
+  }
   commit(
     updates: EntityUpdate[],
     events: ShepherdEvent[],
@@ -658,6 +1101,7 @@ export class SqliteShepherdStore implements TrackedPullRequestStore {
     if (row === undefined) return undefined;
     if (row.request_hash !== request.requestHash) {
       const equivalentLegacyRequest =
+        (request.releaseGate === undefined || request.releaseGate === 'none') &&
         row.operation === request.operation &&
         repoKey(row.repo) === repoKey(request.repo) &&
         row.pr_number === request.number &&
@@ -730,6 +1174,45 @@ export class SqliteShepherdStore implements TrackedPullRequestStore {
     const remove = this.db.prepare('DELETE FROM shepherd_entities WHERE key = ?');
     for (const key of deleteKeys) remove.run(key);
     return inserted;
+  }
+
+  private releaseReplay(request: ReleaseControlRequest): ReleaseControlResult | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM shepherd_release_operations WHERE idempotency_key = ?')
+      .get(request.idempotencyKey) as ReleaseOperationRow | undefined;
+    if (row === undefined) return undefined;
+    if (row.request_hash !== request.requestHash) {
+      throw new IdempotencyConflictError(
+        `Idempotency key ${request.idempotencyKey} was already used for a different release request.`,
+      );
+    }
+    return {
+      ...parseJson<ReleaseControlResult>(row.result_json, `release operation ${request.idempotencyKey}`),
+      idempotentReplay: true,
+    };
+  }
+
+  private insertReleaseOperation(request: ReleaseControlRequest, result: ReleaseControlResult): void {
+    this.db
+      .prepare(
+        `INSERT INTO shepherd_release_operations
+          (idempotency_key, operation, repo, pr_number, actor, evidence_json, reason, head_sha, request_hash,
+           result_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        request.idempotencyKey,
+        request.operation,
+        request.repo,
+        request.number,
+        request.actor,
+        JSON.stringify(request.evidence),
+        request.reason ?? null,
+        request.headSha ?? null,
+        request.requestHash,
+        JSON.stringify(result),
+        request.occurredAt,
+      );
   }
 
   private insertEvent(event: ShepherdEvent, recipient: string | undefined, readyAt: string): boolean {

@@ -119,6 +119,7 @@ Configuration is strict, versioned YAML: unknown keys and unknown guidance event
 | `reviews.bots[]`                        | Configurable bot username, actionable and positive patterns, inbox gating, and feedback-attempt limit.                                 |
 | `features.authoredPRs.enabled`          | Monitor authored pull requests; default `true`.                                                                                        |
 | `features.trackedPRs.enabled`           | Enable durable manual claim controls and the tracked owned-PR lane; disabled by default.                                               |
+| `features.trackedPRs.releaseGate`       | `none` or `exact-head-attestation`; default `none`. The value is captured on each new claim generation.                                |
 | `features.reviewInbox`                  | Optional assigned-review workflow with draft, repository, and age filters; disabled by default.                                        |
 | `features.reviewFollowUp.enabled`       | Track actionable requested-change or inline-comment reviews and emit scoped follow-up transitions; disabled by default.                |
 | `features.reviewerNudge`                | Optional reviewer-comment/escalation workflow, including threshold, weekday handling, timezone, and repeat cap; disabled by default.   |
@@ -151,7 +152,7 @@ Coordinator and endpoint overrides apply only when YAML already declares `delive
 
 ## Events and organization-specific guidance
 
-The engine emits generic facts for CI failures, review feedback, bot findings, human comments, approvals, conflicts, merges, staleness, tracked-PR claims and head changes, review dispatch/completion, scoped re-review, reviewer escalation, automation decisions, `branch-behind`, and `branch-update-failed`. Production messages contain no hard-coded organization, repository, bot, CI-command, or worker-routing policy.
+The engine emits generic facts for CI failures, review feedback, bot findings, human comments, approvals, conflicts, merges, staleness, tracked-PR claims and head changes, release attest/revoke/gate state, review dispatch/completion, scoped re-review, reviewer escalation, automation decisions, `branch-behind`, and `branch-update-failed`. Production messages contain no hard-coded organization, repository, bot, CI-command, or worker-routing policy.
 
 ### Persistent tracked pull requests
 
@@ -179,11 +180,46 @@ including idempotent no-ops and permanent rejections. The
 CLI `--actor` value is audit attribution asserted by a caller in
 the existing same-user local trust boundary; it is not cryptographic identity.
 
-This first tracked-lane stage intentionally keeps tracked-only merge execution at `notify`, even
-when global `automation.autoMerge` is `execute`, and rechecks that prohibition before executing a
-persisted action. Exact-head release attestation and
-provider-conditional merge/queue actions must be installed before the tracked lane can merge.
-Ordinary profile-authored PR behavior remains unchanged.
+With the default `releaseGate: none`, tracked-only merge execution remains at `notify`, even when
+global `automation.autoMerge` is `execute`, and the prohibition is rechecked before executing a
+persisted action. Ordinary profile-authored PR behavior remains unchanged.
+
+### Exact-head release gate
+
+Set `features.trackedPRs.releaseGate: exact-head-attestation` before creating a new claim generation
+to opt that claim into the external gate. Existing claims retain the gate mode they captured; use a
+safe unclaim and new claim to change modes. The release gate is generic: policy engines and human
+workflows resolve their own criteria, then record only the resulting actor, exact head SHA, and JSON
+evidence with `pr-shepherd attest`. Organization-specific rules belong in coordinator policy and
+profile guidance, not Shepherd.
+
+An attestation applies only while its SHA exactly equals GitHub's current head and its claim
+generation remains active. Missing, stale, and revoked attestations emit a durable
+`release-gate-blocked` fact and cannot create or execute a merge action. A same-head re-attestation
+after revoke creates a new attestation cycle and therefore a new decision. In `direct` mode,
+Shepherd refuses a new gated claim or attestation while persistent auto-merge or a merge-queue entry
+already exists. It calls GitHub's conditional merge with `expectedHeadOid` in `direct` mode; in `merge-queue` mode it calls
+conditional enqueue with `expectedHeadOid`. Gated claims never use persistent auto-merge.
+Applicability is fetched and checked again under a durable SQLite mutation mutex immediately before
+the provider mutation. Changing or disabling the configured gate cancels a persisted exact-head
+action rather than falling back to ordinary auto-merge. Revoke outstanding attestations and finish
+compensation before disabling the gate; cleanup revoke remains available afterward, but new
+attestations do not.
+
+`pr-shepherd revoke` atomically revokes active attestations and cancels local pending merge/enqueue
+actions. A completed—or crash-ambiguous pending—queue submission creates a durable dequeue
+compensation action; an inherited or crash-ambiguous legacy auto-merge action creates a durable
+disable-auto-merge compensation. Provider state checks make these retries idempotent, and failed
+compensation remains pending across restart even if the gate is later disabled. A direct
+merge cannot be undone after GitHub accepts it; the exact-head conditional and the shared mutex
+prevent a concurrent local revoke from crossing that submission, but no system can compensate a
+process crash after a completed direct merge. Safe unclaim is refused until attestation revocation
+and any queue compensation are complete.
+
+Attest and revoke require caller-supplied idempotency keys and persist their normalized evidence,
+actor, head/reason, result, and timestamps in SQLite. `pr-shepherd release-audit --limit 100
+--offset 0` prints this bounded, paginated history. As with claim controls, `--actor` is audit
+attribution under the same-user local trust boundary, not authenticated identity.
 
 Review-inbox completion facts include an outcome: `bot-auto-approved`, `already-reviewed`, or
 `assignment-ended`. Once an assignment reaches either of the first two terminal dispositions,
@@ -268,8 +304,11 @@ pr-shepherd -C /path/to/fleet events --limit 50
 pr-shepherd -C /path/to/fleet inbox
 pr-shepherd -C /path/to/fleet claim --repo owner/name --pr 123 --actor local-user --evidence-file evidence.json --idempotency-key claim-owner-name-123
 pr-shepherd -C /path/to/fleet unclaim --repo owner/name --pr 123 --actor local-user --evidence-file reason.json --idempotency-key unclaim-owner-name-123
+pr-shepherd -C /path/to/fleet attest --repo owner/name --pr 123 --head HEAD_SHA --actor local-user --evidence-file release.json --idempotency-key attest-owner-name-123-HEAD_SHA
+pr-shepherd -C /path/to/fleet revoke --repo owner/name --pr 123 --reason "release withdrawn" --actor local-user --evidence-file revoke.json --idempotency-key revoke-owner-name-123
 pr-shepherd -C /path/to/fleet tracked
 pr-shepherd -C /path/to/fleet tracked --audit --limit 100 --offset 0
+pr-shepherd -C /path/to/fleet release-audit --limit 100 --offset 0
 ```
 
 All commands accept these optional overrides:

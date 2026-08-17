@@ -43,7 +43,10 @@ const configSchema = strictObject({
   }).default({}),
   features: strictObject({
     authoredPRs: strictObject({ enabled: z.boolean().default(true) }).default({}),
-    trackedPRs: strictObject({ enabled: z.boolean().default(false) }).default({}),
+    trackedPRs: strictObject({
+      enabled: z.boolean().default(false),
+      releaseGate: z.enum(['none', 'exact-head-attestation']).default('none'),
+    }).default({}),
     reviewInbox: strictObject({
       enabled: z.boolean().default(false),
       ignoreDrafts: z.boolean().default(true),

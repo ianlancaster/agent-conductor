@@ -1,5 +1,6 @@
 import type { ShepherdConfig } from './config.js';
 import { buildEvent } from './events.js';
+import { ShepherdMutationMutex } from './mutex.js';
 import { patternMatches, repositoryInScope } from './scope.js';
 import { elapsedHours } from './time.js';
 import type {
@@ -10,6 +11,7 @@ import type {
   GitHubProvider,
   PullRequestDetails,
   PullRequestRef,
+  ReleaseGateStore,
   Review,
   ReviewThread,
   ReviewThreadComment,
@@ -77,6 +79,11 @@ interface ActionState {
   relatedNudgeKey?: string;
   relatedNudgeHeadSha?: string;
   completedAt?: string;
+  trackedGeneration?: number;
+  attestationHeadSha?: string;
+  attestationId?: string;
+  compensationFor?: string;
+  compensatesActionKey?: string;
 }
 
 export interface PollSummary {
@@ -139,15 +146,37 @@ function supportsTrackedPullRequests(store: ShepherdStore): store is TrackedPull
   );
 }
 
+function supportsReleaseGate(store: ShepherdStore): store is ReleaseGateStore {
+  const candidate = store as Partial<ReleaseGateStore>;
+  return (
+    supportsTrackedPullRequests(store) &&
+    typeof candidate.getReleaseGateStatus === 'function' &&
+    typeof candidate.getReleaseAttestation === 'function' &&
+    typeof candidate.getReleaseControlResult === 'function' &&
+    typeof candidate.listReleaseControlOperations === 'function' &&
+    typeof candidate.countReleaseControlOperations === 'function' &&
+    typeof candidate.canUnclaimReleaseGate === 'function' &&
+    typeof candidate.attestRelease === 'function' &&
+    typeof candidate.revokeRelease === 'function' &&
+    typeof candidate.completeReleaseCompensation === 'function' &&
+    typeof candidate.tryAcquireMutationLock === 'function' &&
+    typeof candidate.releaseMutationLock === 'function'
+  );
+}
+
 export class ShepherdEngine {
   private pollInFlight: Promise<PollSummary> | undefined;
+  private mutationMutex: ShepherdMutationMutex | undefined;
 
   constructor(
     private readonly config: ShepherdConfig,
     private readonly github: GitHubProvider,
     private readonly store: ShepherdStore,
     private readonly clock: () => Date = () => new Date(),
-  ) {}
+    mutationMutex?: ShepherdMutationMutex,
+  ) {
+    this.mutationMutex = mutationMutex;
+  }
 
   pollOnce(): Promise<PollSummary> {
     if (this.pollInFlight !== undefined) return this.pollInFlight;
@@ -183,6 +212,47 @@ export class ShepherdEngine {
         }
       }
       try {
+        if (entity.value.mutation.type === 'enable-auto-merge' && supportsReleaseGate(this.store)) {
+          const mutated = await this.releaseMutex().runExclusive(async () => {
+            if (!this.actionStillApplicable(entity.value)) {
+              this.cancelAction(entity.key, entity.value, 'ownership changed before persistent auto-merge');
+              return false;
+            }
+            await this.github.mutate(entity.value.mutation);
+            this.completeAction(entity.key, entity.value, this.clock().toISOString());
+            return true;
+          });
+          if (mutated) completed += 1;
+          continue;
+        } else if (
+          entity.value.mutation.type === 'merge-exact-head' ||
+          entity.value.mutation.type === 'enqueue-exact-head'
+        ) {
+          const mutated = await this.releaseMutex().runExclusive(async () => {
+            const details = await this.github.getPullRequest(entity.value.mutation.pr);
+            if (!this.gatedActionStillApplicable(entity.value, details)) {
+              this.cancelAction(entity.key, entity.value, 'exact-head release gate is no longer applicable');
+              return false;
+            }
+            await this.github.mutate(entity.value.mutation);
+            this.completeAction(entity.key, entity.value, this.clock().toISOString());
+            return true;
+          });
+          if (mutated) completed += 1;
+          continue;
+        } else if (entity.value.mutation.type === 'dequeue' || entity.value.mutation.type === 'disable-auto-merge') {
+          await this.releaseMutex().runExclusive(async () => {
+            await this.github.mutate(entity.value.mutation);
+            const completedAt = this.clock().toISOString();
+            if (entity.value.compensationFor !== undefined) {
+              this.releaseStore().completeReleaseCompensation(entity.value.compensationFor, entity.key, completedAt);
+            } else {
+              this.completeAction(entity.key, entity.value, completedAt);
+            }
+          });
+          completed += 1;
+          continue;
+        }
         await this.github.mutate(entity.value.mutation);
         const completedAt = this.clock().toISOString();
         const updates: EntityUpdate[] = [
@@ -264,8 +334,40 @@ export class ShepherdEngine {
     this.store.logHealth('github-mutation-cancelled', `${key}: ${reason}`);
   }
 
+  private completeAction(key: string, action: ActionState, completedAt: string): void {
+    this.store.commit(
+      [{ key, kind: 'action', value: { ...action, status: 'completed', completedAt } satisfies ActionState }],
+      [],
+    );
+  }
+
+  private releaseStore(): ReleaseGateStore {
+    if (!supportsReleaseGate(this.store))
+      throw new Error('The Shepherd store does not support exact-head release gates.');
+    return this.store;
+  }
+
+  private releaseMutex(): ShepherdMutationMutex {
+    this.mutationMutex ??= new ShepherdMutationMutex(this.releaseStore(), this.clock);
+    return this.mutationMutex;
+  }
+
   private actionStillApplicable(action: ActionState): boolean {
+    if (action.mutation.type === 'dequeue' || action.mutation.type === 'disable-auto-merge') {
+      return supportsReleaseGate(this.store);
+    }
+    if (action.mutation.type === 'merge-exact-head' || action.mutation.type === 'enqueue-exact-head') {
+      return (
+        this.config.features.trackedPRs.enabled &&
+        this.config.features.trackedPRs.releaseGate === 'exact-head-attestation' &&
+        supportsReleaseGate(this.store)
+      );
+    }
     const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+    if (supportsReleaseGate(this.store)) {
+      const tracked = this.store.getTrackedPullRequest(action.mutation.pr);
+      if (tracked?.status === 'active' && tracked.releaseGate === 'exact-head-attestation') return false;
+    }
     if (authored?.sources?.authored === false && authored.sources.trackedGeneration !== undefined) {
       if (!this.config.features.trackedPRs.enabled || !supportsTrackedPullRequests(this.store)) return false;
       const tracked = this.store.getTrackedPullRequest(action.mutation.pr);
@@ -294,6 +396,39 @@ export class ShepherdEngine {
       this.checksReady(details) &&
       !changesRequested &&
       approvals.length >= this.config.reviews.requiredApprovals
+    );
+  }
+
+  private gatedActionStillApplicable(action: ActionState, details: PullRequestDetails): boolean {
+    if (
+      action.trackedGeneration === undefined ||
+      action.attestationHeadSha === undefined ||
+      action.attestationId === undefined ||
+      !this.config.features.trackedPRs.enabled ||
+      this.config.features.trackedPRs.releaseGate !== 'exact-head-attestation' ||
+      !supportsReleaseGate(this.store)
+    )
+      return false;
+    const tracked = this.store.getTrackedPullRequest(action.mutation.pr);
+    if (
+      tracked?.status !== 'active' ||
+      tracked.generation !== action.trackedGeneration ||
+      tracked.releaseGate !== 'exact-head-attestation' ||
+      details.state !== 'OPEN' ||
+      details.headSha !== action.attestationHeadSha ||
+      this.store.getReleaseGateStatus(details, tracked.generation, details.headSha) !== 'applicable' ||
+      this.store.getReleaseAttestation(details, tracked.generation, details.headSha)?.idempotencyKey !==
+        action.attestationId
+    )
+      return false;
+    const reviews = latestReviews(details.reviews);
+    const directBehind = this.config.github.mode === 'direct' && details.mergeStateStatus === 'BEHIND';
+    return (
+      details.mergeable === 'MERGEABLE' &&
+      !directBehind &&
+      this.checksReady(details) &&
+      !reviews.some((review) => review.state === 'CHANGES_REQUESTED') &&
+      reviews.filter((review) => review.state === 'APPROVED').length >= this.config.reviews.requiredApprovals
     );
   }
 
@@ -563,24 +698,25 @@ export class ShepherdEngine {
         details.mergeStateStatus === 'BEHIND' &&
         details.mergeable === 'MERGEABLE';
       const mergeReady = details.mergeable === 'MERGEABLE' && !directBehind;
-      if (
+      const releaseReady =
         mergeReady &&
         checksReady &&
         changesRequested.length === 0 &&
-        approvals.length >= this.config.reviews.requiredApprovals &&
-        (oldReviews.some((review) => review.state === 'CHANGES_REQUESTED') ||
-          approvals
+        approvals.length >= this.config.reviews.requiredApprovals;
+      const readinessChanged =
+        oldReviews.some((review) => review.state === 'CHANGES_REQUESTED') ||
+        approvals
+          .map((review) => review.id)
+          .sort()
+          .join(',') !==
+          oldApprovals
             .map((review) => review.id)
             .sort()
-            .join(',') !==
-            oldApprovals
-              .map((review) => review.id)
-              .sort()
-              .join(',') ||
-          !previousChecksReady ||
-          previousDetails?.mergeable !== 'MERGEABLE' ||
-          previousDetails?.headSha !== details.headSha)
-      ) {
+            .join(',') ||
+        !previousChecksReady ||
+        previousDetails?.mergeable !== 'MERGEABLE' ||
+        previousDetails?.headSha !== details.headSha;
+      if (releaseReady && readinessChanged) {
         events.push(
           buildEvent(
             this.config,
@@ -599,7 +735,67 @@ export class ShepherdEngine {
             now.toISOString(),
           ),
         );
-        if (details.autoMergeRequest === null) {
+      }
+      if (releaseReady && details.autoMergeRequest === null) {
+        const trackedClaim = tracked ? this.trackedStore().getTrackedPullRequest(pr) : undefined;
+        if (
+          trackedClaim?.status === 'active' &&
+          trackedClaim.generation === trackedGeneration &&
+          trackedClaim.releaseGate === 'exact-head-attestation'
+        ) {
+          const releaseStore = supportsReleaseGate(this.store) ? this.store : undefined;
+          const gateStatus =
+            this.config.features.trackedPRs.releaseGate !== 'exact-head-attestation' || releaseStore === undefined
+              ? 'disabled'
+              : releaseStore.getReleaseGateStatus(pr, trackedClaim.generation, details.headSha);
+          const attestation =
+            gateStatus === 'applicable'
+              ? releaseStore?.getReleaseAttestation(pr, trackedClaim.generation, details.headSha)
+              : undefined;
+          if (gateStatus !== 'applicable' || attestation?.status !== 'active') {
+            const blockedReason = gateStatus === 'applicable' ? 'missing' : gateStatus;
+            events.push(
+              buildEvent(
+                this.config,
+                'release-gate-blocked',
+                pr,
+                { generation: trackedClaim.generation, headSha: details.headSha, reason: blockedReason },
+                { reason: blockedReason, title: details.title, url: details.url },
+                now.toISOString(),
+              ),
+            );
+          } else {
+            const mutation: GitHubMutation =
+              this.config.github.mode === 'merge-queue'
+                ? { type: 'enqueue-exact-head', pr, headSha: details.headSha }
+                : {
+                    type: 'merge-exact-head',
+                    pr,
+                    headSha: details.headSha,
+                    mergeMethod: this.config.github.mergeMethod,
+                  };
+            this.addDecision(
+              'auto-merge-decision',
+              this.config.automation.autoMerge,
+              pr,
+              {
+                headSha: details.headSha,
+                mergeMethod: this.config.github.mergeMethod,
+                releaseGate: 'exact-head-attestation',
+                attestationId: attestation.idempotencyKey,
+              },
+              { mergeMethod: this.config.github.mergeMethod, title: details.title, url: details.url },
+              mutation,
+              events,
+              actions,
+              {
+                trackedGeneration: trackedClaim.generation,
+                attestationHeadSha: details.headSha,
+                attestationId: attestation.idempotencyKey,
+              },
+            );
+          }
+        } else {
           const autoMergeMode =
             tracked && !authored && this.config.automation.autoMerge === 'execute'
               ? 'notify'
@@ -792,16 +988,19 @@ export class ShepherdEngine {
     mutation: GitHubMutation,
     events: ShepherdEvent[],
     actions: EntityUpdate[],
+    actionContext: Pick<ActionState, 'trackedGeneration' | 'attestationHeadSha' | 'attestationId'> = {},
   ): void {
     if (mode === 'off') return;
     const event = buildEvent(this.config, type, pr, identity, { mode, ...facts }, this.clock().toISOString());
     events.push(event);
     if (mode === 'execute') {
       const expectedHeadSha = typeof identity.headSha === 'string' ? identity.headSha : undefined;
+      const key = `action:${event.id}`;
+      if (this.store.getEntity(key) !== undefined) return;
       actions.push({
-        key: `action:${event.id}`,
+        key,
         kind: 'action',
-        value: { status: 'pending', mutation, expectedHeadSha } satisfies ActionState,
+        value: { status: 'pending', mutation, expectedHeadSha, ...actionContext } satisfies ActionState,
       });
     }
   }
@@ -1391,7 +1590,11 @@ export class ShepherdEngine {
       candidate.number === pr.number && candidate.repo.toLowerCase() === pr.repo.toLowerCase();
     const actions = this.store
       .listEntities<ActionState>('action')
-      .filter((entity) => samePr(entity.value.mutation.pr))
+      .filter(
+        (entity) =>
+          samePr(entity.value.mutation.pr) &&
+          !(entity.value.compensationFor !== undefined && entity.value.status === 'pending'),
+      )
       .map((entity) => entity.key);
     const nudges = this.store
       .listEntities<NudgeState>('nudge')

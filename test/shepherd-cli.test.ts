@@ -15,7 +15,7 @@ function run(args: string[]): string {
 
 describe('PR Shepherd CLI profile discovery', () => {
   it('exposes explicit bounded claim and unclaim control inputs', () => {
-    for (const command of ['claim', 'unclaim']) {
+    for (const command of ['claim', 'unclaim', 'attest', 'revoke']) {
       const help = run([command, '--help']);
       expect(help).toContain('--repo <owner/name>');
       expect(help).toContain('--pr <number>');
@@ -24,11 +24,17 @@ describe('PR Shepherd CLI profile discovery', () => {
       expect(help).toContain('--evidence-file <path>');
       expect(help).toContain('--idempotency-key <key>');
     }
+    expect(run(['attest', '--help'])).toContain('--head <sha>');
+    expect(run(['revoke', '--help'])).toContain('--reason <text>');
     const trackedHelp = run(['tracked', '--help']);
     expect(trackedHelp).toContain('Print durable tracked pull-request claims');
     expect(trackedHelp).toContain('--audit');
     expect(trackedHelp).toContain('--limit <count>');
     expect(trackedHelp).toContain('--offset <count>');
+    const releaseAuditHelp = run(['release-audit', '--help']);
+    expect(releaseAuditHelp).toContain('durable exact-head release-control audit log');
+    expect(releaseAuditHelp).toContain('--limit <count>');
+    expect(releaseAuditHelp).toContain('--offset <count>');
   });
 
   it('initializes the fleet-default profile copy-once and validates it structurally', () => {

@@ -19,11 +19,15 @@ export const SHEPHERD_EVENT_TYPES = [
   'tracked-pr-claimed',
   'tracked-pr-unclaimed',
   'head-changed',
+  'release-attested',
+  'release-revoked',
+  'release-gate-blocked',
 ] as const;
 
 export type ShepherdEventType = (typeof SHEPHERD_EVENT_TYPES)[number];
 export type AutomationMode = 'off' | 'notify' | 'execute';
 export type MergeMethod = 'squash' | 'merge' | 'rebase';
+export type ReleaseGate = 'none' | 'exact-head-attestation';
 export type DiscoveryKind = 'authored' | 'review-inbox' | 'review-follow-up' | 'reviewer-nudge';
 
 export interface PullRequestRef {
@@ -124,12 +128,21 @@ export interface DiscoveryResult<T> {
 
 export type GitHubMutation =
   | { type: 'enable-auto-merge'; pr: PullRequestRef; mergeMethod: MergeMethod }
+  | { type: 'merge-exact-head'; pr: PullRequestRef; headSha: string; mergeMethod: MergeMethod }
+  | { type: 'enqueue-exact-head'; pr: PullRequestRef; headSha: string }
+  | { type: 'dequeue'; pr: PullRequestRef }
+  | { type: 'disable-auto-merge'; pr: PullRequestRef }
   | { type: 'update-branch'; pr: PullRequestRef }
   | { type: 'post-reviewer-comment'; pr: PullRequestRef; reviewer: string; body: string };
 
 export interface GitHubProvider {
   discover(kind: DiscoveryKind, githubUser: string): Promise<DiscoveryResult<PullRequestSummary>>;
   getPullRequest(pr: PullRequestRef): Promise<PullRequestDetails>;
+  getMergeAutomationState?(pr: PullRequestRef): Promise<{
+    headSha: string;
+    autoMergeEnabled: boolean;
+    queued: boolean;
+  }>;
   mutate(mutation: GitHubMutation): Promise<void>;
 }
 
@@ -192,6 +205,7 @@ export interface TrackedPullRequest extends PullRequestRef {
   unclaimedAt: string | null;
   terminalState: 'CLOSED' | 'MERGED' | null;
   baselinePending: boolean;
+  releaseGate: ReleaseGate;
 }
 
 export type TrackedControlOperationType = 'claim' | 'unclaim';
@@ -218,6 +232,53 @@ export interface TrackedControlRequest extends PullRequestRef {
   idempotencyKey: string;
   requestHash: string;
   occurredAt: string;
+  releaseGate?: ReleaseGate;
+}
+
+export interface ReleaseAttestation extends PullRequestRef {
+  idempotencyKey: string;
+  generation: number;
+  headSha: string;
+  status: 'active' | 'revoked';
+  actor: string;
+  evidence: unknown;
+  attestedAt: string;
+  revokedAt: string | null;
+  revokeReason: string | null;
+}
+
+export type ReleaseGateStatus = 'applicable' | 'missing' | 'stale' | 'revoked';
+
+export interface ReleaseControlResult extends PullRequestRef {
+  operation: 'attest' | 'revoke';
+  outcome: 'attested' | 'already-attested' | 'revoked' | 'already-revoked';
+  generation: number;
+  headSha: string | null;
+  idempotentReplay: boolean;
+  compensation: 'none' | 'completed' | 'pending';
+  compensationActionKeys: string[];
+}
+
+export interface ReleaseControlRequest extends PullRequestRef {
+  operation: 'attest' | 'revoke';
+  actor: string;
+  evidence: unknown;
+  reason?: string;
+  headSha?: string;
+  idempotencyKey: string;
+  requestHash: string;
+  occurredAt: string;
+}
+
+export interface ReleaseControlAuditRecord extends PullRequestRef {
+  idempotencyKey: string;
+  operation: ReleaseControlRequest['operation'];
+  actor: string;
+  evidence: unknown;
+  reason: string | null;
+  headSha: string | null;
+  result: ReleaseControlResult;
+  createdAt: string;
 }
 
 export interface TrackedControlAuditRecord extends PullRequestRef {
@@ -296,4 +357,35 @@ export interface TrackedPullRequestStore extends ShepherdStore {
     recipient: string | undefined,
     deleteKeys: string[],
   ): TrackedObservationResult;
+}
+
+export interface MutationMutexStore {
+  tryAcquireMutationLock(owner: string, now: string, expiresAt: string): boolean;
+  releaseMutationLock(owner: string): void;
+}
+
+export interface ReleaseGateStore extends TrackedPullRequestStore, MutationMutexStore {
+  getReleaseGateStatus(pr: PullRequestRef, generation: number, headSha: string): ReleaseGateStatus;
+  getReleaseAttestation(pr: PullRequestRef, generation: number, headSha: string): ReleaseAttestation | undefined;
+  listReleaseControlOperations(limit: number, offset?: number): ReleaseControlAuditRecord[];
+  countReleaseControlOperations(): number;
+  canUnclaimReleaseGate(pr: PullRequestRef, generation: number): boolean;
+  attestRelease(
+    request: ReleaseControlRequest,
+    generation: number,
+    event: ShepherdEvent,
+    recipient?: string,
+  ): ReleaseControlResult;
+  revokeRelease(
+    request: ReleaseControlRequest,
+    generation: number,
+    event: ShepherdEvent | undefined,
+    recipient?: string,
+  ): ReleaseControlResult;
+  getReleaseControlResult(request: ReleaseControlRequest): ReleaseControlResult | undefined;
+  completeReleaseCompensation(
+    idempotencyKey: string,
+    actionKey: string,
+    completedAt: string,
+  ): ReleaseControlResult | undefined;
 }

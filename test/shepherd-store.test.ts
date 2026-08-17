@@ -19,6 +19,44 @@ afterEach(() => {
 });
 
 describe('PR Shepherd SQLite store', () => {
+  it('migrates a Stage 1 tracked claim to the inert release-gate default', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-release-migration-'));
+    dirs.push(dir);
+    const path = join(dir, 'shepherd.db');
+    const stageOne = openSqliteDatabase(path);
+    stageOne.exec(`
+      CREATE TABLE shepherd_tracked_prs (
+        repo_key TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        pr_number INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        actor TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        claimed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        unclaimed_at TEXT,
+        terminal_state TEXT,
+        baseline_pending INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (repo_key, pr_number)
+      );
+      INSERT INTO shepherd_tracked_prs VALUES
+        ('acme/api', 'Acme/API', 7, 'active', 1, 'operator', '{}',
+         '2026-08-17T00:00:00Z', '2026-08-17T00:00:00Z', NULL, NULL, 0);
+      PRAGMA user_version = 2;
+    `);
+    stageOne.close();
+
+    const migrated = new SqliteShepherdStore(path);
+    expect(migrated.getTrackedPullRequest({ repo: 'acme/api', number: 7 })).toMatchObject({
+      status: 'active',
+      generation: 1,
+      releaseGate: 'none',
+    });
+    expect(migrated.listReleaseControlOperations(10)).toEqual([]);
+    migrated.close();
+  });
+
   it('applies the additive tracked-PR migration without changing existing entity data', () => {
     const dir = mkdtempSync(join(tmpdir(), 'shepherd-migration-'));
     dirs.push(dir);

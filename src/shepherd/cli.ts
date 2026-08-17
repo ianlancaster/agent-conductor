@@ -6,7 +6,7 @@ import { ensureShepherdScaffold } from '../cli/scaffold.js';
 import { resolveFleetPaths } from '../config/paths.js';
 import { PACKAGE_VERSION } from '../version.js';
 import { assertShepherdProfileReady, loadShepherdConfig, type ConfigOverrides, type ShepherdConfig } from './config.js';
-import { MAX_TRACKED_EVIDENCE_BYTES, TrackedPullRequestControl } from './control.js';
+import { MAX_TRACKED_EVIDENCE_BYTES, ReleaseGateControl, TrackedPullRequestControl } from './control.js';
 import { ShepherdEngine } from './engine.js';
 import { GhGitHubProvider } from './github.js';
 import { ConductorCoordinatorSink, StdoutCoordinatorSink } from './sinks.js';
@@ -28,6 +28,14 @@ interface TrackedControlOptions extends CommonOptions {
   actor: string;
   evidenceFile: string;
   idempotencyKey: string;
+}
+
+interface AttestOptions extends TrackedControlOptions {
+  head: string;
+}
+
+interface RevokeOptions extends TrackedControlOptions {
+  reason: string;
 }
 
 const program = new Command()
@@ -108,6 +116,7 @@ function build(options: CommonOptions): {
 
 function buildTrackedControl(options: CommonOptions): {
   control: TrackedPullRequestControl;
+  releaseControl: ReleaseGateControl;
   store: SqliteShepherdStore;
 } {
   const path = configPath(options);
@@ -115,7 +124,12 @@ function buildTrackedControl(options: CommonOptions): {
   const resolved = config(options);
   mkdirSync(dirname(resolved.databasePath), { recursive: true });
   const store = new SqliteShepherdStore(resolved.databasePath);
-  return { control: new TrackedPullRequestControl(resolved, new GhGitHubProvider(resolved), store), store };
+  const github = new GhGitHubProvider(resolved);
+  return {
+    control: new TrackedPullRequestControl(resolved, github, store),
+    releaseControl: new ReleaseGateControl(resolved, github, store),
+    store,
+  };
 }
 
 function parsePrNumber(raw: string): number {
@@ -263,13 +277,59 @@ trackedControlCommand(
 
 trackedControlCommand(
   program.command('unclaim').description('Stop tracking a persistently claimed pull request'),
-).action((options: TrackedControlOptions) => {
+).action(async (options: TrackedControlOptions) => {
   const { control, store } = buildTrackedControl(options);
   try {
     print(
-      control.unclaim({
+      await control.unclaimSafely({
         repo: options.repo,
         number: parsePrNumber(options.pr),
+        actor: options.actor,
+        evidence: readEvidence(options.evidenceFile),
+        idempotencyKey: options.idempotencyKey,
+      }),
+    );
+  } finally {
+    store.close();
+  }
+});
+
+trackedControlCommand(
+  program
+    .command('attest')
+    .description('Attest release evidence for the exact current pull-request head')
+    .requiredOption('--head <sha>', 'Exact current GitHub head object ID'),
+).action(async (options: AttestOptions) => {
+  const { releaseControl, store } = buildTrackedControl(options);
+  try {
+    print(
+      await releaseControl.attest({
+        repo: options.repo,
+        number: parsePrNumber(options.pr),
+        headSha: options.head,
+        actor: options.actor,
+        evidence: readEvidence(options.evidenceFile),
+        idempotencyKey: options.idempotencyKey,
+      }),
+    );
+  } finally {
+    store.close();
+  }
+});
+
+trackedControlCommand(
+  program
+    .command('revoke')
+    .description('Revoke release eligibility for a tracked pull request')
+    .requiredOption('--reason <text>', 'Bounded audit reason for revocation'),
+).action(async (options: RevokeOptions) => {
+  const { releaseControl, store } = buildTrackedControl(options);
+  try {
+    print(
+      await releaseControl.revoke({
+        repo: options.repo,
+        number: parsePrNumber(options.pr),
+        reason: options.reason,
         actor: options.actor,
         evidence: readEvidence(options.evidenceFile),
         idempotencyKey: options.idempotencyKey,
@@ -303,6 +363,28 @@ common(
     const total = store.countTrackedControlOperations();
     const operations = store.listTrackedControlOperations(limit, offset);
     print({ claims, operations, page: { limit, offset, total, hasMore: offset + operations.length < total } });
+  } finally {
+    store.close();
+  }
+});
+
+common(
+  program
+    .command('release-audit')
+    .description('Print the durable exact-head release-control audit log')
+    .option('--limit <count>', 'Maximum release operations', '100')
+    .option('--offset <count>', 'Release operation offset', '0'),
+).action((options: CommonOptions & { limit: string; offset: string }) => {
+  const resolved = config(options);
+  const store = new SqliteShepherdStore(resolved.databasePath);
+  try {
+    const limit = Number(options.limit);
+    const offset = Number(options.offset);
+    if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('--limit must be a positive integer.');
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('--offset must be a non-negative integer.');
+    const total = store.countReleaseControlOperations();
+    const operations = store.listReleaseControlOperations(limit, offset);
+    print({ operations, page: { limit, offset, total, hasMore: offset + operations.length < total } });
   } finally {
     store.close();
   }

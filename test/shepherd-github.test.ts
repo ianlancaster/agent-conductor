@@ -356,4 +356,126 @@ describe('async gh provider', () => {
       ['pr', 'update-branch', '7', '-R', 'acme/api'],
     ]);
   });
+
+  it('uses expectedHeadOid for direct merge and merge-queue enqueue mutations', async () => {
+    const calls: string[][] = [];
+    const headSha = 'a'.repeat(40);
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query PullRequestMutationState')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: { id: 'PR_node', headRefOid: headSha, autoMergeRequest: null, mergeQueueEntry: null },
+              },
+            },
+          });
+        }
+        return JSON.stringify({ data: {} });
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+
+    await provider.mutate({
+      type: 'merge-exact-head',
+      pr: { repo: 'acme/api', number: 7 },
+      headSha,
+      mergeMethod: 'squash',
+    });
+    await provider.mutate({ type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha });
+
+    const mutations = calls.filter((args) => (args.find((arg) => arg.startsWith('query=')) ?? '').includes('mutation'));
+    expect(mutations).toHaveLength(2);
+    expect(mutations[0]).toEqual(expect.arrayContaining([`expectedHeadOid=${headSha}`, 'mergeMethod=SQUASH']));
+    expect(mutations[0]?.find((arg) => arg.startsWith('query='))).toContain('mergePullRequest');
+    expect(mutations[1]).toEqual(expect.arrayContaining([`expectedHeadOid=${headSha}`]));
+    expect(mutations[1]?.find((arg) => arg.startsWith('query='))).toContain('enqueuePullRequest');
+  });
+
+  it('makes enqueue and dequeue retries state-aware and rejects a changed head before mutation', async () => {
+    const calls: string[][] = [];
+    const headSha = 'a'.repeat(40);
+    const states = [
+      { headRefOid: headSha, mergeQueueEntry: { id: 'MQ_1' } },
+      { headRefOid: headSha, mergeQueueEntry: { id: 'MQ_1' } },
+      { headRefOid: headSha, mergeQueueEntry: null },
+      { headRefOid: 'b'.repeat(40), mergeQueueEntry: null },
+    ];
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query PullRequestMutationState')) {
+          const state = states.shift();
+          if (state === undefined) throw new Error('unexpected state query');
+          return JSON.stringify({
+            data: { repository: { pullRequest: { id: 'PR_node', autoMergeRequest: null, ...state } } },
+          });
+        }
+        return JSON.stringify({ data: {} });
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+
+    await provider.mutate({ type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha });
+    await provider.mutate({ type: 'dequeue', pr: { repo: 'acme/api', number: 7 } });
+    await provider.mutate({ type: 'dequeue', pr: { repo: 'acme/api', number: 7 } });
+    await expect(
+      provider.mutate({ type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha }),
+    ).rejects.toThrow(/head changed/);
+
+    const mutationQueries = calls
+      .map((args) => args.find((arg) => arg.startsWith('query=')) ?? '')
+      .filter((query) => query.includes('mutation'));
+    expect(mutationQueries).toHaveLength(1);
+    expect(mutationQueries[0]).toContain('dequeuePullRequest');
+  });
+
+  it('makes persistent auto-merge disable retries state-aware', async () => {
+    const calls: string[][] = [];
+    const states = [{ enabledAt: '2026-08-17T10:00:00Z' }, null];
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query PullRequestMutationState')) {
+          const autoMergeRequest = states.shift();
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  id: 'PR_node',
+                  headRefOid: 'a'.repeat(40),
+                  autoMergeRequest,
+                  mergeQueueEntry: null,
+                },
+              },
+            },
+          });
+        }
+        return JSON.stringify({ data: {} });
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+
+    await provider.mutate({ type: 'disable-auto-merge', pr: { repo: 'acme/api', number: 7 } });
+    await provider.mutate({ type: 'disable-auto-merge', pr: { repo: 'acme/api', number: 7 } });
+
+    const mutations = calls
+      .map((args) => args.find((arg) => arg.startsWith('query=')) ?? '')
+      .filter((query) => query.includes('mutation'));
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0]).toContain('disablePullRequestAutoMerge');
+  });
 });

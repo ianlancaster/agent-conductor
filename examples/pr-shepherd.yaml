@@ -22,7 +22,7 @@ reviews:
   bots: []
 features:
   authoredPRs: { enabled: true }
-  trackedPRs: { enabled: false }
+  trackedPRs: { enabled: false, releaseGate: none }
   reviewInbox:
     enabled: false
     ignoreDrafts: true

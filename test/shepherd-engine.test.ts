@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseShepherdConfig, type ShepherdConfig } from '../src/shepherd/config.js';
-import { TrackedPullRequestControl } from '../src/shepherd/control.js';
+import { ReleaseGateControl, TrackedPullRequestControl } from '../src/shepherd/control.js';
 import { ShepherdEngine } from '../src/shepherd/engine.js';
 import { SqliteShepherdStore } from '../src/shepherd/store.js';
 import type {
@@ -22,9 +22,11 @@ class FakeGitHub implements GitHubProvider {
   readonly details = new Map<string, PullRequestDetails>();
   readonly mutations: GitHubMutation[] = [];
   mutationError: Error | undefined;
+  mutationHandler: ((mutation: GitHubMutation) => Promise<void>) | undefined;
   discoverCalls = 0;
   readonly getCalls: PullRequestRef[] = [];
   getHandler: ((pr: PullRequestRef) => Promise<PullRequestDetails>) | undefined;
+  queued = false;
 
   async discover(kind: DiscoveryKind): Promise<DiscoveryResult<PullRequestSummary>> {
     this.discoverCalls += 1;
@@ -39,7 +41,18 @@ class FakeGitHub implements GitHubProvider {
     return structuredClone(details);
   }
 
+  async getMergeAutomationState(pr: PullRequestRef): Promise<{
+    headSha: string;
+    autoMergeEnabled: boolean;
+    queued: boolean;
+  }> {
+    const details = this.details.get(`${pr.repo}#${String(pr.number)}`);
+    if (details === undefined) throw new Error(`missing ${pr.repo}#${String(pr.number)}`);
+    return { headSha: details.headSha, autoMergeEnabled: details.autoMergeRequest !== null, queued: this.queued };
+  }
+
   async mutate(mutation: GitHubMutation): Promise<void> {
+    if (this.mutationHandler !== undefined) return this.mutationHandler(structuredClone(mutation));
     if (this.mutationError !== undefined) throw this.mutationError;
     this.mutations.push(mutation);
   }
@@ -441,6 +454,423 @@ describe('Shepherd engine', () => {
     expect(store.listEntities('action')).toEqual([]);
     expect(store.listEvents().find((event) => event.type === 'auto-merge-decision')?.source.mode).toBe('notify');
     store.close();
+  });
+
+  it.each([
+    ['direct', 'merge-exact-head'],
+    ['merge-queue', 'enqueue-exact-head'],
+  ] as const)('uses an exact-head conditional %s mutation for an attested tracked PR', async (mode, mutationType) => {
+    const headSha = 'a'.repeat(40);
+    const github = new FakeGitHub();
+    github.details.set('acme/api#7', pr({ headSha }));
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      github: { mode },
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: { enabled: true, releaseGate: 'exact-head-attestation' },
+        staleThresholdHours: 24,
+      },
+      automation: { autoMerge: 'execute' },
+    });
+    await new TrackedPullRequestControl(resolved, github, store).claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: `claim-${mode}`,
+    });
+    await new ReleaseGateControl(resolved, github, store).attest({
+      repo: 'acme/api',
+      number: 7,
+      headSha,
+      actor: 'operator',
+      evidence: { verified: true },
+      idempotencyKey: `attest-${mode}`,
+    });
+    github.details.set(
+      'acme/api#7',
+      pr({
+        headSha,
+        reviews: [
+          { id: 'approval', author: 'reviewer', state: 'APPROVED', body: '', submittedAt: '2026-08-17T10:00:00Z' },
+        ],
+      }),
+    );
+
+    expect(await new ShepherdEngine(resolved, github, store).pollOnce()).toMatchObject({ mutations: 1 });
+    expect(github.mutations).toEqual([
+      expect.objectContaining({ type: mutationType, headSha, pr: { repo: 'acme/api', number: 7 } }),
+    ]);
+    expect(github.mutations.some((mutation) => mutation.type === 'enable-auto-merge')).toBe(false);
+    store.close();
+  });
+
+  it.each(['missing', 'stale', 'revoked'] as const)(
+    'blocks a ready gated PR when its exact-head attestation is %s',
+    async (gateState) => {
+      const originalHead = 'a'.repeat(40);
+      const currentHead = gateState === 'stale' ? 'b'.repeat(40) : originalHead;
+      const github = new FakeGitHub();
+      github.details.set('acme/api#7', pr({ headSha: originalHead }));
+      const store = new SqliteShepherdStore(':memory:');
+      const resolved = config({
+        features: {
+          authoredPRs: { enabled: false },
+          trackedPRs: { enabled: true, releaseGate: 'exact-head-attestation' },
+          staleThresholdHours: 24,
+        },
+        automation: { autoMerge: 'execute' },
+      });
+      await new TrackedPullRequestControl(resolved, github, store).claim({
+        repo: 'acme/api',
+        number: 7,
+        actor: 'operator',
+        evidence: {},
+        idempotencyKey: `claim-${gateState}`,
+      });
+      const release = new ReleaseGateControl(resolved, github, store);
+      if (gateState !== 'missing') {
+        await release.attest({
+          repo: 'acme/api',
+          number: 7,
+          headSha: originalHead,
+          actor: 'operator',
+          evidence: {},
+          idempotencyKey: `attest-${gateState}`,
+        });
+      }
+      if (gateState === 'revoked') {
+        await release.revoke({
+          repo: 'acme/api',
+          number: 7,
+          reason: 'withdrawn',
+          actor: 'operator',
+          evidence: {},
+          idempotencyKey: 'revoke-blocked',
+        });
+      }
+      github.details.set(
+        'acme/api#7',
+        pr({
+          headSha: currentHead,
+          reviews: [
+            { id: 'approval', author: 'reviewer', state: 'APPROVED', body: '', submittedAt: '2026-08-17T10:00:00Z' },
+          ],
+        }),
+      );
+
+      await new ShepherdEngine(resolved, github, store).pollOnce();
+      expect(github.mutations).toEqual([]);
+      expect(store.listEntities('action')).toEqual([]);
+      expect(store.listEvents().find((event) => event.type === 'release-gate-blocked')?.source.reason).toBe(gateState);
+      store.close();
+    },
+  );
+
+  it('can release an already-ready PR and creates a new decision after same-head revoke and re-attest', async () => {
+    const headSha = 'a'.repeat(40);
+    const ready = pr({
+      headSha,
+      reviews: [
+        { id: 'approval', author: 'reviewer', state: 'APPROVED', body: '', submittedAt: '2026-08-17T10:00:00Z' },
+      ],
+    });
+    const github = new FakeGitHub();
+    github.details.set('acme/api#7', ready);
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: { enabled: true, releaseGate: 'exact-head-attestation' },
+        staleThresholdHours: 24,
+      },
+      automation: { autoMerge: 'execute' },
+    });
+    await new TrackedPullRequestControl(resolved, github, store).claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'claim-ready',
+    });
+    const release = new ReleaseGateControl(resolved, github, store);
+    await release.attest({
+      repo: 'acme/api',
+      number: 7,
+      headSha,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'attest-cycle-1',
+    });
+    const engine = new ShepherdEngine(resolved, github, store);
+    expect(await engine.pollOnce()).toMatchObject({ mutations: 1 });
+    await release.revoke({
+      repo: 'acme/api',
+      number: 7,
+      reason: 'pause',
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'revoke-cycle-1',
+    });
+    await release.attest({
+      repo: 'acme/api',
+      number: 7,
+      headSha,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'attest-cycle-2',
+    });
+    expect(await engine.pollOnce()).toMatchObject({ mutations: 1 });
+    expect(github.mutations.filter((mutation) => mutation.type === 'merge-exact-head')).toHaveLength(2);
+    expect(store.listEvents().filter((event) => event.type === 'auto-merge-decision')).toHaveLength(2);
+    store.close();
+  });
+
+  it('cancels a retried exact-head action when GitHub has moved to a new head', async () => {
+    let now = new Date('2026-08-17T10:00:00Z');
+    const clock = () => now;
+    const headSha = 'a'.repeat(40);
+    const github = new FakeGitHub();
+    github.details.set('acme/api#7', pr({ headSha }));
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: { enabled: true, releaseGate: 'exact-head-attestation' },
+        staleThresholdHours: 24,
+      },
+      automation: { autoMerge: 'execute' },
+    });
+    await new TrackedPullRequestControl(resolved, github, store, clock).claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'claim-retry-head',
+    });
+    await new ReleaseGateControl(resolved, github, store, clock).attest({
+      repo: 'acme/api',
+      number: 7,
+      headSha,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'attest-retry-head',
+    });
+    github.details.set(
+      'acme/api#7',
+      pr({
+        headSha,
+        reviews: [{ id: 'approval', author: 'reviewer', state: 'APPROVED', body: '', submittedAt: now.toISOString() }],
+      }),
+    );
+    github.mutationError = new Error('temporary mutation failure');
+    const engine = new ShepherdEngine(resolved, github, store, clock);
+    await engine.pollOnce();
+    expect(store.listEntities<{ status: string }>('action')[0]?.value.status).toBe('pending');
+
+    github.mutationError = undefined;
+    github.details.set('acme/api#7', pr({ headSha: 'b'.repeat(40) }));
+    now = new Date('2026-08-17T10:01:00Z');
+    expect(await engine.drainActions()).toBe(0);
+    expect(github.mutations).toEqual([]);
+    expect(store.listEntities<{ status: string }>('action')[0]?.value.status).toBe('cancelled');
+    store.close();
+  });
+
+  it('serializes enqueue completion with revoke so an in-flight queue submission is compensated', async () => {
+    const headSha = 'a'.repeat(40);
+    const github = new FakeGitHub();
+    github.details.set('acme/api#7', pr({ headSha }));
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      github: { mode: 'merge-queue' },
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: { enabled: true, releaseGate: 'exact-head-attestation' },
+        staleThresholdHours: 24,
+      },
+      automation: { autoMerge: 'execute' },
+    });
+    await new TrackedPullRequestControl(resolved, github, store).claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'claim-race-revoke',
+    });
+    const release = new ReleaseGateControl(resolved, github, store);
+    await release.attest({
+      repo: 'acme/api',
+      number: 7,
+      headSha,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'attest-race-revoke',
+    });
+    github.details.set(
+      'acme/api#7',
+      pr({
+        headSha,
+        reviews: [
+          { id: 'approval', author: 'reviewer', state: 'APPROVED', body: '', submittedAt: '2026-08-17T10:00:00Z' },
+        ],
+      }),
+    );
+    let releaseEnqueue!: () => void;
+    let enqueueStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      enqueueStarted = resolve;
+    });
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type !== 'enqueue-exact-head') return;
+      enqueueStarted();
+      await new Promise<void>((resolve) => {
+        releaseEnqueue = resolve;
+      });
+    };
+    const poll = new ShepherdEngine(resolved, github, store).pollOnce();
+    await started;
+    const revoke = release.revoke({
+      repo: 'acme/api',
+      number: 7,
+      reason: 'stop',
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'revoke-race',
+    });
+    releaseEnqueue();
+
+    expect(await poll).toMatchObject({ mutations: 1 });
+    expect(await revoke).toMatchObject({ outcome: 'revoked', compensation: 'completed' });
+    expect(github.mutations.map((mutation) => mutation.type)).toEqual(['enqueue-exact-head', 'dequeue']);
+    store.close();
+  });
+
+  it('serializes gated claim with a legacy auto-merge submission and rejects inherited provider state', async () => {
+    const headSha = 'a'.repeat(40);
+    const ready = pr({
+      headSha,
+      reviews: [
+        { id: 'approval', author: 'reviewer', state: 'APPROVED', body: '', submittedAt: '2026-08-17T10:00:00Z' },
+      ],
+    });
+    const github = new FakeGitHub();
+    setDiscovery(github, 'authored', ready);
+    const store = new SqliteShepherdStore(':memory:');
+    const authoredConfig = config({ automation: { autoMerge: 'execute' } });
+    let releaseMutation!: () => void;
+    let mutationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      mutationStarted = resolve;
+    });
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type !== 'enable-auto-merge') return;
+      mutationStarted();
+      await new Promise<void>((resolve) => {
+        releaseMutation = resolve;
+      });
+      github.details.set('acme/api#7', { ...ready, autoMergeRequest: { mergeMethod: 'SQUASH' } });
+    };
+    const poll = new ShepherdEngine(authoredConfig, github, store).pollOnce();
+    await started;
+    const gatedConfig = config({
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: { enabled: true, releaseGate: 'exact-head-attestation' },
+        staleThresholdHours: 24,
+      },
+    });
+    const claim = new TrackedPullRequestControl(gatedConfig, github, store).claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'claim-after-auto-merge',
+    });
+    const rejectedClaim = expect(claim).rejects.toThrow(/persistent auto-merge/);
+    releaseMutation();
+
+    await expect(poll).resolves.toMatchObject({ mutations: 1 });
+    await rejectedClaim;
+    expect(store.listTrackedPullRequests()).toEqual([]);
+    store.close();
+  });
+
+  it('retries a durable revoke compensation after restart even when the release gate is disabled', async () => {
+    const headSha = 'a'.repeat(40);
+    const github = new FakeGitHub();
+    github.details.set('acme/api#7', pr({ headSha }));
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-release-restart-'));
+    const path = join(dir, 'shepherd.db');
+    try {
+      const resolved = config({
+        github: { mode: 'merge-queue' },
+        features: {
+          authoredPRs: { enabled: false },
+          trackedPRs: { enabled: true, releaseGate: 'exact-head-attestation' },
+          staleThresholdHours: 24,
+        },
+      });
+      const first = new SqliteShepherdStore(path);
+      await new TrackedPullRequestControl(resolved, github, first).claim({
+        repo: 'acme/api',
+        number: 7,
+        actor: 'operator',
+        evidence: {},
+        idempotencyKey: 'claim-restart-release',
+      });
+      const release = new ReleaseGateControl(resolved, github, first);
+      await release.attest({
+        repo: 'acme/api',
+        number: 7,
+        headSha,
+        actor: 'operator',
+        evidence: {},
+        idempotencyKey: 'attest-restart-release',
+      });
+      first.commit(
+        [
+          {
+            key: 'action:submitted-before-restart',
+            kind: 'action',
+            value: {
+              status: 'pending',
+              trackedGeneration: 1,
+              mutation: { type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha },
+            },
+          },
+        ],
+        [],
+      );
+      github.mutationError = new Error('process exits before compensation');
+      const revoked = await release.revoke({
+        repo: 'acme/api',
+        number: 7,
+        reason: 'stop',
+        actor: 'operator',
+        evidence: {},
+        idempotencyKey: 'revoke-restart',
+      });
+      expect(revoked.compensation).toBe('pending');
+      first.close();
+
+      github.mutationError = undefined;
+      const reopened = new SqliteShepherdStore(path);
+      const disabled = config({
+        features: { authoredPRs: { enabled: false }, trackedPRs: { enabled: false }, staleThresholdHours: 24 },
+      });
+      expect(await new ShepherdEngine(disabled, github, reopened).drainActions()).toBe(1);
+      expect(
+        reopened.listReleaseControlOperations(10).find((operation) => operation.idempotencyKey === 'revoke-restart')
+          ?.result.compensation,
+      ).toBe('completed');
+      reopened.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('cancels a persisted auto-merge action after ownership becomes tracked-only or tracking is disabled', async () => {

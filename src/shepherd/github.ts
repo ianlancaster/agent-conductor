@@ -139,6 +139,19 @@ interface RawReviewThread {
   };
 }
 
+interface RawPullRequestMutationState {
+  data: {
+    repository: {
+      pullRequest: {
+        id: string;
+        headRefOid: string;
+        autoMergeRequest: { enabledAt: string } | null;
+        mergeQueueEntry: { id: string } | null;
+      } | null;
+    } | null;
+  };
+}
+
 interface RawReviewThreadPage {
   data: {
     repository: {
@@ -247,6 +260,37 @@ query ReviewRequests($owner: String!, $name: String!, $number: Int!, $cursor: St
         pageInfo { hasNextPage endCursor }
       }
     }
+  }
+}`;
+
+const MERGE_EXACT_HEAD_MUTATION = `
+mutation MergeExactHead($pullRequestId: ID!, $expectedHeadOid: GitObjectID!, $mergeMethod: PullRequestMergeMethod!) {
+  mergePullRequest(input: { pullRequestId: $pullRequestId, expectedHeadOid: $expectedHeadOid, mergeMethod: $mergeMethod }) {
+    pullRequest { id merged }
+  }
+}`;
+
+const ENQUEUE_EXACT_HEAD_MUTATION = `
+mutation EnqueueExactHead($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
+  enqueuePullRequest(input: { pullRequestId: $pullRequestId, expectedHeadOid: $expectedHeadOid }) {
+    mergeQueueEntry { id }
+  }
+}`;
+
+const DEQUEUE_MUTATION = `
+mutation DequeuePullRequest($pullRequestId: ID!) {
+  dequeuePullRequest(input: { id: $pullRequestId }) { clientMutationId }
+}`;
+
+const DISABLE_AUTO_MERGE_MUTATION = `
+mutation DisableAutoMerge($pullRequestId: ID!) {
+  disablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId }) { pullRequest { id } }
+}`;
+
+const PULL_REQUEST_MUTATION_STATE_QUERY = `
+query PullRequestMutationState($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { id headRefOid autoMergeRequest { enabledAt } mergeQueueEntry { id } }
   }
 }`;
 
@@ -363,6 +407,19 @@ export class GhGitHubProvider implements GitHubProvider {
     };
   }
 
+  async getMergeAutomationState(pr: PullRequestRef): Promise<{
+    headSha: string;
+    autoMergeEnabled: boolean;
+    queued: boolean;
+  }> {
+    const state = await this.pullRequestMutationState(pr);
+    return {
+      headSha: state.headRefOid,
+      autoMergeEnabled: state.autoMergeRequest !== null,
+      queued: state.mergeQueueEntry !== null,
+    };
+  }
+
   async mutate(mutation: GitHubMutation): Promise<void> {
     if (mutation.type === 'enable-auto-merge') {
       await this.gh([
@@ -374,6 +431,40 @@ export class GhGitHubProvider implements GitHubProvider {
         '--auto',
         `--${mutation.mergeMethod}`,
       ]);
+      return;
+    }
+    if (mutation.type === 'merge-exact-head' || mutation.type === 'enqueue-exact-head') {
+      const state = await this.pullRequestMutationState(mutation.pr);
+      if (state.headRefOid.toLowerCase() !== mutation.headSha.toLowerCase()) {
+        throw new Error(
+          `GitHub head changed before the conditional mutation for ${mutation.pr.repo}#${String(mutation.pr.number)}.`,
+        );
+      }
+      if (mutation.type === 'merge-exact-head') {
+        await this.graphql(MERGE_EXACT_HEAD_MUTATION, {
+          pullRequestId: state.id,
+          expectedHeadOid: mutation.headSha,
+          mergeMethod: mutation.mergeMethod.toUpperCase(),
+        });
+      } else {
+        if (state.mergeQueueEntry !== null) return;
+        await this.graphql(ENQUEUE_EXACT_HEAD_MUTATION, {
+          pullRequestId: state.id,
+          expectedHeadOid: mutation.headSha,
+        });
+      }
+      return;
+    }
+    if (mutation.type === 'dequeue') {
+      const state = await this.pullRequestMutationState(mutation.pr);
+      if (state.mergeQueueEntry === null) return;
+      await this.graphql(DEQUEUE_MUTATION, { pullRequestId: state.id });
+      return;
+    }
+    if (mutation.type === 'disable-auto-merge') {
+      const state = await this.pullRequestMutationState(mutation.pr);
+      if (state.autoMergeRequest === null) return;
+      await this.graphql(DISABLE_AUTO_MERGE_MUTATION, { pullRequestId: state.id });
       return;
     }
     if (mutation.type === 'update-branch') {
@@ -513,6 +604,22 @@ export class GhGitHubProvider implements GitHubProvider {
         : undefined;
     } while (cursor !== undefined);
     return threads;
+  }
+
+  private async pullRequestMutationState(pr: PullRequestRef): Promise<{
+    id: string;
+    headRefOid: string;
+    autoMergeRequest: { enabledAt: string } | null;
+    mergeQueueEntry: { id: string } | null;
+  }> {
+    const { owner, name } = this.repoParts(pr.repo);
+    const raw = await this.graphql(PULL_REQUEST_MUTATION_STATE_QUERY, { owner, name, number: pr.number });
+    const response = this.json<RawPullRequestMutationState>(raw, `${pr.repo}#${String(pr.number)} mutation state`);
+    const state = response.data.repository?.pullRequest;
+    if (state === undefined || state === null) {
+      throw new Error(`GitHub returned no pull request for ${pr.repo}#${String(pr.number)}.`);
+    }
+    return state;
   }
 
   private async requestedReviewers(pr: PullRequestRef): Promise<RequestedReviewer[]> {
