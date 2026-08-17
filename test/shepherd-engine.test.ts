@@ -322,6 +322,56 @@ describe('Shepherd engine', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('cannot apply authored fallback from generation one over an overlapping generation-two claim', async () => {
+    const github = new FakeGitHub();
+    const initial = pr();
+    setDiscovery(github, 'authored', initial);
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-authored-reclaim-race-'));
+    const path = join(dir, 'shepherd.db');
+    const controlStore = new SqliteShepherdStore(path);
+    const engineStore = new SqliteShepherdStore(path);
+    const resolved = config({ features: { trackedPRs: { enabled: true }, staleThresholdHours: 24 } });
+    const engine = new ShepherdEngine(resolved, github, engineStore);
+    await engine.pollOnce();
+    const control = new TrackedPullRequestControl(resolved, github, controlStore);
+    await control.claim({ repo: initial.repo, number: 7, actor: 'operator', evidence: {}, idempotencyKey: 'claim-g1' });
+    let release!: (details: PullRequestDetails) => void;
+    let fetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      fetchStarted = resolve;
+    });
+    github.getHandler = () => {
+      fetchStarted();
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    };
+    const poll = engine.pollOnce();
+    await started;
+    control.unclaim({ repo: initial.repo, number: 7, actor: 'operator', evidence: {}, idempotencyKey: 'unclaim-g1' });
+    const generationTwo = pr({ headSha: 'generation-two' });
+    github.getHandler = undefined;
+    github.details.set('acme/api#7', generationTwo);
+    await control.claim({ repo: initial.repo, number: 7, actor: 'operator', evidence: {}, idempotencyKey: 'claim-g2' });
+    release(pr({ headSha: 'stale-generation-one' }));
+
+    expect(await poll).toMatchObject({ emitted: 0 });
+    expect(controlStore.getTrackedPullRequest(initial)).toMatchObject({ status: 'active', generation: 2 });
+    expect(
+      controlStore.getEntity<{
+        details: PullRequestDetails;
+        sources: { authored: boolean; trackedGeneration: number };
+      }>('authored:acme/api#7')?.value,
+    ).toMatchObject({
+      details: { headSha: 'generation-two' },
+      sources: { authored: true, trackedGeneration: 2 },
+    });
+    expect(controlStore.listEvents().some((event) => event.source.headSha === 'stale-generation-one')).toBe(false);
+    engineStore.close();
+    controlStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it('deduplicates a claimed PR that also appears in authored discovery', async () => {
     const github = new FakeGitHub();
     const details = pr();

@@ -288,4 +288,12 @@ export interface TrackedPullRequestStore extends ShepherdStore {
     deleteKeys: string[],
     terminalState: 'CLOSED' | 'MERGED' | undefined,
   ): TrackedObservationResult;
+  commitAuthoredObservationAfterTrackedRelease(
+    pr: PullRequestRef,
+    observedGeneration: number,
+    updates: EntityUpdate[],
+    events: ShepherdEvent[],
+    recipient: string | undefined,
+    deleteKeys: string[],
+  ): TrackedObservationResult;
 }

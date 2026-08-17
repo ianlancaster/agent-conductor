@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { isDeepStrictEqual } from 'node:util';
 import { applyMigrations, openSqliteDatabase, withTransaction } from '../store/sqlite.js';
 import { IdempotencyConflictError } from './types.js';
 import type {
@@ -491,6 +492,30 @@ export class SqliteShepherdStore implements TrackedPullRequestStore {
     });
   }
 
+  commitAuthoredObservationAfterTrackedRelease(
+    pr: PullRequestRef,
+    observedGeneration: number,
+    updates: EntityUpdate[],
+    events: ShepherdEvent[],
+    recipient: string | undefined,
+    deleteKeys: string[],
+  ): TrackedObservationResult {
+    return withTransaction(this.db, () => {
+      // The durable tracked row is retained after release. Taking a write lock on it closes the
+      // re-read/commit gap: a concurrent reclaim either wins first or installs its newer baseline
+      // after this authored fallback commits.
+      this.db
+        .prepare(
+          `UPDATE shepherd_tracked_prs SET updated_at = updated_at
+           WHERE repo_key = ? AND pr_number = ? AND generation >= ?`,
+        )
+        .run(repoKey(pr.repo), pr.number, observedGeneration);
+      const current = this.trackedRow(pr);
+      if (current?.status === 'active') return { inserted: [], applied: false };
+      return { inserted: this.commitWithin(updates, events, recipient, deleteKeys), applied: true };
+    });
+  }
+
   deleteEntities(keys: string[]): void {
     const remove = this.db.prepare('DELETE FROM shepherd_entities WHERE key = ?');
     withTransaction(this.db, () => {
@@ -628,13 +653,30 @@ export class SqliteShepherdStore implements TrackedPullRequestStore {
 
   private controlReplay(request: TrackedControlRequest): TrackedControlResult | undefined {
     const row = this.db
-      .prepare('SELECT request_hash, result_json FROM shepherd_control_operations WHERE idempotency_key = ?')
+      .prepare('SELECT * FROM shepherd_control_operations WHERE idempotency_key = ?')
       .get(request.idempotencyKey) as TrackedControlOperationRow | undefined;
     if (row === undefined) return undefined;
     if (row.request_hash !== request.requestHash) {
-      throw new IdempotencyConflictError(
-        `Idempotency key ${request.idempotencyKey} was already used for a different control request.`,
-      );
+      const equivalentLegacyRequest =
+        row.operation === request.operation &&
+        repoKey(row.repo) === repoKey(request.repo) &&
+        row.pr_number === request.number &&
+        row.actor === request.actor &&
+        isDeepStrictEqual(
+          parseJson<unknown>(row.evidence_json, `control operation ${request.idempotencyKey} evidence`),
+          request.evidence,
+        );
+      if (!equivalentLegacyRequest) {
+        throw new IdempotencyConflictError(
+          `Idempotency key ${request.idempotencyKey} was already used for a different control request.`,
+        );
+      }
+      this.db
+        .prepare(
+          `UPDATE shepherd_control_operations SET request_hash = ?
+           WHERE idempotency_key = ? AND request_hash = ?`,
+        )
+        .run(request.requestHash, request.idempotencyKey, row.request_hash);
     }
     return {
       ...parseJson<TrackedControlResult>(row.result_json, `control operation ${request.idempotencyKey}`),

@@ -398,13 +398,18 @@ export class ShepherdEngine {
             );
             summary.emitted += result.inserted.length;
             if (!result.applied && authoredKeys.has(key)) {
+              const currentTracked = this.trackedStore().getTrackedPullRequest(details);
+              if (currentTracked?.status === 'active') return;
               const fallback = this.evaluateAuthored(details, previous, isBaseline, false, true);
-              summary.emitted += this.store.commit(
+              const fallbackResult = this.trackedStore().commitAuthoredObservationAfterTrackedRelease(
+                details,
+                tracked.generation,
                 [{ key, kind: 'authored', value: fallback.state }, ...fallback.actions, ...fallback.nudges],
                 fallback.events,
                 this.recipient(),
                 details.state === 'OPEN' ? [] : this.relatedEntityKeys(details, key),
-              ).length;
+              );
+              summary.emitted += fallbackResult.inserted.length;
             }
           } else {
             summary.emitted += this.store.commit(

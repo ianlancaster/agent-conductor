@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseShepherdConfig, type ShepherdConfig } from '../src/shepherd/config.js';
 import { TrackedPullRequestControl } from '../src/shepherd/control.js';
@@ -130,6 +132,65 @@ describe('tracked pull request controls', () => {
     }
     expect(store.getTrackedPullRequest({ repo: 'acme/api', number: 7 })?.evidence).toEqual({ z: 1, a: 2 });
     store.close();
+  });
+
+  it('replays an equivalent operation whose hash was persisted with the legacy locale ordering', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-legacy-control-hash-'));
+    dirs.push(dir);
+    const path = join(dir, 'shepherd.db');
+    const evidence = { z: 1, ä: 2 };
+    const first = new SqliteShepherdStore(path);
+    await new TrackedPullRequestControl(config(), new FakeGitHub(), first).claim(input('claim-legacy-hash', evidence));
+    first.close();
+
+    const legacyCanonical = (value: unknown): string => {
+      if (Array.isArray(value)) return `[${value.map(legacyCanonical).join(',')}]`;
+      if (typeof value === 'object' && value !== null) {
+        return `{${Object.entries(value as Record<string, unknown>)
+          .sort(([left], [right]) => left.localeCompare(right, 'en-US'))
+          .map(([key, item]) => `${JSON.stringify(key)}:${legacyCanonical(item)}`)
+          .join(',')}}`;
+      }
+      return JSON.stringify(value);
+    };
+    const legacyHash = createHash('sha256')
+      .update(
+        legacyCanonical({
+          operation: 'claim',
+          repo: 'acme/api',
+          number: 7,
+          actor: 'local-operator',
+          evidence,
+        }),
+      )
+      .digest('hex');
+    const raw = new DatabaseSync(path);
+    const current = raw
+      .prepare('SELECT request_hash FROM shepherd_control_operations WHERE idempotency_key = ?')
+      .get('claim-legacy-hash') as { request_hash: string };
+    expect(legacyHash).not.toBe(current.request_hash);
+    raw
+      .prepare('UPDATE shepherd_control_operations SET request_hash = ? WHERE idempotency_key = ?')
+      .run(legacyHash, 'claim-legacy-hash');
+    raw.close();
+
+    const reopened = new SqliteShepherdStore(path);
+    expect(
+      await new TrackedPullRequestControl(config(), new FakeGitHub(), reopened).claim(
+        input('claim-legacy-hash', evidence),
+      ),
+    ).toMatchObject({ outcome: 'claimed', generation: 1, idempotentReplay: true });
+    reopened.close();
+
+    const verified = new DatabaseSync(path);
+    expect(
+      (
+        verified
+          .prepare('SELECT request_hash FROM shepherd_control_operations WHERE idempotency_key = ?')
+          .get('claim-legacy-hash') as { request_hash: string }
+      ).request_hash,
+    ).toBe(current.request_hash);
+    verified.close();
   });
 
   it('replaces an old lifecycle snapshot at claim time while preserving authored ownership', async () => {
