@@ -124,7 +124,13 @@ function latestReviews(reviews: Review[]): Review[] {
   for (const review of reviews) {
     const key = review.author.toLowerCase();
     const previous = latest.get(key);
-    if (previous === undefined || review.submittedAt > previous.submittedAt) latest.set(key, review);
+    if (
+      previous === undefined ||
+      review.submittedAt > previous.submittedAt ||
+      (review.submittedAt === previous.submittedAt && review.id > previous.id)
+    ) {
+      latest.set(key, review);
+    }
   }
   return [...latest.values()];
 }

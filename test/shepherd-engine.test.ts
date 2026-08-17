@@ -703,6 +703,42 @@ describe('Shepherd engine', () => {
       'thread-a',
       'thread-b',
     ]);
+
+    const observeActionableReviews = async (reviews: PullRequestDetails['reviews']) => {
+      const github = new FakeGitHub();
+      setDiscovery(github, 'authored', pr());
+      const store = new SqliteShepherdStore(':memory:');
+      const engine = new ShepherdEngine(config(), github, store, () => new Date('2026-07-20T11:00:00Z'));
+      await engine.pollOnce();
+      setDiscovery(github, 'authored', pr({ reviews }));
+      await engine.pollOnce();
+      const event = store.listEvents().find((item) => item.type === 'review-feedback');
+      store.close();
+      return event;
+    };
+    const equalTimeReviews: PullRequestDetails['reviews'] = [
+      {
+        id: 'review-a',
+        author: 'reviewer',
+        state: 'CHANGES_REQUESTED',
+        body: 'First actionable review.',
+        submittedAt: '2026-07-20T10:30:00Z',
+      },
+      {
+        id: 'review-b',
+        author: 'reviewer',
+        state: 'CHANGES_REQUESTED',
+        body: 'Second actionable review.',
+        submittedAt: '2026-07-20T10:30:00Z',
+      },
+    ];
+    const actionableForward = await observeActionableReviews(equalTimeReviews);
+    const actionableReverse = await observeActionableReviews([...equalTimeReviews].reverse());
+
+    expect(actionableReverse?.id).toBe(actionableForward?.id);
+    expect(actionableReverse?.source).toEqual(actionableForward?.source);
+    expect(actionableReverse?.message).toBe(actionableForward?.message);
+    expect(actionableForward?.source).toMatchObject({ reviewId: 'review-b', reviewIds: ['review-b'] });
   });
 
   it('bounds aggregate received-review events with explicit field and omission signals', async () => {
