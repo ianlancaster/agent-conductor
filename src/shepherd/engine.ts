@@ -15,6 +15,7 @@ import type {
   ReviewThreadComment,
   ShepherdEvent,
   ShepherdStore,
+  TrackedPullRequest,
 } from './types.js';
 
 interface AuthoredState {
@@ -23,6 +24,7 @@ interface AuthoredState {
   botAttempts: Record<string, number>;
   staleCycle: number;
   conflictCycle: number;
+  sources?: { authored: boolean; trackedGeneration?: number };
 }
 
 interface InboxState {
@@ -253,8 +255,12 @@ export class ShepherdEngine {
   }
 
   private actionStillApplicable(action: ActionState): boolean {
-    if (action.mutation.type === 'post-reviewer-comment') return true;
     const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+    if (authored?.sources?.authored === false && authored.sources.trackedGeneration !== undefined) {
+      const tracked = this.store.getTrackedPullRequest(action.mutation.pr);
+      if (tracked?.status !== 'active' || tracked.generation !== authored.sources.trackedGeneration) return false;
+    }
+    if (action.mutation.type === 'post-reviewer-comment') return true;
     if (authored?.details.state !== 'OPEN') return false;
     const details = authored.details;
     if (action.expectedHeadSha !== undefined && details.headSha !== action.expectedHeadSha) return false;
@@ -281,7 +287,7 @@ export class ShepherdEngine {
 
   private async poll(): Promise<PollSummary> {
     const summary: PollSummary = { discovered: 0, emitted: 0, mutations: 0, warnings: [] };
-    if (this.config.features.authoredPRs.enabled) {
+    if (this.config.features.authoredPRs.enabled || this.config.features.trackedPRs.enabled) {
       await this.runFeature('authored', () => this.pollAuthored(summary), summary);
     }
     if (this.config.features.reviewInbox.enabled) {
@@ -322,13 +328,33 @@ export class ShepherdEngine {
   }
 
   private async pollAuthored(summary: PollSummary): Promise<void> {
-    const discovery = await this.discover('authored', summary);
+    const discovery = this.config.features.authoredPRs.enabled
+      ? await this.discover('authored', summary)
+      : { items: [], exhaustive: true };
     const isBaseline = this.isBaseline('authored');
     const observed = new Set<string>();
+    const activeTracked = this.config.features.trackedPRs.enabled
+      ? this.store
+          .listTrackedPullRequests('active')
+          .filter((tracked) => repositoryInScope(tracked.repo, this.config.github))
+      : [];
+    const trackedByKey = new Map(activeTracked.map((tracked) => [prKey('authored', tracked), tracked]));
+    const candidates = new Map<string, PullRequestRef>();
+    const authoredKeys = new Set<string>();
 
     for (const item of discovery.items) {
-      if (item.isDraft) continue;
-      observed.add(prKey('authored', item));
+      const key = prKey('authored', item);
+      if (item.isDraft && !trackedByKey.has(key)) continue;
+      candidates.set(key, item);
+      authoredKeys.add(key);
+    }
+    for (const tracked of activeTracked) candidates.set(prKey('authored', tracked), tracked);
+    summary.discovered += [...candidates.keys()].filter(
+      (key) => !discovery.items.some((item) => prKey('authored', item) === key),
+    ).length;
+
+    for (const [candidateKey, item] of candidates) {
+      observed.add(candidateKey);
       await this.runItem(
         'authored',
         item,
@@ -338,7 +364,16 @@ export class ShepherdEngine {
           const key = prKey('authored', details);
           observed.add(key);
           const previous = this.store.getEntity<AuthoredState>(key)?.value;
-          const { state, events, actions, nudges } = this.evaluateAuthored(details, previous, isBaseline);
+          const tracked = trackedByKey.get(key);
+          const baseline = isBaseline || (previous === undefined && tracked?.baselinePending === true);
+          const { state, events, actions, nudges } = this.evaluateAuthored(
+            details,
+            previous,
+            baseline,
+            tracked !== undefined,
+            authoredKeys.has(key),
+            tracked?.generation,
+          );
           const inserted = this.store.commit(
             [{ key, kind: 'authored', value: state }, ...actions, ...nudges],
             events,
@@ -346,19 +381,39 @@ export class ShepherdEngine {
             details.state === 'OPEN' ? [] : this.relatedEntityKeys(details, key),
           );
           summary.emitted += inserted.length;
+          if (tracked !== undefined) {
+            if (details.state === 'OPEN') this.store.completeTrackedBaseline(details);
+            else this.store.markTrackedPullRequestTerminal(details, details.state, this.clock().toISOString());
+          }
         },
         summary,
       );
     }
 
-    if (discovery.exhaustive) await this.cleanupMissingAuthored(observed, summary, isBaseline);
+    if (this.config.features.authoredPRs.enabled && discovery.exhaustive) {
+      await this.cleanupMissingAuthored(observed, summary, isBaseline, trackedByKey);
+    }
+    this.cleanupReleasedTrackedLifecycle();
     if (!this.store.hasCompletedBootstrap('authored')) this.store.markBootstrapComplete('authored');
+  }
+
+  private cleanupReleasedTrackedLifecycle(): void {
+    for (const entity of this.store.listEntities<AuthoredState>('authored')) {
+      const sources = entity.value.sources;
+      if (sources?.authored !== false || sources.trackedGeneration === undefined) continue;
+      const tracked = this.store.getTrackedPullRequest(entity.value.details);
+      if (tracked?.status === 'active' && tracked.generation === sources.trackedGeneration) continue;
+      this.store.commit([], [], undefined, this.relatedEntityKeys(entity.value.details, entity.key));
+    }
   }
 
   private evaluateAuthored(
     details: PullRequestDetails,
     previous: AuthoredState | undefined,
     baseline: boolean,
+    tracked = false,
+    authored = true,
+    trackedGeneration?: number,
   ): { state: AuthoredState; events: ShepherdEvent[]; actions: EntityUpdate[]; nudges: EntityUpdate[] } {
     const now = this.clock();
     const events: ShepherdEvent[] = [];
@@ -392,6 +447,18 @@ export class ShepherdEngine {
         ),
       );
     } else if (!baseline && details.state === 'OPEN') {
+      if (tracked && previousDetails !== undefined && previousDetails.headSha !== details.headSha) {
+        events.push(
+          buildEvent(
+            this.config,
+            'head-changed',
+            pr,
+            { previousHeadSha: previousDetails.headSha, headSha: details.headSha },
+            { title: details.title, url: details.url },
+            now.toISOString(),
+          ),
+        );
+      }
       const failed = this.relevantChecks(details).filter(
         (check) => check.bucket === 'fail' || check.bucket === 'cancel',
       );
@@ -499,9 +566,13 @@ export class ShepherdEngine {
           ),
         );
         if (details.autoMergeRequest === null) {
+          const autoMergeMode =
+            tracked && !authored && this.config.automation.autoMerge === 'execute'
+              ? 'notify'
+              : this.config.automation.autoMerge;
           this.addDecision(
             'auto-merge-decision',
-            this.config.automation.autoMerge,
+            autoMergeMode,
             pr,
             { headSha: details.headSha, mergeMethod: this.config.github.mergeMethod },
             { mergeMethod: this.config.github.mergeMethod, title: details.title, url: details.url },
@@ -610,7 +681,14 @@ export class ShepherdEngine {
     }
 
     return {
-      state: { details, lastObservedAt: now.toISOString(), botAttempts, staleCycle, conflictCycle },
+      state: {
+        details,
+        lastObservedAt: now.toISOString(),
+        botAttempts,
+        staleCycle,
+        conflictCycle,
+        sources: { authored, ...(trackedGeneration === undefined ? {} : { trackedGeneration }) },
+      },
       events: baseline ? [] : events,
       actions: baseline ? [] : actions,
       nudges: baseline ? [] : nudges,
@@ -744,9 +822,14 @@ export class ShepherdEngine {
     );
   }
 
-  private async cleanupMissingAuthored(observed: Set<string>, summary: PollSummary, baseline: boolean): Promise<void> {
+  private async cleanupMissingAuthored(
+    observed: Set<string>,
+    summary: PollSummary,
+    baseline: boolean,
+    activeTracked: ReadonlyMap<string, TrackedPullRequest>,
+  ): Promise<void> {
     for (const entity of this.store.listEntities<AuthoredState>('authored')) {
-      if (observed.has(entity.key)) continue;
+      if (observed.has(entity.key) || activeTracked.has(entity.key)) continue;
       const previous = entity.value;
       let events: ShepherdEvent[] = [];
       try {

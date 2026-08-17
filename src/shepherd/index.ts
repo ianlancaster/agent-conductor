@@ -6,6 +6,7 @@ export { GhGitHubProvider, AsyncProcessExecutor } from './github.js';
 export type { ProcessExecutor } from './github.js';
 export { ConductorCoordinatorSink, StdoutCoordinatorSink } from './sinks.js';
 export { SqliteShepherdStore } from './store.js';
+export { TrackedPullRequestControl } from './control.js';
 export { ShepherdService } from './service.js';
 export {
   ShepherdRuntimeReporter,

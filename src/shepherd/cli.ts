@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { ensureShepherdScaffold } from '../cli/scaffold.js';
 import { resolveFleetPaths } from '../config/paths.js';
 import { PACKAGE_VERSION } from '../version.js';
 import { assertShepherdProfileReady, loadShepherdConfig, type ConfigOverrides, type ShepherdConfig } from './config.js';
+import { MAX_TRACKED_EVIDENCE_BYTES, TrackedPullRequestControl } from './control.js';
 import { ShepherdEngine } from './engine.js';
 import { GhGitHubProvider } from './github.js';
 import { ConductorCoordinatorSink, StdoutCoordinatorSink } from './sinks.js';
@@ -19,6 +20,14 @@ interface CommonOptions {
   coordinatorSession?: string;
   conductorEndpoint?: string;
   databasePath?: string;
+}
+
+interface TrackedControlOptions extends CommonOptions {
+  repo: string;
+  pr: string;
+  actor: string;
+  evidenceFile: string;
+  idempotencyKey: string;
 }
 
 const program = new Command()
@@ -97,6 +106,47 @@ function build(options: CommonOptions): {
   }
 }
 
+function buildTrackedControl(options: CommonOptions): {
+  control: TrackedPullRequestControl;
+  store: SqliteShepherdStore;
+} {
+  const path = configPath(options);
+  assertShepherdProfileReady(path);
+  const resolved = config(options);
+  mkdirSync(dirname(resolved.databasePath), { recursive: true });
+  const store = new SqliteShepherdStore(resolved.databasePath);
+  return { control: new TrackedPullRequestControl(resolved, new GhGitHubProvider(resolved), store), store };
+}
+
+function parsePrNumber(raw: string): number {
+  const number = Number(raw);
+  if (!Number.isSafeInteger(number) || number <= 0) throw new Error('--pr must be a positive integer.');
+  return number;
+}
+
+function readEvidence(path: string): unknown {
+  const resolved = resolve(path);
+  if (statSync(resolved).size > MAX_TRACKED_EVIDENCE_BYTES) {
+    throw new Error(`--evidence-file must not exceed ${String(MAX_TRACKED_EVIDENCE_BYTES)} bytes.`);
+  }
+  try {
+    return JSON.parse(readFileSync(resolved, 'utf8')) as unknown;
+  } catch (error) {
+    throw new Error(
+      `Unable to parse --evidence-file as JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function trackedControlCommand(command: Command): Command {
+  return common(command)
+    .requiredOption('--repo <owner/name>', 'Pull request repository')
+    .requiredOption('--pr <number>', 'Pull request number')
+    .requiredOption('--actor <identity>', 'Caller-asserted local audit identity')
+    .requiredOption('--evidence-file <path>', 'Path to a JSON evidence value (maximum 16 KiB)')
+    .requiredOption('--idempotency-key <key>', 'Stable caller-supplied operation key');
+}
+
 program
   .command('init')
   .description('Create the fleet PR Shepherd profile without replacing an existing file')
@@ -151,7 +201,10 @@ common(program.command('status').description('Show persisted Shepherd status')).
   try {
     print({
       profile: resolved.profile.githubUser,
-      authoredPRs: store.listEntities('authored').length,
+      authoredPRs: store
+        .listEntities<{ sources?: { authored?: boolean } }>('authored')
+        .filter((entity) => entity.value.sources?.authored !== false).length,
+      trackedPRs: store.listTrackedPullRequests('active').length,
       reviewInbox: store.listEntities('review-inbox').length,
       followUps: store.listEntities('review-follow-up').length,
       reviewerNudges: store.listEntities('nudge').length,
@@ -184,6 +237,60 @@ common(program.command('inbox').description('Print active review-inbox state')).
   const store = new SqliteShepherdStore(resolved.databasePath);
   try {
     print(store.listEntities('review-inbox'));
+  } finally {
+    store.close();
+  }
+});
+
+trackedControlCommand(
+  program.command('claim').description('Persistently claim an open pull request for tracking'),
+).action(async (options: TrackedControlOptions) => {
+  const { control, store } = buildTrackedControl(options);
+  try {
+    print(
+      await control.claim({
+        repo: options.repo,
+        number: parsePrNumber(options.pr),
+        actor: options.actor,
+        evidence: readEvidence(options.evidenceFile),
+        idempotencyKey: options.idempotencyKey,
+      }),
+    );
+  } finally {
+    store.close();
+  }
+});
+
+trackedControlCommand(
+  program.command('unclaim').description('Stop tracking a persistently claimed pull request'),
+).action((options: TrackedControlOptions) => {
+  const { control, store } = buildTrackedControl(options);
+  try {
+    print(
+      control.unclaim({
+        repo: options.repo,
+        number: parsePrNumber(options.pr),
+        actor: options.actor,
+        evidence: readEvidence(options.evidenceFile),
+        idempotencyKey: options.idempotencyKey,
+      }),
+    );
+  } finally {
+    store.close();
+  }
+});
+
+common(
+  program
+    .command('tracked')
+    .description('Print durable tracked pull-request claims')
+    .option('--audit', 'Include the durable claim/unclaim audit log'),
+).action((options: CommonOptions & { audit?: boolean }) => {
+  const resolved = config(options);
+  const store = new SqliteShepherdStore(resolved.databasePath);
+  try {
+    const claims = store.listTrackedPullRequests();
+    print(options.audit === true ? { claims, operations: store.listTrackedControlOperations() } : claims);
   } finally {
     store.close();
   }

@@ -43,6 +43,7 @@ const configSchema = strictObject({
   }).default({}),
   features: strictObject({
     authoredPRs: strictObject({ enabled: z.boolean().default(true) }).default({}),
+    trackedPRs: strictObject({ enabled: z.boolean().default(false) }).default({}),
     reviewInbox: strictObject({
       enabled: z.boolean().default(false),
       ignoreDrafts: z.boolean().default(true),

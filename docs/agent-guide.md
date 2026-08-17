@@ -727,6 +727,13 @@ The coordinator receives factual PR events and uses ordinary Conductor primitive
 spawn reviewers, request operator decisions, or coordinate fixes. Organization-specific guidance
 belongs in the Shepherd profile's per-event `guidance` map, not in the reusable engine.
 
+For PRs owned independently of `profile.githubUser`, enable the opt-in tracked-PR lane and use the
+idempotent local `claim`/`unclaim` commands. Claims survive review-request disappearance and reuse
+the authored lifecycle without changing review-inbox identity. Caller-supplied actor names are
+local audit attribution, not cryptographic identity. Keep tracked-only merge execution in notify
+mode until the exact-head release-gate stage is available; the first tracked-lane stage enforces
+that limitation even if the global authored automation setting is `execute`.
+
 When asked to configure Shepherd, first call `get_conductor_docs` without a topic and use its exact
 `shepherdConfig` and `supervisorConfig` paths. Elicit, rather than guess:
 

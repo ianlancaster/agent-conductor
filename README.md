@@ -416,6 +416,8 @@ observation first: authenticate `gh`, validate the profile, run one baseline-onl
 `poll --once` with stdout delivery, and move automation policies from `off` or `notify` to
 `execute` only after the observed decisions are correct. A managed Shepherd runs headless by
 default, appears in fleet status while healthy, and cannot take down Conductor if it fails.
+An optional durable tracked-PR lane can claim open PRs independently of that GitHub identity;
+its manual controls and lifecycle remain inside Shepherd rather than Conductor core.
 See [PR Shepherd V2](docs/pr-shepherd.md) for its policy and delivery model.
 
 ## How it works

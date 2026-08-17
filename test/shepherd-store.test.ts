@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { buildEvent } from '../src/shepherd/events.js';
 import { parseShepherdConfig } from '../src/shepherd/config.js';
 import { SqliteShepherdStore } from '../src/shepherd/store.js';
+import { openSqliteDatabase } from '../src/store/sqlite.js';
 
 const dirs: string[] = [];
 const config = parseShepherdConfig({
@@ -18,6 +19,29 @@ afterEach(() => {
 });
 
 describe('PR Shepherd SQLite store', () => {
+  it('applies the additive tracked-PR migration without changing existing entity data', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-migration-'));
+    dirs.push(dir);
+    const path = join(dir, 'shepherd.db');
+    const legacy = openSqliteDatabase(path);
+    legacy.exec(`
+      CREATE TABLE shepherd_entities (
+        key TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO shepherd_entities VALUES ('authored:acme/api#7', 'authored', '{"legacy":true}', '2026-08-17T00:00:00Z');
+      PRAGMA user_version = 1;
+    `);
+    legacy.close();
+
+    const migrated = new SqliteShepherdStore(path);
+    expect(migrated.getEntity('authored:acme/api#7')?.value).toEqual({ legacy: true });
+    expect(migrated.listTrackedPullRequests()).toEqual([]);
+    migrated.close();
+  });
+
   it('atomically commits cursor state, event, and outbox and deduplicates on restart', () => {
     const dir = mkdtempSync(join(tmpdir(), 'shepherd-store-'));
     dirs.push(dir);

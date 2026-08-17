@@ -118,6 +118,7 @@ Configuration is strict, versioned YAML: unknown keys and unknown guidance event
 | `reviews.requiredApprovals`             | Approval count required for readiness; default `1`.                                                                                    |
 | `reviews.bots[]`                        | Configurable bot username, actionable and positive patterns, inbox gating, and feedback-attempt limit.                                 |
 | `features.authoredPRs.enabled`          | Monitor authored pull requests; default `true`.                                                                                        |
+| `features.trackedPRs.enabled`           | Enable durable manual claim controls and the tracked owned-PR lane; disabled by default.                                               |
 | `features.reviewInbox`                  | Optional assigned-review workflow with draft, repository, and age filters; disabled by default.                                        |
 | `features.reviewFollowUp.enabled`       | Track actionable requested-change or inline-comment reviews and emit scoped follow-up transitions; disabled by default.                |
 | `features.reviewerNudge`                | Optional reviewer-comment/escalation workflow, including threshold, weekday handling, timezone, and repeat cap; disabled by default.   |
@@ -150,7 +151,35 @@ Coordinator and endpoint overrides apply only when YAML already declares `delive
 
 ## Events and organization-specific guidance
 
-The engine emits generic facts for CI failures, review feedback, bot findings, human comments, approvals, conflicts, merges, staleness, review dispatch/completion, scoped re-review, reviewer escalation, automation decisions, `branch-behind`, and `branch-update-failed`. Production messages contain no hard-coded organization, repository, bot, CI-command, or worker-routing policy.
+The engine emits generic facts for CI failures, review feedback, bot findings, human comments, approvals, conflicts, merges, staleness, tracked-PR claims and head changes, review dispatch/completion, scoped re-review, reviewer escalation, automation decisions, `branch-behind`, and `branch-update-failed`. Production messages contain no hard-coded organization, repository, bot, CI-command, or worker-routing policy.
+
+### Persistent tracked pull requests
+
+With `features.trackedPRs.enabled: true`, a local operator can explicitly claim an open pull request
+independently of `profile.githubUser`. Shepherd then direct-fetches that durable claim on every poll
+and applies the authored lifecycle for checks, feedback, comments, approvals, conflicts, staleness,
+head changes, closure, and merge. Review-request removal and review-inbox completion do not release
+the claim. A PR that is both profile-authored and claimed is fetched and evaluated once.
+
+Claims start with a baseline-only lifecycle observation, even when the profile uses
+`notify-current`, so claiming a mature PR does not replay all of its historical conditions. New
+changes after that baseline emit normally. Merge or closure marks the claim terminal and removes
+live lifecycle/action state while retaining the claim and control audit. Explicit unclaim creates a
+durable tombstone; a later manual claim increments the claim generation. Unknown or unreachable
+PRs produce a retryable error and no false claim. Closed and merged PRs produce durable,
+idempotently replayable rejections.
+
+Control mutations require a caller-supplied idempotency key. Reusing the same key and arguments
+returns the stored result; reusing it for different arguments is rejected. Evidence is a generic
+JSON value capped at 16 KiB and must not contain secrets. `pr-shepherd tracked --audit` prints the
+durable claims and operation history, including idempotent no-ops and permanent rejections. The
+CLI `--actor` value is audit attribution asserted by a caller in
+the existing same-user local trust boundary; it is not cryptographic identity.
+
+This first tracked-lane stage intentionally keeps tracked-only merge execution at `notify`, even
+when global `automation.autoMerge` is `execute`. Exact-head release attestation and
+provider-conditional merge/queue actions must be installed before the tracked lane can merge.
+Ordinary profile-authored PR behavior remains unchanged.
 
 Review-inbox completion facts include an outcome: `bot-auto-approved`, `already-reviewed`, or
 `assignment-ended`. Once an assignment reaches either of the first two terminal dispositions,
@@ -214,6 +243,15 @@ Delivery uses a persisted `shepherd:<event-id>:<recipient>` idempotency key. Onl
 
 For rollout, first compare `baseline-only` stdout behavior with the system being replaced. Stop the old system before enabling Conductor delivery, then move each automation policy from `notify` to `execute` independently.
 
+Use a fresh `databasePath`, `polling.bootstrap: baseline-only`, stdout delivery, and only `off` or
+`notify` automation for a shadow rollout. Bootstrap completion is stored by discovery kind, not by
+GitHub identity. Reusing a database after changing `profile.githubUser` (or after adding/changing a
+future selector definition) can therefore treat a different population as already bootstrapped.
+Also, durable outbox rows keep the recipient captured when each event was created; changing
+`delivery.coordinatorSession` does not retarget existing rows. Drain, park, or deliberately replace
+the database before an identity/selection/recipient cutover rather than assuming profile edits
+rewrite durable state.
+
 ## Command reference
 
 ```bash
@@ -224,6 +262,10 @@ pr-shepherd -C /path/to/fleet start
 pr-shepherd -C /path/to/fleet status
 pr-shepherd -C /path/to/fleet events --limit 50
 pr-shepherd -C /path/to/fleet inbox
+pr-shepherd -C /path/to/fleet claim --repo owner/name --pr 123 --actor local-user --evidence-file evidence.json --idempotency-key claim-owner-name-123
+pr-shepherd -C /path/to/fleet unclaim --repo owner/name --pr 123 --actor local-user --evidence-file reason.json --idempotency-key unclaim-owner-name-123
+pr-shepherd -C /path/to/fleet tracked
+pr-shepherd -C /path/to/fleet tracked --audit
 ```
 
 All commands accept these optional overrides:

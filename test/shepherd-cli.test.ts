@@ -14,6 +14,21 @@ function run(args: string[]): string {
 }
 
 describe('PR Shepherd CLI profile discovery', () => {
+  it('exposes explicit bounded claim and unclaim control inputs', () => {
+    for (const command of ['claim', 'unclaim']) {
+      const help = run([command, '--help']);
+      expect(help).toContain('--repo <owner/name>');
+      expect(help).toContain('--pr <number>');
+      expect(help).toContain('--actor <identity>');
+      expect(help).toContain('Caller-asserted local audit identity');
+      expect(help).toContain('--evidence-file <path>');
+      expect(help).toContain('--idempotency-key <key>');
+    }
+    const trackedHelp = run(['tracked', '--help']);
+    expect(trackedHelp).toContain('Print durable tracked pull-request claims');
+    expect(trackedHelp).toContain('--audit');
+  });
+
   it('initializes the fleet-default profile copy-once and validates it structurally', () => {
     const dir = mkdtempSync(join(tmpdir(), 'shepherd-cli-'));
     try {

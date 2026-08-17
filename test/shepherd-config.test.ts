@@ -10,10 +10,28 @@ describe('PR Shepherd V2 configuration', () => {
   it('uses safe defaults while keeping authored PR discovery enabled', () => {
     const config = parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } });
     expect(config.features.authoredPRs.enabled).toBe(true);
+    expect(config.features.trackedPRs.enabled).toBe(false);
     expect(config.features.reviewInbox.enabled).toBe(false);
     expect(config.automation).toEqual({ autoMerge: 'notify', branchUpdate: 'notify', reviewerComment: 'notify' });
     expect(config.delivery).toEqual({ type: 'stdout' });
     expect(config.github.mergeMethod).toBe('squash');
+  });
+
+  it('accepts only the inert tracked-PR feature flag in the first tracked-lane stage', () => {
+    expect(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        features: { trackedPRs: { enabled: true } },
+      }).features.trackedPRs,
+    ).toEqual({ enabled: true });
+    expect(() =>
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        features: { trackedPRs: { enabled: true, authors: ['special-user'] } },
+      }),
+    ).toThrow(/Unrecognized key/);
   });
 
   it('rejects unknown keys, guidance event names, remote endpoints, and invalid timezones', () => {

@@ -16,6 +16,9 @@ export const SHEPHERD_EVENT_TYPES = [
   'branch-behind',
   'branch-update-failed',
   'reviewer-comment-decision',
+  'tracked-pr-claimed',
+  'tracked-pr-unclaimed',
+  'head-changed',
 ] as const;
 
 export type ShepherdEventType = (typeof SHEPHERD_EVENT_TYPES)[number];
@@ -158,6 +161,7 @@ export interface CoordinatorReceipt {
 }
 
 export class PermanentDeliveryError extends Error {}
+export class IdempotencyConflictError extends Error {}
 
 export interface CoordinatorSink {
   send(item: OutboxItem): Promise<CoordinatorReceipt | undefined>;
@@ -176,11 +180,78 @@ export interface EntityUpdate {
   value: unknown;
 }
 
+export type TrackedPullRequestStatus = 'active' | 'unclaimed' | 'terminal';
+
+export interface TrackedPullRequest extends PullRequestRef {
+  status: TrackedPullRequestStatus;
+  generation: number;
+  actor: string;
+  evidence: unknown;
+  claimedAt: string;
+  updatedAt: string;
+  unclaimedAt: string | null;
+  terminalState: 'CLOSED' | 'MERGED' | null;
+  baselinePending: boolean;
+}
+
+export type TrackedControlOperationType = 'claim' | 'unclaim';
+export type TrackedControlOutcome =
+  | 'claimed'
+  | 'reclaimed'
+  | 'already-claimed'
+  | 'unclaimed'
+  | 'already-unclaimed'
+  | 'rejected-closed'
+  | 'rejected-merged';
+
+export interface TrackedControlResult extends PullRequestRef {
+  operation: TrackedControlOperationType;
+  outcome: TrackedControlOutcome;
+  generation: number | null;
+  idempotentReplay: boolean;
+}
+
+export interface TrackedControlRequest extends PullRequestRef {
+  operation: TrackedControlOperationType;
+  actor: string;
+  evidence: unknown;
+  idempotencyKey: string;
+  requestHash: string;
+  occurredAt: string;
+}
+
+export interface TrackedControlAuditRecord extends PullRequestRef {
+  idempotencyKey: string;
+  operation: TrackedControlOperationType;
+  actor: string;
+  evidence: unknown;
+  outcome: TrackedControlOutcome;
+  result: TrackedControlResult;
+  createdAt: string;
+}
+
 export interface ShepherdStore {
   getEntity<T>(key: string): StoredEntity<T> | undefined;
   listEntities<T>(kind?: string): StoredEntity<T>[];
   commit(updates: EntityUpdate[], events: ShepherdEvent[], recipient?: string, deleteKeys?: string[]): ShepherdEvent[];
   deleteEntities(keys: string[]): void;
+  getTrackedPullRequest(pr: PullRequestRef): TrackedPullRequest | undefined;
+  listTrackedPullRequests(status?: TrackedPullRequestStatus): TrackedPullRequest[];
+  getTrackedControlResult(request: TrackedControlRequest): TrackedControlResult | undefined;
+  listTrackedControlOperations(limit?: number): TrackedControlAuditRecord[];
+  claimTrackedPullRequest(
+    request: TrackedControlRequest,
+    state: PullRequestDetails['state'],
+    event: ShepherdEvent | undefined,
+    recipient?: string,
+  ): TrackedControlResult;
+  unclaimTrackedPullRequest(
+    request: TrackedControlRequest,
+    event: ShepherdEvent | undefined,
+    recipient?: string,
+  ): TrackedControlResult;
+  completeTrackedBaseline(pr: PullRequestRef): void;
+  markTrackedPullRequestTerminal(pr: PullRequestRef, state: 'CLOSED' | 'MERGED', occurredAt: string): void;
   hasCompletedBootstrap(kind: DiscoveryKind): boolean;
   markBootstrapComplete(kind: DiscoveryKind): void;
   claimOutbox(now: Date, limit?: number): OutboxItem[];
