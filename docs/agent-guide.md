@@ -735,9 +735,12 @@ keeps tracked-only merge execution in notify mode even if global authored automa
 
 For both profile-authored and explicitly tracked PRs, `review-feedback` coalesces new review bodies
 with received inline-thread creation, replies, and transitions into outdated or resolved state.
-Thread facts include stable review/thread/comment IDs, author, full body, URL, path and line, current
-state, and new replies. An empty `COMMENTED` review still produces useful work when it owns a new
-inline thread. Durable per-thread cursors suppress unchanged observations across restart while
+Thread facts include stable review/thread/comment IDs, author, bounded body, URL, path and line,
+current state, and new replies. Self-authored and `reviews.ignoredActors` content advances the seen
+cursor without emitting received work. An empty `COMMENTED` review still produces useful work when
+it owns a new eligible inline thread. The full serialized event is capped at 64 KiB; explicit
+per-body truncation metadata and aggregate omitted-context counts tell the coordinator when another
+fetch is necessary. Durable per-thread cursors suppress unchanged observations across restart while
 recurrence counters keep later created/outdated/resolved cycles distinct. Claim snapshots and
 baseline-only bootstrap record historical thread state without replaying it; fleet-specific routing
 and remediation policy belongs in `guidance` and coordinator instructions.

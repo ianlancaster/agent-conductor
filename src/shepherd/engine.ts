@@ -1,5 +1,5 @@
 import type { ShepherdConfig } from './config.js';
-import { buildEvent } from './events.js';
+import { buildEvent, eventId } from './events.js';
 import { ShepherdMutationMutex } from './mutex.js';
 import { patternMatches, repositoryInScope } from './scope.js';
 import { elapsedHours } from './time.js';
@@ -44,6 +44,13 @@ interface ReceivedReviewThreadState {
 
 type ReceivedReviewReason =
   'review-submitted' | 'thread-created' | 'thread-replied' | 'thread-outdated' | 'thread-resolved';
+
+interface ReceivedReviewRenderLimits {
+  textBytes: number;
+  reviews: number;
+  threads: number;
+  replies: number;
+}
 
 interface InboxState {
   details: PullRequestDetails;
@@ -144,6 +151,44 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 function excerpt(body: string, limit = 240): string {
   const compact = body.replace(/\s+/g, ' ').trim();
   return compact.length <= limit ? compact : `${compact.slice(0, limit - 1)}…`;
+}
+
+const RECEIVED_REVIEW_EVENT_MAX_BYTES = 64 * 1024;
+const RECEIVED_REVIEW_TEXT_MAX_BYTES = 4 * 1024;
+const RECEIVED_REVIEW_GUIDANCE_MAX_BYTES = 4 * 1024;
+const RECEIVED_REVIEW_TRANSITION_MAX_ITEMS = 25;
+
+function utf8Bytes(value: string): number {
+  return Buffer.byteLength(value, 'utf8');
+}
+
+function boundedText(value: string, maxBytes: number): { value: string; originalBytes: number; truncated: boolean } {
+  const originalBytes = utf8Bytes(value);
+  if (originalBytes <= maxBytes) return { value, originalBytes, truncated: false };
+  if (maxBytes < 3) return { value: '', originalBytes, truncated: true };
+  const kept: string[] = [];
+  let keptBytes = 0;
+  for (const character of value) {
+    const characterBytes = utf8Bytes(character);
+    if (keptBytes + characterBytes + 3 > maxBytes) break;
+    kept.push(character);
+    keptBytes += characterBytes;
+  }
+  return { value: `${kept.join('')}…`, originalBytes, truncated: true };
+}
+
+function boundedTransitionList(
+  pr: PullRequestRef,
+  field: string,
+  values: string[],
+): Record<string, string[] | string | number | boolean> {
+  if (values.length <= RECEIVED_REVIEW_TRANSITION_MAX_ITEMS) return { [field]: values };
+  return {
+    [field]: values.slice(0, RECEIVED_REVIEW_TRANSITION_MAX_ITEMS),
+    [`${field}Truncated`]: true,
+    [`${field}Count`]: values.length,
+    [`${field}Digest`]: eventId('review-feedback', pr, { field, values }),
+  };
 }
 
 function inboxCompletionOutcome(disposition: InboxState['disposition']): InboxCompletionOutcome | undefined {
@@ -978,16 +1023,23 @@ export class ShepherdEngine {
     const outdatedTransitions: { threadId: string; cycle: number }[] = [];
     const resolvedTransitions: { threadId: string; cycle: number }[] = [];
     const newReplies = new Map<string, ReviewThreadComment[]>();
+    const reviewsById = new Map(details.reviews.map((review) => [review.id, review]));
+    const eligibleThreadIds = new Set<string>();
 
     for (const thread of [...details.reviewThreads].sort((left, right) =>
       left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
     )) {
       const oldThread = previousThreads[thread.id];
+      const review = reviewsById.get(thread.reviewId);
+      const eligible =
+        this.receivedFeedbackActor(thread.rootAuthor) &&
+        (review === undefined || this.receivedFeedbackActor(review.author));
+      if (eligible) eligibleThreadIds.add(thread.id);
       const newlyPresent = oldThread?.present !== true;
       let createdCycle = oldThread?.createdCycle ?? 0;
       let outdatedCycle = oldThread?.outdatedCycle ?? 0;
       let resolvedCycle = oldThread?.resolvedCycle ?? 0;
-      if (!baseline && newlyPresent) {
+      if (!baseline && eligible && newlyPresent) {
         createdCycle += 1;
         createdTransitions.push({ threadId: thread.id, cycle: createdCycle });
       }
@@ -998,14 +1050,17 @@ export class ShepherdEngine {
           const byTime = left.createdAt.localeCompare(right.createdAt);
           return byTime === 0 ? (left.id < right.id ? -1 : left.id > right.id ? 1 : 0) : byTime;
         })
-        .filter((comment) => comment.id !== thread.rootCommentId && !seen.has(comment.id));
-      if (!baseline && replies.length > 0) newReplies.set(thread.id, replies);
+        .filter(
+          (comment) =>
+            comment.id !== thread.rootCommentId && !seen.has(comment.id) && this.receivedFeedbackActor(comment.author),
+        );
+      if (!baseline && eligible && replies.length > 0) newReplies.set(thread.id, replies);
 
-      if (!baseline && oldThread?.present === true && !oldThread.isOutdated && thread.isOutdated) {
+      if (!baseline && eligible && oldThread?.present === true && !oldThread.isOutdated && thread.isOutdated) {
         outdatedCycle += 1;
         outdatedTransitions.push({ threadId: thread.id, cycle: outdatedCycle });
       }
-      if (!baseline && oldThread?.present === true && !oldThread.isResolved && thread.isResolved) {
+      if (!baseline && eligible && oldThread?.present === true && !oldThread.isResolved && thread.isResolved) {
         resolvedCycle += 1;
         resolvedTransitions.push({ threadId: thread.id, cycle: resolvedCycle });
       }
@@ -1027,6 +1082,7 @@ export class ShepherdEngine {
     const newReviews = sortedReviews(
       latestReviews(details.reviews).filter(
         (review) =>
+          this.receivedFeedbackActor(review.author) &&
           (review.state === 'CHANGES_REQUESTED' || (review.state === 'COMMENTED' && review.body.trim().length > 0)) &&
           !oldReviewIds.has(review.id),
       ),
@@ -1046,64 +1102,246 @@ export class ShepherdEngine {
       ...resolvedTransitions.map(({ threadId }) => threadId),
     ]);
     const newReviewIds = new Set(newReviews.map((review) => review.id));
-    const affectedThreads = details.reviewThreads.filter(
-      (thread) => affectedThreadIds.has(thread.id) || newReviewIds.has(thread.reviewId),
-    );
+    const affectedThreads = details.reviewThreads
+      .filter(
+        (thread) =>
+          eligibleThreadIds.has(thread.id) && (affectedThreadIds.has(thread.id) || newReviewIds.has(thread.reviewId)),
+      )
+      .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
     const contextReviewIds = new Set([...newReviewIds, ...affectedThreads.map((thread) => thread.reviewId)]);
-    const contextReviews = sortedReviews(details.reviews.filter((review) => contextReviewIds.has(review.id)));
+    const contextReviews = sortedReviews(
+      details.reviews.filter((review) => contextReviewIds.has(review.id) && this.receivedFeedbackActor(review.author)),
+    );
     const primaryReview = newReviews.length === 1 ? newReviews[0] : undefined;
-    const occurredAt =
-      reasons.length === 1 && reasons[0] === 'review-submitted' && primaryReview !== undefined
-        ? primaryReview.submittedAt
-        : this.clock().toISOString();
+    const occurredAt = primaryReview?.submittedAt ?? this.clock().toISOString();
+    const transitionFacts = {
+      ...boundedTransitionList(details, 'reviewIds', newReviews.map((review) => review.id).sort()),
+      ...boundedTransitionList(
+        details,
+        'createdTransitions',
+        createdTransitions.map(({ threadId, cycle }) => `${threadId}:${String(cycle)}`).sort(),
+      ),
+      ...boundedTransitionList(
+        details,
+        'replyIds',
+        [...newReplies.values()]
+          .flat()
+          .map(({ id }) => id)
+          .sort(),
+      ),
+      ...boundedTransitionList(
+        details,
+        'outdatedTransitions',
+        outdatedTransitions.map(({ threadId, cycle }) => `${threadId}:${String(cycle)}`).sort(),
+      ),
+      ...boundedTransitionList(
+        details,
+        'resolvedTransitions',
+        resolvedTransitions.map(({ threadId, cycle }) => `${threadId}:${String(cycle)}`).sort(),
+      ),
+    };
     const identity =
-      reasons.length === 1 && reasons[0] === 'review-submitted' && primaryReview !== undefined
-        ? { reviewId: primaryReview.id, state: primaryReview.state }
-        : {
-            reviewIds: newReviews.map((review) => review.id),
-            createdTransitions: createdTransitions.map(({ threadId, cycle }) => `${threadId}:${String(cycle)}`).sort(),
-            replyIds: [...newReplies.values()]
-              .flat()
-              .map(({ id }) => id)
-              .sort(),
-            outdatedTransitions: outdatedTransitions
-              .map(({ threadId, cycle }) => `${threadId}:${String(cycle)}`)
-              .sort(),
-            resolvedTransitions: resolvedTransitions
-              .map(({ threadId, cycle }) => `${threadId}:${String(cycle)}`)
-              .sort(),
-            ...(primaryReview === undefined ? {} : { reviewId: primaryReview.id, state: primaryReview.state }),
-          };
+      primaryReview === undefined ? transitionFacts : { reviewId: primaryReview.id, state: primaryReview.state };
     return {
       threads: nextThreads,
-      event: buildEvent(
-        this.config,
-        'review-feedback',
+      event: this.buildReceivedReviewEvent(
         details,
         identity,
-        {
-          title: details.title,
-          url: details.url,
-          triggeringReasons: reasons,
-          reviews: contextReviews.map((review) => ({
-            id: review.id,
-            author: review.author,
-            state: review.state,
-            body: review.body,
-            submittedAt: review.submittedAt,
-            commitSha: review.commitSha,
-          })),
-          affectedThreads: affectedThreads.map((thread) =>
-            this.receivedReviewThreadFacts(thread, newReplies.get(thread.id) ?? []),
-          ),
-          ...(primaryReview === undefined ? {} : { reviewer: primaryReview.author, body: primaryReview.body }),
-        },
+        transitionFacts,
+        reasons,
+        contextReviews,
+        affectedThreads,
+        newReplies,
+        primaryReview,
         occurredAt,
       ),
     };
   }
 
-  private receivedReviewThreadFacts(thread: ReviewThread, replies: ReviewThreadComment[]): Record<string, unknown> {
+  private receivedFeedbackActor(author: string): boolean {
+    const normalized = author.toLowerCase();
+    return (
+      normalized !== this.config.profile.githubUser.toLowerCase() &&
+      !this.config.reviews.ignoredActors.some((ignored) => ignored.toLowerCase() === normalized)
+    );
+  }
+
+  private buildReceivedReviewEvent(
+    details: PullRequestDetails,
+    identity: Record<string, unknown>,
+    transitionFacts: Record<string, unknown>,
+    reasons: ReceivedReviewReason[],
+    contextReviews: Review[],
+    affectedThreads: ReviewThread[],
+    newReplies: ReadonlyMap<string, ReviewThreadComment[]>,
+    primaryReview: Review | undefined,
+    occurredAt: string,
+  ): ShepherdEvent {
+    const orderedReviews =
+      primaryReview === undefined
+        ? contextReviews
+        : [primaryReview, ...contextReviews.filter((review) => review.id !== primaryReview.id)];
+    const totalReplies = [...newReplies.values()].reduce((total, replies) => total + replies.length, 0);
+    const configuredGuidance = this.config.guidance['review-feedback'];
+    const guidance =
+      configuredGuidance === undefined
+        ? undefined
+        : boundedText(configuredGuidance, RECEIVED_REVIEW_GUIDANCE_MAX_BYTES);
+    const eventConfig: ShepherdConfig =
+      guidance?.truncated === true
+        ? {
+            ...this.config,
+            guidance: { ...this.config.guidance, 'review-feedback': guidance.value },
+          }
+        : this.config;
+    const minimumReviews = primaryReview === undefined ? 0 : 1;
+    const minimumThreads = affectedThreads.length === 0 ? 0 : 1;
+    const limits: ReceivedReviewRenderLimits = {
+      textBytes: RECEIVED_REVIEW_TEXT_MAX_BYTES,
+      reviews: orderedReviews.length,
+      threads: affectedThreads.length,
+      replies: totalReplies,
+    };
+
+    for (;;) {
+      const event = buildEvent(
+        eventConfig,
+        'review-feedback',
+        details,
+        identity,
+        this.receivedReviewFacts(
+          details,
+          transitionFacts,
+          reasons,
+          orderedReviews,
+          affectedThreads,
+          newReplies,
+          primaryReview,
+          limits,
+          guidance,
+        ),
+        occurredAt,
+      );
+      if (utf8Bytes(JSON.stringify(event)) <= RECEIVED_REVIEW_EVENT_MAX_BYTES) return event;
+      if (limits.textBytes > 256) {
+        limits.textBytes = Math.max(256, Math.floor(limits.textBytes / 2));
+      } else if (limits.threads > minimumThreads) {
+        limits.threads = Math.max(minimumThreads, Math.floor(limits.threads / 2));
+      } else if (limits.replies > 0) {
+        limits.replies = Math.floor(limits.replies / 2);
+      } else if (limits.reviews > minimumReviews) {
+        limits.reviews = Math.max(minimumReviews, Math.floor(limits.reviews / 2));
+      } else if (limits.threads > 0) {
+        limits.threads = 0;
+      } else if (limits.textBytes > 0) {
+        limits.textBytes = 0;
+      } else {
+        throw new Error('Received review-feedback routing metadata exceeds the 64 KiB event ceiling.');
+      }
+    }
+  }
+
+  private receivedReviewFacts(
+    details: PullRequestDetails,
+    transitionFacts: Record<string, unknown>,
+    reasons: ReceivedReviewReason[],
+    orderedReviews: Review[],
+    affectedThreads: ReviewThread[],
+    newReplies: ReadonlyMap<string, ReviewThreadComment[]>,
+    primaryReview: Review | undefined,
+    limits: ReceivedReviewRenderLimits,
+    guidance: ReturnType<typeof boundedText> | undefined,
+  ): Record<string, unknown> {
+    const selectedReviews = orderedReviews.slice(0, limits.reviews);
+    const reviewFacts = selectedReviews.map((review) => this.receivedReviewFactsForReview(review, limits.textBytes));
+    const selectedThreads = affectedThreads.slice(0, limits.threads);
+    let remainingReplies = limits.replies;
+    let includedReplies = 0;
+    const threadFacts = selectedThreads.map((thread) => {
+      const replies = newReplies.get(thread.id) ?? [];
+      const included = replies.slice(0, remainingReplies);
+      remainingReplies -= included.length;
+      includedReplies += included.length;
+      return this.receivedReviewThreadFacts(thread, included, replies.length - included.length, limits.textBytes);
+    });
+    const totalReplies = [...newReplies.values()].reduce((total, replies) => total + replies.length, 0);
+    const textTruncated =
+      reviewFacts.some((review) => review.bodyTruncated === true) ||
+      threadFacts.some(
+        (thread) =>
+          (thread.rootComment as Record<string, unknown> | undefined)?.bodyTruncated === true ||
+          (thread.newReplies as Record<string, unknown>[]).some((reply) => reply.bodyTruncated === true),
+      ) ||
+      (primaryReview !== undefined && boundedText(primaryReview.body, limits.textBytes).truncated);
+    const transitionMetadataTruncated = Object.entries(transitionFacts).some(
+      ([key, value]) => key.endsWith('Truncated') && value === true,
+    );
+    const aggregateTruncated =
+      textTruncated ||
+      transitionMetadataTruncated ||
+      selectedReviews.length < orderedReviews.length ||
+      selectedThreads.length < affectedThreads.length ||
+      includedReplies < totalReplies ||
+      guidance?.truncated === true;
+    return {
+      title: details.title,
+      url: details.url,
+      triggeringReasons: reasons,
+      ...transitionFacts,
+      reviews: reviewFacts,
+      affectedThreads: threadFacts,
+      payload: {
+        maxEventBytes: RECEIVED_REVIEW_EVENT_MAX_BYTES,
+        truncated: aggregateTruncated,
+        textLimitBytes: limits.textBytes,
+        reviewCount: orderedReviews.length,
+        includedReviewCount: selectedReviews.length,
+        omittedReviewCount: orderedReviews.length - selectedReviews.length,
+        threadCount: affectedThreads.length,
+        includedThreadCount: selectedThreads.length,
+        omittedThreadCount: affectedThreads.length - selectedThreads.length,
+        replyCount: totalReplies,
+        includedReplyCount: includedReplies,
+        omittedReplyCount: totalReplies - includedReplies,
+        ...(transitionMetadataTruncated ? { transitionMetadataTruncated: true } : {}),
+        ...(guidance?.truncated === true
+          ? { guidanceTruncated: true, guidanceOriginalBytes: guidance.originalBytes }
+          : {}),
+      },
+      ...(primaryReview === undefined
+        ? {}
+        : {
+            reviewer: primaryReview.author,
+            ...this.receivedReviewBodyFacts(primaryReview.body, limits.textBytes),
+          }),
+    };
+  }
+
+  private receivedReviewFactsForReview(review: Review, maxBodyBytes: number): Record<string, unknown> {
+    return {
+      id: review.id,
+      author: review.author,
+      state: review.state,
+      ...this.receivedReviewBodyFacts(review.body, maxBodyBytes),
+      submittedAt: review.submittedAt,
+      commitSha: review.commitSha,
+    };
+  }
+
+  private receivedReviewBodyFacts(body: string, maxBodyBytes: number): Record<string, unknown> {
+    const bounded = boundedText(body, maxBodyBytes);
+    return {
+      body: bounded.value,
+      ...(bounded.truncated ? { bodyTruncated: true, bodyOriginalBytes: bounded.originalBytes } : {}),
+    };
+  }
+
+  private receivedReviewThreadFacts(
+    thread: ReviewThread,
+    replies: ReviewThreadComment[],
+    omittedReplyCount: number,
+    maxBodyBytes: number,
+  ): Record<string, unknown> {
     const root = thread.comments.find((comment) => comment.id === thread.rootCommentId);
     return {
       threadId: thread.id,
@@ -1124,7 +1362,7 @@ export class ShepherdEngine {
           : {
               id: root.id,
               author: root.author,
-              body: root.body,
+              ...this.receivedReviewBodyFacts(root.body, maxBodyBytes),
               createdAt: root.createdAt,
               updatedAt: root.updatedAt,
               url: root.url,
@@ -1132,11 +1370,12 @@ export class ShepherdEngine {
       newReplies: replies.map((reply) => ({
         id: reply.id,
         author: reply.author,
-        body: reply.body,
+        ...this.receivedReviewBodyFacts(reply.body, maxBodyBytes),
         createdAt: reply.createdAt,
         updatedAt: reply.updatedAt,
         url: reply.url,
       })),
+      ...(omittedReplyCount > 0 ? { omittedReplyCount } : {}),
     };
   }
 

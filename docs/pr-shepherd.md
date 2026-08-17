@@ -191,16 +191,33 @@ coalesced `review-feedback` event per poll for newly submitted feedback and rece
 activity. A new thread is actionable even when its enclosing `COMMENTED` review has an empty body.
 Later replies and transitions into outdated or resolved state reuse the same generic event type;
 disappearance and later reappearance is a recurrent thread-created transition. No reviewer or
-organization identity is built into this observation layer.
+organization identity is built into this observation layer. Reviews, roots, and replies authored
+by `profile.githubUser` or a case-insensitive `reviews.ignoredActors` entry do not emit received
+work. Their comment IDs still advance the durable seen cursor, so changing configuration or
+restarting does not replay suppressed content.
 
-Each event lists every triggering reason and relevant review with its ID, author, state, complete
-body, submission time, and reviewed commit when available. Affected-thread facts include the
-thread, review, and root-comment IDs; root author and complete root body; thread and comment URLs;
-path; original/current line and side; current outdated/resolved state; and complete metadata for
-new replies. Coordinators can therefore route a finding or verify a resolution without a second
-GitHub discovery pass. Existing single-review events retain the top-level `reviewId`, `state`,
-`reviewer`, and `body` fields and their prior stable event identity for consumers that use the
-earlier shape.
+Each event lists every triggering reason and relevant review with its ID, author, state, bounded
+body, submission time, and reviewed commit when available. Affected threads are rendered in stable
+thread-ID order. Their facts include the thread, review, and root-comment IDs; root author and
+bounded root body; thread and comment URLs; path; original/current line and side; current
+outdated/resolved state; and bounded metadata for new replies. Coordinators can therefore route a
+finding or verify a resolution without a second GitHub discovery pass. Whenever exactly one new
+actionable review anchors the coalesced event, it retains the earlier `{reviewId,state}` event
+identity and top-level `reviewId`, `state`, `reviewer`, and `body` fields—even when its inline thread
+appears in the same poll. A thread that arrives in a later partial observation or reappears in a
+later cycle gets its own transition identity.
+
+The complete serialized `review-feedback` event, including its protected-delivery message, is
+limited to 64 KiB. Individual review, root, reply, and legacy top-level bodies begin with a 4 KiB
+UTF-8 allowance. If the aggregate would exceed its ceiling, Shepherd deterministically reduces the
+text allowance and then the number of rendered reviews, threads, or replies. Every shortened body
+has adjacent `bodyTruncated: true` and `bodyOriginalBytes` fields. The `payload` summary reports the
+ceiling, effective text allowance, total/included/omitted counts for each context kind, and whether
+the aggregate or configured guidance was truncated. Transition ID arrays retain the first 25
+sorted values; larger arrays add an explicit truncation flag, total count, and stable digest so
+event identity remains recurrence-safe without defeating the aggregate ceiling. Stable IDs and
+URLs remain on every rendered item; omission counts explicitly tell the coordinator when a
+follow-up fetch is required.
 
 The received-thread cursor lives in the existing authored entity. Thread presence, seen comment
 IDs, and recurrence counters are committed in the same SQLite transaction as the event and durable
@@ -209,6 +226,12 @@ created, outdated, or resolved cycles remain distinct. A claim's verified snapsh
 `polling.bootstrap: baseline-only` both establish a complete baseline without replaying historical
 threads, replies, or states. Existing entity JSON without the optional cursor derives its baseline
 from the last stored pull-request snapshot, so this capability requires no schema migration.
+
+The delivery ceiling is not a data-retention boundary. Shepherd's live authored entity still holds
+the complete GitHub snapshot, including review-thread bodies, until lifecycle cleanup. Bounded event
+and outbox copies remain durable in the Shepherd database according to the deployment's database
+retention. Protect that database as review content, avoid putting secrets in review text or
+guidance, and apply the deployment's normal database retention/removal procedure.
 
 ### Exact-head release gate
 

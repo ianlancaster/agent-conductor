@@ -474,6 +474,359 @@ describe('Shepherd engine', () => {
     }
   });
 
+  it.each([
+    { lane: 'authored', authored: true, tracked: false },
+    { lane: 'tracked-only', authored: false, tracked: true },
+    { lane: 'authored-and-tracked overlap', authored: true, tracked: true },
+  ])('suppresses self and ignored received-thread actors in the $lane lane', async ({ authored, tracked }) => {
+    const github = new FakeGitHub();
+    const initial = pr();
+    github.details.set('acme/api#7', initial);
+    if (authored) setDiscovery(github, 'authored', initial);
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      reviews: { ignoredActors: ['automation-bot'] },
+      features: {
+        authoredPRs: { enabled: authored },
+        trackedPRs: { enabled: tracked },
+        staleThresholdHours: 24,
+      },
+    });
+    const clock = () => new Date('2026-07-20T11:00:00Z');
+    if (tracked) {
+      await new TrackedPullRequestControl(resolved, github, store, clock).claim({
+        repo: initial.repo,
+        number: initial.number,
+        actor: 'operator',
+        evidence: {},
+        idempotencyKey: `claim-actor-filter-${authored ? 'overlap' : 'tracked'}`,
+      });
+    }
+    const engine = new ShepherdEngine(resolved, github, store, clock);
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+
+    const actorReview = (id: string, author: string) => ({
+      id,
+      author,
+      state: 'COMMENTED' as const,
+      body: '',
+      submittedAt: '2026-07-20T10:30:00Z',
+    });
+    const actorThread = (id: string, reviewId: string, author: string, replyAuthor = 'teammate') =>
+      reviewThread({
+        id,
+        reviewId,
+        rootCommentId: `root-${id}`,
+        rootAuthor: author,
+        comments: [
+          {
+            id: `root-${id}`,
+            author,
+            body: `Finding from ${author}`,
+            createdAt: '2026-07-20T10:30:00Z',
+            updatedAt: '2026-07-20T10:30:00Z',
+            url: `https://github.com/acme/api/pull/7#${id}`,
+          },
+          {
+            id: `reply-${id}`,
+            author: replyAuthor,
+            body: `Reply from ${replyAuthor}`,
+            createdAt: '2026-07-20T10:35:00Z',
+            updatedAt: '2026-07-20T10:35:00Z',
+            url: `https://github.com/acme/api/pull/7#reply-${id}`,
+          },
+        ],
+      });
+    const eligible = actorThread('thread-human', 'review-human', 'reviewer');
+    eligible.comments.push(
+      {
+        ...eligible.comments[1]!,
+        id: 'reply-self',
+        author: 'OCTOCAT',
+        body: 'Self reply',
+      },
+      {
+        ...eligible.comments[1]!,
+        id: 'reply-bot',
+        author: 'Automation-Bot',
+        body: 'Ignored reply',
+      },
+    );
+    const updated = pr({
+      reviews: [
+        actorReview('review-self', 'OCTOCAT'),
+        actorReview('review-bot', 'automation-bot'),
+        actorReview('review-human', 'reviewer'),
+      ],
+      reviewThreads: [
+        actorThread('thread-review-self', 'review-self', 'reviewer'),
+        actorThread('thread-review-bot', 'review-bot', 'reviewer'),
+        actorThread('thread-root-self', 'review-human', 'OCTOCAT'),
+        actorThread('thread-root-bot', 'review-human', 'Automation-Bot'),
+        eligible,
+      ],
+    });
+    github.details.set('acme/api#7', updated);
+    if (authored) setDiscovery(github, 'authored', updated);
+
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    const feedback = store.listEvents().find((event) => event.type === 'review-feedback');
+    expect(feedback?.source).toMatchObject({
+      triggeringReasons: ['thread-created', 'thread-replied'],
+      createdTransitions: ['thread-human:1'],
+      replyIds: ['reply-thread-human'],
+    });
+    expect(feedback?.source.affectedThreads).toEqual([
+      expect.objectContaining({
+        threadId: 'thread-human',
+        rootAuthor: 'reviewer',
+        newReplies: [expect.objectContaining({ id: 'reply-thread-human', author: 'teammate' })],
+      }),
+    ]);
+    const lifecycle = store.getEntity<{
+      receivedReviewThreads: Record<string, { seenCommentIds: string[] }>;
+    }>('authored:acme/api#7');
+    expect(Object.keys(lifecycle?.value.receivedReviewThreads ?? {}).sort()).toEqual([
+      'thread-human',
+      'thread-review-bot',
+      'thread-review-self',
+      'thread-root-bot',
+      'thread-root-self',
+    ]);
+    expect(lifecycle?.value.receivedReviewThreads['thread-human']?.seenCommentIds).toEqual(
+      expect.arrayContaining(['reply-self', 'reply-bot', 'reply-thread-human']),
+    );
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    store.close();
+  });
+
+  it('retains legacy review identity with same-poll threads and separates later thread cycles', async () => {
+    const github = new FakeGitHub();
+    const initial = pr();
+    setDiscovery(github, 'authored', initial);
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(config(), github, store, () => new Date('2026-07-20T11:00:00Z'));
+    await engine.pollOnce();
+
+    const review = {
+      id: 'review-anchored',
+      author: 'reviewer',
+      state: 'CHANGES_REQUESTED' as const,
+      body: 'Please address the inline finding.',
+      submittedAt: '2026-07-20T10:30:00Z',
+    };
+    const thread = reviewThread({ reviewId: review.id, rootAuthor: 'reviewer' });
+    setDiscovery(github, 'authored', pr({ reviews: [review], reviewThreads: [thread] }));
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    const anchored = store.listEvents()[0];
+    expect(anchored?.id).toBe(eventId('review-feedback', initial, { reviewId: review.id, state: review.state }));
+    expect(anchored?.source).toMatchObject({
+      reviewId: review.id,
+      state: review.state,
+      reviewer: 'reviewer',
+      triggeringReasons: ['review-submitted', 'thread-created'],
+      reviewIds: [review.id],
+      createdTransitions: ['thread-1:1'],
+    });
+
+    setDiscovery(github, 'authored', pr({ reviews: [review], reviewThreads: [] }));
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    setDiscovery(github, 'authored', pr({ reviews: [review], reviewThreads: [thread] }));
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    const reappeared = store
+      .listEvents()
+      .find((event) => event.id !== anchored?.id && event.type === 'review-feedback');
+    expect(reappeared?.source).toMatchObject({
+      reviewIds: [],
+      triggeringReasons: ['thread-created'],
+      createdTransitions: ['thread-1:2'],
+    });
+
+    const partialReview = { ...review, id: 'review-partial', submittedAt: '2026-07-20T10:45:00Z' };
+    setDiscovery(github, 'authored', pr({ reviews: [review, partialReview], reviewThreads: [thread] }));
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    const partial = store
+      .listEvents()
+      .find(
+        (event) =>
+          event.id === eventId('review-feedback', initial, { reviewId: partialReview.id, state: review.state }),
+      );
+    expect(partial).toBeDefined();
+    const lateThread = reviewThread({
+      id: 'thread-partial',
+      reviewId: partialReview.id,
+      rootCommentId: 'root-partial',
+      rootAuthor: 'reviewer',
+      comments: [{ ...thread.comments[0]!, id: 'root-partial' }],
+    });
+    setDiscovery(github, 'authored', pr({ reviews: [review, partialReview], reviewThreads: [thread, lateThread] }));
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    const late = store
+      .listEvents()
+      .find(
+        (event) =>
+          event.type === 'review-feedback' &&
+          Array.isArray(event.source.createdTransitions) &&
+          event.source.createdTransitions.includes('thread-partial:1'),
+      );
+    expect(late?.id).not.toBe(partial?.id);
+    store.close();
+  });
+
+  it('renders affected threads identically regardless of provider order', async () => {
+    const observe = async (threads: ReviewThread[]) => {
+      const github = new FakeGitHub();
+      setDiscovery(github, 'authored', pr());
+      const store = new SqliteShepherdStore(':memory:');
+      const engine = new ShepherdEngine(config(), github, store, () => new Date('2026-07-20T11:00:00Z'));
+      await engine.pollOnce();
+      const reviews = threads.map((thread) => ({
+        ...commentedReview,
+        id: thread.reviewId,
+        author: 'reviewer',
+      }));
+      setDiscovery(github, 'authored', pr({ reviews, reviewThreads: threads }));
+      await engine.pollOnce();
+      const event = store.listEvents().find((item) => item.type === 'review-feedback');
+      store.close();
+      return event;
+    };
+    const first = reviewThread({ id: 'thread-a', reviewId: 'review-a', rootAuthor: 'reviewer' });
+    const second = reviewThread({ id: 'thread-b', reviewId: 'review-b', rootAuthor: 'reviewer' });
+    const forward = await observe([first, second]);
+    const reverse = await observe([second, first]);
+
+    expect(reverse?.id).toBe(forward?.id);
+    expect(reverse?.source).toEqual(forward?.source);
+    expect(reverse?.message).toBe(forward?.message);
+    expect((forward?.source.affectedThreads as { threadId: string }[]).map(({ threadId }) => threadId)).toEqual([
+      'thread-a',
+      'thread-b',
+    ]);
+  });
+
+  it('bounds aggregate received-review events with explicit field and omission signals', async () => {
+    const github = new FakeGitHub();
+    setDiscovery(github, 'authored', pr());
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(config(), github, store, () => new Date('2026-07-20T11:00:00Z'));
+    await engine.pollOnce();
+    const largeBody = 'é'.repeat(32_768);
+    const reviews = Array.from({ length: 100 }, (_, index) => ({
+      ...commentedReview,
+      id: `review-${String(index).padStart(3, '0')}`,
+      author: 'reviewer',
+      ...(index === 99
+        ? { state: 'CHANGES_REQUESTED' as const, body: largeBody, submittedAt: '2026-07-20T10:00:00Z' }
+        : {}),
+    }));
+    const threads = reviews.map((review, index) => {
+      const suffix = String(index).padStart(3, '0');
+      return reviewThread({
+        id: `thread-${suffix}`,
+        reviewId: review.id,
+        rootCommentId: `root-${suffix}`,
+        rootAuthor: 'reviewer',
+        url: `https://github.com/acme/api/pull/7#thread-${suffix}`,
+        comments: [
+          {
+            id: `root-${suffix}`,
+            author: 'reviewer',
+            body: largeBody,
+            createdAt: '2026-07-20T10:30:00Z',
+            updatedAt: '2026-07-20T10:30:00Z',
+            url: `https://github.com/acme/api/pull/7#root-${suffix}`,
+          },
+          {
+            id: `reply-${suffix}`,
+            author: 'author',
+            body: largeBody,
+            createdAt: '2026-07-20T10:35:00Z',
+            updatedAt: '2026-07-20T10:35:00Z',
+            url: `https://github.com/acme/api/pull/7#reply-${suffix}`,
+          },
+        ],
+      });
+    });
+    setDiscovery(github, 'authored', pr({ reviews, reviewThreads: threads }));
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    const created = store.listEvents().find((event) => event.type === 'review-feedback');
+    expect(Buffer.byteLength(JSON.stringify(created), 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    expect(Buffer.byteLength(created?.message ?? '', 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    const source = created?.source as {
+      payload: {
+        truncated: boolean;
+        maxEventBytes: number;
+        textLimitBytes: number;
+        omittedThreadCount: number;
+        omittedReplyCount: number;
+      };
+      body: string;
+      bodyTruncated?: boolean;
+      bodyOriginalBytes?: number;
+      createdTransitions: string[];
+      createdTransitionsTruncated?: boolean;
+      createdTransitionsCount?: number;
+      createdTransitionsDigest?: string;
+      replyIds: string[];
+      replyIdsTruncated?: boolean;
+      replyIdsCount?: number;
+      replyIdsDigest?: string;
+      reviews: { body: string; bodyTruncated?: boolean; bodyOriginalBytes?: number }[];
+      affectedThreads: {
+        rootComment: { body: string; bodyTruncated?: boolean; bodyOriginalBytes?: number };
+        newReplies: { body: string; bodyTruncated?: boolean; bodyOriginalBytes?: number }[];
+      }[];
+    };
+    expect(source.payload).toMatchObject({ truncated: true, maxEventBytes: 64 * 1024 });
+    expect(source).toMatchObject({
+      createdTransitionsTruncated: true,
+      createdTransitionsCount: 100,
+      replyIdsTruncated: true,
+      replyIdsCount: 100,
+    });
+    expect(source.createdTransitions).toHaveLength(25);
+    expect(source.createdTransitionsDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(source.replyIds).toHaveLength(25);
+    expect(source.replyIdsDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(source).toMatchObject({ bodyTruncated: true, bodyOriginalBytes: 65_536 });
+    expect(source.reviews[0]).toMatchObject({ bodyTruncated: true, bodyOriginalBytes: 65_536 });
+    expect(source.payload.omittedThreadCount + source.payload.omittedReplyCount).toBeGreaterThan(0);
+    for (const thread of source.affectedThreads) {
+      expect(thread.rootComment).toMatchObject({ bodyTruncated: true, bodyOriginalBytes: 65_536 });
+      expect(Buffer.byteLength(thread.rootComment.body, 'utf8')).toBeLessThanOrEqual(source.payload.textLimitBytes);
+      for (const reply of thread.newReplies) {
+        expect(reply).toMatchObject({ bodyTruncated: true, bodyOriginalBytes: 65_536 });
+        expect(Buffer.byteLength(reply.body, 'utf8')).toBeLessThanOrEqual(source.payload.textLimitBytes);
+      }
+    }
+
+    const recurrentThreads = threads.map((thread, index) => ({
+      ...thread,
+      isResolved: true,
+      comments: [
+        ...thread.comments,
+        {
+          ...thread.comments[1]!,
+          id: `reply-recurrent-${String(index).padStart(3, '0')}`,
+          createdAt: '2026-07-20T10:45:00Z',
+          updatedAt: '2026-07-20T10:45:00Z',
+        },
+      ],
+    }));
+    setDiscovery(github, 'authored', pr({ reviews, reviewThreads: recurrentThreads }));
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    const recurrent = store.listEvents().find((event) => event.type === 'review-feedback' && event.id !== created?.id);
+    expect(Buffer.byteLength(JSON.stringify(recurrent), 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    expect(Buffer.byteLength(recurrent?.message ?? '', 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    expect(recurrent?.source).toMatchObject({
+      triggeringReasons: ['thread-replied', 'thread-resolved'],
+      payload: { truncated: true, maxEventBytes: 64 * 1024 },
+    });
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    store.close();
+  });
+
   it('uses the verified claim snapshot as the generation baseline', async () => {
     const github = new FakeGitHub();
     const initial = pr();
