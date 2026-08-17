@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { parseShepherdConfig, type ShepherdConfig } from '../src/shepherd/config.js';
 import { ReleaseGateControl, TrackedPullRequestControl } from '../src/shepherd/control.js';
 import { ShepherdEngine } from '../src/shepherd/engine.js';
+import { eventId } from '../src/shepherd/events.js';
 import { SqliteShepherdStore } from '../src/shepherd/store.js';
 import type {
   DiscoveryKind,
@@ -199,6 +200,25 @@ describe('Shepherd engine', () => {
     expect(store.listEvents().map((event) => event.type)).toEqual(
       expect.arrayContaining(['tracked-pr-claimed', 'head-changed', 'ci-failed', 'review-feedback', 'comment']),
     );
+    const receivedFeedback = store.listEvents().find((event) => event.type === 'review-feedback');
+    expect(receivedFeedback?.id).toBe(
+      eventId('review-feedback', initial, { reviewId: 'feedback-1', state: 'CHANGES_REQUESTED' }),
+    );
+    expect(receivedFeedback?.source).toMatchObject({
+      reviewId: 'feedback-1',
+      state: 'CHANGES_REQUESTED',
+      reviewer: 'reviewer',
+      body: 'Please preserve the existing contract.',
+      triggeringReasons: ['review-submitted'],
+      reviews: [
+        expect.objectContaining({
+          id: 'feedback-1',
+          author: 'reviewer',
+          state: 'CHANGES_REQUESTED',
+          body: 'Please preserve the existing contract.',
+        }),
+      ],
+    });
     expect(
       control.unclaim({
         repo: 'acme/api',
@@ -210,6 +230,248 @@ describe('Shepherd engine', () => {
     ).toMatchObject({ outcome: 'unclaimed' });
     expect(store.listEntities('authored')).toEqual([]);
     store.close();
+  });
+
+  it('persists and coalesces received review-thread transitions for a tracked PR', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-owned-review-threads-'));
+    const path = join(dir, 'shepherd.db');
+    const github = new FakeGitHub();
+    const resolved = config({
+      polling: { bootstrap: 'baseline-only' },
+      features: { authoredPRs: { enabled: false }, trackedPRs: { enabled: true }, staleThresholdHours: 24 },
+    });
+    const clock = () => new Date('2026-08-17T11:00:00Z');
+    const inlineReview = {
+      ...commentedReview,
+      author: 'reviewer',
+      submittedAt: '2026-08-17T10:05:00Z',
+    };
+    const rootThread = reviewThread({
+      rootAuthor: 'reviewer',
+      comments: [
+        {
+          ...reviewThread().comments[0]!,
+          author: 'reviewer',
+          body: 'Preserve the public contract.',
+          createdAt: '2026-08-17T10:05:00Z',
+          updatedAt: '2026-08-17T10:05:00Z',
+        },
+      ],
+    });
+    const historicalReply = {
+      id: 'reply-historical',
+      author: 'author',
+      body: 'This predates the claim baseline.',
+      createdAt: '2026-08-17T09:30:00Z',
+      updatedAt: '2026-08-17T09:30:00Z',
+      url: 'https://github.com/acme/api/pull/7#discussion_r0_reply',
+    };
+    const historicalReview = {
+      ...inlineReview,
+      id: 'review-historical',
+      submittedAt: '2026-08-17T09:00:00Z',
+    };
+    const historicalThread = reviewThread({
+      id: 'thread-historical',
+      reviewId: 'review-historical',
+      rootCommentId: 'root-historical',
+      isOutdated: true,
+      isResolved: true,
+      comments: [
+        {
+          ...rootThread.comments[0]!,
+          id: 'root-historical',
+          createdAt: '2026-08-17T09:00:00Z',
+          updatedAt: '2026-08-17T09:00:00Z',
+        },
+        historicalReply,
+      ],
+    });
+    const initial = pr({ reviews: [historicalReview], reviewThreads: [historicalThread] });
+    github.details.set('acme/api#7', initial);
+    try {
+      const firstStore = new SqliteShepherdStore(path);
+      await new TrackedPullRequestControl(resolved, github, firstStore, clock).claim({
+        repo: initial.repo,
+        number: initial.number,
+        actor: 'operator',
+        evidence: { reason: 'owned' },
+        idempotencyKey: 'claim-thread-context',
+      });
+      const firstEngine = new ShepherdEngine(resolved, github, firstStore, clock);
+      expect(await firstEngine.pollOnce()).toMatchObject({ emitted: 0 });
+
+      github.details.set('acme/api#7', pr({ reviews: [inlineReview], reviewThreads: [rootThread] }));
+      expect(await firstEngine.pollOnce()).toMatchObject({ emitted: 1 });
+      const created = firstStore.listEvents().find((event) => event.type === 'review-feedback');
+      expect(created?.source).toMatchObject({
+        triggeringReasons: ['thread-created'],
+        reviewIds: [],
+        createdTransitions: ['thread-1:1'],
+        reviews: [
+          {
+            id: 'review-comment',
+            author: 'reviewer',
+            state: 'COMMENTED',
+            body: '',
+          },
+        ],
+      });
+      expect(created?.source.affectedThreads).toEqual([
+        expect.objectContaining({
+          threadId: 'thread-1',
+          reviewId: 'review-comment',
+          rootCommentId: 'root-1',
+          rootAuthor: 'reviewer',
+          path: 'src/api.ts',
+          originalLine: 10,
+          currentLine: 12,
+          threadUrl: 'https://github.com/acme/api/pull/7#discussion_r1',
+          isOutdated: false,
+          isResolved: false,
+          rootComment: {
+            id: 'root-1',
+            author: 'reviewer',
+            body: 'Preserve the public contract.',
+            createdAt: '2026-08-17T10:05:00Z',
+            updatedAt: '2026-08-17T10:05:00Z',
+            url: 'https://github.com/acme/api/pull/7#discussion_r1',
+          },
+          newReplies: [],
+        }),
+      ]);
+      expect(await firstEngine.pollOnce()).toMatchObject({ emitted: 0 });
+      firstStore.close();
+
+      const restartedStore = new SqliteShepherdStore(path);
+      const restartedEngine = new ShepherdEngine(resolved, github, restartedStore, clock);
+      expect(await restartedEngine.pollOnce()).toMatchObject({ emitted: 0 });
+
+      const firstReply = {
+        id: 'reply-1',
+        author: 'author',
+        body: 'Fixed in the latest push.',
+        createdAt: '2026-08-17T10:30:00Z',
+        updatedAt: '2026-08-17T10:30:00Z',
+        url: 'https://github.com/acme/api/pull/7#discussion_r2',
+      };
+      github.details.set(
+        'acme/api#7',
+        pr({
+          reviews: [inlineReview],
+          reviewThreads: [
+            { ...rootThread, isOutdated: true, isResolved: true, comments: [...rootThread.comments, firstReply] },
+          ],
+        }),
+      );
+      expect(await restartedEngine.pollOnce()).toMatchObject({ emitted: 1 });
+      const firstTransition = restartedStore
+        .listEvents()
+        .find((event) => event.type === 'review-feedback' && event.id !== created?.id);
+      expect(firstTransition?.source).toMatchObject({
+        triggeringReasons: ['thread-replied', 'thread-outdated', 'thread-resolved'],
+        replyIds: ['reply-1'],
+        outdatedTransitions: ['thread-1:1'],
+        resolvedTransitions: ['thread-1:1'],
+      });
+      expect(firstTransition?.source.affectedThreads).toEqual([
+        expect.objectContaining({
+          isOutdated: true,
+          isResolved: true,
+          newReplies: [
+            expect.objectContaining({
+              id: 'reply-1',
+              author: 'author',
+              body: 'Fixed in the latest push.',
+              url: 'https://github.com/acme/api/pull/7#discussion_r2',
+            }),
+          ],
+        }),
+      ]);
+      expect(await restartedEngine.pollOnce()).toMatchObject({ emitted: 0 });
+
+      github.details.set(
+        'acme/api#7',
+        pr({
+          reviews: [inlineReview],
+          reviewThreads: [{ ...rootThread, comments: [...rootThread.comments, firstReply] }],
+        }),
+      );
+      expect(await restartedEngine.pollOnce()).toMatchObject({ emitted: 0 });
+      const secondReply = {
+        ...firstReply,
+        id: 'reply-2',
+        author: 'teammate',
+        body: 'The follow-up regression is resolved too.',
+        url: 'https://github.com/acme/api/pull/7#discussion_r3',
+      };
+      github.details.set(
+        'acme/api#7',
+        pr({
+          reviews: [inlineReview],
+          reviewThreads: [
+            {
+              ...rootThread,
+              isOutdated: true,
+              isResolved: true,
+              comments: [...rootThread.comments, firstReply, secondReply],
+            },
+          ],
+        }),
+      );
+      expect(await restartedEngine.pollOnce()).toMatchObject({ emitted: 1 });
+      const recurrent = restartedStore
+        .listEvents()
+        .find(
+          (event) =>
+            event.type === 'review-feedback' &&
+            Array.isArray(event.source.replyIds) &&
+            event.source.replyIds.includes('reply-2'),
+        );
+      expect(recurrent?.source).toMatchObject({
+        triggeringReasons: ['thread-replied', 'thread-outdated', 'thread-resolved'],
+        replyIds: ['reply-2'],
+        outdatedTransitions: ['thread-1:2'],
+        resolvedTransitions: ['thread-1:2'],
+      });
+
+      github.details.set('acme/api#7', pr({ reviews: [inlineReview], reviewThreads: [] }));
+      expect(await restartedEngine.pollOnce()).toMatchObject({ emitted: 0 });
+      github.details.set(
+        'acme/api#7',
+        pr({
+          reviews: [inlineReview],
+          reviewThreads: [
+            {
+              ...rootThread,
+              isOutdated: true,
+              isResolved: true,
+              comments: [...rootThread.comments, firstReply, secondReply],
+            },
+          ],
+        }),
+      );
+      expect(await restartedEngine.pollOnce()).toMatchObject({ emitted: 1 });
+      const recreated = restartedStore
+        .listEvents()
+        .find(
+          (event) =>
+            event.type === 'review-feedback' &&
+            Array.isArray(event.source.createdTransitions) &&
+            event.source.createdTransitions.includes('thread-1:2'),
+        );
+      expect(recreated?.source).toMatchObject({
+        triggeringReasons: ['thread-created'],
+        createdTransitions: ['thread-1:2'],
+        replyIds: [],
+      });
+      expect(new Set(restartedStore.listEvents().map((event) => event.id)).size).toBe(
+        restartedStore.listEvents().length,
+      );
+      restartedStore.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('uses the verified claim snapshot as the generation baseline', async () => {

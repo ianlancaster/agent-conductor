@@ -733,6 +733,15 @@ the authored lifecycle without changing review-inbox identity. Caller-supplied a
 local audit attribution, not cryptographic identity. The default `trackedPRs.releaseGate: none`
 keeps tracked-only merge execution in notify mode even if global authored automation is `execute`.
 
+For both profile-authored and explicitly tracked PRs, `review-feedback` coalesces new review bodies
+with received inline-thread creation, replies, and transitions into outdated or resolved state.
+Thread facts include stable review/thread/comment IDs, author, full body, URL, path and line, current
+state, and new replies. An empty `COMMENTED` review still produces useful work when it owns a new
+inline thread. Durable per-thread cursors suppress unchanged observations across restart while
+recurrence counters keep later created/outdated/resolved cycles distinct. Claim snapshots and
+baseline-only bootstrap record historical thread state without replaying it; fleet-specific routing
+and remediation policy belongs in `guidance` and coordinator instructions.
+
 For an independently governed release decision, set
 `features.trackedPRs.releaseGate: exact-head-attestation` before creating a claim generation, then
 use the idempotent local `attest --repo ... --pr ... --head ... --actor ... --evidence-file ...`

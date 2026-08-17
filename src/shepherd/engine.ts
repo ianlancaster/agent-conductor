@@ -27,8 +27,23 @@ interface AuthoredState {
   botAttempts: Record<string, number>;
   staleCycle: number;
   conflictCycle: number;
+  receivedReviewThreads?: Record<string, ReceivedReviewThreadState>;
   sources?: { authored: boolean; trackedGeneration?: number };
 }
+
+interface ReceivedReviewThreadState {
+  present: boolean;
+  rootCommentId: string;
+  seenCommentIds: string[];
+  createdCycle: number;
+  outdatedCycle: number;
+  resolvedCycle: number;
+  isOutdated: boolean;
+  isResolved: boolean;
+}
+
+type ReceivedReviewReason =
+  'review-submitted' | 'thread-created' | 'thread-replied' | 'thread-outdated' | 'thread-resolved';
 
 interface InboxState {
   details: PullRequestDetails;
@@ -620,6 +635,7 @@ export class ShepherdEngine {
     const botAttempts = { ...(previous?.botAttempts ?? {}) };
     let staleCycle = previous?.staleCycle ?? 0;
     let conflictCycle = previous?.conflictCycle ?? 0;
+    const receivedReviewFeedback = this.receivedReviewFeedback(details, previous, baseline);
     if (baseline) {
       const threshold = this.config.features.staleThresholdHours;
       const staleHours = (now.getTime() - new Date(details.updatedAt).getTime()) / 3_600_000;
@@ -691,28 +707,7 @@ export class ShepherdEngine {
       }
 
       const reviews = latestReviews(details.reviews);
-      const oldReviewIds = new Set(previousDetails?.reviews.map((review) => review.id) ?? []);
-      for (const review of reviews.filter(
-        (item) =>
-          (item.state === 'CHANGES_REQUESTED' || (item.state === 'COMMENTED' && item.body.trim().length > 0)) &&
-          !oldReviewIds.has(item.id),
-      )) {
-        events.push(
-          buildEvent(
-            this.config,
-            'review-feedback',
-            pr,
-            { reviewId: review.id, state: review.state },
-            {
-              reviewer: review.author,
-              body: review.body,
-              title: details.title,
-              url: details.url,
-            },
-            review.submittedAt,
-          ),
-        );
-      }
+      if (receivedReviewFeedback.event !== undefined) events.push(receivedReviewFeedback.event);
 
       const approvals = reviews.filter((review) => review.state === 'APPROVED');
       const changesRequested = reviews.filter((review) => review.state === 'CHANGES_REQUESTED');
@@ -944,11 +939,204 @@ export class ShepherdEngine {
         botAttempts,
         staleCycle,
         conflictCycle,
+        receivedReviewThreads: receivedReviewFeedback.threads,
         sources: { authored, ...(trackedGeneration === undefined ? {} : { trackedGeneration }) },
       },
       events: baseline ? [] : events,
       actions: baseline ? [] : actions,
       nudges: baseline ? [] : nudges,
+    };
+  }
+
+  private receivedReviewFeedback(
+    details: PullRequestDetails,
+    previous: AuthoredState | undefined,
+    baseline: boolean,
+  ): { threads: Record<string, ReceivedReviewThreadState>; event?: ShepherdEvent } {
+    const previousDetails = previous?.details;
+    const previousThreads =
+      previous?.receivedReviewThreads ??
+      Object.fromEntries(
+        (previousDetails?.reviewThreads ?? []).map((thread) => [
+          thread.id,
+          {
+            present: true,
+            rootCommentId: thread.rootCommentId,
+            seenCommentIds: thread.comments.map((comment) => comment.id).sort(),
+            createdCycle: 0,
+            outdatedCycle: 0,
+            resolvedCycle: 0,
+            isOutdated: thread.isOutdated,
+            isResolved: thread.isResolved,
+          } satisfies ReceivedReviewThreadState,
+        ]),
+      );
+    const nextThreads = Object.fromEntries(
+      Object.entries(previousThreads).map(([threadId, thread]) => [threadId, { ...thread, present: false }]),
+    );
+    const createdTransitions: { threadId: string; cycle: number }[] = [];
+    const outdatedTransitions: { threadId: string; cycle: number }[] = [];
+    const resolvedTransitions: { threadId: string; cycle: number }[] = [];
+    const newReplies = new Map<string, ReviewThreadComment[]>();
+
+    for (const thread of [...details.reviewThreads].sort((left, right) =>
+      left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+    )) {
+      const oldThread = previousThreads[thread.id];
+      const newlyPresent = oldThread?.present !== true;
+      let createdCycle = oldThread?.createdCycle ?? 0;
+      let outdatedCycle = oldThread?.outdatedCycle ?? 0;
+      let resolvedCycle = oldThread?.resolvedCycle ?? 0;
+      if (!baseline && newlyPresent) {
+        createdCycle += 1;
+        createdTransitions.push({ threadId: thread.id, cycle: createdCycle });
+      }
+
+      const seen = new Set(oldThread?.seenCommentIds ?? []);
+      const replies = [...thread.comments]
+        .sort((left, right) => {
+          const byTime = left.createdAt.localeCompare(right.createdAt);
+          return byTime === 0 ? (left.id < right.id ? -1 : left.id > right.id ? 1 : 0) : byTime;
+        })
+        .filter((comment) => comment.id !== thread.rootCommentId && !seen.has(comment.id));
+      if (!baseline && replies.length > 0) newReplies.set(thread.id, replies);
+
+      if (!baseline && oldThread?.present === true && !oldThread.isOutdated && thread.isOutdated) {
+        outdatedCycle += 1;
+        outdatedTransitions.push({ threadId: thread.id, cycle: outdatedCycle });
+      }
+      if (!baseline && oldThread?.present === true && !oldThread.isResolved && thread.isResolved) {
+        resolvedCycle += 1;
+        resolvedTransitions.push({ threadId: thread.id, cycle: resolvedCycle });
+      }
+      nextThreads[thread.id] = {
+        present: true,
+        rootCommentId: thread.rootCommentId,
+        seenCommentIds: [
+          ...new Set([...(oldThread?.seenCommentIds ?? []), ...thread.comments.map(({ id }) => id)]),
+        ].sort(),
+        createdCycle,
+        outdatedCycle,
+        resolvedCycle,
+        isOutdated: thread.isOutdated,
+        isResolved: thread.isResolved,
+      };
+    }
+
+    const oldReviewIds = new Set(previousDetails?.reviews.map((review) => review.id) ?? []);
+    const newReviews = sortedReviews(
+      latestReviews(details.reviews).filter(
+        (review) =>
+          (review.state === 'CHANGES_REQUESTED' || (review.state === 'COMMENTED' && review.body.trim().length > 0)) &&
+          !oldReviewIds.has(review.id),
+      ),
+    );
+    const reasons: ReceivedReviewReason[] = [];
+    if (!baseline && newReviews.length > 0) reasons.push('review-submitted');
+    if (!baseline && createdTransitions.length > 0) reasons.push('thread-created');
+    if (!baseline && newReplies.size > 0) reasons.push('thread-replied');
+    if (!baseline && outdatedTransitions.length > 0) reasons.push('thread-outdated');
+    if (!baseline && resolvedTransitions.length > 0) reasons.push('thread-resolved');
+    if (reasons.length === 0 || details.state !== 'OPEN') return { threads: nextThreads };
+
+    const affectedThreadIds = new Set([
+      ...createdTransitions.map(({ threadId }) => threadId),
+      ...newReplies.keys(),
+      ...outdatedTransitions.map(({ threadId }) => threadId),
+      ...resolvedTransitions.map(({ threadId }) => threadId),
+    ]);
+    const newReviewIds = new Set(newReviews.map((review) => review.id));
+    const affectedThreads = details.reviewThreads.filter(
+      (thread) => affectedThreadIds.has(thread.id) || newReviewIds.has(thread.reviewId),
+    );
+    const contextReviewIds = new Set([...newReviewIds, ...affectedThreads.map((thread) => thread.reviewId)]);
+    const contextReviews = sortedReviews(details.reviews.filter((review) => contextReviewIds.has(review.id)));
+    const primaryReview = newReviews.length === 1 ? newReviews[0] : undefined;
+    const occurredAt =
+      reasons.length === 1 && reasons[0] === 'review-submitted' && primaryReview !== undefined
+        ? primaryReview.submittedAt
+        : this.clock().toISOString();
+    const identity =
+      reasons.length === 1 && reasons[0] === 'review-submitted' && primaryReview !== undefined
+        ? { reviewId: primaryReview.id, state: primaryReview.state }
+        : {
+            reviewIds: newReviews.map((review) => review.id),
+            createdTransitions: createdTransitions.map(({ threadId, cycle }) => `${threadId}:${String(cycle)}`).sort(),
+            replyIds: [...newReplies.values()]
+              .flat()
+              .map(({ id }) => id)
+              .sort(),
+            outdatedTransitions: outdatedTransitions
+              .map(({ threadId, cycle }) => `${threadId}:${String(cycle)}`)
+              .sort(),
+            resolvedTransitions: resolvedTransitions
+              .map(({ threadId, cycle }) => `${threadId}:${String(cycle)}`)
+              .sort(),
+            ...(primaryReview === undefined ? {} : { reviewId: primaryReview.id, state: primaryReview.state }),
+          };
+    return {
+      threads: nextThreads,
+      event: buildEvent(
+        this.config,
+        'review-feedback',
+        details,
+        identity,
+        {
+          title: details.title,
+          url: details.url,
+          triggeringReasons: reasons,
+          reviews: contextReviews.map((review) => ({
+            id: review.id,
+            author: review.author,
+            state: review.state,
+            body: review.body,
+            submittedAt: review.submittedAt,
+            commitSha: review.commitSha,
+          })),
+          affectedThreads: affectedThreads.map((thread) =>
+            this.receivedReviewThreadFacts(thread, newReplies.get(thread.id) ?? []),
+          ),
+          ...(primaryReview === undefined ? {} : { reviewer: primaryReview.author, body: primaryReview.body }),
+        },
+        occurredAt,
+      ),
+    };
+  }
+
+  private receivedReviewThreadFacts(thread: ReviewThread, replies: ReviewThreadComment[]): Record<string, unknown> {
+    const root = thread.comments.find((comment) => comment.id === thread.rootCommentId);
+    return {
+      threadId: thread.id,
+      reviewId: thread.reviewId,
+      threadUrl: thread.url,
+      rootCommentId: thread.rootCommentId,
+      rootAuthor: thread.rootAuthor,
+      path: thread.path,
+      originalLine: thread.originalLine,
+      originalSide: thread.originalSide,
+      currentLine: thread.currentLine,
+      currentSide: thread.currentSide,
+      isOutdated: thread.isOutdated,
+      isResolved: thread.isResolved,
+      rootComment:
+        root === undefined
+          ? undefined
+          : {
+              id: root.id,
+              author: root.author,
+              body: root.body,
+              createdAt: root.createdAt,
+              updatedAt: root.updatedAt,
+              url: root.url,
+            },
+      newReplies: replies.map((reply) => ({
+        id: reply.id,
+        author: reply.author,
+        body: reply.body,
+        createdAt: reply.createdAt,
+        updatedAt: reply.updatedAt,
+        url: reply.url,
+      })),
     };
   }
 

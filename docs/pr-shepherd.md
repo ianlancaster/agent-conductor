@@ -184,6 +184,32 @@ With the default `releaseGate: none`, tracked-only merge execution remains at `n
 global `automation.autoMerge` is `execute`, and the prohibition is rechecked before executing a
 persisted action. Ordinary profile-authored PR behavior remains unchanged.
 
+### Owned pull-request review threads
+
+The authored lifecycle used by profile-authored and explicitly tracked pull requests emits one
+coalesced `review-feedback` event per poll for newly submitted feedback and received inline-thread
+activity. A new thread is actionable even when its enclosing `COMMENTED` review has an empty body.
+Later replies and transitions into outdated or resolved state reuse the same generic event type;
+disappearance and later reappearance is a recurrent thread-created transition. No reviewer or
+organization identity is built into this observation layer.
+
+Each event lists every triggering reason and relevant review with its ID, author, state, complete
+body, submission time, and reviewed commit when available. Affected-thread facts include the
+thread, review, and root-comment IDs; root author and complete root body; thread and comment URLs;
+path; original/current line and side; current outdated/resolved state; and complete metadata for
+new replies. Coordinators can therefore route a finding or verify a resolution without a second
+GitHub discovery pass. Existing single-review events retain the top-level `reviewId`, `state`,
+`reviewer`, and `body` fields and their prior stable event identity for consumers that use the
+earlier shape.
+
+The received-thread cursor lives in the existing authored entity. Thread presence, seen comment
+IDs, and recurrence counters are committed in the same SQLite transaction as the event and durable
+outbox row. Unchanged observations deduplicate across polls and restarts; later replies and repeated
+created, outdated, or resolved cycles remain distinct. A claim's verified snapshot and
+`polling.bootstrap: baseline-only` both establish a complete baseline without replaying historical
+threads, replies, or states. Existing entity JSON without the optional cursor derives its baseline
+from the last stored pull-request snapshot, so this capability requires no schema migration.
+
 ### Exact-head release gate
 
 Set `features.trackedPRs.releaseGate: exact-head-attestation` before creating a new claim generation
