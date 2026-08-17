@@ -159,7 +159,12 @@ function supportsReleaseGate(store: ShepherdStore): store is ReleaseGateStore {
     typeof candidate.attestRelease === 'function' &&
     typeof candidate.revokeRelease === 'function' &&
     typeof candidate.completeReleaseCompensation === 'function' &&
+    typeof candidate.prepareActionCancellation === 'function' &&
+    typeof candidate.ensureActionSafetyCompensation === 'function' &&
     typeof candidate.tryAcquireMutationLock === 'function' &&
+    typeof candidate.getMutationLock === 'function' &&
+    typeof candidate.renewMutationLock === 'function' &&
+    typeof candidate.tryTakeoverMutationLock === 'function' &&
     typeof candidate.releaseMutationLock === 'function'
   );
 }
@@ -188,6 +193,14 @@ export class ShepherdEngine {
 
   async drainActions(): Promise<number> {
     let completed = 0;
+    if (supportsReleaseGate(this.store)) {
+      const recoveredAt = this.clock().toISOString();
+      for (const entity of this.store.listEntities<ActionState>('action')) {
+        if (entity.value.status === 'cancelled') {
+          this.store.ensureActionSafetyCompensation(entity.key, recoveredAt);
+        }
+      }
+    }
     for (const entity of this.store.listEntities<ActionState>('action')) {
       if (entity.value.status !== 'pending') continue;
       if (
@@ -196,7 +209,9 @@ export class ShepherdEngine {
       ) {
         continue;
       }
-      if (!repositoryInScope(entity.value.mutation.pr.repo, this.config.github)) {
+      const safetyCompensation =
+        entity.value.mutation.type === 'dequeue' || entity.value.mutation.type === 'disable-auto-merge';
+      if (!safetyCompensation && !repositoryInScope(entity.value.mutation.pr.repo, this.config.github)) {
         this.cancelAction(entity.key, entity.value, 'repository is outside configured scope');
         continue;
       }
@@ -213,12 +228,14 @@ export class ShepherdEngine {
       }
       try {
         if (entity.value.mutation.type === 'enable-auto-merge' && supportsReleaseGate(this.store)) {
-          const mutated = await this.releaseMutex().runExclusive(async () => {
+          const mutated = await this.releaseMutex().runExclusive(async (lease) => {
             if (!this.actionStillApplicable(entity.value)) {
               this.cancelAction(entity.key, entity.value, 'ownership changed before persistent auto-merge');
               return false;
             }
+            lease.assertOwned();
             await this.github.mutate(entity.value.mutation);
+            lease.assertOwned();
             this.completeAction(entity.key, entity.value, this.clock().toISOString());
             return true;
           });
@@ -228,21 +245,25 @@ export class ShepherdEngine {
           entity.value.mutation.type === 'merge-exact-head' ||
           entity.value.mutation.type === 'enqueue-exact-head'
         ) {
-          const mutated = await this.releaseMutex().runExclusive(async () => {
+          const mutated = await this.releaseMutex().runExclusive(async (lease) => {
             const details = await this.github.getPullRequest(entity.value.mutation.pr);
             if (!this.gatedActionStillApplicable(entity.value, details)) {
               this.cancelAction(entity.key, entity.value, 'exact-head release gate is no longer applicable');
               return false;
             }
+            lease.assertOwned();
             await this.github.mutate(entity.value.mutation);
+            lease.assertOwned();
             this.completeAction(entity.key, entity.value, this.clock().toISOString());
             return true;
           });
           if (mutated) completed += 1;
           continue;
         } else if (entity.value.mutation.type === 'dequeue' || entity.value.mutation.type === 'disable-auto-merge') {
-          await this.releaseMutex().runExclusive(async () => {
+          await this.releaseMutex().runExclusive(async (lease) => {
+            lease.assertOwned();
             await this.github.mutate(entity.value.mutation);
+            lease.assertOwned();
             const completedAt = this.clock().toISOString();
             if (entity.value.compensationFor !== undefined) {
               this.releaseStore().completeReleaseCompensation(entity.value.compensationFor, entity.key, completedAt);
@@ -321,16 +342,21 @@ export class ShepherdEngine {
   }
 
   private cancelAction(key: string, action: ActionState, reason: string): void {
-    this.store.commit(
-      [
-        {
-          key,
-          kind: 'action',
-          value: { ...action, status: 'cancelled', completedAt: this.clock().toISOString() },
-        },
-      ],
-      [],
-    );
+    const occurredAt = this.clock().toISOString();
+    if (supportsReleaseGate(this.store)) {
+      this.store.prepareActionCancellation(key, occurredAt);
+    } else {
+      this.store.commit(
+        [
+          {
+            key,
+            kind: 'action',
+            value: { ...action, status: 'cancelled', completedAt: occurredAt },
+          },
+        ],
+        [],
+      );
+    }
     this.store.logHealth('github-mutation-cancelled', `${key}: ${reason}`);
   }
 

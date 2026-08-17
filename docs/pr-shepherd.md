@@ -201,16 +201,21 @@ Shepherd refuses a new gated claim or attestation while persistent auto-merge or
 already exists. It calls GitHub's conditional merge with `expectedHeadOid` in `direct` mode; in `merge-queue` mode it calls
 conditional enqueue with `expectedHeadOid`. Gated claims never use persistent auto-merge.
 Applicability is fetched and checked again under a durable SQLite mutation mutex immediately before
-the provider mutation. Changing or disabling the configured gate cancels a persisted exact-head
-action rather than falling back to ordinary auto-merge. Revoke outstanding attestations and finish
-compensation before disabling the gate; cleanup revoke remains available afterward, but new
-attestations do not.
+the provider mutation. The mutex renews its lease and will not let an expired lease be taken from a
+still-live local owner process, so event-loop or provider delays cannot create overlapping local
+mutations. Ownership is fenced again around each provider call. Changing or disabling the
+configured gate cancels a persisted exact-head action rather than falling back to ordinary
+auto-merge, but a crash-ambiguous enqueue is first paired atomically with durable dequeue safety
+work. Revoke outstanding attestations and finish compensation before disabling the gate; cleanup
+revoke remains available afterward, but new attestations do not.
 
 `pr-shepherd revoke` atomically revokes active attestations and cancels local pending merge/enqueue
 actions. A completed—or crash-ambiguous pending—queue submission creates a durable dequeue
 compensation action; an inherited or crash-ambiguous legacy auto-merge action creates a durable
 disable-auto-merge compensation. Provider state checks make these retries idempotent, and failed
-compensation remains pending across restart even if the gate is later disabled. A direct
+compensation remains pending across restart even if the gate is later disabled or repository scope
+is narrowed. Startup repairs previously cancelled enqueue/auto-merge actions into the same durable
+safety work. A direct
 merge cannot be undone after GitHub accepts it; the exact-head conditional and the shared mutex
 prevent a concurrent local revoke from crossing that submission, but no system can compensate a
 process crash after a completed direct merge. Safe unclaim is refused until attestation revocation

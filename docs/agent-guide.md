@@ -730,9 +730,25 @@ belongs in the Shepherd profile's per-event `guidance` map, not in the reusable 
 For PRs owned independently of `profile.githubUser`, enable the opt-in tracked-PR lane and use the
 idempotent local `claim`/`unclaim` commands. Claims survive review-request disappearance and reuse
 the authored lifecycle without changing review-inbox identity. Caller-supplied actor names are
-local audit attribution, not cryptographic identity. Keep tracked-only merge execution in notify
-mode until the exact-head release-gate stage is available; the first tracked-lane stage enforces
-that limitation even if the global authored automation setting is `execute`.
+local audit attribution, not cryptographic identity. The default `trackedPRs.releaseGate: none`
+keeps tracked-only merge execution in notify mode even if global authored automation is `execute`.
+
+For an independently governed release decision, set
+`features.trackedPRs.releaseGate: exact-head-attestation` before creating a claim generation, then
+use the idempotent local `attest --repo ... --pr ... --head ... --actor ... --evidence-file ...`
+and `revoke --repo ... --pr ... --reason ...` controls. An attestation applies only to the exact
+GitHub head and active claim generation. Missing, stale, or revoked evidence blocks execution. A
+gated direct merge uses the provider's expected-head precondition; merge-queue mode uses a
+conditional enqueue. Gated claims never enable persistent auto-merge.
+
+Revoke durably cancels local submission work and compensates any completed or crash-ambiguous
+enqueue/legacy-auto-merge handoff with state-aware dequeue/disable operations. Safety compensation
+continues after restart, feature disablement, gate rollback, or repository-scope narrowing; safe
+unclaim remains blocked until it finishes. After a crash, retry the same control key and arguments
+to recover its stored result and resume pending compensation. A direct merge already accepted by
+GitHub cannot be undone, so exact-head provider preconditions and Shepherd's cross-process mutation
+mutex protect the pre-submit boundary rather than promising rollback after acceptance. Use
+`release-audit --limit ... --offset ...` for durable attribution and recovery inspection.
 
 When asked to configure Shepherd, first call `get_conductor_docs` without a topic and use its exact
 `shepherdConfig` and `supervisorConfig` paths. Elicit, rather than guess:

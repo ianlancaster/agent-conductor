@@ -625,8 +625,11 @@ export class SqliteShepherdStore implements ReleaseGateStore {
         )
       )
         return false;
-      if (value.status === 'completed' && mutationRecord.type === 'enqueue-exact-head') queueActions.add(action.key);
-      if (value.status === 'completed' && mutationRecord.type === 'enable-auto-merge') autoMergeActions.add(action.key);
+      if (['completed', 'cancelled'].includes(String(value.status)) && mutationRecord.type === 'enqueue-exact-head')
+        queueActions.add(action.key);
+      if (['completed', 'cancelled'].includes(String(value.status)) && mutationRecord.type === 'enable-auto-merge') {
+        autoMergeActions.add(action.key);
+      }
       if (
         value.status === 'completed' &&
         ['dequeue', 'disable-auto-merge'].includes(mutationType) &&
@@ -720,7 +723,7 @@ export class SqliteShepherdStore implements ReleaseGateStore {
       const queueActions = new Map<string, { key: string; completedAt: string }>();
       const autoMergeActions = new Map<string, { key: string; completedAt: string }>();
       const compensatedActions = new Set<string>();
-      const pendingCompensations = new Set<string>();
+      const pendingCompensations = new Map<string, string>();
       for (const action of actionEntities) {
         const value = action.value;
         const mutation = value.mutation;
@@ -740,20 +743,22 @@ export class SqliteShepherdStore implements ReleaseGateStore {
           (generationScoped && value.trackedGeneration !== generation)
         )
           continue;
-        if (
-          value.status === 'pending' &&
-          ['enable-auto-merge', 'merge-exact-head', 'enqueue-exact-head'].includes(mutationType)
-        ) {
+        if (['pending', 'cancelled'].includes(String(value.status))) {
           if (mutationType === 'enqueue-exact-head') {
             // A process can crash after GitHub accepted enqueue but before local completion.
-            // Conservatively compensate the pending enqueue; the provider makes dequeue a no-op
-            // when no queue entry exists.
+            // Cancelled work remains ambiguous across upgrades, so retain it as a compensation
+            // source; the provider makes dequeue a no-op when no queue entry exists.
             queueActions.set(action.key, { key: action.key, completedAt: action.updatedAt });
           }
           if (mutationType === 'enable-auto-merge') {
             // The same crash window exists for the legacy persistent auto-merge action.
             autoMergeActions.set(action.key, { key: action.key, completedAt: action.updatedAt });
           }
+        }
+        if (
+          value.status === 'pending' &&
+          ['enable-auto-merge', 'merge-exact-head', 'enqueue-exact-head'].includes(mutationType)
+        ) {
           this.db
             .prepare('UPDATE shepherd_entities SET value_json = ?, updated_at = ? WHERE key = ?')
             .run(
@@ -779,7 +784,7 @@ export class SqliteShepherdStore implements ReleaseGateStore {
           typeof value.compensatesActionKey === 'string'
         ) {
           if (value.status === 'completed') compensatedActions.add(value.compensatesActionKey);
-          if (value.status === 'pending') pendingCompensations.add(value.compensatesActionKey);
+          if (value.status === 'pending') pendingCompensations.set(value.compensatesActionKey, action.key);
         }
       }
       const lifecycle = this.getEntity<{ details?: { autoMergeRequest?: unknown } }>(
@@ -794,7 +799,7 @@ export class SqliteShepherdStore implements ReleaseGateStore {
       }
       const newestUncompensated = (candidates: Map<string, { key: string; completedAt: string }>) =>
         [...candidates.values()]
-          .filter((action) => !compensatedActions.has(action.key) && !pendingCompensations.has(action.key))
+          .filter((action) => !compensatedActions.has(action.key))
           .sort((left, right) =>
             left.completedAt < right.completedAt ? 1 : left.completedAt > right.completedAt ? -1 : 0,
           )[0];
@@ -807,6 +812,21 @@ export class SqliteShepherdStore implements ReleaseGateStore {
       );
       const compensationActionKeys: string[] = [];
       for (const compensation of compensations) {
+        const pendingCompensationKey = pendingCompensations.get(compensation.source.key);
+        if (pendingCompensationKey !== undefined) {
+          const pending = this.getEntity<Record<string, unknown>>(pendingCompensationKey);
+          if (pending !== undefined) {
+            this.db
+              .prepare('UPDATE shepherd_entities SET value_json = ?, updated_at = ? WHERE key = ?')
+              .run(
+                JSON.stringify({ ...pending.value, compensationFor: request.idempotencyKey }),
+                request.occurredAt,
+                pendingCompensationKey,
+              );
+            compensationActionKeys.push(pendingCompensationKey);
+            continue;
+          }
+        }
         const compensationKey = `${compensation.source.key}:${compensation.type}:${request.idempotencyKey}`;
         this.db.prepare('INSERT INTO shepherd_entities (key, kind, value_json, updated_at) VALUES (?, ?, ?, ?)').run(
           compensationKey,
@@ -872,17 +892,62 @@ export class SqliteShepherdStore implements ReleaseGateStore {
     });
   }
 
-  tryAcquireMutationLock(owner: string, now: string, expiresAt: string): boolean {
+  prepareActionCancellation(actionKey: string, occurredAt: string): boolean {
     return withTransaction(this.db, () => {
-      const row = this.db
-        .prepare("SELECT owner, expires_at FROM shepherd_mutation_mutex WHERE name = 'github'")
-        .get() as { owner: string; expires_at: string } | undefined;
-      if (row !== undefined && row.owner !== owner && row.expires_at > now) return false;
+      const action = this.getEntity<Record<string, unknown>>(actionKey);
+      if (action?.value.status !== 'pending') return false;
+      this.ensureActionSafetyCompensationWithin(actionKey, action.value, occurredAt);
       this.db
-        .prepare("INSERT OR REPLACE INTO shepherd_mutation_mutex (name, owner, expires_at) VALUES ('github', ?, ?)")
-        .run(owner, expiresAt);
+        .prepare('UPDATE shepherd_entities SET value_json = ?, updated_at = ? WHERE key = ?')
+        .run(JSON.stringify({ ...action.value, status: 'cancelled', completedAt: occurredAt }), occurredAt, actionKey);
       return true;
     });
+  }
+
+  ensureActionSafetyCompensation(actionKey: string, occurredAt: string): string | undefined {
+    return withTransaction(this.db, () => {
+      const action = this.getEntity<Record<string, unknown>>(actionKey);
+      if (action === undefined) return undefined;
+      return this.ensureActionSafetyCompensationWithin(actionKey, action.value, occurredAt);
+    });
+  }
+
+  tryAcquireMutationLock(owner: string, now: string, expiresAt: string): boolean {
+    void now;
+    return (
+      this.db
+        .prepare(
+          `INSERT INTO shepherd_mutation_mutex (name, owner, expires_at) VALUES ('github', ?, ?)
+           ON CONFLICT(name) DO UPDATE SET expires_at = excluded.expires_at
+           WHERE shepherd_mutation_mutex.owner = excluded.owner`,
+        )
+        .run(owner, expiresAt).changes > 0
+    );
+  }
+
+  getMutationLock(): { owner: string; expiresAt: string } | undefined {
+    const row = this.db.prepare("SELECT owner, expires_at FROM shepherd_mutation_mutex WHERE name = 'github'").get() as
+      { owner: string; expires_at: string } | undefined;
+    return row === undefined ? undefined : { owner: row.owner, expiresAt: row.expires_at };
+  }
+
+  renewMutationLock(owner: string, expiresAt: string): boolean {
+    return (
+      this.db
+        .prepare("UPDATE shepherd_mutation_mutex SET expires_at = ? WHERE name = 'github' AND owner = ?")
+        .run(expiresAt, owner).changes > 0
+    );
+  }
+
+  tryTakeoverMutationLock(owner: string, previousOwner: string, now: string, expiresAt: string): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE shepherd_mutation_mutex SET owner = ?, expires_at = ?
+           WHERE name = 'github' AND owner = ? AND expires_at <= ?`,
+        )
+        .run(owner, expiresAt, previousOwner, now).changes > 0
+    );
   }
 
   releaseMutationLock(owner: string): void {
@@ -1174,6 +1239,69 @@ export class SqliteShepherdStore implements ReleaseGateStore {
     const remove = this.db.prepare('DELETE FROM shepherd_entities WHERE key = ?');
     for (const key of deleteKeys) remove.run(key);
     return inserted;
+  }
+
+  private ensureActionSafetyCompensationWithin(
+    actionKey: string,
+    value: Record<string, unknown>,
+    occurredAt: string,
+  ): string | undefined {
+    const mutation = value.mutation;
+    if (typeof mutation !== 'object' || mutation === null || Array.isArray(mutation)) return undefined;
+    const mutationRecord = mutation as Record<string, unknown>;
+    if (
+      ['dequeue', 'disable-auto-merge'].includes(String(mutationRecord.type)) &&
+      typeof value.compensatesActionKey === 'string'
+    ) {
+      if (value.status === 'cancelled' || value.status === 'failed') {
+        const { completedAt: _completedAt, ...restored } = value;
+        this.db
+          .prepare('UPDATE shepherd_entities SET value_json = ?, updated_at = ? WHERE key = ?')
+          .run(JSON.stringify({ ...restored, status: 'pending' }), occurredAt, actionKey);
+      }
+      return actionKey;
+    }
+    const compensationType =
+      mutationRecord.type === 'enqueue-exact-head'
+        ? 'dequeue'
+        : mutationRecord.type === 'enable-auto-merge'
+          ? 'disable-auto-merge'
+          : undefined;
+    if (compensationType === undefined) return undefined;
+    const pr = mutationRecord.pr;
+    if (typeof pr !== 'object' || pr === null || Array.isArray(pr)) return undefined;
+    const ref = pr as Record<string, unknown>;
+    if (typeof ref.repo !== 'string' || typeof ref.number !== 'number') return undefined;
+
+    for (const candidate of this.listEntities<Record<string, unknown>>('action')) {
+      if (candidate.value.compensatesActionKey !== actionKey) continue;
+      const candidateMutation = candidate.value.mutation;
+      if (typeof candidateMutation !== 'object' || candidateMutation === null || Array.isArray(candidateMutation)) {
+        continue;
+      }
+      if ((candidateMutation as Record<string, unknown>).type !== compensationType) continue;
+      if (candidate.value.status === 'cancelled' || candidate.value.status === 'failed') {
+        const { completedAt: _completedAt, ...restored } = candidate.value;
+        this.db
+          .prepare('UPDATE shepherd_entities SET value_json = ?, updated_at = ? WHERE key = ?')
+          .run(JSON.stringify({ ...restored, status: 'pending' }), occurredAt, candidate.key);
+      }
+      return candidate.key;
+    }
+
+    const compensationKey = `${actionKey}:safety-${compensationType}`;
+    this.db.prepare('INSERT INTO shepherd_entities (key, kind, value_json, updated_at) VALUES (?, ?, ?, ?)').run(
+      compensationKey,
+      'action',
+      JSON.stringify({
+        status: 'pending',
+        mutation: { type: compensationType, pr: { repo: ref.repo, number: ref.number } },
+        ...(typeof value.trackedGeneration === 'number' ? { trackedGeneration: value.trackedGeneration } : {}),
+        compensatesActionKey: actionKey,
+      }),
+      occurredAt,
+    );
+    return compensationKey;
   }
 
   private releaseReplay(request: ReleaseControlRequest): ReleaseControlResult | undefined {

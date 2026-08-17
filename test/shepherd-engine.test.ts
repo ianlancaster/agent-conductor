@@ -799,7 +799,7 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
-  it('retries a durable revoke compensation after restart even when the release gate is disabled', async () => {
+  it('revives cancelled revoke compensation after restart, gate disablement, and scope narrowing', async () => {
     const headSha = 'a'.repeat(40);
     const github = new FakeGitHub();
     github.details.set('acme/api#7', pr({ headSha }));
@@ -855,11 +855,30 @@ describe('Shepherd engine', () => {
         idempotencyKey: 'revoke-restart',
       });
       expect(revoked.compensation).toBe('pending');
+      const compensationKey = revoked.compensationActionKeys[0];
+      if (compensationKey === undefined) throw new Error('expected durable revoke compensation');
+      const compensation = first.getEntity<Record<string, unknown>>(compensationKey);
+      if (compensation === undefined) throw new Error('expected persisted revoke compensation');
+      first.commit(
+        [
+          {
+            key: compensation.key,
+            kind: compensation.kind,
+            value: {
+              ...compensation.value,
+              status: 'cancelled',
+              completedAt: '2026-08-17T10:05:00.000Z',
+            },
+          },
+        ],
+        [],
+      );
       first.close();
 
       github.mutationError = undefined;
       const reopened = new SqliteShepherdStore(path);
       const disabled = config({
+        github: { includeOwners: ['different-owner'] },
         features: { authoredPRs: { enabled: false }, trackedPRs: { enabled: false }, staleThresholdHours: 24 },
       });
       expect(await new ShepherdEngine(disabled, github, reopened).drainActions()).toBe(1);
@@ -871,6 +890,134 @@ describe('Shepherd engine', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('durably compensates a crash-ambiguous enqueue before disabled configuration cancels it', async () => {
+    const headSha = 'a'.repeat(40);
+    const github = new FakeGitHub();
+    github.details.set('acme/api#7', pr({ headSha }));
+    const store = new SqliteShepherdStore(':memory:');
+    const gated = config({
+      github: { mode: 'merge-queue' },
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: { enabled: true, releaseGate: 'exact-head-attestation' },
+        staleThresholdHours: 24,
+      },
+    });
+    await new TrackedPullRequestControl(gated, github, store).claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'claim-before-disabled-cancel',
+    });
+    await new ReleaseGateControl(gated, github, store).attest({
+      repo: 'acme/api',
+      number: 7,
+      headSha,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'attest-before-disabled-cancel',
+    });
+    store.commit(
+      [
+        {
+          key: 'action:ambiguous-disabled-enqueue',
+          kind: 'action',
+          value: {
+            status: 'pending',
+            trackedGeneration: 1,
+            mutation: { type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha },
+          },
+        },
+      ],
+      [],
+    );
+    const disabled = config({
+      features: { authoredPRs: { enabled: false }, trackedPRs: { enabled: false }, staleThresholdHours: 24 },
+    });
+
+    expect(await new ShepherdEngine(disabled, github, store).drainActions()).toBe(0);
+    expect(store.getEntity<{ status: string }>('action:ambiguous-disabled-enqueue')?.value.status).toBe('cancelled');
+    expect(store.getEntity<{ status: string }>('action:ambiguous-disabled-enqueue:safety-dequeue')?.value.status).toBe(
+      'pending',
+    );
+
+    const revoked = await new ReleaseGateControl(disabled, github, store).revoke({
+      repo: 'acme/api',
+      number: 7,
+      reason: 'configuration rollback',
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'revoke-after-disabled-cancel',
+    });
+    expect(revoked).toMatchObject({ compensation: 'completed' });
+    expect(revoked.compensationActionKeys).toEqual(['action:ambiguous-disabled-enqueue:safety-dequeue']);
+    expect(github.mutations).toEqual([{ type: 'dequeue', pr: { repo: 'acme/api', number: 7 } }]);
+    store.close();
+  });
+
+  it('recovers compensation for an enqueue cancelled by an older disabled-start drain', async () => {
+    const github = new FakeGitHub();
+    const store = new SqliteShepherdStore(':memory:');
+    store.commit(
+      [
+        {
+          key: 'action:cancelled-before-upgrade',
+          kind: 'action',
+          value: {
+            status: 'cancelled',
+            completedAt: '2026-08-17T09:00:00.000Z',
+            trackedGeneration: 1,
+            mutation: {
+              type: 'enqueue-exact-head',
+              pr: { repo: 'acme/api', number: 7 },
+              headSha: 'a'.repeat(40),
+            },
+          },
+        },
+      ],
+      [],
+    );
+    const disabled = config({
+      features: { authoredPRs: { enabled: false }, trackedPRs: { enabled: false }, staleThresholdHours: 24 },
+    });
+
+    expect(await new ShepherdEngine(disabled, github, store).drainActions()).toBe(1);
+    expect(github.mutations).toEqual([{ type: 'dequeue', pr: { repo: 'acme/api', number: 7 } }]);
+    expect(store.getEntity<{ status: string }>('action:cancelled-before-upgrade:safety-dequeue')?.value.status).toBe(
+      'completed',
+    );
+    store.close();
+  });
+
+  it('runs durable safety compensation after repository scope narrows', async () => {
+    const github = new FakeGitHub();
+    const store = new SqliteShepherdStore(':memory:');
+    store.commit(
+      [
+        {
+          key: 'action:out-of-scope-dequeue',
+          kind: 'action',
+          value: {
+            status: 'pending',
+            mutation: { type: 'dequeue', pr: { repo: 'acme/api', number: 7 } },
+            compensatesActionKey: 'action:prior-enqueue',
+          },
+        },
+      ],
+      [],
+    );
+    const narrowed = config({
+      github: { includeOwners: ['different-owner'] },
+      features: { authoredPRs: { enabled: false }, trackedPRs: { enabled: false }, staleThresholdHours: 24 },
+    });
+
+    expect(await new ShepherdEngine(narrowed, github, store).drainActions()).toBe(1);
+    expect(github.mutations).toEqual([{ type: 'dequeue', pr: { repo: 'acme/api', number: 7 } }]);
+    expect(store.getEntity<{ status: string }>('action:out-of-scope-dequeue')?.value.status).toBe('completed');
+    store.close();
   });
 
   it('cancels a persisted auto-merge action after ownership becomes tracked-only or tracking is disabled', async () => {

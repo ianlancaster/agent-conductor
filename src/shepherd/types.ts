@@ -361,6 +361,9 @@ export interface TrackedPullRequestStore extends ShepherdStore {
 
 export interface MutationMutexStore {
   tryAcquireMutationLock(owner: string, now: string, expiresAt: string): boolean;
+  getMutationLock(): { owner: string; expiresAt: string } | undefined;
+  renewMutationLock(owner: string, expiresAt: string): boolean;
+  tryTakeoverMutationLock(owner: string, previousOwner: string, now: string, expiresAt: string): boolean;
   releaseMutationLock(owner: string): void;
 }
 
@@ -388,4 +391,6 @@ export interface ReleaseGateStore extends TrackedPullRequestStore, MutationMutex
     actionKey: string,
     completedAt: string,
   ): ReleaseControlResult | undefined;
+  prepareActionCancellation(actionKey: string, occurredAt: string): boolean;
+  ensureActionSafetyCompensation(actionKey: string, occurredAt: string): string | undefined;
 }

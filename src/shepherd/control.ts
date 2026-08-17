@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { ShepherdConfig } from './config.js';
 import { buildEvent } from './events.js';
 import { ShepherdMutationMutex } from './mutex.js';
+import type { ShepherdMutationLease } from './mutex.js';
 import { repositoryInScope } from './scope.js';
 import type {
   GitHubProvider,
@@ -110,7 +111,8 @@ export class TrackedPullRequestControl {
     if (!repositoryInScope(request.repo, this.config.github)) {
       throw new Error(`Repository ${request.repo} is outside the configured GitHub scope.`);
     }
-    const verifyAndClaim = async (): Promise<TrackedControlResult> => {
+    const verifyAndClaim = async (lease?: ShepherdMutationLease): Promise<TrackedControlResult> => {
+      lease?.assertOwned();
       let details: PullRequestDetails;
       try {
         details = await this.github.getPullRequest(request);
@@ -137,6 +139,7 @@ export class TrackedPullRequestControl {
           throw new Error('The GitHub provider cannot verify merge automation state for an exact-head gated claim.');
         }
         const automation = await this.github.getMergeAutomationState(request);
+        lease?.assertOwned();
         if (automation.headSha.toLowerCase() !== details.headSha.toLowerCase()) {
           throw new Error('The pull request head changed during gated claim verification; retry the claim.');
         }
@@ -158,6 +161,7 @@ export class TrackedPullRequestControl {
       const now = this.clock();
       const threshold = this.config.features.staleThresholdHours;
       const staleHours = (now.getTime() - new Date(details.updatedAt).getTime()) / 3_600_000;
+      lease?.assertOwned();
       return this.store.claimTrackedPullRequest(
         request,
         details,
@@ -198,7 +202,7 @@ export class TrackedPullRequestControl {
       return this.persistUnclaim(request);
     }
     const releaseStore = this.releaseStore();
-    return this.releaseMutex().runExclusive(async () => {
+    return this.releaseMutex().runExclusive(async (lease) => {
       const current = releaseStore.getTrackedPullRequest(request);
       if (
         current?.status === 'active' &&
@@ -207,6 +211,7 @@ export class TrackedPullRequestControl {
       ) {
         throw new Error('Revoke the exact-head release gate and complete any queue compensation before unclaiming.');
       }
+      lease.assertOwned();
       return this.persistUnclaim(request);
     });
   }
@@ -242,6 +247,9 @@ export class TrackedPullRequestControl {
     if (
       typeof candidate.canUnclaimReleaseGate !== 'function' ||
       typeof candidate.tryAcquireMutationLock !== 'function' ||
+      typeof candidate.getMutationLock !== 'function' ||
+      typeof candidate.renewMutationLock !== 'function' ||
+      typeof candidate.tryTakeoverMutationLock !== 'function' ||
       typeof candidate.releaseMutationLock !== 'function'
     ) {
       throw new Error('The tracked pull-request store does not support safe exact-head gate release.');
@@ -314,12 +322,13 @@ export class ReleaseGateControl {
   }
 
   async attest(input: ReleaseAttestInput): Promise<ReleaseControlResult> {
-    this.assertAttestEnabled();
     const request = validatedRelease('attest', input, this.clock());
     const replay = this.store.getReleaseControlResult(request);
     if (replay !== undefined) return replay;
-    return this.mutex.runExclusive(async () => {
+    this.assertAttestEnabled();
+    return this.mutex.runExclusive(async (lease) => {
       const tracked = this.currentTracked(request);
+      lease.assertOwned();
       let details: PullRequestDetails;
       try {
         details = await this.github.getPullRequest(request);
@@ -337,6 +346,7 @@ export class ReleaseGateControl {
         throw new Error('The GitHub provider cannot verify merge automation state for an exact-head attestation.');
       }
       const automation = await this.github.getMergeAutomationState(request);
+      lease.assertOwned();
       if (automation.headSha.toLowerCase() !== request.headSha) {
         throw new Error('The pull request head changed during release attestation; retry with the current head.');
       }
@@ -353,6 +363,7 @@ export class ReleaseGateControl {
         { actor: request.actor, evidence: request.evidence, title: details.title, url: details.url },
         request.occurredAt,
       );
+      lease.assertOwned();
       return this.store.attestRelease(request, tracked.generation, event, this.recipient());
     });
   }
@@ -362,10 +373,10 @@ export class ReleaseGateControl {
     const replay = this.store.getReleaseControlResult(request);
     if (replay !== undefined) {
       return replay.compensation === 'pending'
-        ? this.mutex.runExclusive(() => this.runCompensations(request, replay))
+        ? this.mutex.runExclusive((lease) => this.runCompensations(request, replay, lease))
         : replay;
     }
-    return this.mutex.runExclusive(async () => {
+    return this.mutex.runExclusive(async (lease) => {
       const tracked = this.currentTracked(request);
       const event = buildEvent(
         this.config,
@@ -378,6 +389,7 @@ export class ReleaseGateControl {
       return this.runCompensations(
         request,
         this.store.revokeRelease(request, tracked.generation, event, this.recipient()),
+        lease,
       );
     });
   }
@@ -385,6 +397,7 @@ export class ReleaseGateControl {
   private async runCompensations(
     request: ReleaseControlRequest,
     initial: ReleaseControlResult,
+    lease: ShepherdMutationLease,
   ): Promise<ReleaseControlResult> {
     let result = initial;
     if (result.compensation !== 'pending') return result;
@@ -398,7 +411,9 @@ export class ReleaseGateControl {
       }
       if (action.value.status === 'completed') continue;
       try {
+        lease.assertOwned();
         await this.github.mutate(action.value.mutation);
+        lease.assertOwned();
         const updated = this.store.completeReleaseCompensation(
           request.idempotencyKey,
           actionKey,

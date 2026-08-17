@@ -566,4 +566,25 @@ describe('exact-head release controls', () => {
     );
     store.close();
   });
+
+  it('replays a durable attestation after tracked controls and the gate are disabled', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    const github = new FakeGitHub();
+    const { release } = await claimedGate(store, github);
+    const attestInput = { ...input('attest-replay-after-disable'), headSha };
+    await expect(release.attest(attestInput)).resolves.toMatchObject({
+      outcome: 'attested',
+      idempotentReplay: false,
+    });
+
+    const disabled = new ReleaseGateControl(config(false, 'none'), github, store);
+    await expect(disabled.attest(attestInput)).resolves.toMatchObject({
+      outcome: 'attested',
+      idempotentReplay: true,
+    });
+    await expect(disabled.attest({ ...attestInput, evidence: { ticket: 'different' } })).rejects.toThrow(
+      /different release request/,
+    );
+    store.close();
+  });
 });
