@@ -372,9 +372,14 @@ export class ReleaseGateControl {
     const request = validatedRelease('revoke', input, this.clock());
     const replay = this.store.getReleaseControlResult(request);
     if (replay !== undefined) {
-      return replay.compensation === 'pending'
-        ? this.mutex.runExclusive((lease) => this.runCompensations(request, replay, lease))
-        : replay;
+      if (replay.compensation === 'completed') return replay;
+      return this.mutex.runExclusive((lease) => {
+        lease.assertOwned();
+        const reconciled = this.store.reconcileReleaseCompensation(request) ?? replay;
+        return reconciled.compensation === 'pending'
+          ? this.runCompensations(request, reconciled, lease)
+          : Promise.resolve(reconciled);
+      });
     }
     return this.mutex.runExclusive(async (lease) => {
       const tracked = this.currentTracked(request);

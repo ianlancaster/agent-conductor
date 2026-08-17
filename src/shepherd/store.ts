@@ -860,6 +860,91 @@ export class SqliteShepherdStore implements ReleaseGateStore {
     });
   }
 
+  reconcileReleaseCompensation(request: ReleaseControlRequest): ReleaseControlResult | undefined {
+    return withTransaction(this.db, () => {
+      const replay = this.releaseReplay(request);
+      if (replay?.operation !== 'revoke' || replay.compensation !== 'none') return replay;
+
+      const compensationActionKeys = new Set<string>();
+      for (const source of this.listEntities<Record<string, unknown>>('action')) {
+        if (source.value.status !== 'cancelled') continue;
+        const mutation = source.value.mutation;
+        if (typeof mutation !== 'object' || mutation === null || Array.isArray(mutation)) continue;
+        const mutationRecord = mutation as Record<string, unknown>;
+        const mutationType = String(mutationRecord.type);
+        if (!['enqueue-exact-head', 'enable-auto-merge'].includes(mutationType)) continue;
+        const pr = mutationRecord.pr;
+        if (typeof pr !== 'object' || pr === null || Array.isArray(pr)) continue;
+        const ref = pr as Record<string, unknown>;
+        if (
+          ref.number !== request.number ||
+          typeof ref.repo !== 'string' ||
+          repoKey(ref.repo) !== repoKey(request.repo) ||
+          (mutationType === 'enqueue-exact-head' && source.value.trackedGeneration !== replay.generation)
+        ) {
+          continue;
+        }
+
+        let compensationKey = this.ensureActionSafetyCompensationWithin(source.key, source.value, request.occurredAt);
+        if (compensationKey === undefined) continue;
+        let compensation = this.getEntity<Record<string, unknown>>(compensationKey);
+        if (compensation === undefined) continue;
+        const linkedOperation = compensation.value.compensationFor;
+        if (
+          compensation.value.status === 'pending' &&
+          typeof linkedOperation === 'string' &&
+          linkedOperation !== request.idempotencyKey
+        ) {
+          const compensationType = mutationType === 'enqueue-exact-head' ? 'dequeue' : 'disable-auto-merge';
+          compensationKey = `${source.key}:${compensationType}:${request.idempotencyKey}`;
+          this.db
+            .prepare('INSERT OR IGNORE INTO shepherd_entities (key, kind, value_json, updated_at) VALUES (?, ?, ?, ?)')
+            .run(
+              compensationKey,
+              'action',
+              JSON.stringify({
+                status: 'pending',
+                mutation: { type: compensationType, pr: { repo: request.repo, number: request.number } },
+                ...(typeof source.value.trackedGeneration === 'number'
+                  ? { trackedGeneration: source.value.trackedGeneration }
+                  : {}),
+                compensationFor: request.idempotencyKey,
+                compensatesActionKey: source.key,
+              }),
+              request.occurredAt,
+            );
+          compensation = this.getEntity<Record<string, unknown>>(compensationKey);
+          if (compensation === undefined) continue;
+        } else if (linkedOperation === undefined || linkedOperation === request.idempotencyKey) {
+          this.db
+            .prepare('UPDATE shepherd_entities SET value_json = ?, updated_at = ? WHERE key = ?')
+            .run(
+              JSON.stringify({ ...compensation.value, compensationFor: request.idempotencyKey }),
+              request.occurredAt,
+              compensationKey,
+            );
+        }
+        compensationActionKeys.add(compensationKey);
+      }
+
+      if (compensationActionKeys.size === 0) return replay;
+      const linkedKeys = [...compensationActionKeys].sort();
+      const completed = linkedKeys.every(
+        (key) => this.getEntity<Record<string, unknown>>(key)?.value.status === 'completed',
+      );
+      const persisted: ReleaseControlResult = {
+        ...replay,
+        idempotentReplay: false,
+        compensation: completed ? 'completed' : 'pending',
+        compensationActionKeys: linkedKeys,
+      };
+      this.db
+        .prepare('UPDATE shepherd_release_operations SET result_json = ? WHERE idempotency_key = ?')
+        .run(JSON.stringify(persisted), request.idempotencyKey);
+      return { ...persisted, idempotentReplay: true };
+    });
+  }
+
   completeReleaseCompensation(
     idempotencyKey: string,
     actionKey: string,

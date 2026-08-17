@@ -215,7 +215,8 @@ compensation action; an inherited or crash-ambiguous legacy auto-merge action cr
 disable-auto-merge compensation. Provider state checks make these retries idempotent, and failed
 compensation remains pending across restart even if the gate is later disabled or repository scope
 is narrowed. Startup repairs previously cancelled enqueue/auto-merge actions into the same durable
-safety work. A direct
+safety work. Replaying the original revoke key adopts that standalone repair into the original
+release audit, including when cleanup already completed before the replay. A direct
 merge cannot be undone after GitHub accepts it; the exact-head conditional and the shared mutex
 prevent a concurrent local revoke from crossing that submission, but no system can compensate a
 process crash after a completed direct merge. Safe unclaim is refused until attestation revocation

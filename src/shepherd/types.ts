@@ -386,6 +386,7 @@ export interface ReleaseGateStore extends TrackedPullRequestStore, MutationMutex
     recipient?: string,
   ): ReleaseControlResult;
   getReleaseControlResult(request: ReleaseControlRequest): ReleaseControlResult | undefined;
+  reconcileReleaseCompensation(request: ReleaseControlRequest): ReleaseControlResult | undefined;
   completeReleaseCompensation(
     idempotencyKey: string,
     actionKey: string,

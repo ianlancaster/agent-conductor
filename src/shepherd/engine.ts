@@ -158,6 +158,7 @@ function supportsReleaseGate(store: ShepherdStore): store is ReleaseGateStore {
     typeof candidate.canUnclaimReleaseGate === 'function' &&
     typeof candidate.attestRelease === 'function' &&
     typeof candidate.revokeRelease === 'function' &&
+    typeof candidate.reconcileReleaseCompensation === 'function' &&
     typeof candidate.completeReleaseCompensation === 'function' &&
     typeof candidate.prepareActionCancellation === 'function' &&
     typeof candidate.ensureActionSafetyCompensation === 'function' &&

@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseShepherdConfig, type ShepherdConfig } from '../src/shepherd/config.js';
 import { ReleaseGateControl, TrackedPullRequestControl } from '../src/shepherd/control.js';
+import { ShepherdEngine } from '../src/shepherd/engine.js';
 import { SqliteShepherdStore } from '../src/shepherd/store.js';
 import type {
   DiscoveryKind,
@@ -332,6 +333,69 @@ describe('exact-head release controls', () => {
     return { resolved, release: new ReleaseGateControl(resolved, github, store) };
   }
 
+  async function legacyNoneRevokeState(scenario: string, sourceType: 'enqueue' | 'auto-merge' = 'enqueue') {
+    const dir = mkdtempSync(join(tmpdir(), `shepherd-legacy-revoke-${scenario}-`));
+    dirs.push(dir);
+    const path = join(dir, 'shepherd.db');
+    const store = new SqliteShepherdStore(path);
+    const github = new FakeGitHub();
+    const { release } = await claimedGate(store, github);
+    await release.attest({ ...input(`attest-${scenario}`), headSha });
+    const sourceActionKey = `action:legacy-cancelled-${scenario}`;
+    store.commit(
+      [
+        {
+          key: sourceActionKey,
+          kind: 'action',
+          value: {
+            status: 'pending',
+            ...(sourceType === 'enqueue' ? { trackedGeneration: 1 } : {}),
+            mutation:
+              sourceType === 'enqueue'
+                ? { type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha }
+                : {
+                    type: 'enable-auto-merge',
+                    pr: { repo: 'acme/api', number: 7 },
+                    mergeMethod: 'squash',
+                  },
+          },
+        },
+      ],
+      [],
+    );
+    github.mutationError = new Error('seed pending compensation');
+    const revokeInput = { ...input(`revoke-${scenario}`), reason: 'withdraw legacy release' };
+    const initial = await release.revoke(revokeInput);
+    const originalCompensationKey = initial.compensationActionKeys[0];
+    if (originalCompensationKey === undefined) throw new Error('expected seeded compensation action');
+    store.close();
+
+    const database = new DatabaseSync(path);
+    const row = database
+      .prepare('SELECT result_json FROM shepherd_release_operations WHERE idempotency_key = ?')
+      .get(revokeInput.idempotencyKey) as { result_json: string };
+    const legacyResult = {
+      ...(JSON.parse(row.result_json) as Record<string, unknown>),
+      compensation: 'none',
+      compensationActionKeys: [],
+    };
+    database
+      .prepare('UPDATE shepherd_release_operations SET result_json = ? WHERE idempotency_key = ?')
+      .run(JSON.stringify(legacyResult), revokeInput.idempotencyKey);
+    database.prepare('DELETE FROM shepherd_entities WHERE key = ?').run(originalCompensationKey);
+    database.close();
+    github.mutationError = undefined;
+    const compensationType = sourceType === 'enqueue' ? 'dequeue' : 'disable-auto-merge';
+    return {
+      github,
+      path,
+      revokeInput,
+      sourceActionKey,
+      safetyActionKey: `${sourceActionKey}:safety-${compensationType}`,
+      compensationType,
+    };
+  }
+
   it('persists exact-head evidence and replays attest/revoke requests idempotently', async () => {
     const store = new SqliteShepherdStore(':memory:');
     const github = new FakeGitHub();
@@ -585,6 +649,106 @@ describe('exact-head release controls', () => {
     await expect(disabled.attest({ ...attestInput, evidence: { ticket: 'different' } })).rejects.toThrow(
       /different release request/,
     );
+    store.close();
+  });
+
+  it('reconciles a legacy compensation-none revoke replay before startup repair', async () => {
+    const seeded = await legacyNoneRevokeState('before-repair');
+    const store = new SqliteShepherdStore(seeded.path);
+    const release = new ReleaseGateControl(config(false, 'none'), seeded.github, store);
+    await expect(release.revoke({ ...seeded.revokeInput, reason: 'different request' })).rejects.toThrow(
+      /different release request/,
+    );
+
+    seeded.github.mutationError = new Error('keep reconciled compensation pending');
+    const pending = await release.revoke(seeded.revokeInput);
+    expect(pending).toMatchObject({ compensation: 'pending', idempotentReplay: true });
+    expect(pending.compensationActionKeys).toEqual([seeded.safetyActionKey]);
+    expect(store.listReleaseControlOperations(10)[0]?.result).toMatchObject({
+      compensation: 'pending',
+      compensationActionKeys: pending.compensationActionKeys,
+    });
+
+    seeded.github.mutationError = undefined;
+    await expect(release.revoke(seeded.revokeInput)).resolves.toMatchObject({
+      compensation: 'completed',
+      compensationActionKeys: pending.compensationActionKeys,
+      idempotentReplay: true,
+    });
+    expect(store.listReleaseControlOperations(10)[0]?.result.compensation).toBe('completed');
+    store.close();
+  });
+
+  it('adopts startup-repaired safety work into a legacy compensation-none revoke audit', async () => {
+    const seeded = await legacyNoneRevokeState('after-repair');
+    const store = new SqliteShepherdStore(seeded.path);
+    seeded.github.mutationError = new Error('leave startup safety work pending');
+    expect(await new ShepherdEngine(config(false, 'none'), seeded.github, store).drainActions()).toBe(0);
+    const safetyKey = seeded.safetyActionKey;
+    expect(store.getEntity<Record<string, unknown>>(safetyKey)?.value).toMatchObject({
+      status: 'pending',
+      compensatesActionKey: seeded.sourceActionKey,
+    });
+    expect(store.listReleaseControlOperations(10)[0]?.result).toMatchObject({
+      compensation: 'none',
+      compensationActionKeys: [],
+    });
+
+    const replay = await new ReleaseGateControl(config(false, 'none'), seeded.github, store).revoke(seeded.revokeInput);
+    expect(replay).toMatchObject({
+      compensation: 'pending',
+      compensationActionKeys: [safetyKey],
+      idempotentReplay: true,
+    });
+    expect(store.getEntity<Record<string, unknown>>(safetyKey)?.value.compensationFor).toBe(
+      seeded.revokeInput.idempotencyKey,
+    );
+    expect(store.listReleaseControlOperations(10)[0]?.result.compensationActionKeys).toEqual([safetyKey]);
+    store.close();
+  });
+
+  it('links completed startup safety work and corrects a legacy compensation-none revoke audit', async () => {
+    const seeded = await legacyNoneRevokeState('after-completion');
+    const store = new SqliteShepherdStore(seeded.path);
+    expect(await new ShepherdEngine(config(false, 'none'), seeded.github, store).drainActions()).toBe(1);
+    const safetyKey = seeded.safetyActionKey;
+    expect(store.getEntity<Record<string, unknown>>(safetyKey)?.value.status).toBe('completed');
+    expect(store.listReleaseControlOperations(10)[0]?.result.compensation).toBe('none');
+    const mutationCount = seeded.github.mutations.length;
+
+    await expect(
+      new ReleaseGateControl(config(false, 'none'), seeded.github, store).revoke(seeded.revokeInput),
+    ).resolves.toMatchObject({
+      compensation: 'completed',
+      compensationActionKeys: [safetyKey],
+      idempotentReplay: true,
+    });
+    expect(seeded.github.mutations).toHaveLength(mutationCount);
+    expect(store.listReleaseControlOperations(10)[0]?.result).toMatchObject({
+      compensation: 'completed',
+      compensationActionKeys: [safetyKey],
+    });
+    store.close();
+  });
+
+  it('reconciles a legacy compensation-none revoke for persistent auto-merge safety work', async () => {
+    const seeded = await legacyNoneRevokeState('legacy-auto-merge', 'auto-merge');
+    const store = new SqliteShepherdStore(seeded.path);
+    await expect(
+      new ReleaseGateControl(config(false, 'none'), seeded.github, store).revoke(seeded.revokeInput),
+    ).resolves.toMatchObject({
+      compensation: 'completed',
+      compensationActionKeys: [seeded.safetyActionKey],
+      idempotentReplay: true,
+    });
+    expect(seeded.github.mutations.at(-1)).toEqual({
+      type: seeded.compensationType,
+      pr: { repo: 'acme/api', number: 7 },
+    });
+    expect(store.listReleaseControlOperations(10)[0]?.result).toMatchObject({
+      compensation: 'completed',
+      compensationActionKeys: [seeded.safetyActionKey],
+    });
     store.close();
   });
 });
