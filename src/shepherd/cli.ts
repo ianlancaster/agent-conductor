@@ -284,13 +284,25 @@ common(
   program
     .command('tracked')
     .description('Print durable tracked pull-request claims')
-    .option('--audit', 'Include the durable claim/unclaim audit log'),
-).action((options: CommonOptions & { audit?: boolean }) => {
+    .option('--audit', 'Include the durable claim/unclaim audit log')
+    .option('--limit <count>', 'Maximum audit operations', '100')
+    .option('--offset <count>', 'Audit operation offset', '0'),
+).action((options: CommonOptions & { audit?: boolean; limit: string; offset: string }) => {
   const resolved = config(options);
   const store = new SqliteShepherdStore(resolved.databasePath);
   try {
     const claims = store.listTrackedPullRequests();
-    print(options.audit === true ? { claims, operations: store.listTrackedControlOperations() } : claims);
+    if (options.audit !== true) {
+      print(claims);
+      return;
+    }
+    const limit = Number(options.limit);
+    const offset = Number(options.offset);
+    if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('--limit must be a positive integer.');
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('--offset must be a non-negative integer.');
+    const total = store.countTrackedControlOperations();
+    const operations = store.listTrackedControlOperations(limit, offset);
+    print({ claims, operations, page: { limit, offset, total, hasMore: offset + operations.length < total } });
   } finally {
     store.close();
   }

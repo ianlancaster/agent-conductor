@@ -16,6 +16,7 @@ import type {
   ShepherdEvent,
   ShepherdStore,
   TrackedPullRequest,
+  TrackedPullRequestStore,
 } from './types.js';
 
 interface AuthoredState {
@@ -127,6 +128,15 @@ function inboxCompletionOutcome(disposition: InboxState['disposition']): InboxCo
   if (disposition === 'auto-approved') return 'bot-auto-approved';
   if (disposition === 'already-reviewed') return 'already-reviewed';
   return undefined;
+}
+
+function supportsTrackedPullRequests(store: ShepherdStore): store is TrackedPullRequestStore {
+  const candidate = store as Partial<TrackedPullRequestStore>;
+  return (
+    typeof candidate.getTrackedPullRequest === 'function' &&
+    typeof candidate.listTrackedPullRequests === 'function' &&
+    typeof candidate.commitTrackedObservation === 'function'
+  );
 }
 
 export class ShepherdEngine {
@@ -257,8 +267,10 @@ export class ShepherdEngine {
   private actionStillApplicable(action: ActionState): boolean {
     const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
     if (authored?.sources?.authored === false && authored.sources.trackedGeneration !== undefined) {
+      if (!this.config.features.trackedPRs.enabled || !supportsTrackedPullRequests(this.store)) return false;
       const tracked = this.store.getTrackedPullRequest(action.mutation.pr);
       if (tracked?.status !== 'active' || tracked.generation !== authored.sources.trackedGeneration) return false;
+      if (action.mutation.type === 'enable-auto-merge') return false;
     }
     if (action.mutation.type === 'post-reviewer-comment') return true;
     if (authored?.details.state !== 'OPEN') return false;
@@ -334,7 +346,7 @@ export class ShepherdEngine {
     const isBaseline = this.isBaseline('authored');
     const observed = new Set<string>();
     const activeTracked = this.config.features.trackedPRs.enabled
-      ? this.store
+      ? this.trackedStore()
           .listTrackedPullRequests('active')
           .filter((tracked) => repositoryInScope(tracked.repo, this.config.github))
       : [];
@@ -374,16 +386,33 @@ export class ShepherdEngine {
             authoredKeys.has(key),
             tracked?.generation,
           );
-          const inserted = this.store.commit(
-            [{ key, kind: 'authored', value: state }, ...actions, ...nudges],
-            events,
-            this.recipient(),
-            details.state === 'OPEN' ? [] : this.relatedEntityKeys(details, key),
-          );
-          summary.emitted += inserted.length;
           if (tracked !== undefined) {
-            if (details.state === 'OPEN') this.store.completeTrackedBaseline(details);
-            else this.store.markTrackedPullRequestTerminal(details, details.state, this.clock().toISOString());
+            const result = this.trackedStore().commitTrackedObservation(
+              details,
+              tracked.generation,
+              [{ key, kind: 'authored', value: state }, ...actions, ...nudges],
+              events,
+              this.recipient(),
+              details.state === 'OPEN' ? [] : this.relatedEntityKeys(details, key),
+              details.state === 'OPEN' ? undefined : details.state,
+            );
+            summary.emitted += result.inserted.length;
+            if (!result.applied && authoredKeys.has(key)) {
+              const fallback = this.evaluateAuthored(details, previous, isBaseline, false, true);
+              summary.emitted += this.store.commit(
+                [{ key, kind: 'authored', value: fallback.state }, ...fallback.actions, ...fallback.nudges],
+                fallback.events,
+                this.recipient(),
+                details.state === 'OPEN' ? [] : this.relatedEntityKeys(details, key),
+              ).length;
+            }
+          } else {
+            summary.emitted += this.store.commit(
+              [{ key, kind: 'authored', value: state }, ...actions, ...nudges],
+              events,
+              this.recipient(),
+              details.state === 'OPEN' ? [] : this.relatedEntityKeys(details, key),
+            ).length;
           }
         },
         summary,
@@ -401,7 +430,7 @@ export class ShepherdEngine {
     for (const entity of this.store.listEntities<AuthoredState>('authored')) {
       const sources = entity.value.sources;
       if (sources?.authored !== false || sources.trackedGeneration === undefined) continue;
-      const tracked = this.store.getTrackedPullRequest(entity.value.details);
+      const tracked = this.trackedStore().getTrackedPullRequest(entity.value.details);
       if (tracked?.status === 'active' && tracked.generation === sources.trackedGeneration) continue;
       this.store.commit([], [], undefined, this.relatedEntityKeys(entity.value.details, entity.key));
     }
@@ -1328,6 +1357,13 @@ export class ShepherdEngine {
 
   private recipient(): string {
     return this.config.delivery.type === 'conductor' ? this.config.delivery.coordinatorSession : 'stdout';
+  }
+
+  private trackedStore(): TrackedPullRequestStore {
+    if (!supportsTrackedPullRequests(this.store)) {
+      throw new Error('features.trackedPRs requires a tracked pull-request store capability.');
+    }
+    return this.store;
   }
 
   private async runItem(

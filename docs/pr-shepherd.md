@@ -161,9 +161,11 @@ and applies the authored lifecycle for checks, feedback, comments, approvals, co
 head changes, closure, and merge. Review-request removal and review-inbox completion do not release
 the claim. A PR that is both profile-authored and claimed is fetched and evaluated once.
 
-Claims start with a baseline-only lifecycle observation, even when the profile uses
-`notify-current`, so claiming a mature PR does not replay all of its historical conditions. New
-changes after that baseline emit normally. Merge or closure marks the claim terminal and removes
+The `claim` command atomically persists its verified GitHub snapshot as the new claim generation's
+baseline, even when the profile uses `notify-current`, so claiming a mature PR does not replay all
+of its historical conditions and a head change immediately after claiming is not lost. New
+changes after that baseline emit normally. Every later observation commits only while that exact
+claim generation is still active. Merge or closure marks the claim terminal and removes
 live lifecycle/action state while retaining the claim and control audit. Explicit unclaim creates a
 durable tombstone; a later manual claim increments the claim generation. Unknown or unreachable
 PRs produce a retryable error and no false claim. Closed and merged PRs produce durable,
@@ -171,13 +173,15 @@ idempotently replayable rejections.
 
 Control mutations require a caller-supplied idempotency key. Reusing the same key and arguments
 returns the stored result; reusing it for different arguments is rejected. Evidence is a generic
-JSON value capped at 16 KiB and must not contain secrets. `pr-shepherd tracked --audit` prints the
-durable claims and operation history, including idempotent no-ops and permanent rejections. The
+JSON value capped at 16 KiB and must not contain secrets. `pr-shepherd tracked --audit --limit 100
+--offset 0` prints the durable claims, operation history, total, and `hasMore` pagination metadata,
+including idempotent no-ops and permanent rejections. The
 CLI `--actor` value is audit attribution asserted by a caller in
 the existing same-user local trust boundary; it is not cryptographic identity.
 
 This first tracked-lane stage intentionally keeps tracked-only merge execution at `notify`, even
-when global `automation.autoMerge` is `execute`. Exact-head release attestation and
+when global `automation.autoMerge` is `execute`, and rechecks that prohibition before executing a
+persisted action. Exact-head release attestation and
 provider-conditional merge/queue actions must be installed before the tracked lane can merge.
 Ordinary profile-authored PR behavior remains unchanged.
 
@@ -265,7 +269,7 @@ pr-shepherd -C /path/to/fleet inbox
 pr-shepherd -C /path/to/fleet claim --repo owner/name --pr 123 --actor local-user --evidence-file evidence.json --idempotency-key claim-owner-name-123
 pr-shepherd -C /path/to/fleet unclaim --repo owner/name --pr 123 --actor local-user --evidence-file reason.json --idempotency-key unclaim-owner-name-123
 pr-shepherd -C /path/to/fleet tracked
-pr-shepherd -C /path/to/fleet tracked --audit
+pr-shepherd -C /path/to/fleet tracked --audit --limit 100 --offset 0
 ```
 
 All commands accept these optional overrides:

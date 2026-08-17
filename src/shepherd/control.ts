@@ -6,11 +6,11 @@ import type {
   GitHubProvider,
   PullRequestDetails,
   PullRequestRef,
-  ShepherdStore,
   TrackedControlOperationType,
   TrackedControlRequest,
   TrackedControlResult,
   TrackedPullRequest,
+  TrackedPullRequestStore,
 } from './types.js';
 
 export interface TrackedControlInput extends PullRequestRef {
@@ -27,7 +27,7 @@ function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (typeof value === 'object' && value !== null) {
     return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
       .join(',')}}`;
   }
@@ -61,13 +61,14 @@ function validatedInput(
   if (Buffer.byteLength(evidenceJson, 'utf8') > MAX_TRACKED_EVIDENCE_BYTES) {
     throw new Error(`Evidence must not exceed ${String(MAX_TRACKED_EVIDENCE_BYTES)} UTF-8 bytes.`);
   }
-  const identity = { operation, repo: repo.toLowerCase(), number: input.number, actor, evidence: input.evidence };
+  const evidence = JSON.parse(evidenceJson) as unknown;
+  const identity = { operation, repo: repo.toLowerCase(), number: input.number, actor, evidence };
   return {
     operation,
     repo,
     number: input.number,
     actor,
-    evidence: input.evidence,
+    evidence,
     idempotencyKey,
     requestHash: createHash('sha256').update(canonical(identity)).digest('hex'),
     occurredAt: now.toISOString(),
@@ -78,7 +79,7 @@ export class TrackedPullRequestControl {
   constructor(
     private readonly config: ShepherdConfig,
     private readonly github: GitHubProvider,
-    private readonly store: ShepherdStore,
+    private readonly store: TrackedPullRequestStore,
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
@@ -116,7 +117,22 @@ export class TrackedPullRequestControl {
       { actor: request.actor, evidence: request.evidence, title: details.title, url: details.url },
       request.occurredAt,
     );
-    return this.store.claimTrackedPullRequest(request, details.state, event, this.recipient());
+    const now = this.clock();
+    const threshold = this.config.features.staleThresholdHours;
+    const staleHours = (now.getTime() - new Date(details.updatedAt).getTime()) / 3_600_000;
+    return this.store.claimTrackedPullRequest(
+      request,
+      details,
+      {
+        details,
+        lastObservedAt: request.occurredAt,
+        botAttempts: {},
+        staleCycle: threshold === 0 ? 1 : Math.max(0, Math.floor(staleHours / threshold)),
+        conflictCycle: details.mergeable === 'CONFLICTING' ? 1 : 0,
+      },
+      event,
+      this.recipient(),
+    );
   }
 
   unclaim(input: TrackedControlInput): TrackedControlResult {

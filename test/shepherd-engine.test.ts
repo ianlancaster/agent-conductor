@@ -24,6 +24,7 @@ class FakeGitHub implements GitHubProvider {
   mutationError: Error | undefined;
   discoverCalls = 0;
   readonly getCalls: PullRequestRef[] = [];
+  getHandler: ((pr: PullRequestRef) => Promise<PullRequestDetails>) | undefined;
 
   async discover(kind: DiscoveryKind): Promise<DiscoveryResult<PullRequestSummary>> {
     this.discoverCalls += 1;
@@ -32,6 +33,7 @@ class FakeGitHub implements GitHubProvider {
 
   async getPullRequest(pr: PullRequestRef): Promise<PullRequestDetails> {
     this.getCalls.push(structuredClone(pr));
+    if (this.getHandler !== undefined) return this.getHandler(pr);
     const details = this.details.get(`${pr.repo}#${String(pr.number)}`);
     if (details === undefined) throw new Error(`missing ${pr.repo}#${String(pr.number)}`);
     return structuredClone(details);
@@ -197,6 +199,129 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
+  it('uses the verified claim snapshot as the generation baseline', async () => {
+    const github = new FakeGitHub();
+    const initial = pr();
+    github.details.set('acme/api#7', initial);
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      features: { authoredPRs: { enabled: false }, trackedPRs: { enabled: true }, staleThresholdHours: 24 },
+    });
+    await new TrackedPullRequestControl(resolved, github, store).claim({
+      repo: initial.repo,
+      number: initial.number,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'claim-baseline',
+    });
+    github.details.set('acme/api#7', pr({ headSha: 'head-b' }));
+
+    expect(await new ShepherdEngine(resolved, github, store).pollOnce()).toMatchObject({ emitted: 1 });
+    expect(store.listEvents().filter((event) => event.type === 'head-changed')).toHaveLength(1);
+    store.close();
+  });
+
+  it('reports and cleans up a merge that occurs immediately after claim verification', async () => {
+    const github = new FakeGitHub();
+    const initial = pr();
+    github.details.set('acme/api#7', initial);
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      features: { authoredPRs: { enabled: false }, trackedPRs: { enabled: true }, staleThresholdHours: 24 },
+    });
+    await new TrackedPullRequestControl(resolved, github, store).claim({
+      repo: initial.repo,
+      number: initial.number,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'claim-before-merge',
+    });
+    github.details.set('acme/api#7', pr({ state: 'MERGED', mergedAt: '2026-08-17T10:05:00Z', headSha: 'merged-head' }));
+
+    expect(await new ShepherdEngine(resolved, github, store).pollOnce()).toMatchObject({ emitted: 1 });
+    expect(store.listEvents().filter((event) => event.type === 'merged')).toHaveLength(1);
+    expect(store.getTrackedPullRequest(initial)).toMatchObject({ status: 'terminal', terminalState: 'MERGED' });
+    expect(store.getEntity('authored:acme/api#7')).toBeUndefined();
+    store.close();
+  });
+
+  it('drops an observation that finishes after its claim was unclaimed', async () => {
+    const github = new FakeGitHub();
+    const initial = pr();
+    github.details.set('acme/api#7', initial);
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-unclaim-race-'));
+    const path = join(dir, 'shepherd.db');
+    const controlStore = new SqliteShepherdStore(path);
+    const engineStore = new SqliteShepherdStore(path);
+    const resolved = config({
+      features: { authoredPRs: { enabled: false }, trackedPRs: { enabled: true }, staleThresholdHours: 24 },
+    });
+    const control = new TrackedPullRequestControl(resolved, github, controlStore);
+    await control.claim({
+      repo: initial.repo,
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'claim-race',
+    });
+    let release!: (details: PullRequestDetails) => void;
+    github.getHandler = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    const poll = new ShepherdEngine(resolved, github, engineStore).pollOnce();
+    control.unclaim({ repo: initial.repo, number: 7, actor: 'operator', evidence: {}, idempotencyKey: 'unclaim-race' });
+    release(pr({ headSha: 'stale-head' }));
+
+    expect(await poll).toMatchObject({ emitted: 0 });
+    expect(controlStore.listEntities('authored')).toEqual([]);
+    expect(controlStore.getTrackedPullRequest(initial)).toMatchObject({ status: 'unclaimed', generation: 1 });
+    expect(controlStore.listEvents().some((event) => event.source.headSha === 'stale-head')).toBe(false);
+    engineStore.close();
+    controlStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('cannot apply a generation-one observation after unclaim and generation-two reclaim', async () => {
+    const github = new FakeGitHub();
+    const initial = pr();
+    github.details.set('acme/api#7', initial);
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-reclaim-race-'));
+    const path = join(dir, 'shepherd.db');
+    const controlStore = new SqliteShepherdStore(path);
+    const engineStore = new SqliteShepherdStore(path);
+    const resolved = config({
+      features: { authoredPRs: { enabled: false }, trackedPRs: { enabled: true }, staleThresholdHours: 24 },
+    });
+    const control = new TrackedPullRequestControl(resolved, github, controlStore);
+    await control.claim({ repo: initial.repo, number: 7, actor: 'operator', evidence: {}, idempotencyKey: 'claim-g1' });
+    let release!: (details: PullRequestDetails) => void;
+    github.getHandler = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    const poll = new ShepherdEngine(resolved, github, engineStore).pollOnce();
+    control.unclaim({ repo: initial.repo, number: 7, actor: 'operator', evidence: {}, idempotencyKey: 'unclaim-g1' });
+    const generationTwo = pr({ headSha: 'generation-two' });
+    github.getHandler = undefined;
+    github.details.set('acme/api#7', generationTwo);
+    await control.claim({ repo: initial.repo, number: 7, actor: 'operator', evidence: {}, idempotencyKey: 'claim-g2' });
+    release(pr({ state: 'MERGED', mergedAt: '2026-08-17T11:00:00Z', headSha: 'stale-generation-one' }));
+
+    expect(await poll).toMatchObject({ emitted: 0 });
+    expect(controlStore.getTrackedPullRequest(initial)).toMatchObject({
+      status: 'active',
+      generation: 2,
+      terminalState: null,
+    });
+    expect(controlStore.getEntity<{ details: PullRequestDetails }>('authored:acme/api#7')?.value.details.headSha).toBe(
+      'generation-two',
+    );
+    engineStore.close();
+    controlStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it('deduplicates a claimed PR that also appears in authored discovery', async () => {
     const github = new FakeGitHub();
     const details = pr();
@@ -266,6 +391,79 @@ describe('Shepherd engine', () => {
     expect(store.listEntities('action')).toEqual([]);
     expect(store.listEvents().find((event) => event.type === 'auto-merge-decision')?.source.mode).toBe('notify');
     store.close();
+  });
+
+  it('cancels a persisted auto-merge action after ownership becomes tracked-only or tracking is disabled', async () => {
+    for (const enabled of [true, false]) {
+      const github = new FakeGitHub();
+      const details = pr({
+        reviews: [
+          { id: 'approval', author: 'reviewer', state: 'APPROVED', body: '', submittedAt: '2026-08-17T10:00:00Z' },
+        ],
+      });
+      github.details.set('acme/api#7', details);
+      const store = new SqliteShepherdStore(':memory:');
+      if (enabled) {
+        store.commit(
+          [
+            {
+              key: 'authored:acme/api#7',
+              kind: 'authored',
+              value: {
+                details,
+                lastObservedAt: '2026-08-17T09:00:00Z',
+                botAttempts: {},
+                staleCycle: 0,
+                conflictCycle: 0,
+                sources: { authored: true },
+              },
+            },
+          ],
+          [],
+        );
+      }
+      const claimingConfig = config({
+        features: { authoredPRs: { enabled: false }, trackedPRs: { enabled: true }, staleThresholdHours: 24 },
+      });
+      await new TrackedPullRequestControl(claimingConfig, github, store).claim({
+        repo: details.repo,
+        number: details.number,
+        actor: 'operator',
+        evidence: {},
+        idempotencyKey: `claim-persisted-${String(enabled)}`,
+      });
+      store.commit(
+        [
+          {
+            key: `action:persisted-${String(enabled)}`,
+            kind: 'action',
+            value: {
+              status: 'pending',
+              mutation: {
+                type: 'enable-auto-merge',
+                pr: { repo: details.repo, number: details.number },
+                mergeMethod: 'squash',
+              },
+              expectedHeadSha: details.headSha,
+            },
+          },
+        ],
+        [],
+      );
+      const runtimeConfig = config({
+        features: { authoredPRs: { enabled }, trackedPRs: { enabled }, staleThresholdHours: 24 },
+        automation: { autoMerge: 'execute' },
+      });
+
+      const engine = new ShepherdEngine(runtimeConfig, github, store);
+      if (enabled) await engine.pollOnce();
+      else expect(await engine.drainActions()).toBe(0);
+      expect(github.mutations).toEqual([]);
+      expect(store.getEntity<{ status: string }>(`action:persisted-${String(enabled)}`)?.value.status).toBe(
+        'cancelled',
+      );
+      store.close();
+    }
   });
 
   it('marks a merged claim terminal and cleans its live lifecycle state across restart', async () => {

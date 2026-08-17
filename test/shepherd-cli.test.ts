@@ -27,6 +27,8 @@ describe('PR Shepherd CLI profile discovery', () => {
     const trackedHelp = run(['tracked', '--help']);
     expect(trackedHelp).toContain('Print durable tracked pull-request claims');
     expect(trackedHelp).toContain('--audit');
+    expect(trackedHelp).toContain('--limit <count>');
+    expect(trackedHelp).toContain('--offset <count>');
   });
 
   it('initializes the fleet-default profile copy-once and validates it structurally', () => {

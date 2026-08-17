@@ -96,11 +96,11 @@ describe('tracked pull request controls', () => {
       repo: 'Acme/API',
       status: 'active',
       generation: 1,
-      baselinePending: true,
+      baselinePending: false,
     });
     expect(store.listEvents().map((event) => event.type)).toEqual(['tracked-pr-claimed']);
     expect(store.listOutbox()).toHaveLength(1);
-    expect(store.listTrackedControlOperations()).toEqual([
+    expect(store.listTrackedControlOperations(100)).toEqual([
       expect.objectContaining({ idempotencyKey: 'claim-7', operation: 'claim', outcome: 'claimed' }),
     ]);
     store.close();
@@ -111,6 +111,60 @@ describe('tracked pull request controls', () => {
     const control = new TrackedPullRequestControl(config(), new FakeGitHub(), store);
     await control.claim(input('claim-7'));
     await expect(control.claim(input('claim-7', { ticket: 'OTHER' }))).rejects.toThrow(/different control request/);
+    store.close();
+  });
+
+  it('hashes the normalized persisted evidence with locale-independent key ordering', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    const control = new TrackedPullRequestControl(config(), new FakeGitHub(), store);
+    const evidence = { z: 1, a: 2, omitted: undefined };
+    const original = String.prototype.localeCompare;
+    String.prototype.localeCompare = () => {
+      throw new Error('locale ordering must not participate in durable hashes');
+    };
+    try {
+      expect(await control.claim(input('claim-locale', evidence))).toMatchObject({ outcome: 'claimed' });
+      expect(await control.claim(input('claim-locale', evidence))).toMatchObject({ idempotentReplay: true });
+    } finally {
+      String.prototype.localeCompare = original;
+    }
+    expect(store.getTrackedPullRequest({ repo: 'acme/api', number: 7 })?.evidence).toEqual({ z: 1, a: 2 });
+    store.close();
+  });
+
+  it('replaces an old lifecycle snapshot at claim time while preserving authored ownership', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    const oldDetails = { ...pullRequest(), headSha: 'old-head' };
+    store.commit(
+      [
+        {
+          key: 'authored:acme/api#7',
+          kind: 'authored',
+          value: {
+            details: oldDetails,
+            lastObservedAt: '2026-08-17T09:00:00Z',
+            botAttempts: {},
+            staleCycle: 0,
+            conflictCycle: 0,
+            sources: { authored: true },
+          },
+        },
+      ],
+      [],
+    );
+    const github = new FakeGitHub();
+    github.details = { ...pullRequest(), headSha: 'verified-head' };
+
+    await new TrackedPullRequestControl(config(), github, store).claim(input('claim-overlap'));
+
+    expect(
+      store.getEntity<{ details: PullRequestDetails; sources: { authored: boolean; trackedGeneration: number } }>(
+        'authored:acme/api#7',
+      )?.value,
+    ).toMatchObject({
+      details: { headSha: 'verified-head' },
+      sources: { authored: true, trackedGeneration: 1 },
+    });
     store.close();
   });
 
@@ -128,6 +182,9 @@ describe('tracked pull request controls', () => {
       generation: 1,
     });
     expect(await control.claim(input('claim-3'))).toMatchObject({ outcome: 'reclaimed', generation: 2 });
+    expect(store.countTrackedControlOperations()).toBe(5);
+    expect(store.listTrackedControlOperations(2, 0)).toHaveLength(2);
+    expect(store.listTrackedControlOperations(2, 4)).toHaveLength(1);
     expect(
       store
         .listEvents()
@@ -147,7 +204,7 @@ describe('tracked pull request controls', () => {
     expect(await control.claim(input(`claim-${state}`))).toEqual({ ...first, idempotentReplay: true });
     expect(store.listTrackedPullRequests()).toEqual([]);
     expect(store.listEvents()).toEqual([]);
-    expect(store.listTrackedControlOperations()).toEqual([
+    expect(store.listTrackedControlOperations(100)).toEqual([
       expect.objectContaining({ operation: 'claim', outcome: `rejected-${state.toLowerCase()}` }),
     ]);
     store.close();
