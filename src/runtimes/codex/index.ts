@@ -1,9 +1,8 @@
-import { execFile } from 'node:child_process';
 import { mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
+import { runGit } from '../../core/git.js';
 import type { PaneActivityEvidence, RuntimeEvent } from '../../core/types.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
 import { prepareInstructionLayers, writeAtomicFile } from '../instructions.js';
@@ -49,7 +48,6 @@ const AGENTS_OVERRIDE_NAME = 'AGENTS.override.md';
 const HOOKS_NAME = 'hooks.json';
 const AGENTS_NAME = 'AGENTS.md';
 const GIT_TIMEOUT_MS = 5_000;
-const execFileAsync = promisify(execFile);
 
 /** Per-session CODEX_HOME lives here (isolates sessions/); auth is symlinked in from the shared home. */
 const CODEX_HOME_DIR = 'codex-home';
@@ -728,9 +726,7 @@ export class CodexRuntime implements SessionRuntime {
   /** Git's index is authoritative: a dirty/uncommitted file is still tracked. */
   private async isTracked(repo: string, filename: string): Promise<boolean> {
     try {
-      await execFileAsync('git', ['-C', repo, 'ls-files', '--error-unmatch', '--', filename], {
-        timeout: GIT_TIMEOUT_MS,
-      });
+      await runGit(['-C', repo, 'ls-files', '--error-unmatch', '--', filename], { timeoutMs: GIT_TIMEOUT_MS });
       return true;
     } catch {
       // A non-repository, missing git binary, and an untracked path are all

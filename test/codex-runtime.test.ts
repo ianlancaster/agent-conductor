@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sessionConfigSchema } from '../src/config/schema.js';
 import type { SessionConfig } from '../src/config/schema.js';
+import { isolatedGitEnvironment } from '../src/core/git.js';
 import type { IdentityEndpoints } from '../src/runtimes/types.js';
 import { MAX_SESSION_INSTRUCTION_BYTES } from '../src/runtimes/instructions.js';
 import { CodexRuntime } from '../src/runtimes/codex/index.js';
@@ -26,6 +27,7 @@ import {
 } from '../src/runtimes/codex/config-gen.js';
 
 const SETTINGS: CodexRuntimeSettings = { binary: 'codex', toolTimeoutSec: 600 };
+const gitEnv = isolatedGitEnvironment();
 
 function makeSession(overrides: Partial<SessionConfig> = {}): SessionConfig {
   return sessionConfigSchema.parse({ codename: 'sample', repo: '/repos/sample', runtime: 'codex', ...overrides });
@@ -480,8 +482,8 @@ describe('prepare', () => {
     const overridePath = path.join(repoDir, 'AGENTS.override.md');
     const legacy = appendConductorInstructions('# Hand-written override\n\nKeep this rule.', 'OLD PROTOCOL');
     await writeFile(overridePath, legacy);
-    execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
-    execFileSync('git', ['add', 'AGENTS.override.md'], { cwd: repoDir, stdio: 'ignore' });
+    execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore', env: gitEnv });
+    execFileSync('git', ['add', 'AGENTS.override.md'], { cwd: repoDir, stdio: 'ignore', env: gitEnv });
 
     const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
     await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));

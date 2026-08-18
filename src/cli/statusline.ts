@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { REPOSITORY_LOCAL_GIT_ENV } from '../core/git.js';
 
 export const CODEX_STATUS_LINE_ITEMS = [
   'model-with-reasoning',
@@ -136,7 +137,16 @@ try {
 
 const runGit = (cwd, args) => {
   try {
-    return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const env = { ...process.env };
+    const local = new Set(${JSON.stringify(REPOSITORY_LOCAL_GIT_ENV)});
+    for (const key of Object.keys(env)) {
+      if (local.has(key) || /^GIT_CONFIG_(?:KEY|VALUE)_\\d+$/.test(key)) delete env[key];
+    }
+    return execFileSync('git', ['-C', cwd, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env,
+    }).trim();
   } catch {
     return '';
   }

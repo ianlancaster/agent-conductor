@@ -3,15 +3,13 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { isolatedGitEnvironment } from '../src/core/git.js';
 import { materializeWorkspace, resolveTemplateSource } from '../src/core/workspace.js';
 
 let baseDir: string;
 let source: string;
 
-const gitEnv: NodeJS.ProcessEnv = { ...process.env };
-for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
-  delete gitEnv[key];
-}
+const gitEnv = isolatedGitEnvironment();
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-C', cwd, '-c', 'user.name=test', '-c', 'user.email=test@example.com', ...args], {

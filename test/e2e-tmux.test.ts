@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { isolatedGitEnvironment } from '../src/core/git.js';
 import { Store } from '../src/store/index.js';
 import { Supervisor } from '../src/core/supervisor.js';
 import { FakeChannel } from './fakes/fake-channel.js';
@@ -448,10 +449,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
     it('spawns and safely tears down a real git worktree without orphaning dirty work', async () => {
       const repo = join(baseDir, 'main-repo');
       mkdirSync(repo);
-      const gitEnv = { ...process.env };
-      for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
-        delete gitEnv[key];
-      }
+      const gitEnv = isolatedGitEnvironment();
       const git = (cwd: string, ...args: string[]): string =>
         execFileSync('git', ['-C', cwd, '-c', 'user.name=test', '-c', 'user.email=test@example.com', ...args], {
           encoding: 'utf8',

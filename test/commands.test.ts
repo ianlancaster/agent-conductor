@@ -12,6 +12,7 @@ import { Messaging } from '../src/core/messaging.js';
 import { ConductorOperations } from '../src/core/operations.js';
 import { OperatorRequests } from '../src/core/operator-requests.js';
 import type { ChannelMessage } from '../src/channels/types.js';
+import { isolatedGitEnvironment } from '../src/core/git.js';
 import { StallSentinelRouter } from '../src/core/sentinel.js';
 import { SessionStateManager } from '../src/core/state.js';
 import { Store } from '../src/store/index.js';
@@ -40,10 +41,7 @@ function writeSessionConfig(codename: string): void {
   writeFileSync(join(baseDir, 'config', 'sessions', `${codename}.yaml`), `codename: ${codename}\nrepo: ${repo}\n`);
 }
 
-const gitEnv: NodeJS.ProcessEnv = { ...process.env };
-for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
-  delete gitEnv[key];
-}
+const gitEnv = isolatedGitEnvironment();
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-C', cwd, '-c', 'user.name=test', '-c', 'user.email=test@example.com', ...args], {

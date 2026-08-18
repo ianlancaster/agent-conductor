@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { isolatedGitEnvironment } from '../src/core/git.js';
 import {
   CODEX_STATUS_LINE_ITEMS,
   configureStatusLines,
@@ -119,10 +120,7 @@ describe('configureStatusLines', () => {
     const source = join(baseDir, 'source');
     const linked = join(baseDir, 'review-one');
     mkdirSync(source);
-    const gitEnv = { ...process.env };
-    for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
-      delete gitEnv[key];
-    }
+    const gitEnv = isolatedGitEnvironment();
     const git = (cwd: string, ...args: string[]): void => {
       execFileSync('git', ['-C', cwd, '-c', 'user.name=test', '-c', 'user.email=test@example.com', ...args], {
         stdio: 'ignore',

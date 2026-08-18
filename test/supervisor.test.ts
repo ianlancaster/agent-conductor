@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Supervisor } from '../src/core/supervisor.js';
+import { isolatedGitEnvironment } from '../src/core/git.js';
 import type { ChannelAdapter, ChannelHandlers, ChannelMessage } from '../src/channels/types.js';
 import { exportEventJournalJsonl, Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
@@ -718,10 +719,7 @@ describe('Supervisor construction', () => {
   it('reports the configured path and current branch in detailed and fleet status', () => {
     const repo = join(baseDir, 'session-repo');
     mkdirSync(repo);
-    const gitEnv = { ...process.env };
-    for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
-      delete gitEnv[key];
-    }
+    const gitEnv = isolatedGitEnvironment();
     execFileSync('git', ['-C', repo, 'init', '-b', 'main'], { stdio: 'ignore', env: gitEnv });
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43390\n', {
       alpha: `codename: alpha\nrepo: ${repo}\n`,
