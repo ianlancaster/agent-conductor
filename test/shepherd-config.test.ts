@@ -12,34 +12,58 @@ describe('PR Shepherd V2 configuration', () => {
     expect(config.features.authoredPRs.enabled).toBe(true);
     expect(config.features.trackedPRs.enabled).toBe(false);
     expect(config.features.trackedPRs.releaseGate).toBe('none');
+    expect(config.features.trackedPRs.selectors).toEqual([]);
     expect(config.features.reviewInbox.enabled).toBe(false);
     expect(config.automation).toEqual({ autoMerge: 'notify', branchUpdate: 'notify', reviewerComment: 'notify' });
     expect(config.delivery).toEqual({ type: 'stdout' });
     expect(config.github.mergeMethod).toBe('squash');
   });
 
-  it('keeps the exact-head gate inert by default and rejects narrower selector policy', () => {
+  it('keeps the exact-head gate inert by default and validates generic tracked selectors', () => {
     expect(
       parseShepherdConfig({
         version: 2,
         profile: { githubUser: 'octocat' },
         features: { trackedPRs: { enabled: true } },
       }).features.trackedPRs,
-    ).toEqual({ enabled: true, releaseGate: 'none' });
+    ).toEqual({ enabled: true, releaseGate: 'none', selectors: [] });
     expect(
       parseShepherdConfig({
         version: 2,
         profile: { githubUser: 'octocat' },
         features: { trackedPRs: { enabled: true, releaseGate: 'exact-head-attestation' } },
       }).features.trackedPRs,
-    ).toEqual({ enabled: true, releaseGate: 'exact-head-attestation' });
+    ).toEqual({ enabled: true, releaseGate: 'exact-head-attestation', selectors: [] });
+    expect(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        features: {
+          trackedPRs: {
+            enabled: true,
+            selectors: [
+              { id: 'generated-branch', type: 'head-prefix', values: ['generated/'] },
+              { id: 'stewardship-label', type: 'label', values: ['stewardship'] },
+            ],
+          },
+        },
+      }).features.trackedPRs.selectors,
+    ).toHaveLength(2);
     expect(() =>
       parseShepherdConfig({
         version: 2,
         profile: { githubUser: 'octocat' },
-        features: { trackedPRs: { enabled: true, authors: ['special-user'] } },
+        features: {
+          trackedPRs: {
+            enabled: true,
+            selectors: [
+              { id: 'same', type: 'head-prefix', values: ['one/'] },
+              { id: 'same', type: 'label', values: ['two'] },
+            ],
+          },
+        },
       }),
-    ).toThrow(/Unrecognized key/);
+    ).toThrow(/Duplicate tracked pull-request selector id/);
   });
 
   it('rejects unknown keys, guidance event names, remote endpoints, and invalid timezones', () => {

@@ -29,6 +29,14 @@ export type AutomationMode = 'off' | 'notify' | 'execute';
 export type MergeMethod = 'squash' | 'merge' | 'rebase';
 export type ReleaseGate = 'none' | 'exact-head-attestation';
 export type DiscoveryKind = 'authored' | 'review-inbox' | 'review-follow-up' | 'reviewer-nudge';
+export type TrackedPullRequestSelector =
+  { id: string; type: 'head-prefix'; values: string[] } | { id: string; type: 'label'; values: string[] };
+
+export interface TrackedSelectorMatch {
+  selectorId: string;
+  type: TrackedPullRequestSelector['type'];
+  value: string;
+}
 
 export interface PullRequestRef {
   repo: string;
@@ -40,6 +48,10 @@ export interface PullRequestSummary extends PullRequestRef {
   url: string;
   isDraft: boolean;
   updatedAt: string;
+}
+
+export interface TrackedPullRequestCandidate extends PullRequestSummary {
+  matches: TrackedSelectorMatch[];
 }
 
 export interface CheckRun {
@@ -137,6 +149,9 @@ export type GitHubMutation =
 
 export interface GitHubProvider {
   discover(kind: DiscoveryKind, githubUser: string): Promise<DiscoveryResult<PullRequestSummary>>;
+  discoverTrackedPullRequests?(
+    selectors: TrackedPullRequestSelector[],
+  ): Promise<DiscoveryResult<TrackedPullRequestCandidate>>;
   getPullRequest(pr: PullRequestRef): Promise<PullRequestDetails>;
   getMergeAutomationState?(pr: PullRequestRef): Promise<{
     headSha: string;
@@ -213,6 +228,7 @@ export type TrackedControlOutcome =
   | 'claimed'
   | 'reclaimed'
   | 'already-claimed'
+  | 'selector-skipped'
   | 'unclaimed'
   | 'already-unclaimed'
   | 'rejected-closed'
@@ -233,6 +249,8 @@ export interface TrackedControlRequest extends PullRequestRef {
   requestHash: string;
   occurredAt: string;
   releaseGate?: ReleaseGate;
+  /** Selector claims may create a first claim but never override an explicit unclaim tombstone. */
+  onlyIfUntracked?: boolean;
 }
 
 export interface ReleaseAttestation extends PullRequestRef {

@@ -727,11 +727,16 @@ The coordinator receives factual PR events and uses ordinary Conductor primitive
 spawn reviewers, request operator decisions, or coordinate fixes. Organization-specific guidance
 belongs in the Shepherd profile's per-event `guidance` map, not in the reusable engine.
 
-For PRs owned independently of `profile.githubUser`, enable the opt-in tracked-PR lane and use the
-idempotent local `claim`/`unclaim` commands. Claims survive review-request disappearance and reuse
-the authored lifecycle without changing review-inbox identity. Caller-supplied actor names are
-local audit attribution, not cryptographic identity. The default `trackedPRs.releaseGate: none`
-keeps tracked-only merge execution in notify mode even if global authored automation is `execute`.
+For PRs owned independently of `profile.githubUser`, enable the opt-in tracked-PR lane. Use the
+idempotent local `claim`/`unclaim` commands for explicit ownership, or configure generic
+`trackedPRs.selectors` with stable IDs to auto-claim an exact label or case-insensitive head-branch
+prefix. Selector entries and values are ORed, include drafts, and remain constrained by GitHub
+owner/repository scope. Claims survive review-request, label, and branch-name changes and reuse the
+authored lifecycle without changing review-inbox identity. Explicit unclaim leaves a tombstone that
+selectors will not reclaim. Caller-supplied actor names are local audit attribution, not
+cryptographic identity; automatic claims use `selector:<id>` attribution and retain all matched
+selector evidence. The default `trackedPRs.releaseGate: none` keeps tracked-only merge execution in
+notify mode even if global authored automation is `execute`.
 
 For both profile-authored and explicitly tracked PRs, `review-feedback` coalesces new review bodies
 with received inline-thread creation, replies, and transitions into outdated or resolved state.

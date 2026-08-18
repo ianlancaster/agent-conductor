@@ -97,6 +97,84 @@ describe('async gh provider', () => {
     ]);
   });
 
+  it('discovers tracked pull requests by exact label or case-insensitive head prefix', async () => {
+    const calls: string[][] = [];
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query TrackedHeadSearch')) {
+          return JSON.stringify({
+            data: {
+              search: {
+                issueCount: 2,
+                nodes: [
+                  {
+                    number: 7,
+                    title: 'Generated and labelled',
+                    url: 'https://github.com/acme/api/pull/7',
+                    isDraft: true,
+                    updatedAt: '2026-08-18T00:00:00Z',
+                    headRefName: 'ABBY/generated-change',
+                    repository: { nameWithOwner: 'acme/api' },
+                  },
+                  {
+                    number: 8,
+                    title: 'Ordinary branch',
+                    url: 'https://github.com/acme/api/pull/8',
+                    isDraft: false,
+                    updatedAt: '2026-08-18T00:00:00Z',
+                    headRefName: 'feature/ordinary',
+                    repository: { nameWithOwner: 'acme/api' },
+                  },
+                ],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          });
+        }
+        return JSON.stringify({
+          total_count: 1,
+          incomplete_results: false,
+          items: [
+            {
+              number: 7,
+              title: 'Generated and labelled',
+              html_url: 'https://github.com/acme/api/pull/7',
+              repository_url: 'https://api.github.com/repos/acme/api',
+              draft: true,
+              updated_at: '2026-08-18T00:00:00Z',
+            },
+          ],
+        });
+      },
+    };
+    const config = parseShepherdConfig({
+      version: 2,
+      profile: { githubUser: 'octocat' },
+      github: { includeOwners: ['acme'] },
+    });
+    const result = await new GhGitHubProvider(config, executor).discoverTrackedPullRequests([
+      { id: 'abby-label', type: 'label', values: ['Abby'] },
+      { id: 'abby-branch', type: 'head-prefix', values: ['Abby/'] },
+    ]);
+
+    expect(result).toMatchObject({ exhaustive: true });
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        repo: 'acme/api',
+        number: 7,
+        isDraft: true,
+        matches: [
+          { selectorId: 'abby-branch', type: 'head-prefix', value: 'Abby/' },
+          { selectorId: 'abby-label', type: 'label', value: 'Abby' },
+        ],
+      }),
+    ]);
+    expect(calls.some((args) => args.includes('q=is:pr state:open label:"Abby" org:acme'))).toBe(true);
+    expect(calls.some((args) => args.includes('queryString=is:pr state:open org:acme'))).toBe(true);
+  });
+
   it('accepts the documented pending and failed exit statuses for gh pr checks only', async () => {
     const accepted: (readonly number[] | undefined)[] = [];
     const executor: ProcessExecutor = {

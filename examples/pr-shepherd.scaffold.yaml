@@ -18,7 +18,10 @@ checks: { required: [], ignored: [] }
 reviews: { ignoredActors: [], ignoredCommentPatterns: [], requiredApprovals: 1, bots: [] }
 features:
   authoredPRs: { enabled: true }
-  trackedPRs: { enabled: false, releaseGate: none }
+  trackedPRs:
+    enabled: false
+    releaseGate: none
+    selectors: []
   reviewInbox: { enabled: false, ignoreDrafts: true, ignoredRepos: [], maxAgeDays: 5 }
   reviewFollowUp: { enabled: false }
   reviewerNudge: { enabled: false, escalateAfterHours: 24, businessDaysOnly: true, timezone: UTC, maxEscalations: 1 }

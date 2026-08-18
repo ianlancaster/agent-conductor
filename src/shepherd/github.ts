@@ -18,6 +18,8 @@ import type {
   ReviewThread,
   ReviewThreadComment,
   ReviewThreadSide,
+  TrackedPullRequestCandidate,
+  TrackedPullRequestSelector,
 } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -68,6 +70,24 @@ interface SearchPage {
   total_count: number;
   incomplete_results: boolean;
   items: SearchItem[];
+}
+
+interface RawTrackedSearchPage {
+  data: {
+    search: {
+      issueCount: number;
+      nodes: {
+        number: number;
+        title: string;
+        url: string;
+        isDraft: boolean;
+        updatedAt: string;
+        headRefName: string;
+        repository: { nameWithOwner: string };
+      }[];
+      pageInfo: RawPageInfo;
+    };
+  };
 }
 
 interface RawView {
@@ -294,6 +314,25 @@ query PullRequestMutationState($owner: String!, $name: String!, $number: Int!) {
   }
 }`;
 
+const TRACKED_HEAD_SEARCH_QUERY = `
+query TrackedHeadSearch($queryString: String!, $cursor: String) {
+  search(type: ISSUE, query: $queryString, first: ${String(GRAPHQL_PAGE_SIZE)}, after: $cursor) {
+    issueCount
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        isDraft
+        updatedAt
+        headRefName
+        repository { nameWithOwner }
+      }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}`;
+
 export class GhGitHubProvider implements GitHubProvider {
   constructor(
     private readonly config: ShepherdConfig,
@@ -320,6 +359,79 @@ export class GhGitHubProvider implements GitHubProvider {
 
     return {
       items: [...byKey.values()],
+      exhaustive,
+      ...(warnings.length > 0 ? { warning: warnings.join('; ') } : {}),
+    };
+  }
+
+  async discoverTrackedPullRequests(
+    selectors: TrackedPullRequestSelector[],
+  ): Promise<DiscoveryResult<TrackedPullRequestCandidate>> {
+    const candidates = new Map<string, TrackedPullRequestCandidate>();
+    const warnings: string[] = [];
+    let exhaustive = true;
+    const addMatch = (item: PullRequestSummary, match: TrackedPullRequestCandidate['matches'][number]): void => {
+      if (!repositoryInScope(item.repo, this.config.github)) return;
+      const key = `${item.repo.toLowerCase()}#${String(item.number)}`;
+      const existing = candidates.get(key);
+      if (existing === undefined) {
+        candidates.set(key, { ...item, matches: [match] });
+      } else if (
+        !existing.matches.some(
+          (candidate) =>
+            candidate.selectorId === match.selectorId &&
+            candidate.type === match.type &&
+            candidate.value === match.value,
+        )
+      ) {
+        existing.matches.push(match);
+      }
+    };
+
+    for (const selector of selectors.filter((candidate) => candidate.type === 'label')) {
+      for (const value of selector.values) {
+        for (const scope of this.scopeQueries()) {
+          const result = await this.search(`is:pr state:open label:${this.searchValue(value)} ${scope}`.trim());
+          exhaustive &&= result.exhaustive;
+          if (result.warning !== undefined) warnings.push(result.warning);
+          for (const item of result.items) addMatch(item, { selectorId: selector.id, type: selector.type, value });
+        }
+      }
+    }
+
+    const prefixSelectors = selectors.filter((candidate) => candidate.type === 'head-prefix');
+    if (prefixSelectors.length > 0) {
+      for (const scope of this.scopeQueries()) {
+        const result = await this.searchPullRequestHeads(`is:pr state:open ${scope}`.trim());
+        exhaustive &&= result.exhaustive;
+        if (result.warning !== undefined) warnings.push(result.warning);
+        for (const item of result.items) {
+          for (const selector of prefixSelectors) {
+            for (const value of selector.values) {
+              if (item.headRefName.toLowerCase().startsWith(value.toLowerCase())) {
+                addMatch(item, { selectorId: selector.id, type: selector.type, value });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return {
+      items: [...candidates.values()]
+        .map((candidate) => ({
+          ...candidate,
+          matches: [...candidate.matches].sort((left, right) => {
+            const leftKey = `${left.selectorId}\u0000${left.type}\u0000${left.value}`;
+            const rightKey = `${right.selectorId}\u0000${right.type}\u0000${right.value}`;
+            return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+          }),
+        }))
+        .sort((left, right) => {
+          const leftKey = `${left.repo.toLowerCase()}\u0000${String(left.number).padStart(12, '0')}`;
+          const rightKey = `${right.repo.toLowerCase()}\u0000${String(right.number).padStart(12, '0')}`;
+          return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+        }),
       exhaustive,
       ...(warnings.length > 0 ? { warning: warnings.join('; ') } : {}),
     };
@@ -532,6 +644,49 @@ export class GhGitHubProvider implements GitHubProvider {
           }
         : {}),
     };
+  }
+
+  private async searchPullRequestHeads(
+    query: string,
+  ): Promise<DiscoveryResult<PullRequestSummary & { headRefName: string }>> {
+    const items: (PullRequestSummary & { headRefName: string })[] = [];
+    let cursor: string | undefined;
+    let total = 0;
+    do {
+      const raw = await this.graphql(TRACKED_HEAD_SEARCH_QUERY, { queryString: query, cursor });
+      const response = this.json<RawTrackedSearchPage>(raw, `tracked head search for ${query}`);
+      const connection = response.data.search;
+      total = connection.issueCount;
+      for (const item of connection.nodes) {
+        items.push({
+          repo: item.repository.nameWithOwner,
+          number: item.number,
+          title: item.title,
+          url: item.url,
+          isDraft: item.isDraft,
+          updatedAt: item.updatedAt,
+          headRefName: item.headRefName,
+        });
+      }
+      cursor =
+        connection.pageInfo.hasNextPage && items.length < SEARCH_RESULT_CAP
+          ? this.nextCursor(connection.pageInfo, `tracked head search for ${query}`)
+          : undefined;
+    } while (cursor !== undefined);
+    const exhaustive = total <= SEARCH_RESULT_CAP && items.length >= total;
+    return {
+      items,
+      exhaustive,
+      ...(!exhaustive
+        ? {
+            warning: `GitHub search was non-exhaustive (${String(items.length)}/${String(total)} results for ${query})`,
+          }
+        : {}),
+    };
+  }
+
+  private searchValue(value: string): string {
+    return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
   }
 
   private qualifier(kind: DiscoveryKind, user: string): string {

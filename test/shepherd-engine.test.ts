@@ -16,10 +16,13 @@ import type {
   PullRequestRef,
   PullRequestSummary,
   ReviewThread,
+  TrackedPullRequestCandidate,
+  TrackedPullRequestSelector,
 } from '../src/shepherd/types.js';
 
 class FakeGitHub implements GitHubProvider {
   readonly discoveries = new Map<DiscoveryKind, DiscoveryResult<PullRequestSummary>>();
+  selectorDiscovery: DiscoveryResult<TrackedPullRequestCandidate> = { items: [], exhaustive: true };
   readonly details = new Map<string, PullRequestDetails>();
   readonly mutations: GitHubMutation[] = [];
   mutationError: Error | undefined;
@@ -32,6 +35,12 @@ class FakeGitHub implements GitHubProvider {
   async discover(kind: DiscoveryKind): Promise<DiscoveryResult<PullRequestSummary>> {
     this.discoverCalls += 1;
     return this.discoveries.get(kind) ?? { items: [], exhaustive: true };
+  }
+
+  async discoverTrackedPullRequests(
+    _selectors: TrackedPullRequestSelector[],
+  ): Promise<DiscoveryResult<TrackedPullRequestCandidate>> {
+    return structuredClone(this.selectorDiscovery);
   }
 
   async getPullRequest(pr: PullRequestRef): Promise<PullRequestDetails> {
@@ -229,6 +238,71 @@ describe('Shepherd engine', () => {
       }),
     ).toMatchObject({ outcome: 'unclaimed' });
     expect(store.listEntities('authored')).toEqual([]);
+    store.close();
+  });
+
+  it('automatically claims selector matches once and preserves an explicit unclaim tombstone', async () => {
+    const github = new FakeGitHub();
+    const initial = pr({ isDraft: true });
+    github.details.set('acme/api#7', initial);
+    github.selectorDiscovery = {
+      exhaustive: true,
+      items: [
+        {
+          ...initial,
+          matches: [
+            { selectorId: 'abby-branch', type: 'head-prefix', value: 'Abby/' },
+            { selectorId: 'abby-label', type: 'label', value: 'Abby' },
+          ],
+        },
+      ],
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: {
+          enabled: true,
+          selectors: [
+            { id: 'abby-branch', type: 'head-prefix', values: ['Abby/'] },
+            { id: 'abby-label', type: 'label', values: ['Abby'] },
+          ],
+        },
+        staleThresholdHours: 24,
+      },
+    });
+    const clock = () => new Date('2026-08-18T10:00:00Z');
+    const engine = new ShepherdEngine(resolved, github, store, clock);
+
+    expect(await engine.pollOnce()).toMatchObject({ discovered: 1, emitted: 1 });
+    expect(store.getTrackedPullRequest(initial)).toMatchObject({
+      status: 'active',
+      generation: 1,
+      actor: 'selector:abby-branch',
+      evidence: {
+        summary: 'Matched configured tracked pull-request selector.',
+        selectors: [
+          { selectorId: 'abby-branch', type: 'head-prefix', value: 'Abby/' },
+          { selectorId: 'abby-label', type: 'label', value: 'Abby' },
+        ],
+      },
+    });
+    expect(store.listEvents().filter((event) => event.type === 'tracked-pr-claimed')).toHaveLength(1);
+    await engine.pollOnce();
+    expect(store.listEvents().filter((event) => event.type === 'tracked-pr-claimed')).toHaveLength(1);
+
+    const control = new TrackedPullRequestControl(resolved, github, store, clock);
+    expect(
+      control.unclaim({
+        repo: initial.repo,
+        number: initial.number,
+        actor: 'operator',
+        evidence: { reason: 'explicit exception' },
+        idempotencyKey: 'unclaim-selector-match',
+      }),
+    ).toMatchObject({ outcome: 'unclaimed', generation: 1 });
+    await engine.pollOnce();
+    expect(store.getTrackedPullRequest(initial)).toMatchObject({ status: 'unclaimed', generation: 1 });
     store.close();
   });
 

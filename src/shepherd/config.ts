@@ -6,6 +6,19 @@ import { SHEPHERD_EVENT_TYPES } from './types.js';
 
 const strictObject = <T extends z.ZodRawShape>(shape: T): z.ZodObject<T, 'strict'> => z.object(shape).strict();
 const automationMode = z.enum(['off', 'notify', 'execute']);
+const trackedSelectorId = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/);
+const trackedSelector = z.discriminatedUnion('type', [
+  strictObject({
+    id: trackedSelectorId,
+    type: z.literal('head-prefix'),
+    values: z.array(z.string().min(1)).min(1),
+  }),
+  strictObject({
+    id: trackedSelectorId,
+    type: z.literal('label'),
+    values: z.array(z.string().min(1)).min(1),
+  }),
+]);
 
 const botSchema = strictObject({
   username: z.string().min(1),
@@ -46,6 +59,22 @@ const configSchema = strictObject({
     trackedPRs: strictObject({
       enabled: z.boolean().default(false),
       releaseGate: z.enum(['none', 'exact-head-attestation']).default('none'),
+      selectors: z
+        .array(trackedSelector)
+        .superRefine((selectors, context) => {
+          const seen = new Set<string>();
+          selectors.forEach((selector, index) => {
+            if (seen.has(selector.id)) {
+              context.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `Duplicate tracked pull-request selector id: ${selector.id}`,
+                path: [index, 'id'],
+              });
+            }
+            seen.add(selector.id);
+          });
+        })
+        .default([]),
     }).default({}),
     reviewInbox: strictObject({
       enabled: z.boolean().default(false),

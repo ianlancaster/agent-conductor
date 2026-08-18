@@ -118,8 +118,9 @@ Configuration is strict, versioned YAML: unknown keys and unknown guidance event
 | `reviews.requiredApprovals`             | Approval count required for readiness; default `1`.                                                                                    |
 | `reviews.bots[]`                        | Configurable bot username, actionable and positive patterns, inbox gating, and feedback-attempt limit.                                 |
 | `features.authoredPRs.enabled`          | Monitor authored pull requests; default `true`.                                                                                        |
-| `features.trackedPRs.enabled`           | Enable durable manual claim controls and the tracked owned-PR lane; disabled by default.                                               |
+| `features.trackedPRs.enabled`           | Enable durable claim controls and the tracked owned-PR lane; disabled by default.                                                      |
 | `features.trackedPRs.releaseGate`       | `none` or `exact-head-attestation`; default `none`. The value is captured on each new claim generation.                                |
+| `features.trackedPRs.selectors`         | Optional generic auto-claim rules for exact labels or case-insensitive head-branch prefixes; default `[]`.                             |
 | `features.reviewInbox`                  | Optional assigned-review workflow with draft, repository, and age filters; disabled by default.                                        |
 | `features.reviewFollowUp.enabled`       | Track actionable requested-change or inline-comment reviews and emit scoped follow-up transitions; disabled by default.                |
 | `features.reviewerNudge`                | Optional reviewer-comment/escalation workflow, including threshold, weekday handling, timezone, and repeat cap; disabled by default.   |
@@ -171,6 +172,29 @@ live lifecycle/action state while retaining the claim and control audit. Explici
 durable tombstone; a later manual claim increments the claim generation. Unknown or unreachable
 PRs produce a retryable error and no false claim. Closed and merged PRs produce durable,
 idempotently replayable rejections.
+
+Selectors can seed the same durable lane without depending on `profile.githubUser` or a transient
+review request. Each strict selector has a stable `id`, a `type` of `head-prefix` or `label`, and
+one or more `values`; selector entries and values are ORed. Label matching uses GitHub's exact
+label qualifier. Head-prefix matching is case-insensitive and examines the pull request's actual
+`headRefName`. Draft pull requests are included. Scope allowlists and denylists still apply.
+
+```yaml
+features:
+  trackedPRs:
+    enabled: true
+    releaseGate: exact-head-attestation
+    selectors:
+      - { id: generated-branch, type: head-prefix, values: [generated/] }
+      - { id: stewardship-label, type: label, values: [stewardship] }
+```
+
+A first match verifies the open pull request, records its current snapshot as generation 1's
+baseline, and emits `tracked-pr-claimed` with selector evidence. Multiple matches coalesce into one
+claim. An active claim remains owned even if its label or branch later changes. An explicit
+unclaim is a durable tombstone: selectors do not reclaim it, while a later explicit manual claim
+may start a new generation. Non-exhaustive GitHub search is reported as a coverage warning and
+never interpreted as absence.
 
 Control mutations require a caller-supplied idempotency key. Reusing the same key and arguments
 returns the stored result; reusing it for different arguments is rejected. Evidence is a generic

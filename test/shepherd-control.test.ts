@@ -269,6 +269,29 @@ describe('tracked pull request controls', () => {
     store.close();
   });
 
+  it('never lets an automatic selector claim override an explicit unclaim tombstone', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    const control = new TrackedPullRequestControl(config(), new FakeGitHub(), store);
+    await control.claim(input('claim-before-selector'));
+    control.unclaim(input('unclaim-before-selector', { reason: 'explicit exception' }));
+
+    expect(await control.claimIfUntracked(input('selector-after-unclaim'))).toMatchObject({
+      outcome: 'selector-skipped',
+      generation: 1,
+    });
+    expect(store.getTrackedPullRequest({ repo: 'acme/api', number: 7 })).toMatchObject({
+      status: 'unclaimed',
+      generation: 1,
+    });
+    expect(
+      store
+        .listEvents()
+        .map((event) => event.type)
+        .sort(),
+    ).toEqual(['tracked-pr-claimed', 'tracked-pr-unclaimed']);
+    store.close();
+  });
+
   it.each(['CLOSED', 'MERGED'] as const)('durably rejects a %s pull request', async (state) => {
     const store = new SqliteShepherdStore(':memory:');
     const github = new FakeGitHub();

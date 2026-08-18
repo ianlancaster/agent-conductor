@@ -411,6 +411,18 @@ export class SqliteShepherdStore implements ReleaseGateStore {
         this.insertControlOperation(request, result);
         return result;
       }
+      if (request.onlyIfUntracked && existing !== undefined) {
+        const result: TrackedControlResult = {
+          operation: 'claim',
+          outcome: 'selector-skipped',
+          repo: existing.repo,
+          number: existing.pr_number,
+          generation: existing.generation,
+          idempotentReplay: false,
+        };
+        this.insertControlOperation(request, result);
+        return result;
+      }
       const nextGeneration = generation + 1;
       this.db
         .prepare(

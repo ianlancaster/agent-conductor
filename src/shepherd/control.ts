@@ -45,6 +45,7 @@ function validatedInput(
   input: TrackedControlInput,
   now: Date,
   releaseGate?: ShepherdConfig['features']['trackedPRs']['releaseGate'],
+  onlyIfUntracked = false,
 ): TrackedControlRequest {
   const repo = input.repo.trim();
   if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) throw new Error('Repository must use the owner/name form.');
@@ -76,6 +77,7 @@ function validatedInput(
     actor,
     evidence,
     ...(releaseGate === 'exact-head-attestation' ? { releaseGate } : {}),
+    ...(onlyIfUntracked ? { onlyIfUntracked: true } : {}),
   };
   return {
     operation,
@@ -87,6 +89,7 @@ function validatedInput(
     requestHash: createHash('sha256').update(canonical(identity)).digest('hex'),
     occurredAt: now.toISOString(),
     ...(releaseGate === undefined ? {} : { releaseGate }),
+    ...(onlyIfUntracked ? { onlyIfUntracked: true } : {}),
   };
 }
 
@@ -104,8 +107,23 @@ export class TrackedPullRequestControl {
   }
 
   async claim(input: TrackedControlInput): Promise<TrackedControlResult> {
+    return this.claimInternal(input, false);
+  }
+
+  /** Claim a selector match only if this PR has never had durable tracked ownership. */
+  async claimIfUntracked(input: TrackedControlInput): Promise<TrackedControlResult> {
+    return this.claimInternal(input, true);
+  }
+
+  private async claimInternal(input: TrackedControlInput, onlyIfUntracked: boolean): Promise<TrackedControlResult> {
     this.assertEnabled();
-    const request = validatedInput('claim', input, this.clock(), this.config.features.trackedPRs.releaseGate);
+    const request = validatedInput(
+      'claim',
+      input,
+      this.clock(),
+      this.config.features.trackedPRs.releaseGate,
+      onlyIfUntracked,
+    );
     const replay = this.store.getTrackedControlResult(request);
     if (replay !== undefined) return replay;
     if (!repositoryInScope(request.repo, this.config.github)) {

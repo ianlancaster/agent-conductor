@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import type { ShepherdConfig } from './config.js';
+import { TrackedPullRequestControl } from './control.js';
 import { buildEvent, eventId } from './events.js';
 import { ShepherdMutationMutex } from './mutex.js';
 import { patternMatches, repositoryInScope } from './scope.js';
@@ -527,6 +529,9 @@ export class ShepherdEngine {
 
   private async poll(): Promise<PollSummary> {
     const summary: PollSummary = { discovered: 0, emitted: 0, mutations: 0, warnings: [] };
+    if (this.config.features.trackedPRs.enabled && this.config.features.trackedPRs.selectors.length > 0) {
+      await this.runFeature('tracked-selectors', () => this.pollTrackedSelectors(summary), summary);
+    }
     if (this.config.features.authoredPRs.enabled || this.config.features.trackedPRs.enabled) {
       await this.runFeature('authored', () => this.pollAuthored(summary), summary);
     }
@@ -543,13 +548,67 @@ export class ShepherdEngine {
     return summary;
   }
 
-  private async runFeature(name: DiscoveryKind, run: () => Promise<void>, summary: PollSummary): Promise<void> {
+  private async runFeature(
+    name: DiscoveryKind | 'tracked-selectors',
+    run: () => Promise<void>,
+    summary: PollSummary,
+  ): Promise<void> {
     try {
       await run();
     } catch (error) {
       const detail = `${name}: ${error instanceof Error ? error.message : String(error)}`;
       summary.warnings.push(detail);
       this.store.logHealth('feature-poll-failed', detail);
+    }
+  }
+
+  private async pollTrackedSelectors(summary: PollSummary): Promise<void> {
+    if (this.github.discoverTrackedPullRequests === undefined) {
+      throw new Error('The GitHub provider does not support configured tracked pull-request selectors.');
+    }
+    const store = this.trackedStore();
+    const discovery = await this.github.discoverTrackedPullRequests(this.config.features.trackedPRs.selectors);
+    if (discovery.warning !== undefined) {
+      summary.warnings.push(discovery.warning);
+      this.store.logHealth('github-coverage-warning', `tracked-selectors: ${discovery.warning}`);
+    }
+    const control = new TrackedPullRequestControl(this.config, this.github, store, this.clock, this.mutationMutex);
+    for (const candidate of discovery.items
+      .filter((item) => repositoryInScope(item.repo, this.config.github))
+      .sort((left, right) => {
+        const leftKey = `${left.repo.toLowerCase()}#${String(left.number).padStart(12, '0')}`;
+        const rightKey = `${right.repo.toLowerCase()}#${String(right.number).padStart(12, '0')}`;
+        return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+      })) {
+      // Any durable row is authoritative. In particular, an explicit unclaim is a tombstone and
+      // selectors must not immediately reclaim it; only a later explicit claim starts a generation.
+      if (store.getTrackedPullRequest(candidate) !== undefined) continue;
+      await this.runItem(
+        'tracked-selectors',
+        candidate,
+        async () => {
+          const matches = [...candidate.matches].sort((left, right) => {
+            const leftKey = `${left.selectorId}\u0000${left.type}\u0000${left.value}`;
+            const rightKey = `${right.selectorId}\u0000${right.type}\u0000${right.value}`;
+            return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+          });
+          const identity = JSON.stringify({ repo: candidate.repo.toLowerCase(), number: candidate.number, matches });
+          const digest = createHash('sha256').update(identity).digest('hex');
+          const result = await control.claimIfUntracked({
+            repo: candidate.repo,
+            number: candidate.number,
+            actor: `selector:${matches[0]?.selectorId ?? 'configured'}`,
+            evidence: {
+              summary: 'Matched configured tracked pull-request selector.',
+              selectors: matches,
+              references: [candidate.url],
+            },
+            idempotencyKey: `selector-claim:${digest}`,
+          });
+          if (result.outcome === 'claimed' || result.outcome === 'reclaimed') summary.emitted += 1;
+        },
+        summary,
+      );
     }
   }
 
@@ -2031,7 +2090,7 @@ export class ShepherdEngine {
   }
 
   private async runItem(
-    feature: DiscoveryKind,
+    feature: DiscoveryKind | 'tracked-selectors',
     pr: PullRequestRef,
     run: () => Promise<void>,
     summary: PollSummary,
