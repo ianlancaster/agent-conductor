@@ -26,6 +26,9 @@ describe('PR Shepherd CLI profile discovery', () => {
     }
     expect(run(['attest', '--help'])).toContain('--head <sha>');
     expect(run(['revoke', '--help'])).toContain('--reason <text>');
+    const claimHelp = run(['claim', '--help']);
+    expect(claimHelp).toContain('safely clear inherited merge');
+    expect(claimHelp).toContain('automation');
     const trackedHelp = run(['tracked', '--help']);
     expect(trackedHelp).toContain('Print durable tracked pull-request claims');
     expect(trackedHelp).toContain('--audit');

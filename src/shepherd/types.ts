@@ -239,6 +239,9 @@ export interface TrackedControlResult extends PullRequestRef {
   outcome: TrackedControlOutcome;
   generation: number | null;
   idempotentReplay: boolean;
+  /** Present when a gated claim safely removed inherited provider merge automation. */
+  handoff?: 'completed';
+  handoffActionKeys?: string[];
 }
 
 export interface TrackedControlRequest extends PullRequestRef {
@@ -315,6 +318,14 @@ export interface TrackedClaimBaseline {
   botAttempts: Record<string, number>;
   staleCycle: number;
   conflictCycle: number;
+}
+
+export interface TrackedClaimHandoff extends PullRequestRef {
+  idempotencyKey: string;
+  requestHash: string;
+  expectedGeneration: number;
+  observedHeadSha: string;
+  actionKeys: string[];
 }
 
 export interface TrackedObservationResult {
@@ -412,4 +423,21 @@ export interface ReleaseGateStore extends TrackedPullRequestStore, MutationMutex
   ): ReleaseControlResult | undefined;
   prepareActionCancellation(actionKey: string, occurredAt: string): boolean;
   ensureActionSafetyCompensation(actionKey: string, occurredAt: string): string | undefined;
+}
+
+/** Optional durable store capability used only when a gated claim inherits provider automation. */
+export interface TrackedClaimHandoffStore extends ReleaseGateStore {
+  getTrackedClaimHandoff(request: TrackedControlRequest): TrackedClaimHandoff | undefined;
+  prepareTrackedClaimHandoff(
+    request: TrackedControlRequest,
+    observedHeadSha: string,
+    mutations: Extract<GitHubMutation, { type: 'dequeue' | 'disable-auto-merge' }>[],
+  ): TrackedClaimHandoff | TrackedControlResult;
+  completeTrackedClaimHandoff(
+    request: TrackedControlRequest,
+    details: PullRequestDetails,
+    baseline: TrackedClaimBaseline,
+    event: ShepherdEvent,
+    recipient?: string,
+  ): TrackedControlResult;
 }

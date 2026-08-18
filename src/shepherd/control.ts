@@ -12,6 +12,8 @@ import type {
   ReleaseControlRequest,
   ReleaseControlResult,
   ReleaseGateStore,
+  TrackedClaimHandoff,
+  TrackedClaimHandoffStore,
   TrackedControlOperationType,
   TrackedControlRequest,
   TrackedControlResult,
@@ -161,36 +163,59 @@ export class TrackedPullRequestControl {
         if (automation.headSha.toLowerCase() !== details.headSha.toLowerCase()) {
           throw new Error('The pull request head changed during gated claim verification; retry the claim.');
         }
+        const inheritedMutations: Extract<GitHubMutation, { type: 'dequeue' | 'disable-auto-merge' }>[] = [];
+        const pr = { repo: request.repo, number: request.number };
+        if (automation.queued) inheritedMutations.push({ type: 'dequeue', pr });
         if (automation.autoMergeEnabled || details.autoMergeRequest !== null) {
-          throw new Error("Disable the pull request's existing persistent auto-merge before creating a gated claim.");
+          inheritedMutations.push({ type: 'disable-auto-merge', pr });
         }
-        if (automation.queued) {
-          throw new Error('Remove the pull request from the merge queue before creating a gated claim.');
+        if (onlyIfUntracked && inheritedMutations.length > 0) {
+          if (inheritedMutations.some((mutation) => mutation.type === 'disable-auto-merge')) {
+            throw new Error("Disable the pull request's existing persistent auto-merge before automatic claiming.");
+          }
+          throw new Error('Remove the pull request from the merge queue before automatic claiming.');
+        }
+        const pendingHandoff = this.optionalClaimHandoffStore()?.getTrackedClaimHandoff(request);
+        if (inheritedMutations.length > 0 || pendingHandoff !== undefined) {
+          const handoffStore = this.claimHandoffStore();
+          const prepared =
+            pendingHandoff ??
+            handoffStore.prepareTrackedClaimHandoff(request, details.headSha.toLowerCase(), inheritedMutations);
+          if ('operation' in prepared) return prepared;
+          await this.runClaimHandoff(request, prepared, handoffStore, lease);
+          details = await this.github.getPullRequest(request);
+          const safeAutomation = await this.github.getMergeAutomationState(request);
+          lease?.assertOwned();
+          if (details.number !== request.number || details.repo.toLowerCase() !== request.repo.toLowerCase()) {
+            throw new Error(
+              `GitHub returned a different pull request while completing ${request.repo}#${String(request.number)} claim handoff.`,
+            );
+          }
+          if (safeAutomation.headSha.toLowerCase() !== details.headSha.toLowerCase()) {
+            throw new Error('The pull request head changed during gated claim handoff; retry the same claim key.');
+          }
+          if (safeAutomation.autoMergeEnabled || details.autoMergeRequest !== null || safeAutomation.queued) {
+            throw new Error(
+              'GitHub merge automation is still active; retry the same claim key to resume safe handoff.',
+            );
+          }
+          const event = this.claimEvent(request, details);
+          lease?.assertOwned();
+          return handoffStore.completeTrackedClaimHandoff(
+            request,
+            details,
+            this.claimBaseline(request, details),
+            event,
+            this.recipient(),
+          );
         }
       }
-      const event = buildEvent(
-        this.config,
-        'tracked-pr-claimed',
-        request,
-        { idempotencyKey: request.idempotencyKey },
-        { actor: request.actor, evidence: request.evidence, title: details.title, url: details.url },
-        request.occurredAt,
-      );
-      const now = this.clock();
-      const threshold = this.config.features.staleThresholdHours;
-      const staleHours = (now.getTime() - new Date(details.updatedAt).getTime()) / 3_600_000;
       lease?.assertOwned();
       return this.store.claimTrackedPullRequest(
         request,
         details,
-        {
-          details,
-          lastObservedAt: request.occurredAt,
-          botAttempts: {},
-          staleCycle: threshold === 0 ? 1 : Math.max(0, Math.floor(staleHours / threshold)),
-          conflictCycle: details.mergeable === 'CONFLICTING' ? 1 : 0,
-        },
-        event,
+        this.claimBaseline(request, details),
+        this.claimEvent(request, details),
         this.recipient(),
       );
     };
@@ -258,6 +283,98 @@ export class TrackedPullRequestControl {
 
   private recipient(): string {
     return this.config.delivery.type === 'conductor' ? this.config.delivery.coordinatorSession : 'stdout';
+  }
+
+  private claimEvent(request: TrackedControlRequest, details: PullRequestDetails) {
+    return buildEvent(
+      this.config,
+      'tracked-pr-claimed',
+      request,
+      { idempotencyKey: request.idempotencyKey },
+      { actor: request.actor, evidence: request.evidence, title: details.title, url: details.url },
+      request.occurredAt,
+    );
+  }
+
+  private claimBaseline(request: TrackedControlRequest, details: PullRequestDetails) {
+    const now = this.clock();
+    const threshold = this.config.features.staleThresholdHours;
+    const staleHours = (now.getTime() - new Date(details.updatedAt).getTime()) / 3_600_000;
+    return {
+      details,
+      lastObservedAt: request.occurredAt,
+      botAttempts: {},
+      staleCycle: threshold === 0 ? 1 : Math.max(0, Math.floor(staleHours / threshold)),
+      conflictCycle: details.mergeable === 'CONFLICTING' ? 1 : 0,
+    };
+  }
+
+  private async runClaimHandoff(
+    request: TrackedControlRequest,
+    handoff: TrackedClaimHandoff,
+    store: TrackedClaimHandoffStore,
+    lease: ShepherdMutationLease | undefined,
+  ): Promise<void> {
+    if (this.github.getMergeAutomationState === undefined) {
+      throw new Error('The GitHub provider cannot verify merge automation state for an exact-head gated claim.');
+    }
+    for (const actionKey of handoff.actionKeys) {
+      const action = store.getEntity<{ status: string; mutation: GitHubMutation }>(actionKey);
+      if (
+        action === undefined ||
+        (action.value.mutation.type !== 'dequeue' && action.value.mutation.type !== 'disable-auto-merge')
+      ) {
+        throw new Error(`Tracked-claim handoff action ${actionKey} is missing or invalid.`);
+      }
+      try {
+        lease?.assertOwned();
+        const state = await this.github.getMergeAutomationState(request);
+        lease?.assertOwned();
+        const needed = action.value.mutation.type === 'dequeue' ? state.queued : state.autoMergeEnabled;
+        if (needed) {
+          await this.github.mutate(action.value.mutation);
+          lease?.assertOwned();
+        }
+        const completedAt = this.clock().toISOString();
+        store.commit(
+          [
+            {
+              key: action.key,
+              kind: 'action',
+              value: { ...action.value, status: 'completed', completedAt },
+            },
+          ],
+          [],
+        );
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        store.logHealth(
+          'tracked-pr-claim-handoff-failed',
+          `${request.repo}#${String(request.number)}: ${detail.slice(0, 500)}`,
+        );
+        throw new Error(
+          `Unable to make provider merge state safe; no claim was recorded. Retry the same claim key: ${detail}`,
+          { cause: error },
+        );
+      }
+    }
+  }
+
+  private optionalClaimHandoffStore(): TrackedClaimHandoffStore | undefined {
+    const candidate = this.store as Partial<TrackedClaimHandoffStore>;
+    return typeof candidate.getTrackedClaimHandoff === 'function' &&
+      typeof candidate.prepareTrackedClaimHandoff === 'function' &&
+      typeof candidate.completeTrackedClaimHandoff === 'function'
+      ? (candidate as TrackedClaimHandoffStore)
+      : undefined;
+  }
+
+  private claimHandoffStore(): TrackedClaimHandoffStore {
+    const store = this.optionalClaimHandoffStore();
+    if (store === undefined) {
+      throw new Error('The tracked pull-request store does not support safe inherited merge-state handoff.');
+    }
+    return store;
   }
 
   private releaseStore(): ReleaseGateStore {

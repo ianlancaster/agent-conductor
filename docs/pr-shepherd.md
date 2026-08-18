@@ -173,6 +173,18 @@ durable tombstone; a later manual claim increments the claim generation. Unknown
 PRs produce a retryable error and no false claim. Closed and merged PRs produce durable,
 idempotently replayable rejections.
 
+When a new `exact-head-attestation` claim inherits a GitHub merge-queue entry or persistent
+auto-merge request, `claim` first records a durable handoff plus state-aware dequeue and/or
+disable-auto-merge actions under Shepherd's mutation mutex. It does not create the tracked row,
+generation baseline, claim audit, event, or outbox item until a fresh details and automation read
+agree on the current head and prove both provider states clear. A provider failure therefore leaves
+no false claim. Retry the same idempotency key and arguments to resume pending work; this is also
+safe after a crash where GitHub accepted the mutation but Shepherd did not record completion.
+Completed provider work is detected rather than submitted twice. If the head moves during the
+handoff, the stale snapshot is never committed; retrying the same key verifies and captures the new
+current head. The reserved generation is fenced at final commit, so an intervening claim cannot be
+overwritten.
+
 Selectors can seed the same durable lane without depending on `profile.githubUser` or a transient
 review request. Each strict selector has a stable `id`, a `type` of `head-prefix` or `label`, and
 one or more `values`; selector entries and values are ORed. Label matching uses GitHub's exact
@@ -194,7 +206,9 @@ baseline, and emits `tracked-pr-claimed` with selector evidence. Multiple matche
 claim. An active claim remains owned even if its label or branch later changes. An explicit
 unclaim is a durable tombstone: selectors do not reclaim it, while a later explicit manual claim
 may start a new generation. Non-exhaustive GitHub search is reported as a coverage warning and
-never interpreted as absence.
+never interpreted as absence. Selectors remain observation-only with respect to provider merge
+automation: an exact-head candidate that is already queued or has persistent auto-merge remains
+unclaimed until an operator uses the explicit `claim` control to perform the safe handoff.
 
 Control mutations require a caller-supplied idempotency key. Reusing the same key and arguments
 returns the stored result; reusing it for different arguments is rejected. Evidence is a generic
@@ -270,8 +284,9 @@ An attestation applies only while its SHA exactly equals GitHub's current head a
 generation remains active. Missing, stale, and revoked attestations emit a durable
 `release-gate-blocked` fact and cannot create or execute a merge action. A same-head re-attestation
 after revoke creates a new attestation cycle and therefore a new decision. In `direct` mode,
-Shepherd refuses a new gated claim or attestation while persistent auto-merge or a merge-queue entry
-already exists. It calls GitHub's conditional merge with `expectedHeadOid` in `direct` mode; in `merge-queue` mode it calls
+Shepherd safely removes inherited persistent auto-merge or merge-queue state before establishing a
+new gated claim. Attestation still refuses while either provider state is active. Shepherd calls
+GitHub's conditional merge with `expectedHeadOid` in `direct` mode; in `merge-queue` mode it calls
 conditional enqueue with `expectedHeadOid`. Gated claims never use persistent auto-merge.
 Applicability is fetched and checked again under a durable SQLite mutation mutex immediately before
 the provider mutation. The mutex renews its lease and will not let an expired lease be taken from a

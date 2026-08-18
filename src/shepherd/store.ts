@@ -6,6 +6,7 @@ import type {
   CoordinatorReceipt,
   DiscoveryKind,
   EntityUpdate,
+  GitHubMutation,
   OutboxItem,
   PullRequestDetails,
   PullRequestRef,
@@ -13,12 +14,13 @@ import type {
   ReleaseControlResult,
   ReleaseControlAuditRecord,
   ReleaseAttestation,
-  ReleaseGateStore,
   ReleaseGateStatus,
   ShepherdEvent,
   ShepherdEventType,
   StoredEntity,
   TrackedClaimBaseline,
+  TrackedClaimHandoff,
+  TrackedClaimHandoffStore,
   TrackedControlAuditRecord,
   TrackedControlRequest,
   TrackedControlResult,
@@ -291,7 +293,11 @@ function repoKey(repo: string): string {
   return repo.toLowerCase();
 }
 
-export class SqliteShepherdStore implements ReleaseGateStore {
+function trackedClaimHandoffKey(idempotencyKey: string): string {
+  return `claim-handoff:${idempotencyKey}`;
+}
+
+export class SqliteShepherdStore implements TrackedClaimHandoffStore {
   private readonly db: DatabaseSync;
 
   constructor(dbPath: string) {
@@ -375,6 +381,122 @@ export class SqliteShepherdStore implements ReleaseGateStore {
     return row.count;
   }
 
+  getTrackedClaimHandoff(request: TrackedControlRequest): TrackedClaimHandoff | undefined {
+    const entity = this.getEntity<Omit<TrackedClaimHandoff, 'repo' | 'number' | 'idempotencyKey'>>(
+      trackedClaimHandoffKey(request.idempotencyKey),
+    );
+    if (entity === undefined) return undefined;
+    if (entity.kind !== 'claim-handoff' || entity.value.requestHash !== request.requestHash) {
+      throw new IdempotencyConflictError(
+        `Idempotency key ${request.idempotencyKey} was already used for a different control request.`,
+      );
+    }
+    return {
+      repo: request.repo,
+      number: request.number,
+      idempotencyKey: request.idempotencyKey,
+      ...entity.value,
+    };
+  }
+
+  prepareTrackedClaimHandoff(
+    request: TrackedControlRequest,
+    observedHeadSha: string,
+    mutations: Extract<GitHubMutation, { type: 'dequeue' | 'disable-auto-merge' }>[],
+  ): TrackedClaimHandoff | TrackedControlResult {
+    return withTransaction(this.db, () => {
+      const replay = this.controlReplay(request);
+      if (replay !== undefined) return replay;
+      const pending = this.getTrackedClaimHandoff(request);
+      if (pending !== undefined) return pending;
+      const existing = this.trackedRow(request);
+      if (existing?.status === 'active' || (request.onlyIfUntracked && existing !== undefined)) {
+        const result: TrackedControlResult = {
+          operation: 'claim',
+          outcome: existing.status === 'active' ? 'already-claimed' : 'selector-skipped',
+          repo: existing.repo,
+          number: existing.pr_number,
+          generation: existing.generation,
+          idempotentReplay: false,
+        };
+        this.insertControlOperation(request, result);
+        return result;
+      }
+      const expectedGeneration = (existing?.generation ?? 0) + 1;
+      const actionKeys = mutations.map(
+        (mutation) => `${trackedClaimHandoffKey(request.idempotencyKey)}:${mutation.type}`,
+      );
+      const handoff: TrackedClaimHandoff = {
+        repo: request.repo,
+        number: request.number,
+        idempotencyKey: request.idempotencyKey,
+        requestHash: request.requestHash,
+        expectedGeneration,
+        observedHeadSha,
+        actionKeys,
+      };
+      this.db
+        .prepare('INSERT INTO shepherd_entities (key, kind, value_json, updated_at) VALUES (?, ?, ?, ?)')
+        .run(
+          trackedClaimHandoffKey(request.idempotencyKey),
+          'claim-handoff',
+          JSON.stringify({ requestHash: request.requestHash, expectedGeneration, observedHeadSha, actionKeys }),
+          request.occurredAt,
+        );
+      const insertAction = this.db.prepare(
+        'INSERT INTO shepherd_entities (key, kind, value_json, updated_at) VALUES (?, ?, ?, ?)',
+      );
+      for (const mutation of mutations) {
+        insertAction.run(
+          `${trackedClaimHandoffKey(request.idempotencyKey)}:${mutation.type}`,
+          'action',
+          JSON.stringify({
+            status: 'pending',
+            mutation,
+            trackedGeneration: expectedGeneration,
+            expectedHeadSha: observedHeadSha,
+            claimHandoffFor: request.idempotencyKey,
+            compensatesActionKey: `provider:${mutation.type}:${repoKey(request.repo)}#${String(request.number)}`,
+          }),
+          request.occurredAt,
+        );
+      }
+      return handoff;
+    });
+  }
+
+  completeTrackedClaimHandoff(
+    request: TrackedControlRequest,
+    details: PullRequestDetails,
+    baseline: TrackedClaimBaseline,
+    event: ShepherdEvent,
+    recipient?: string,
+  ): TrackedControlResult {
+    return withTransaction(this.db, () => {
+      const replay = this.controlReplay(request);
+      if (replay !== undefined) return replay;
+      const handoff = this.getTrackedClaimHandoff(request);
+      if (handoff === undefined) throw new Error('The durable tracked-claim handoff is missing.');
+      if (
+        !handoff.actionKeys.every((key) => this.getEntity<Record<string, unknown>>(key)?.value.status === 'completed')
+      ) {
+        throw new Error('The durable tracked-claim handoff still has pending provider safety work.');
+      }
+      const existing = this.trackedRow(request);
+      if ((existing?.generation ?? 0) + 1 !== handoff.expectedGeneration) {
+        throw new Error('The tracked pull-request generation changed during claim handoff; use a new control key.');
+      }
+      const result = this.claimTrackedPullRequestWithin(request, details, baseline, event, recipient, {
+        handoff: 'completed',
+        handoffActionKeys: handoff.actionKeys,
+      });
+      this.db
+        .prepare('DELETE FROM shepherd_entities WHERE key = ?')
+        .run(trackedClaimHandoffKey(request.idempotencyKey));
+      return result;
+    });
+  }
+
   claimTrackedPullRequest(
     request: TrackedControlRequest,
     details: PullRequestDetails,
@@ -382,108 +504,9 @@ export class SqliteShepherdStore implements ReleaseGateStore {
     event: ShepherdEvent | undefined,
     recipient?: string,
   ): TrackedControlResult {
-    return withTransaction(this.db, () => {
-      const replay = this.controlReplay(request);
-      if (replay !== undefined) return replay;
-      const existing = this.trackedRow(request);
-      const generation = existing?.generation ?? 0;
-      if (details.state !== 'OPEN') {
-        const result: TrackedControlResult = {
-          operation: 'claim',
-          outcome: details.state === 'MERGED' ? 'rejected-merged' : 'rejected-closed',
-          repo: request.repo,
-          number: request.number,
-          generation: generation === 0 ? null : generation,
-          idempotentReplay: false,
-        };
-        this.insertControlOperation(request, result);
-        return result;
-      }
-      if (existing?.status === 'active') {
-        const result: TrackedControlResult = {
-          operation: 'claim',
-          outcome: 'already-claimed',
-          repo: existing.repo,
-          number: existing.pr_number,
-          generation: existing.generation,
-          idempotentReplay: false,
-        };
-        this.insertControlOperation(request, result);
-        return result;
-      }
-      if (request.onlyIfUntracked && existing !== undefined) {
-        const result: TrackedControlResult = {
-          operation: 'claim',
-          outcome: 'selector-skipped',
-          repo: existing.repo,
-          number: existing.pr_number,
-          generation: existing.generation,
-          idempotentReplay: false,
-        };
-        this.insertControlOperation(request, result);
-        return result;
-      }
-      const nextGeneration = generation + 1;
-      this.db
-        .prepare(
-          `INSERT INTO shepherd_tracked_prs
-            (repo_key, repo, pr_number, status, generation, actor, evidence_json, claimed_at, updated_at,
-             unclaimed_at, terminal_state, baseline_pending, release_gate)
-           VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, NULL, NULL, 0, ?)
-           ON CONFLICT(repo_key, pr_number) DO UPDATE SET
-             repo = excluded.repo, status = 'active', generation = excluded.generation,
-             actor = excluded.actor, evidence_json = excluded.evidence_json, claimed_at = excluded.claimed_at,
-             updated_at = excluded.updated_at, unclaimed_at = NULL, terminal_state = NULL, baseline_pending = 0,
-             release_gate = excluded.release_gate`,
-        )
-        .run(
-          repoKey(request.repo),
-          request.repo,
-          request.number,
-          nextGeneration,
-          request.actor,
-          JSON.stringify(request.evidence),
-          request.occurredAt,
-          request.occurredAt,
-          request.releaseGate ?? 'none',
-        );
-      const lifecycleKey = `authored:${repoKey(request.repo)}#${String(request.number)}`;
-      const existingLifecycle = this.db.prepare('SELECT * FROM shepherd_entities WHERE key = ?').get(lifecycleKey) as
-        EntityRow | undefined;
-      const existingValue =
-        existingLifecycle === undefined
-          ? undefined
-          : parseJson<Record<string, unknown>>(existingLifecycle.value_json, `entity ${lifecycleKey}`);
-      const existingSources = existingValue?.sources;
-      const authored =
-        existingLifecycle !== undefined &&
-        (typeof existingSources !== 'object' ||
-          existingSources === null ||
-          Array.isArray(existingSources) ||
-          (existingSources as Record<string, unknown>).authored !== false);
-      this.db
-        .prepare(
-          `INSERT INTO shepherd_entities (key, kind, value_json, updated_at) VALUES (?, 'authored', ?, ?)
-           ON CONFLICT(key) DO UPDATE SET kind = 'authored', value_json = excluded.value_json,
-             updated_at = excluded.updated_at`,
-        )
-        .run(
-          lifecycleKey,
-          JSON.stringify({ ...baseline, sources: { authored, trackedGeneration: nextGeneration } }),
-          request.occurredAt,
-        );
-      const result: TrackedControlResult = {
-        operation: 'claim',
-        outcome: existing === undefined ? 'claimed' : 'reclaimed',
-        repo: request.repo,
-        number: request.number,
-        generation: nextGeneration,
-        idempotentReplay: false,
-      };
-      this.insertControlOperation(request, result);
-      if (event !== undefined) this.insertEvent(event, recipient, request.occurredAt);
-      return result;
-    });
+    return withTransaction(this.db, () =>
+      this.claimTrackedPullRequestWithin(request, details, baseline, event, recipient),
+    );
   }
 
   unclaimTrackedPullRequest(
@@ -1205,6 +1228,120 @@ export class SqliteShepherdStore implements ReleaseGateStore {
     this.db
       .prepare('INSERT INTO shepherd_health_log (event, detail, created_at) VALUES (?, ?, ?)')
       .run(event, detail ?? null, new Date().toISOString());
+  }
+
+  private claimTrackedPullRequestWithin(
+    request: TrackedControlRequest,
+    details: PullRequestDetails,
+    baseline: TrackedClaimBaseline,
+    event: ShepherdEvent | undefined,
+    recipient: string | undefined,
+    handoff: Pick<TrackedControlResult, 'handoff' | 'handoffActionKeys'> = {},
+  ): TrackedControlResult {
+    const replay = this.controlReplay(request);
+    if (replay !== undefined) return replay;
+    const existing = this.trackedRow(request);
+    const generation = existing?.generation ?? 0;
+    if (details.state !== 'OPEN') {
+      const result: TrackedControlResult = {
+        operation: 'claim',
+        outcome: details.state === 'MERGED' ? 'rejected-merged' : 'rejected-closed',
+        repo: request.repo,
+        number: request.number,
+        generation: generation === 0 ? null : generation,
+        idempotentReplay: false,
+        ...handoff,
+      };
+      this.insertControlOperation(request, result);
+      return result;
+    }
+    if (existing?.status === 'active') {
+      const result: TrackedControlResult = {
+        operation: 'claim',
+        outcome: 'already-claimed',
+        repo: existing.repo,
+        number: existing.pr_number,
+        generation: existing.generation,
+        idempotentReplay: false,
+        ...handoff,
+      };
+      this.insertControlOperation(request, result);
+      return result;
+    }
+    if (request.onlyIfUntracked && existing !== undefined) {
+      const result: TrackedControlResult = {
+        operation: 'claim',
+        outcome: 'selector-skipped',
+        repo: existing.repo,
+        number: existing.pr_number,
+        generation: existing.generation,
+        idempotentReplay: false,
+        ...handoff,
+      };
+      this.insertControlOperation(request, result);
+      return result;
+    }
+    const nextGeneration = generation + 1;
+    this.db
+      .prepare(
+        `INSERT INTO shepherd_tracked_prs
+          (repo_key, repo, pr_number, status, generation, actor, evidence_json, claimed_at, updated_at,
+           unclaimed_at, terminal_state, baseline_pending, release_gate)
+         VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, NULL, NULL, 0, ?)
+         ON CONFLICT(repo_key, pr_number) DO UPDATE SET
+           repo = excluded.repo, status = 'active', generation = excluded.generation,
+           actor = excluded.actor, evidence_json = excluded.evidence_json, claimed_at = excluded.claimed_at,
+           updated_at = excluded.updated_at, unclaimed_at = NULL, terminal_state = NULL, baseline_pending = 0,
+           release_gate = excluded.release_gate`,
+      )
+      .run(
+        repoKey(request.repo),
+        request.repo,
+        request.number,
+        nextGeneration,
+        request.actor,
+        JSON.stringify(request.evidence),
+        request.occurredAt,
+        request.occurredAt,
+        request.releaseGate ?? 'none',
+      );
+    const lifecycleKey = `authored:${repoKey(request.repo)}#${String(request.number)}`;
+    const existingLifecycle = this.db.prepare('SELECT * FROM shepherd_entities WHERE key = ?').get(lifecycleKey) as
+      EntityRow | undefined;
+    const existingValue =
+      existingLifecycle === undefined
+        ? undefined
+        : parseJson<Record<string, unknown>>(existingLifecycle.value_json, `entity ${lifecycleKey}`);
+    const existingSources = existingValue?.sources;
+    const authored =
+      existingLifecycle !== undefined &&
+      (typeof existingSources !== 'object' ||
+        existingSources === null ||
+        Array.isArray(existingSources) ||
+        (existingSources as Record<string, unknown>).authored !== false);
+    this.db
+      .prepare(
+        `INSERT INTO shepherd_entities (key, kind, value_json, updated_at) VALUES (?, 'authored', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET kind = 'authored', value_json = excluded.value_json,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        lifecycleKey,
+        JSON.stringify({ ...baseline, sources: { authored, trackedGeneration: nextGeneration } }),
+        request.occurredAt,
+      );
+    const result: TrackedControlResult = {
+      operation: 'claim',
+      outcome: existing === undefined ? 'claimed' : 'reclaimed',
+      repo: request.repo,
+      number: request.number,
+      generation: nextGeneration,
+      idempotentReplay: false,
+      ...handoff,
+    };
+    this.insertControlOperation(request, result);
+    if (event !== undefined) this.insertEvent(event, recipient, request.occurredAt);
+    return result;
   }
 
   private trackedRow(pr: PullRequestRef): TrackedPullRequestRow | undefined {

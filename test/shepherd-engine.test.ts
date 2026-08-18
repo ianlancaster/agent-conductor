@@ -1473,7 +1473,7 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
-  it('serializes gated claim with a legacy auto-merge submission and rejects inherited provider state', async () => {
+  it('serializes and safely hands off a gated claim after a legacy auto-merge submission', async () => {
     const headSha = 'a'.repeat(40);
     const ready = pr({
       headSha,
@@ -1492,12 +1492,15 @@ describe('Shepherd engine', () => {
     });
     github.mutationHandler = async (mutation) => {
       github.mutations.push(mutation);
-      if (mutation.type !== 'enable-auto-merge') return;
-      mutationStarted();
-      await new Promise<void>((resolve) => {
-        releaseMutation = resolve;
-      });
-      github.details.set('acme/api#7', { ...ready, autoMergeRequest: { mergeMethod: 'SQUASH' } });
+      if (mutation.type === 'enable-auto-merge') {
+        mutationStarted();
+        await new Promise<void>((resolve) => {
+          releaseMutation = resolve;
+        });
+        github.details.set('acme/api#7', { ...ready, autoMergeRequest: { mergeMethod: 'SQUASH' } });
+      } else if (mutation.type === 'disable-auto-merge') {
+        github.details.set('acme/api#7', { ...ready, autoMergeRequest: null });
+      }
     };
     const poll = new ShepherdEngine(authoredConfig, github, store).pollOnce();
     await started;
@@ -1515,12 +1518,12 @@ describe('Shepherd engine', () => {
       evidence: {},
       idempotencyKey: 'claim-after-auto-merge',
     });
-    const rejectedClaim = expect(claim).rejects.toThrow(/persistent auto-merge/);
     releaseMutation();
 
     await expect(poll).resolves.toMatchObject({ mutations: 1 });
-    await rejectedClaim;
-    expect(store.listTrackedPullRequests()).toEqual([]);
+    await expect(claim).resolves.toMatchObject({ outcome: 'claimed', generation: 1, handoff: 'completed' });
+    expect(github.mutations.map((mutation) => mutation.type)).toEqual(['enable-auto-merge', 'disable-auto-merge']);
+    expect(store.listTrackedPullRequests('active')).toHaveLength(1);
     store.close();
   });
 

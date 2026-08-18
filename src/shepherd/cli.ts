@@ -257,7 +257,9 @@ common(program.command('inbox').description('Print active review-inbox state')).
 });
 
 trackedControlCommand(
-  program.command('claim').description('Persistently claim an open pull request for tracking'),
+  program
+    .command('claim')
+    .description('Claim an open pull request; exact-head claims safely clear inherited merge automation'),
 ).action(async (options: TrackedControlOptions) => {
   const { control, store } = buildTrackedControl(options);
   try {

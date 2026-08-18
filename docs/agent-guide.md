@@ -736,7 +736,9 @@ authored lifecycle without changing review-inbox identity. Explicit unclaim leav
 selectors will not reclaim. Caller-supplied actor names are local audit attribution, not
 cryptographic identity; automatic claims use `selector:<id>` attribution and retain all matched
 selector evidence. The default `trackedPRs.releaseGate: none` keeps tracked-only merge execution in
-notify mode even if global authored automation is `execute`.
+notify mode even if global authored automation is `execute`. Selectors never change provider merge
+automation; use the explicit `claim` control when an exact-head candidate needs a safe handoff from
+an existing queue entry or persistent auto-merge.
 
 For both profile-authored and explicitly tracked PRs, `review-feedback` coalesces new review bodies
 with received inline-thread creation, replies, and transitions into outdated or resolved state.
@@ -756,7 +758,13 @@ use the idempotent local `attest --repo ... --pr ... --head ... --actor ... --ev
 and `revoke --repo ... --pr ... --reason ...` controls. An attestation applies only to the exact
 GitHub head and active claim generation. Missing, stale, or revoked evidence blocks execution. A
 gated direct merge uses the provider's expected-head precondition; merge-queue mode uses a
-conditional enqueue. Gated claims never enable persistent auto-merge.
+conditional enqueue. If a new gated claim inherits a queue entry or persistent auto-merge, claim
+first persists state-aware dequeue/disable safety work under the shared mutation mutex. It records
+the tracked generation only after a fresh provider snapshot proves the current head and both
+automation states safe. Provider failure or a crash leaves no false claim: retry the same claim key
+and arguments to resume the durable handoff. A head change is reverified before the baseline commit,
+and an intervening generation is fenced rather than overwritten. Gated claims never enable
+persistent auto-merge.
 
 Revoke durably cancels local submission work and compensates any completed or crash-ambiguous
 enqueue/legacy-auto-merge handoff with state-aware dequeue/disable operations. Safety compensation

@@ -61,6 +61,9 @@ class FakeGitHub implements GitHubProvider {
   details: PullRequestDetails | Error = pullRequest();
   readonly mutations: GitHubMutation[] = [];
   mutationError: Error | undefined;
+  mutationErrorType: GitHubMutation['type'] | undefined;
+  mutationErrorAfterApply: Error | undefined;
+  readonly automationStates: { headSha: string; autoMergeEnabled: boolean; queued: boolean }[] = [];
   queued = false;
 
   async discover(_kind: DiscoveryKind, _githubUser: string): Promise<DiscoveryResult<PullRequestSummary>> {
@@ -74,6 +77,8 @@ class FakeGitHub implements GitHubProvider {
 
   async getMergeAutomationState(): Promise<{ headSha: string; autoMergeEnabled: boolean; queued: boolean }> {
     if (this.details instanceof Error) throw this.details;
+    const scripted = this.automationStates.shift();
+    if (scripted !== undefined) return structuredClone(scripted);
     return {
       headSha: this.details.headSha,
       autoMergeEnabled: this.details.autoMergeRequest !== null,
@@ -82,8 +87,18 @@ class FakeGitHub implements GitHubProvider {
   }
 
   async mutate(_mutation: GitHubMutation): Promise<void> {
-    if (this.mutationError !== undefined) throw this.mutationError;
+    if (
+      this.mutationError !== undefined &&
+      (this.mutationErrorType === undefined || this.mutationErrorType === _mutation.type)
+    ) {
+      throw this.mutationError;
+    }
     this.mutations.push(structuredClone(_mutation));
+    if (_mutation.type === 'dequeue') this.queued = false;
+    if (_mutation.type === 'disable-auto-merge' && !(this.details instanceof Error)) {
+      this.details = { ...this.details, autoMergeRequest: null };
+    }
+    if (this.mutationErrorAfterApply !== undefined) throw this.mutationErrorAfterApply;
   }
 }
 
@@ -482,7 +497,7 @@ describe('exact-head release controls', () => {
   });
 
   it.each(['auto-merge', 'merge-queue'] as const)(
-    'rejects a gated claim that would inherit existing %s state',
+    'safely hands off a gated claim that inherits existing %s state',
     async (state) => {
       const store = new SqliteShepherdStore(':memory:');
       const github = new FakeGitHub();
@@ -492,15 +507,192 @@ describe('exact-head release controls', () => {
         autoMergeRequest: state === 'auto-merge' ? { mergeMethod: 'SQUASH' } : null,
       };
       github.queued = state === 'merge-queue';
-      await expect(
-        new TrackedPullRequestControl(config(true, 'exact-head-attestation'), github, store).claim(
-          input(`claim-existing-${state}`),
-        ),
-      ).rejects.toThrow(state === 'auto-merge' ? /persistent auto-merge/ : /merge queue/);
-      expect(store.listTrackedPullRequests()).toEqual([]);
+      const result = await new TrackedPullRequestControl(config(true, 'exact-head-attestation'), github, store).claim(
+        input(`claim-existing-${state}`),
+      );
+      expect(result).toMatchObject({
+        outcome: 'claimed',
+        generation: 1,
+        handoff: 'completed',
+        handoffActionKeys: [expect.any(String)],
+      });
+      expect(github.mutations).toEqual([
+        {
+          type: state === 'auto-merge' ? 'disable-auto-merge' : 'dequeue',
+          pr: { repo: 'Acme/API', number: 7 },
+        },
+      ]);
+      expect(store.listTrackedPullRequests()).toEqual([
+        expect.objectContaining({ status: 'active', generation: 1, releaseGate: 'exact-head-attestation' }),
+      ]);
       store.close();
     },
   );
+
+  it('leaves provider failures durable and resumes the same claim key without a false claim', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    const github = new FakeGitHub();
+    github.details = { ...pullRequest(), headSha };
+    github.queued = true;
+    github.mutationError = new Error('temporary dequeue failure');
+    const control = new TrackedPullRequestControl(config(true, 'exact-head-attestation'), github, store);
+    const claimInput = input('claim-provider-retry');
+
+    await expect(control.claim(claimInput)).rejects.toThrow(/no claim was recorded.*same claim key/i);
+    expect(store.listTrackedPullRequests()).toEqual([]);
+    expect(store.listTrackedControlOperations(10)).toEqual([]);
+    expect(store.listEntities<{ status: string }>('claim-handoff')).toHaveLength(1);
+    expect(store.listEntities<{ status: string }>('action')[0]?.value.status).toBe('pending');
+    await expect(control.claim({ ...claimInput, evidence: { ticket: 'different' } })).rejects.toThrow(
+      /different control request/,
+    );
+
+    github.mutationError = undefined;
+    const completed = await control.claim(claimInput);
+    expect(completed).toMatchObject({ outcome: 'claimed', generation: 1, handoff: 'completed' });
+    expect(github.mutations).toEqual([{ type: 'dequeue', pr: { repo: 'Acme/API', number: 7 } }]);
+    github.details = new Error('idempotent replay must not call GitHub');
+    await expect(control.claim(claimInput)).resolves.toEqual({ ...completed, idempotentReplay: true });
+    expect(store.listEntities('claim-handoff')).toEqual([]);
+    expect(store.countTrackedControlOperations()).toBe(1);
+    store.close();
+  });
+
+  it('persists every required handoff action before a later auto-merge compensation fails', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    const github = new FakeGitHub();
+    github.details = { ...pullRequest(), headSha, autoMergeRequest: { mergeMethod: 'SQUASH' } };
+    github.queued = true;
+    github.mutationError = new Error('temporary auto-merge disable failure');
+    github.mutationErrorType = 'disable-auto-merge';
+    const control = new TrackedPullRequestControl(config(true, 'exact-head-attestation'), github, store);
+    const claimInput = input('claim-multiple-provider-states');
+
+    await expect(control.claim(claimInput)).rejects.toThrow(/no claim was recorded/);
+    expect(store.listTrackedPullRequests()).toEqual([]);
+    expect(
+      store
+        .listEntities<{ status: string; mutation: GitHubMutation }>('action')
+        .map((entity) => [entity.value.mutation.type, entity.value.status]),
+    ).toEqual([
+      ['dequeue', 'completed'],
+      ['disable-auto-merge', 'pending'],
+    ]);
+
+    github.mutationError = undefined;
+    await expect(control.claim(claimInput)).resolves.toMatchObject({
+      outcome: 'claimed',
+      handoff: 'completed',
+      handoffActionKeys: [expect.any(String), expect.any(String)],
+    });
+    expect(github.mutations.map((mutation) => mutation.type)).toEqual(['dequeue', 'disable-auto-merge']);
+    store.close();
+  });
+
+  it('recovers after a crash-ambiguous accepted provider mutation without submitting it twice', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-claim-handoff-crash-'));
+    dirs.push(dir);
+    const path = join(dir, 'shepherd.db');
+    const github = new FakeGitHub();
+    github.details = { ...pullRequest(), headSha };
+    github.queued = true;
+    github.mutationErrorAfterApply = new Error('connection lost after GitHub accepted dequeue');
+    const claimInput = input('claim-after-crash');
+    const first = new SqliteShepherdStore(path);
+
+    await expect(
+      new TrackedPullRequestControl(config(true, 'exact-head-attestation'), github, first).claim(claimInput),
+    ).rejects.toThrow(/no claim was recorded/);
+    expect(first.listTrackedPullRequests()).toEqual([]);
+    expect(github.mutations).toEqual([{ type: 'dequeue', pr: { repo: 'Acme/API', number: 7 } }]);
+    first.close();
+
+    github.mutationErrorAfterApply = undefined;
+    const reopened = new SqliteShepherdStore(path);
+    await expect(
+      new TrackedPullRequestControl(config(true, 'exact-head-attestation'), github, reopened).claim(claimInput),
+    ).resolves.toMatchObject({ outcome: 'claimed', generation: 1, handoff: 'completed' });
+    expect(github.mutations).toHaveLength(1);
+    expect(reopened.listTrackedPullRequests('active')).toHaveLength(1);
+    reopened.close();
+  });
+
+  it('does not commit a stale snapshot when the head changes during provider handoff', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    const github = new FakeGitHub();
+    const nextHead = 'b'.repeat(40);
+    github.details = { ...pullRequest(), headSha };
+    github.queued = true;
+    github.automationStates.push(
+      { headSha, autoMergeEnabled: false, queued: true },
+      { headSha, autoMergeEnabled: false, queued: true },
+      { headSha: nextHead, autoMergeEnabled: false, queued: false },
+    );
+    const control = new TrackedPullRequestControl(config(true, 'exact-head-attestation'), github, store);
+    const claimInput = input('claim-head-changed');
+
+    await expect(control.claim(claimInput)).rejects.toThrow(/head changed during gated claim handoff/);
+    expect(store.listTrackedPullRequests()).toEqual([]);
+    github.details = { ...pullRequest(), headSha: nextHead };
+    await expect(control.claim(claimInput)).resolves.toMatchObject({ outcome: 'claimed', generation: 1 });
+    expect(store.getEntity<{ details: PullRequestDetails }>('authored:acme/api#7')?.value.details.headSha).toBe(
+      nextHead,
+    );
+    store.close();
+  });
+
+  it('fences a pending handoff from an intervening claim generation', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    const github = new FakeGitHub();
+    github.details = { ...pullRequest(), headSha };
+    github.queued = true;
+    github.mutationError = new Error('pause the first handoff');
+    const gated = new TrackedPullRequestControl(config(true, 'exact-head-attestation'), github, store);
+    const pendingInput = input('claim-generation-fence');
+    await expect(gated.claim(pendingInput)).rejects.toThrow(/no claim was recorded/);
+
+    github.mutationError = undefined;
+    await new TrackedPullRequestControl(config(true, 'none'), github, store).claim(input('intervening-claim'));
+    await expect(gated.claim(pendingInput)).rejects.toThrow(/generation changed during claim handoff/);
+    expect(store.getTrackedPullRequest(input('unused'))).toMatchObject({
+      generation: 1,
+      actor: 'local-operator',
+      releaseGate: 'none',
+    });
+    expect(store.countTrackedControlOperations()).toBe(1);
+    store.close();
+  });
+
+  it('keeps the releaseGate none claim path backward compatible with inherited provider state', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    const github = new FakeGitHub();
+    github.details = { ...pullRequest(), headSha, autoMergeRequest: { mergeMethod: 'SQUASH' } };
+    github.queued = true;
+
+    await expect(
+      new TrackedPullRequestControl(config(true, 'none'), github, store).claim(input('claim-ungated')),
+    ).resolves.toMatchObject({ outcome: 'claimed', generation: 1 });
+    expect(github.mutations).toEqual([]);
+    expect(store.listEntities('claim-handoff')).toEqual([]);
+    store.close();
+  });
+
+  it('keeps selector claims non-mutating when an exact-head candidate has inherited provider state', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    const github = new FakeGitHub();
+    github.details = { ...pullRequest(), headSha };
+    github.queued = true;
+
+    await expect(
+      new TrackedPullRequestControl(config(true, 'exact-head-attestation'), github, store).claimIfUntracked(
+        input('selector-queued'),
+      ),
+    ).rejects.toThrow(/remove the pull request from the merge queue/i);
+    expect(github.mutations).toEqual([]);
+    expect(store.listTrackedPullRequests()).toEqual([]);
+    expect(store.listEntities('claim-handoff')).toEqual([]);
+    store.close();
+  });
 
   it('requires revoke and completed queue compensation before safely unclaiming', async () => {
     const store = new SqliteShepherdStore(':memory:');
