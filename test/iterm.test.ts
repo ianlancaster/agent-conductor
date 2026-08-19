@@ -1,8 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
+  CLEAR_INPUT_LINE_OPERATIONS,
   SESSION_USER_VAR,
   SESSION_NOT_FOUND_RESULT,
+  awaitLaunchReadiness,
   bracketedPastePayload,
   buildCloseSessionScript,
   buildCreateSessionWindowScript,
@@ -144,6 +146,125 @@ describe('containsPromptMarker', () => {
 
   it('does not mistake progress percentages for a zsh prompt', () => {
     expect(containsPromptMarker('receiving objects: 42%')).toBe(false);
+  });
+
+  it('cannot recognize a prompt a stray keystroke has typed into', () => {
+    // Not a defect in the marker — a prompt with characters after it is
+    // genuinely not ready. It is why awaitLaunchReadiness needs the tty.
+    expect(containsPromptMarker('ian@mac ~/repo ❯ he')).toBe(false);
+    expect(containsPromptMarker('bash-5.2$ hel')).toBe(false);
+  });
+});
+
+describe('CLEAR_INPUT_LINE_OPERATIONS', () => {
+  it('sends ^E then ^U as edits, never as a submitted line', () => {
+    // ^E first so bash's backwards-only unix-line-discard still clears the
+    // whole line; `newline false` so nothing is executed.
+    expect(CLEAR_INPUT_LINE_OPERATIONS).toContain('ASCII character 5');
+    expect(CLEAR_INPUT_LINE_OPERATIONS).toContain('ASCII character 21');
+    expect(CLEAR_INPUT_LINE_OPERATIONS).toContain('newline false');
+    expect(CLEAR_INPUT_LINE_OPERATIONS).not.toContain('ASCII character 13');
+  });
+});
+
+describe('awaitLaunchReadiness', () => {
+  const CLEAN_PROMPT = 'ian@mac ~/repo ❯ ';
+
+  /**
+   * Probe over a pane that keeps showing `line` until the input line is
+   * cleared. `clearReveals` says whether clearing exposes a prompt the marker
+   * can read — true for a contaminated prompt, false for one it never could.
+   */
+  function harness(options: { line: string; shellIdle: boolean; polls: number; clearReveals?: boolean }) {
+    let visible = options.line;
+    let remaining = options.polls;
+    const calls = { contents: 0, shellIdle: 0, clears: 0, pauses: 0 };
+    const probe = {
+      contents: async () => {
+        calls.contents += 1;
+        return visible;
+      },
+      shellIdle: async () => {
+        calls.shellIdle += 1;
+        return options.shellIdle;
+      },
+      clearInputLine: async () => {
+        calls.clears += 1;
+        // Stands in for the shell redrawing its prompt after ^E^U.
+        if (options.clearReveals !== false) visible = CLEAN_PROMPT;
+      },
+      expired: () => {
+        remaining -= 1;
+        return remaining <= 0;
+      },
+      pause: async () => {
+        calls.pauses += 1;
+      },
+    };
+    return { probe, calls };
+  }
+
+  it('returns on the first clean prompt without touching the tty', async () => {
+    const { probe, calls } = harness({ line: CLEAN_PROMPT, shellIdle: true, polls: 8 });
+    await expect(awaitLaunchReadiness(probe)).resolves.toBe(true);
+    // The happy path must not pay for the tty lookup or a needless clear.
+    expect(calls).toMatchObject({ contents: 1, shellIdle: 0, clears: 0, pauses: 0 });
+  });
+
+  it('clears a contaminated prompt and launches instead of waiting out the timeout', async () => {
+    // The reported bug: a keystroke landed during pane creation, so the marker
+    // never matched and the launch command spliced onto the operator's text.
+    const { probe, calls } = harness({ line: 'ian@mac ~/repo ❯ he', shellIdle: true, polls: 32 });
+    await expect(awaitLaunchReadiness(probe)).resolves.toBe(true);
+    expect(calls.clears).toBe(1);
+    // Recovered on the very next poll rather than at the 8s deadline.
+    expect(calls.pauses).toBe(1);
+  });
+
+  it('never sends control characters into a pane running a foreground job', async () => {
+    const { probe, calls } = harness({ line: 'building...', shellIdle: false, polls: 4 });
+    await expect(awaitLaunchReadiness(probe)).resolves.toBe(false);
+    expect(calls.clears).toBe(0);
+    expect(calls.contents).toBe(4);
+  });
+
+  it('clears at most once when the prompt stays unrecognizable', async () => {
+    // An exotic PS1 the marker cannot parse must degrade to the old
+    // submit-anyway timeout, not to an osascript per poll.
+    const { probe, calls } = harness({ line: 'ian@mac ~/repo »', shellIdle: true, polls: 6, clearReveals: false });
+    await expect(awaitLaunchReadiness(probe)).resolves.toBe(false);
+    expect(calls.clears).toBe(1);
+  });
+
+  it('does not clear a pane it could not observe', async () => {
+    let clears = 0;
+    await expect(
+      awaitLaunchReadiness({
+        contents: async () => 'still booting',
+        // What the backend reports when the tty or `ps` cannot be read.
+        shellIdle: async () => false,
+        clearInputLine: async () => {
+          clears += 1;
+        },
+        expired: () => true,
+        pause: async () => undefined,
+      }),
+    ).resolves.toBe(false);
+    expect(clears).toBe(0);
+  });
+
+  it('propagates an unobservable pane instead of reporting it ready', async () => {
+    await expect(
+      awaitLaunchReadiness({
+        contents: async () => {
+          throw new Error('iTerm unavailable');
+        },
+        shellIdle: async () => true,
+        clearInputLine: async () => undefined,
+        expired: () => false,
+        pause: async () => undefined,
+      }),
+    ).rejects.toThrow('iTerm unavailable');
   });
 });
 

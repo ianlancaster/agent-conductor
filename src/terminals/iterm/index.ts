@@ -9,6 +9,7 @@ import type { Store } from '../../store/index.js';
 import type { DeliveryCapture, TerminalBackend, TerminalCapabilities } from '../types.js';
 import { ttyHasForegroundJob } from '../process.js';
 import {
+  awaitLaunchReadiness,
   buildCloseSessionScript,
   buildCreateSessionWindowScript,
   buildCreateTabScript,
@@ -25,8 +26,8 @@ import {
   buildUnchangedContentsGuard,
   buildWindowExistsScript,
   bracketedPastePayload,
+  CLEAR_INPUT_LINE_OPERATIONS,
   confirmLiveness,
-  containsPromptMarker,
   encodeSessionVar,
   escapeAppleScript,
   parseRediscoveryOutput,
@@ -85,7 +86,9 @@ const LIVENESS_CONFIRM_DELAY_MS = 100;
  *    embedded newlines are content, not submit keystrokes.
  *  - launch() polls session contents for a shell prompt marker (JS-side async
  *    loop — the old code busy-waited inside AppleScript) so the first command
- *    is not swallowed by shell rc-file init.
+ *    is not swallowed by shell rc-file init, and falls back to the tty's
+ *    foreground process group so a keystroke that landed in the pane during
+ *    creation is cleared instead of spliced into the launch command.
  */
 export class ITermBackend implements TerminalBackend {
   readonly name = 'iterm';
@@ -258,8 +261,8 @@ export class ITermBackend implements TerminalBackend {
   }
 
   async isSessionActive(pane: PaneRef): Promise<boolean> {
-    const tty = (await runOsa(buildSessionTtyScript(pane.id))).trim();
-    if (tty.length === 0) throw new Error(`iTerm session ${pane.id} has no tty`);
+    const tty = await this.sessionTty(pane.id);
+    if (tty === null) throw new Error(`iTerm session ${pane.id} has no tty`);
     return ttyHasForegroundJob(tty);
   }
 
@@ -418,19 +421,56 @@ export class ITermBackend implements TerminalBackend {
 
   /**
    * Poll session contents for a shell prompt marker so input lands on a live
-   * prompt instead of being consumed by rc-file init (nvm, oh-my-zsh, ...).
-   * Async JS-side loop — never blocks the event loop. Returns false on timeout
-   * (callers submit anyway, best-effort — same behavior as the old conductor).
+   * prompt instead of being consumed by rc-file init (nvm, oh-my-zsh, ...),
+   * with the pane's foreground process group as the second opinion — see
+   * {@link awaitLaunchReadiness}. Async JS-side loop; never blocks the event
+   * loop. Returns false on timeout (callers submit anyway, best-effort — same
+   * behavior as the old conductor).
    */
   private async waitForPrompt(sessionId: string): Promise<boolean> {
+    const short = sessionId.slice(0, 8);
     const deadline = Date.now() + this.config.launchTimeoutSec * 1000;
     const intervalMs = this.config.pollIntervalSec * 1000;
-    for (;;) {
-      const contents = await this.sessionContents(sessionId);
-      if (containsPromptMarker(contents)) return true;
-      if (Date.now() >= deadline) return false;
-      await sleep(intervalMs);
-    }
+    // Resolved at most once per launch, and only if the prompt marker misses:
+    // the common case is a clean pane on the first poll, which should not pay
+    // for an extra osascript round trip.
+    let tty: string | null | undefined;
+
+    return awaitLaunchReadiness({
+      contents: async () => this.sessionContents(sessionId),
+      shellIdle: async () => {
+        // `??=` would retry a cached null on every poll; undefined is the
+        // "not looked up yet" state, null the settled "this pane has no tty".
+        if (tty === undefined) tty = await this.sessionTty(sessionId).catch(() => null);
+        if (tty === null) return false;
+        try {
+          return !(await ttyHasForegroundJob(tty));
+        } catch (err) {
+          // Unreadable is not idle. Reporting it as idle would send control
+          // characters into whatever is actually running in the pane.
+          log().debug('iterm', `${short}: shell state unreadable: ${String(err)}`);
+          return false;
+        }
+      },
+      clearInputLine: async () => {
+        log().debug('iterm', `${short}: shell idle with no prompt in view — clearing the input line`);
+        try {
+          await this.inSession(sessionId, CLEAR_INPUT_LINE_OPERATIONS);
+        } catch (err) {
+          // Recovery is opportunistic; a failed clear must not fail the launch
+          // that would otherwise have gone ahead untouched.
+          log().warn('iterm', `${short}: could not clear the input line: ${String(err)}`);
+        }
+      },
+      expired: () => Date.now() >= deadline,
+      pause: async () => sleep(intervalMs),
+    });
+  }
+
+  /** The pane's tty path, or null when iTerm reports none. */
+  private async sessionTty(sessionId: string): Promise<string | null> {
+    const tty = (await runOsa(buildSessionTtyScript(sessionId))).trim();
+    return tty.length === 0 ? null : tty;
   }
 
   /**

@@ -116,6 +116,72 @@ export function containsPromptMarker(contents: string): boolean {
   return /(?:(?<!\d)%|[$#❯>])$/.test(last);
 }
 
+/**
+ * Clear whatever sits on a shell's input line, sending no signal to do it.
+ *
+ * `^E` moves to end of line and `^U` kills backwards from there, which clears
+ * the whole line under both editors: zsh binds `^U` to `kill-whole-line` and
+ * bash to `unix-line-discard` (backwards only), so the `^E` is what makes the
+ * kill total on bash. Both are no-ops on an already-empty line.
+ *
+ * This cannot ride along inside a bracketed-paste payload — everything between
+ * the paste markers is delivered as literal text, never as editing commands.
+ */
+export const CLEAR_INPUT_LINE_OPERATIONS = 'write text ((ASCII character 5) & (ASCII character 21)) newline false';
+
+/** Injected observations for {@link awaitLaunchReadiness}. */
+export interface LaunchReadinessProbe {
+  /** Current pane contents. */
+  contents: () => Promise<string>;
+  /**
+   * Whether the pane's interactive shell owns its tty's foreground process
+   * group. Must resolve false when the tty cannot be read: a pane nobody could
+   * observe is not a pane known to be sitting at a prompt, and the difference
+   * decides whether control characters are safe to send.
+   */
+  shellIdle: () => Promise<boolean>;
+  /** Apply {@link CLEAR_INPUT_LINE_OPERATIONS} to the pane; best effort. */
+  clearInputLine: () => Promise<void>;
+  /** Whether the launch timeout has elapsed. */
+  expired: () => boolean;
+  /** Wait one poll interval. */
+  pause: () => Promise<void>;
+}
+
+/**
+ * Wait until a pane can accept a launch command.
+ *
+ * A rendered prompt marker is the primary signal, but it is blind to the case
+ * this exists for. A keystroke that lands in a pane while it is being created
+ * leaves the input line reading `~/repo ❯ he`, which `containsPromptMarker`
+ * rejects and will never accept, so the poll burned its entire timeout and then
+ * spliced the launch command onto the operator's characters — one dead agent
+ * per stray keystroke.
+ *
+ * The tty's foreground process group is the independent signal. A shell that
+ * owns its own foreground group is sitting at a prompt whatever its input line
+ * says, so on that evidence the line is cleared. If contamination was the
+ * cause, the next poll sees a clean prompt and the launch proceeds normally
+ * instead of waiting out the timeout; if the pane was merely still running
+ * rc-file init, the control characters are inert and the poll is unchanged.
+ *
+ * Clearing happens at most once. The window in which a stray keystroke can
+ * reach the pane closes when creation returns, so a second attempt could only
+ * add osascript round trips to a pane that is slow rather than dirty.
+ */
+export async function awaitLaunchReadiness(probe: LaunchReadinessProbe): Promise<boolean> {
+  let cleared = false;
+  for (;;) {
+    if (containsPromptMarker(await probe.contents())) return true;
+    if (!cleared && (await probe.shellIdle())) {
+      await probe.clearInputLine();
+      cleared = true;
+    }
+    if (probe.expired()) return false;
+    await probe.pause();
+  }
+}
+
 /** Trailing `lines` content rows, ignoring the terminal viewport's empty tail. */
 export function tailLines(contents: string, lines: number): string {
   if (lines <= 0) return '';
