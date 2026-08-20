@@ -77,6 +77,7 @@ function pr(overrides: Partial<PullRequestDetails> = {}): PullRequestDetails {
     isDraft: false,
     updatedAt: '2026-07-20T10:00:00.000Z',
     state: 'OPEN',
+    headRefName: 'feature/improve-api',
     headSha: 'head-a',
     mergeable: 'MERGEABLE',
     mergeStateStatus: 'CLEAN',
@@ -2193,6 +2194,228 @@ describe('Shepherd engine', () => {
 
     expect(store.listEntities('review-inbox')).toHaveLength(1);
     expect(store.listEvents()).toHaveLength(eventCount);
+    store.close();
+  });
+
+  it('excludes assigned-review heads case-insensitively before inbox state, events, or outbox creation', async () => {
+    const github = new FakeGitHub();
+    const lower = pr({ number: 7, headRefName: 'abby/lowercase' });
+    const upper = pr({ number: 8, headRefName: 'Abby/uppercase' });
+    const eligible = pr({ number: 9, headRefName: 'feature/eligible' });
+    for (const details of [lower, upper, eligible]) {
+      github.details.set(`${details.repo}#${String(details.number)}`, details);
+    }
+    github.discoveries.set('review-inbox', { items: [lower, upper, eligible], exhaustive: true });
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({
+        features: {
+          authoredPRs: { enabled: false },
+          reviewInbox: { enabled: true, ignoredHeadPatterns: ['^abby/'] },
+          staleThresholdHours: 24,
+        },
+      }),
+      github,
+      store,
+      () => new Date('2026-07-20T10:00:00Z'),
+    );
+
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    expect(store.listEvents()).toEqual([expect.objectContaining({ type: 'review-dispatch', prNumber: 9 })]);
+    expect(store.listEntities('review-inbox')).toEqual([expect.objectContaining({ key: 'inbox:acme/api#9' })]);
+    expect(store.listOutbox()).toHaveLength(1);
+    store.close();
+  });
+
+  it('silently exits and recurrently re-enters the inbox when a head crosses an excluded namespace', async () => {
+    const github = new FakeGitHub();
+    const eligible = pr({ headRefName: 'feature/eligible' });
+    setDiscovery(github, 'review-inbox', eligible);
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      features: {
+        authoredPRs: { enabled: false },
+        reviewInbox: { enabled: true, ignoredHeadPatterns: ['^abby/'] },
+        staleThresholdHours: 24,
+      },
+    });
+    const engine = new ShepherdEngine(resolved, github, store, () => new Date('2026-07-20T10:00:00Z'));
+
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    setDiscovery(github, 'review-inbox', pr({ headRefName: 'Abby/now-owned-elsewhere' }));
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEntities('review-inbox')).toEqual([]);
+    expect(store.listOutbox()).toEqual([]);
+
+    setDiscovery(github, 'review-inbox', eligible);
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    const dispatches = store.listEvents().filter((event) => event.type === 'review-dispatch');
+    expect(dispatches).toHaveLength(2);
+    expect(new Set(dispatches.map((event) => event.id)).size).toBe(2);
+    expect(dispatches.some((event) => event.source.exclusionCycle === 1)).toBe(true);
+    store.close();
+  });
+
+  it('silences already-known inbox work and its pending delivery when an exclusion is enabled', async () => {
+    const github = new FakeGitHub();
+    const details = pr({ headRefName: 'Abby/already-known' });
+    setDiscovery(github, 'review-inbox', details);
+    const store = new SqliteShepherdStore(':memory:');
+    const clock = () => new Date('2026-07-20T12:00:00Z');
+    const unfiltered = config({
+      features: { authoredPRs: { enabled: false }, reviewInbox: { enabled: true }, staleThresholdHours: 24 },
+    });
+    expect(await new ShepherdEngine(unfiltered, github, store, clock).pollOnce()).toMatchObject({ emitted: 1 });
+    expect(store.listOutbox()).toHaveLength(1);
+
+    const filtered = config({
+      features: {
+        authoredPRs: { enabled: false },
+        reviewInbox: { enabled: true, ignoredHeadPatterns: ['^abby/'] },
+        staleThresholdHours: 24,
+      },
+    });
+    const filteredEngine = new ShepherdEngine(filtered, github, store, clock);
+    expect(await filteredEngine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEntities('review-inbox')).toEqual([]);
+    expect(store.listOutbox()).toEqual([]);
+
+    github.discoveries.set('review-inbox', { items: [], exhaustive: true });
+    expect(await filteredEngine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEvents().map((event) => event.type)).toEqual(['review-dispatch']);
+    store.close();
+  });
+
+  it('keeps excluded inbox follow-up quiet across replies, re-requests, completion, and restart', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-head-exclusion-'));
+    const path = join(dir, 'shepherd.db');
+    const github = new FakeGitHub();
+    const initial = pr({
+      headRefName: 'abby/reviewed-change',
+      reviews: [commentedReview],
+      reviewThreads: [reviewThread()],
+      requestedReviewers: [{ login: 'octocat' }],
+    });
+    setDiscovery(github, 'review-inbox', initial);
+    setDiscovery(github, 'review-follow-up', initial);
+    const filtered = config({
+      features: {
+        authoredPRs: { enabled: false },
+        reviewInbox: { enabled: true, ignoredHeadPatterns: ['^abby/'] },
+        reviewFollowUp: { enabled: true },
+        staleThresholdHours: 24,
+      },
+    });
+    const clock = () => new Date('2026-07-20T12:00:00Z');
+
+    try {
+      const firstStore = new SqliteShepherdStore(path);
+      const firstEngine = new ShepherdEngine(filtered, github, firstStore, clock);
+      expect(await firstEngine.pollOnce()).toMatchObject({ emitted: 0 });
+
+      const reply = {
+        id: 'reply-after-exclusion',
+        author: 'author',
+        body: 'The requested change is ready.',
+        createdAt: '2026-07-20T11:00:00Z',
+        updatedAt: '2026-07-20T11:00:00Z',
+        url: 'https://github.com/acme/api/pull/7#discussion_r2',
+      };
+      const changed = pr({
+        headRefName: 'Abby/reviewed-change',
+        headSha: 'head-b',
+        reviews: [commentedReview],
+        reviewThreads: [reviewThread({ comments: [...reviewThread().comments, reply] })],
+        requestedReviewers: [],
+      });
+      setDiscovery(github, 'review-inbox', changed);
+      setDiscovery(github, 'review-follow-up', changed);
+      expect(await firstEngine.pollOnce()).toMatchObject({ emitted: 0 });
+
+      const rerequested = { ...changed, requestedReviewers: [{ login: 'octocat' }] };
+      setDiscovery(github, 'review-inbox', rerequested);
+      setDiscovery(github, 'review-follow-up', rerequested);
+      expect(await firstEngine.pollOnce()).toMatchObject({ emitted: 0 });
+      github.discoveries.set('review-inbox', { items: [], exhaustive: true });
+      github.discoveries.set('review-follow-up', { items: [], exhaustive: true });
+      expect(await firstEngine.pollOnce()).toMatchObject({ emitted: 0 });
+      firstStore.close();
+
+      const restartedStore = new SqliteShepherdStore(path);
+      const restartedEngine = new ShepherdEngine(filtered, github, restartedStore, clock);
+      expect(await restartedEngine.pollOnce()).toMatchObject({ emitted: 0 });
+      expect(restartedStore.listEvents()).toEqual([]);
+
+      setDiscovery(github, 'review-inbox', rerequested);
+      setDiscovery(github, 'review-follow-up', rerequested);
+      const unfiltered = config({
+        features: {
+          authoredPRs: { enabled: false },
+          reviewInbox: { enabled: true },
+          reviewFollowUp: { enabled: true },
+          staleThresholdHours: 24,
+        },
+      });
+      const reentered = new ShepherdEngine(unfiltered, github, restartedStore, clock);
+      await reentered.pollOnce();
+      expect(
+        restartedStore
+          .listEvents()
+          .map((event) => event.type)
+          .sort(),
+      ).toEqual(['review-completed', 'scoped-re-review']);
+      const followUp = restartedStore.listEvents().find((event) => event.type === 'scoped-re-review');
+      expect(followUp?.source.triggeringReasons).toEqual(['head-changed']);
+      expect(followUp?.source.replyIds).toEqual([]);
+      restartedStore.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not let review-inbox exclusions alter a durable tracked ownership lane', async () => {
+    const github = new FakeGitHub();
+    const initial = pr({ headRefName: 'abby/tracked-change' });
+    github.details.set('acme/api#7', initial);
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: { enabled: true },
+        reviewInbox: { enabled: true, ignoredHeadPatterns: ['^abby/'] },
+        staleThresholdHours: 24,
+      },
+    });
+    await new TrackedPullRequestControl(resolved, github, store).claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'other-profile',
+      evidence: { reason: 'explicit tracked ownership' },
+      idempotencyKey: 'claim-abby-7',
+    });
+    setDiscovery(github, 'review-inbox', initial);
+    const engine = new ShepherdEngine(resolved, github, store);
+    await engine.pollOnce();
+
+    const reviewed = pr({
+      headRefName: 'Abby/tracked-change',
+      reviews: [
+        {
+          id: 'external-review',
+          author: 'reviewer',
+          state: 'CHANGES_REQUESTED',
+          body: 'Please cover the edge case.',
+          submittedAt: '2026-07-20T11:00:00Z',
+        },
+      ],
+    });
+    github.details.set('acme/api#7', reviewed);
+    setDiscovery(github, 'review-inbox', reviewed);
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    expect(store.getTrackedPullRequest(reviewed)).toMatchObject({ status: 'active', generation: 1 });
+    expect(store.listEntities('authored')).toHaveLength(1);
+    expect(store.listEntities('review-inbox')).toEqual([]);
+    expect(store.listEvents().some((event) => event.type === 'review-feedback')).toBe(true);
     store.close();
   });
 

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 import { describe, expect, it } from 'vitest';
+import { ZodError } from 'zod';
 import { assertShepherdProfileReady, loadShepherdConfig, parseShepherdConfig } from '../src/shepherd/config.js';
 import { repositoryInScope } from '../src/shepherd/scope.js';
 
@@ -14,6 +15,7 @@ describe('PR Shepherd V2 configuration', () => {
     expect(config.features.trackedPRs.releaseGate).toBe('none');
     expect(config.features.trackedPRs.selectors).toEqual([]);
     expect(config.features.reviewInbox.enabled).toBe(false);
+    expect(config.features.reviewInbox.ignoredHeadPatterns).toEqual([]);
     expect(config.automation).toEqual({ autoMerge: 'notify', branchUpdate: 'notify', reviewerComment: 'notify' });
     expect(config.delivery).toEqual({ type: 'stdout' });
     expect(config.github.mergeMethod).toBe('squash');
@@ -91,6 +93,31 @@ describe('PR Shepherd V2 configuration', () => {
         features: { reviewerNudge: { timezone: 'Mars/Olympus' } },
       }),
     ).toThrow(/Invalid IANA timezone/);
+  });
+
+  it('validates each ignored review-inbox head pattern at its exact field index', () => {
+    const valid = parseShepherdConfig({
+      version: 2,
+      profile: { githubUser: 'octocat' },
+      features: { reviewInbox: { ignoredHeadPatterns: ['^abby/', 'release/'] } },
+    });
+    expect(valid.features.reviewInbox.ignoredHeadPatterns).toEqual(['^abby/', 'release/']);
+
+    let failure: unknown;
+    try {
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        features: { reviewInbox: { ignoredHeadPatterns: ['^valid/', '[broken'] } },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(ZodError);
+    const issue = (failure as ZodError).issues.find(
+      (candidate) => candidate.path.join('.') === 'features.reviewInbox.ignoredHeadPatterns.1',
+    );
+    expect(issue?.message).toContain('Invalid regular expression');
   });
 
   it('accepts IPv4 and IPv6 loopback Conductor endpoints', () => {

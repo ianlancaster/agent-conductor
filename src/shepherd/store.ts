@@ -1224,6 +1224,23 @@ export class SqliteShepherdStore implements TrackedClaimHandoffStore {
     return rows.map(outboxFromRow);
   }
 
+  suppressOutbox(pr: PullRequestRef, eventTypes: readonly ShepherdEventType[], reason: string): number {
+    if (eventTypes.length === 0) return 0;
+    const placeholders = eventTypes.map(() => '?').join(', ');
+    const result = this.db
+      .prepare(
+        `UPDATE shepherd_outbox
+         SET status = 'completed', completed_at = ?, claimed_at = NULL, receipt_json = NULL, last_error = ?
+         WHERE status IN ('pending', 'sending', 'parked')
+           AND event_id IN (
+             SELECT id FROM shepherd_events
+             WHERE lower(repo) = ? AND pr_number = ? AND type IN (${placeholders})
+           )`,
+      )
+      .run(new Date().toISOString(), reason, repoKey(pr.repo), pr.number, ...eventTypes);
+    return Number(result.changes);
+  }
+
   logHealth(event: string, detail?: string): void {
     this.db
       .prepare('INSERT INTO shepherd_health_log (event, detail, created_at) VALUES (?, ?, ?)')

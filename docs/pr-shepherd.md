@@ -100,39 +100,40 @@ crash-restart policy gave up; fix the reported cause and restart Conductor.
 
 Configuration is strict, versioned YAML: unknown keys and unknown guidance event names are rejected. CLI overrides take precedence over environment variables, which take precedence over YAML.
 
-| Setting                                 | Purpose and default                                                                                                                    |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`                               | Required schema version; currently `2`.                                                                                                |
-| `profile.githubUser`                    | Required GitHub username managed by this process.                                                                                      |
-| `polling.intervalSeconds`               | Start-to-start polling interval; default `180`, minimum `10`. Cycles never overlap.                                                    |
-| `polling.bootstrap`                     | `notify-current` emits current conditions on first discovery; `baseline-only` records them without emitting. Default `notify-current`. |
-| `github.defaultRepo`                    | Optional profile metadata for a primary repository; default `null`.                                                                    |
-| `github.includeOwners` / `includeRepos` | Optional owner and repository allowlists. Empty lists allow all repositories.                                                          |
-| `github.excludeOwners` / `excludeRepos` | Owner and repository denylists applied after includes.                                                                                 |
-| `github.mode`                           | `direct` or `merge-queue`; default `direct`. Direct updates behind PRs first; queue mode avoids merely-behind updates.                 |
-| `github.mergeMethod`                    | `squash`, `merge`, or `rebase`; default `squash`.                                                                                      |
-| `checks.required`                       | If non-empty, only these check names determine readiness.                                                                              |
-| `checks.ignored`                        | Check names removed before evaluation.                                                                                                 |
-| `reviews.ignoredActors`                 | Case-insensitive actor names ignored for review/comment signals.                                                                       |
-| `reviews.ignoredCommentPatterns`        | Case-insensitive regular expressions suppressed from human-comment events.                                                             |
-| `reviews.requiredApprovals`             | Approval count required for readiness; default `1`.                                                                                    |
-| `reviews.bots[]`                        | Configurable bot username, actionable and positive patterns, inbox gating, and feedback-attempt limit.                                 |
-| `features.authoredPRs.enabled`          | Monitor authored pull requests; default `true`.                                                                                        |
-| `features.trackedPRs.enabled`           | Enable durable claim controls and the tracked owned-PR lane; disabled by default.                                                      |
-| `features.trackedPRs.releaseGate`       | `none` or `exact-head-attestation`; default `none`. The value is captured on each new claim generation.                                |
-| `features.trackedPRs.selectors`         | Optional generic auto-claim rules for exact labels or case-insensitive head-branch prefixes; default `[]`.                             |
-| `features.reviewInbox`                  | Optional assigned-review workflow with draft, repository, and age filters; disabled by default.                                        |
-| `features.reviewFollowUp.enabled`       | Track actionable requested-change or inline-comment reviews and emit scoped follow-up transitions; disabled by default.                |
-| `features.reviewerNudge`                | Optional reviewer-comment/escalation workflow, including threshold, weekday handling, timezone, and repeat cap; disabled by default.   |
-| `features.staleThresholdHours`          | Authored-PR staleness interval; default `4`. Set `0` for immediate first-cycle staleness.                                              |
-| `automation.autoMerge`                  | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
-| `automation.branchUpdate`               | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
-| `automation.reviewerComment`            | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
-| `delivery.type`                         | `stdout` or `conductor`; default `stdout`.                                                                                             |
-| `delivery.endpoint`                     | Required for Conductor delivery and restricted to a localhost URL.                                                                     |
-| `delivery.coordinatorSession`           | Required Conductor recipient for all Shepherd events.                                                                                  |
-| `guidance`                              | Optional text keyed by emitted event type and appended to the generic fact message.                                                    |
-| `databasePath`                          | Independent SQLite database, resolved relative to the profile; default `./data/pr-shepherd-v2.db`.                                     |
+| Setting                                    | Purpose and default                                                                                                                    |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                                  | Required schema version; currently `2`.                                                                                                |
+| `profile.githubUser`                       | Required GitHub username managed by this process.                                                                                      |
+| `polling.intervalSeconds`                  | Start-to-start polling interval; default `180`, minimum `10`. Cycles never overlap.                                                    |
+| `polling.bootstrap`                        | `notify-current` emits current conditions on first discovery; `baseline-only` records them without emitting. Default `notify-current`. |
+| `github.defaultRepo`                       | Optional profile metadata for a primary repository; default `null`.                                                                    |
+| `github.includeOwners` / `includeRepos`    | Optional owner and repository allowlists. Empty lists allow all repositories.                                                          |
+| `github.excludeOwners` / `excludeRepos`    | Owner and repository denylists applied after includes.                                                                                 |
+| `github.mode`                              | `direct` or `merge-queue`; default `direct`. Direct updates behind PRs first; queue mode avoids merely-behind updates.                 |
+| `github.mergeMethod`                       | `squash`, `merge`, or `rebase`; default `squash`.                                                                                      |
+| `checks.required`                          | If non-empty, only these check names determine readiness.                                                                              |
+| `checks.ignored`                           | Check names removed before evaluation.                                                                                                 |
+| `reviews.ignoredActors`                    | Case-insensitive actor names ignored for review/comment signals.                                                                       |
+| `reviews.ignoredCommentPatterns`           | Case-insensitive regular expressions suppressed from human-comment events.                                                             |
+| `reviews.requiredApprovals`                | Approval count required for readiness; default `1`.                                                                                    |
+| `reviews.bots[]`                           | Configurable bot username, actionable and positive patterns, inbox gating, and feedback-attempt limit.                                 |
+| `features.authoredPRs.enabled`             | Monitor authored pull requests; default `true`.                                                                                        |
+| `features.trackedPRs.enabled`              | Enable durable claim controls and the tracked owned-PR lane; disabled by default.                                                      |
+| `features.trackedPRs.releaseGate`          | `none` or `exact-head-attestation`; default `none`. The value is captured on each new claim generation.                                |
+| `features.trackedPRs.selectors`            | Optional generic auto-claim rules for exact labels or case-insensitive head-branch prefixes; default `[]`.                             |
+| `features.reviewInbox`                     | Optional assigned-review workflow with draft, repository, age, and case-insensitive head-regex exclusions; disabled by default.        |
+| `features.reviewInbox.ignoredHeadPatterns` | Case-insensitive regular expressions matched against `headRefName` before review-inbox/follow-up state or delivery; default `[]`.      |
+| `features.reviewFollowUp.enabled`          | Track actionable requested-change or inline-comment reviews and emit scoped follow-up transitions; disabled by default.                |
+| `features.reviewerNudge`                   | Optional reviewer-comment/escalation workflow, including threshold, weekday handling, timezone, and repeat cap; disabled by default.   |
+| `features.staleThresholdHours`             | Authored-PR staleness interval; default `4`. Set `0` for immediate first-cycle staleness.                                              |
+| `automation.autoMerge`                     | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
+| `automation.branchUpdate`                  | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
+| `automation.reviewerComment`               | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
+| `delivery.type`                            | `stdout` or `conductor`; default `stdout`.                                                                                             |
+| `delivery.endpoint`                        | Required for Conductor delivery and restricted to a localhost URL.                                                                     |
+| `delivery.coordinatorSession`              | Required Conductor recipient for all Shepherd events.                                                                                  |
+| `guidance`                                 | Optional text keyed by emitted event type and appended to the generic fact message.                                                    |
+| `databasePath`                             | Independent SQLite database, resolved relative to the profile; default `./data/pr-shepherd-v2.db`.                                     |
 
 Each bot entry supports:
 
@@ -319,6 +320,35 @@ Review-inbox completion facts include an outcome: `bot-auto-approved`, `already-
 `assignment-ended`. Once an assignment reaches either of the first two terminal dispositions,
 its later disappearance from GitHub's review-requested search only clears tracking state; it
 does not emit a second generic completion.
+
+### Review-inbox head exclusions
+
+`features.reviewInbox.ignoredHeadPatterns` is a list of JavaScript regular expressions matched
+case-insensitively against GitHub's `headRefName`. For example, `['^abby/']` excludes both
+`abby/change` and `Abby/change`. Invalid expressions fail profile validation at the exact list
+index. An omitted or empty list preserves the existing behavior.
+
+This is a pre-delivery boundary for the assigned-review lane. A match is checked before Shepherd
+creates or updates review-inbox or review-follow-up state and before it creates their outbox work.
+It suppresses `review-dispatch`, `review-completed`, and `scoped-re-review`, including undelivered
+rows created before the profile change. Enabling a pattern silently clears existing assigned-review
+and follow-up state for matching PRs, so later review-request removal does not produce a completion.
+
+The exclusion does not alter the authored/tracked lane, durable claims, release attestations,
+provider mutations, compensation actions, received `review-feedback`, or reviewer-nudge work owned
+through that separate lane. A different profile can therefore continue to own the same PR through
+its authored identity or tracked selectors. Removing an exclusion lets an eligible PR enter again
+under the configured `polling.bootstrap` and current-state semantics. Historical thread replies are
+not replayed as new activity; only a currently actionable head or request condition can produce the
+normal current-state event.
+
+```yaml
+features:
+  reviewInbox:
+    enabled: true
+    ignoredHeadPatterns:
+      - '^abby/'
+```
 
 ### Review follow-up lifecycle
 

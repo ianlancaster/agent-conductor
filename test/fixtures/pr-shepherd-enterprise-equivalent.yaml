@@ -31,6 +31,7 @@ features:
     enabled: true
     ignoreDrafts: true
     ignoredRepos: []
+    ignoredHeadPatterns: []
     maxAgeDays: 5
   reviewFollowUp: { enabled: true }
   reviewerNudge:

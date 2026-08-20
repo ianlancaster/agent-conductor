@@ -42,6 +42,7 @@ function pullRequest(state: PullRequestDetails['state'] = 'OPEN'): PullRequestDe
     isDraft: false,
     updatedAt: '2026-08-17T10:00:00Z',
     state,
+    headRefName: 'feature/improve-api',
     headSha: 'head-a',
     mergeable: 'MERGEABLE',
     mergeStateStatus: 'CLEAN',

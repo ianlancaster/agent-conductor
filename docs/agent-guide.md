@@ -815,6 +815,13 @@ reply, outdated, resolved, and explicit re-request reasons plus the affected thr
 that factual scope when dispatching a reviewer; do not treat an ordinary PR issue comment as an
 inline-thread reply or redo a full review unless fleet guidance explicitly asks for one.
 
+When multiple Shepherd profiles share a reviewer identity, use
+`features.reviewInbox.ignoredHeadPatterns` to divide assigned-review ownership by GitHub
+`headRefName`. Expressions are case-insensitive and are applied before review-inbox/follow-up state,
+outbox creation, or delivery. This exclusion does not affect a separate authored/tracked ownership
+lane for the same PR. Removing a pattern restores normal bootstrap/current-state discovery without
+turning historical review-thread replies into new activity.
+
 See `docs/pr-shepherd.md` for the complete schema, delivery contract, event types, automation
 semantics, and operational commands.
 

@@ -97,6 +97,7 @@ interface RawView {
   isDraft: boolean;
   updatedAt: string;
   state: string;
+  headRefName: string;
   headRefOid: string;
   mergeable: PullRequestDetails['mergeable'];
   mergeStateStatus: string;
@@ -445,6 +446,7 @@ export class GhGitHubProvider implements GitHubProvider {
       'isDraft',
       'updatedAt',
       'state',
+      'headRefName',
       'headRefOid',
       'mergeable',
       'mergeStateStatus',
@@ -504,6 +506,7 @@ export class GhGitHubProvider implements GitHubProvider {
       isDraft: view.isDraft,
       updatedAt: view.updatedAt,
       state: view.state === 'MERGED' ? 'MERGED' : view.state === 'CLOSED' ? 'CLOSED' : 'OPEN',
+      headRefName: view.headRefName,
       headSha: view.headRefOid,
       mergeable: view.mergeable,
       mergeStateStatus: view.mergeStateStatus,

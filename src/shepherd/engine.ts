@@ -61,6 +61,15 @@ interface InboxState {
 
 type InboxCompletionOutcome = 'bot-auto-approved' | 'already-reviewed';
 
+const REVIEW_INBOX_EVENT_TYPES = ['review-dispatch', 'review-completed', 'scoped-re-review'] as const;
+type ReviewLane = 'review-inbox' | 'review-follow-up';
+
+interface ReviewExclusionState {
+  excluded: boolean;
+  cycle: number;
+  details: PullRequestDetails;
+}
+
 interface FollowUpThreadState {
   rootCommentId: string;
   isOutdated: boolean;
@@ -241,6 +250,7 @@ function supportsReleaseGate(store: ShepherdStore): store is ReleaseGateStore {
 export class ShepherdEngine {
   private pollInFlight: Promise<PollSummary> | undefined;
   private mutationMutex: ShepherdMutationMutex | undefined;
+  private readonly ignoredReviewInboxHeadPatterns: RegExp[];
 
   constructor(
     private readonly config: ShepherdConfig,
@@ -250,6 +260,9 @@ export class ShepherdEngine {
     mutationMutex?: ShepherdMutationMutex,
   ) {
     this.mutationMutex = mutationMutex;
+    this.ignoredReviewInboxHeadPatterns = config.features.reviewInbox.ignoredHeadPatterns.map(
+      (pattern) => new RegExp(pattern, 'i'),
+    );
   }
 
   pollOnce(): Promise<PollSummary> {
@@ -1645,6 +1658,11 @@ export class ShepherdEngine {
           if (!repositoryInScope(details.repo, this.config.github)) return;
           const key = prKey('inbox', details);
           observed.add(key);
+          if (this.reviewInboxHeadIgnored(details.headRefName)) {
+            this.excludeReviewInboxLifecycle(details);
+            return;
+          }
+          const reentry = this.reviewLaneReentry('review-inbox', details);
           const previous = this.store.getEntity<InboxState>(key)?.value;
           const disposition = this.inboxDisposition(details);
           const events: ShepherdEvent[] = [];
@@ -1655,7 +1673,11 @@ export class ShepherdEngine {
                   this.config,
                   'review-dispatch',
                   details,
-                  { headSha: details.headSha, requestUpdatedAt: details.updatedAt },
+                  {
+                    headSha: details.headSha,
+                    requestUpdatedAt: details.updatedAt,
+                    ...(reentry.cycle === undefined ? {} : { exclusionCycle: reentry.cycle }),
+                  },
                   { title: details.title, url: details.url },
                   this.clock().toISOString(),
                 ),
@@ -1668,7 +1690,12 @@ export class ShepherdEngine {
                     this.config,
                     'review-completed',
                     details,
-                    { headSha: details.headSha, requestUpdatedAt: details.updatedAt, outcome },
+                    {
+                      headSha: details.headSha,
+                      requestUpdatedAt: details.updatedAt,
+                      outcome,
+                      ...(reentry.cycle === undefined ? {} : { exclusionCycle: reentry.cycle }),
+                    },
                     { outcome, title: details.title, url: details.url },
                     this.clock().toISOString(),
                   ),
@@ -1677,7 +1704,7 @@ export class ShepherdEngine {
             }
           }
           summary.emitted += this.store.commit(
-            [{ key, kind: 'review-inbox', value: { details, disposition } satisfies InboxState }],
+            [...reentry.updates, { key, kind: 'review-inbox', value: { details, disposition } satisfies InboxState }],
             events,
             this.recipient(),
           ).length;
@@ -1688,30 +1715,42 @@ export class ShepherdEngine {
     if (discovery.exhaustive) {
       const missing = this.store.listEntities<InboxState>('review-inbox').filter((entity) => !observed.has(entity.key));
       for (const entity of missing) {
-        if (!repositoryInScope(entity.value.details.repo, this.config.github)) {
-          this.store.commit([], [], undefined, [entity.key]);
-          continue;
-        }
-        const alreadyCompleted = inboxCompletionOutcome(entity.value.disposition) !== undefined;
-        const outcome = 'assignment-ended';
-        const events =
-          baseline || alreadyCompleted
-            ? []
-            : [
-                buildEvent(
-                  this.config,
-                  'review-completed',
-                  entity.value.details,
-                  {
-                    headSha: entity.value.details.headSha,
-                    requestUpdatedAt: entity.value.details.updatedAt,
-                    outcome,
-                  },
-                  { outcome, title: entity.value.details.title, url: entity.value.details.url },
-                  this.clock().toISOString(),
-                ),
-              ];
-        summary.emitted += this.store.commit([], events, this.recipient(), [entity.key]).length;
+        await this.runItem(
+          'review-inbox',
+          entity.value.details,
+          async () => {
+            const details = await this.github.getPullRequest(entity.value.details);
+            if (!repositoryInScope(details.repo, this.config.github)) {
+              this.store.commit([], [], undefined, [entity.key]);
+              return;
+            }
+            if (this.reviewInboxHeadIgnored(details.headRefName)) {
+              this.excludeReviewInboxLifecycle(details);
+              return;
+            }
+            const alreadyCompleted = inboxCompletionOutcome(entity.value.disposition) !== undefined;
+            const outcome = 'assignment-ended';
+            const events =
+              baseline || alreadyCompleted
+                ? []
+                : [
+                    buildEvent(
+                      this.config,
+                      'review-completed',
+                      details,
+                      {
+                        headSha: details.headSha,
+                        requestUpdatedAt: details.updatedAt,
+                        outcome,
+                      },
+                      { outcome, title: details.title, url: details.url },
+                      this.clock().toISOString(),
+                    ),
+                  ];
+            summary.emitted += this.store.commit([], events, this.recipient(), [entity.key]).length;
+          },
+          summary,
+        );
       }
     }
     if (!this.store.hasCompletedBootstrap('review-inbox')) this.store.markBootstrapComplete('review-inbox');
@@ -1756,14 +1795,19 @@ export class ShepherdEngine {
           if (!repositoryInScope(details.repo, this.config.github)) return;
           const key = prKey('follow-up', details);
           observed.add(key);
+          if (this.reviewInboxHeadIgnored(details.headRefName)) {
+            this.excludeReviewInboxLifecycle(details);
+            return;
+          }
+          const reentry = this.reviewLaneReentry('review-follow-up', details);
           if (details.state !== 'OPEN') {
-            this.store.commit([], [], undefined, [key]);
+            this.store.commit(reentry.updates, [], undefined, [key]);
             return;
           }
 
           const active = this.activeFollowUp(details);
           if (active.reviews.length === 0) {
-            this.store.commit([], [], undefined, [key]);
+            this.store.commit(reentry.updates, [], undefined, [key]);
             return;
           }
 
@@ -1872,6 +1916,7 @@ export class ShepherdEngine {
                       .map((transition) => `${transition.threadId}:${String(transition.cycle)}`)
                       .sort(),
                     reviewRequestCycle: reviewRequestedTransition ? reviewRequestCycle : undefined,
+                    ...(reentry.cycle === undefined ? {} : { exclusionCycle: reentry.cycle }),
                   },
                   {
                     title: details.title,
@@ -1897,7 +1942,7 @@ export class ShepherdEngine {
             details,
           };
           summary.emitted += this.store.commit(
-            [{ key, kind: 'review-follow-up', value: state }],
+            [...reentry.updates, { key, kind: 'review-follow-up', value: state }],
             event === undefined ? [] : [event],
             this.recipient(),
           ).length;
@@ -1908,9 +1953,19 @@ export class ShepherdEngine {
     if (discovery.exhaustive) {
       const missing = this.store
         .listEntities<FollowUpState>('review-follow-up')
-        .filter((entity) => !observed.has(entity.key))
-        .map((entity) => entity.key);
-      this.store.commit([], [], undefined, missing);
+        .filter((entity) => !observed.has(entity.key));
+      for (const entity of missing) {
+        await this.runItem(
+          'review-follow-up',
+          entity.value.details,
+          async () => {
+            const details = await this.github.getPullRequest(entity.value.details);
+            if (this.reviewInboxHeadIgnored(details.headRefName)) this.excludeReviewInboxLifecycle(details);
+            else this.store.commit([], [], undefined, [entity.key]);
+          },
+          summary,
+        );
+      }
     }
     if (!this.store.hasCompletedBootstrap('review-follow-up')) this.store.markBootstrapComplete('review-follow-up');
   }
@@ -2080,6 +2135,48 @@ export class ShepherdEngine {
 
   private recipient(): string {
     return this.config.delivery.type === 'conductor' ? this.config.delivery.coordinatorSession : 'stdout';
+  }
+
+  private reviewInboxHeadIgnored(headRefName: string): boolean {
+    return this.ignoredReviewInboxHeadPatterns.some((pattern) => pattern.test(headRefName));
+  }
+
+  private excludeReviewInboxLifecycle(pr: PullRequestDetails): void {
+    this.store.suppressOutbox?.(
+      pr,
+      REVIEW_INBOX_EVENT_TYPES,
+      `suppressed by features.reviewInbox.ignoredHeadPatterns for head ${pr.headRefName}`,
+    );
+    const updates = (['review-inbox', 'review-follow-up'] as const).map((lane) => {
+      const key = prKey(`exclusion-${lane}`, pr);
+      const previous = this.store.getEntity<ReviewExclusionState>(key)?.value;
+      return {
+        key,
+        kind: 'review-exclusion',
+        value: {
+          excluded: true,
+          cycle: previous?.excluded === true ? previous.cycle : (previous?.cycle ?? 0) + 1,
+          details: pr,
+        } satisfies ReviewExclusionState,
+      };
+    });
+    this.store.commit(updates, [], undefined, [prKey('inbox', pr), prKey('follow-up', pr)]);
+  }
+
+  private reviewLaneReentry(lane: ReviewLane, pr: PullRequestDetails): { updates: EntityUpdate[]; cycle?: number } {
+    const key = prKey(`exclusion-${lane}`, pr);
+    const previous = this.store.getEntity<ReviewExclusionState>(key)?.value;
+    if (previous?.excluded !== true) return { updates: [] };
+    return {
+      updates: [
+        {
+          key,
+          kind: 'review-exclusion',
+          value: { ...previous, excluded: false, details: pr } satisfies ReviewExclusionState,
+        },
+      ],
+      cycle: previous.cycle,
+    };
   }
 
   private trackedStore(): TrackedPullRequestStore {

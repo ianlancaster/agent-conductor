@@ -27,6 +27,8 @@ describe('ensureFleetScaffold', () => {
     const shepherd = readFileSync(join(baseDir, '.conductor', 'config', 'pr-shepherd.yaml'), 'utf8');
     expect(shepherd).toContain('agent-conductor-pr-shepherd-scaffold: identity-required');
     expect(shepherd).toContain('bootstrap: baseline-only');
+    expect(shepherd).toContain('ignoredHeadPatterns: []');
+    expect(shepherd).toContain('before review-lane state or delivery');
     expect(shepherd).not.toMatch(/:\s*execute\b/);
     expect(existsSync(join(baseDir, '.conductor', 'config', 'sessions'))).toBe(true);
     expect(existsSync(join(baseDir, '.conductor', 'env.template'))).toBe(true);

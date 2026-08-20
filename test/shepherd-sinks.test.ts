@@ -250,6 +250,7 @@ describe('Shepherd-to-Conductor compatibility contract', () => {
       isDraft: false,
       updatedAt: '2026-07-20T10:00:00Z',
       state: 'OPEN',
+      headRefName: 'feature/policy-sync',
       headSha: 'head-a',
       mergeable: 'MERGEABLE',
       mergeStateStatus: 'CLEAN',

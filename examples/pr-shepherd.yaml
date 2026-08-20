@@ -30,6 +30,8 @@ features:
     enabled: false
     ignoreDrafts: true
     ignoredRepos: []
+    # Case-insensitive regular expressions matched against headRefName before review-lane state or delivery.
+    ignoredHeadPatterns: []
     maxAgeDays: 5
   reviewFollowUp: { enabled: false }
   reviewerNudge:

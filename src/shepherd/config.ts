@@ -6,6 +6,19 @@ import { SHEPHERD_EVENT_TYPES } from './types.js';
 
 const strictObject = <T extends z.ZodRawShape>(shape: T): z.ZodObject<T, 'strict'> => z.object(shape).strict();
 const automationMode = z.enum(['off', 'notify', 'execute']);
+const regularExpression = z
+  .string()
+  .min(1)
+  .superRefine((pattern, context) => {
+    try {
+      new RegExp(pattern, 'i');
+    } catch (error) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Invalid regular expression: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  });
 const trackedSelectorId = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/);
 const trackedSelector = z.discriminatedUnion('type', [
   strictObject({
@@ -80,6 +93,7 @@ const configSchema = strictObject({
       enabled: z.boolean().default(false),
       ignoreDrafts: z.boolean().default(true),
       ignoredRepos: z.array(z.string().min(1)).default([]),
+      ignoredHeadPatterns: z.array(regularExpression).default([]),
       maxAgeDays: z.number().int().positive().default(5),
     }).default({}),
     reviewFollowUp: strictObject({ enabled: z.boolean().default(false) }).default({}),

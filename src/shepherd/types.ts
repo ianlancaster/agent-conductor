@@ -118,6 +118,7 @@ export interface RequestedReviewer {
 
 export interface PullRequestDetails extends PullRequestSummary {
   state: 'OPEN' | 'CLOSED' | 'MERGED';
+  headRefName: string;
   headSha: string;
   mergeable: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN';
   mergeStateStatus: string;
@@ -347,6 +348,8 @@ export interface ShepherdStore {
   recoverInFlight(): void;
   listEvents(limit?: number): ShepherdEvent[];
   listOutbox(includeCompleted?: boolean): OutboxItem[];
+  /** Optionally suppresses undelivered events after a policy change, without deleting their audit records. */
+  suppressOutbox?(pr: PullRequestRef, eventTypes: readonly ShepherdEventType[], reason: string): number;
   logHealth(event: string, detail?: string): void;
   close(): void;
 }

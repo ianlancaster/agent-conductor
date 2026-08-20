@@ -418,6 +418,8 @@ observation first: authenticate `gh`, validate the profile, run one baseline-onl
 default, appears in fleet status while healthy, and cannot take down Conductor if it fails.
 An optional durable tracked-PR lane can claim open PRs independently of that GitHub identity;
 its manual controls and lifecycle remain inside Shepherd rather than Conductor core.
+Case-insensitive review-inbox head patterns can exclude assigned-review PRs before lifecycle state
+or delivery without affecting ownership through another profile's authored or tracked lane.
 See [PR Shepherd V2](docs/pr-shepherd.md) for its policy and delivery model.
 
 ## How it works
