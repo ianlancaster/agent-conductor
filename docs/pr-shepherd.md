@@ -154,7 +154,21 @@ Coordinator and endpoint overrides apply only when YAML already declares `delive
 
 ## Events and organization-specific guidance
 
-The engine emits generic facts for CI failures, review feedback, bot findings, human comments, approvals, conflicts, merges, staleness, tracked-PR claims and head changes, release attest/revoke/gate state, review dispatch/completion, scoped re-review, reviewer escalation, automation decisions, `branch-behind`, and `branch-update-failed`. Production messages contain no hard-coded organization, repository, bot, CI-command, or worker-routing policy.
+The engine emits generic facts for CI failures, review feedback, bot findings, human comments, approvals, conflicts, merges, staleness, tracked-PR claims and head changes, release attest/revoke/gate state, review dispatch/completion, scoped re-review, reviewer escalation, automation decisions, merge-queue eviction, `branch-behind`, and `branch-update-failed`. Production messages contain no hard-coded organization, repository, bot, CI-command, or worker-routing policy.
+
+In `merge-queue` mode Shepherd observes the current queue entry and latest GitHub removal event on
+every owned-PR poll. A ready PR with no active queue entry or persistent auto-merge is submitted
+with GitHub's exact-head precondition. While the entry exists, repeated polls are inert. If GitHub
+later removes the same head, Shepherd emits `merge-queue-evicted` with GitHub's removal reason when
+available and durably schedules another exact-head attempt. Retry delays increase from one minute
+to five minutes, fifteen minutes, and one hour; Shepherd stops after five queue submissions for one
+head and release-attestation cycle. Provider mutation failures are also parked after five attempts.
+A new head or a new same-head attestation starts a fresh bounded cycle. Pending attempts, backoff,
+and exhaustion survive restart, and completed queue submissions from older Shepherd versions seed
+the same recovery state. The built-in GitHub provider supplies this capability. An injected
+`GitHubProvider` that omits the optional `getMergeAutomationState` method retains legacy
+`enable-auto-merge` submission and cannot report or retry queue eviction until its adapter exposes
+that state.
 
 ### Persistent tracked pull requests
 

@@ -12,6 +12,7 @@ export const SHEPHERD_EVENT_TYPES = [
   'scoped-re-review',
   'reviewer-escalation',
   'auto-merge-decision',
+  'merge-queue-evicted',
   'branch-update-decision',
   'branch-behind',
   'branch-update-failed',
@@ -133,6 +134,20 @@ export interface PullRequestDetails extends PullRequestSummary {
   commits: Commit[];
 }
 
+export interface MergeQueueRemoval {
+  id: string;
+  createdAt: string;
+  reason: string | null;
+}
+
+export interface MergeAutomationState {
+  headSha: string;
+  autoMergeEnabled: boolean;
+  queued: boolean;
+  queueEntryId?: string;
+  latestQueueRemoval?: MergeQueueRemoval;
+}
+
 export interface DiscoveryResult<T> {
   items: T[];
   exhaustive: boolean;
@@ -154,11 +169,7 @@ export interface GitHubProvider {
     selectors: TrackedPullRequestSelector[],
   ): Promise<DiscoveryResult<TrackedPullRequestCandidate>>;
   getPullRequest(pr: PullRequestRef): Promise<PullRequestDetails>;
-  getMergeAutomationState?(pr: PullRequestRef): Promise<{
-    headSha: string;
-    autoMergeEnabled: boolean;
-    queued: boolean;
-  }>;
+  getMergeAutomationState?(pr: PullRequestRef): Promise<MergeAutomationState>;
   mutate(mutation: GitHubMutation): Promise<void>;
 }
 

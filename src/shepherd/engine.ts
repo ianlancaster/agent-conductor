@@ -11,6 +11,7 @@ import type {
   EntityUpdate,
   GitHubMutation,
   GitHubProvider,
+  MergeAutomationState,
   PullRequestDetails,
   PullRequestRef,
   ReleaseGateStore,
@@ -30,7 +31,17 @@ interface AuthoredState {
   staleCycle: number;
   conflictCycle: number;
   receivedReviewThreads?: Record<string, ReceivedReviewThreadState>;
+  mergeQueueRetry?: MergeQueueRetryState;
   sources?: { authored: boolean; trackedGeneration?: number };
+}
+
+interface MergeQueueRetryState {
+  headSha: string;
+  scope: string;
+  attempts: number;
+  lastActionKey?: string;
+  observedQueued: boolean;
+  exhausted: boolean;
 }
 
 interface ReceivedReviewThreadState {
@@ -117,7 +128,11 @@ interface ActionState {
   attestationId?: string;
   compensationFor?: string;
   compensatesActionKey?: string;
+  enqueueAttempt?: number;
 }
+
+const MERGE_QUEUE_MAX_ATTEMPTS = 5;
+const MERGE_QUEUE_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000] as const;
 
 export interface PollSummary {
   discovered: number;
@@ -278,19 +293,15 @@ export class ShepherdEngine {
     if (supportsReleaseGate(this.store)) {
       const recoveredAt = this.clock().toISOString();
       for (const entity of this.store.listEntities<ActionState>('action')) {
-        if (entity.value.status === 'cancelled') {
+        const ordinaryQueueAttempt =
+          entity.value.mutation.type === 'enqueue-exact-head' && entity.value.trackedGeneration === undefined;
+        if (entity.value.status === 'cancelled' && !ordinaryQueueAttempt) {
           this.store.ensureActionSafetyCompensation(entity.key, recoveredAt);
         }
       }
     }
     for (const entity of this.store.listEntities<ActionState>('action')) {
       if (entity.value.status !== 'pending') continue;
-      if (
-        entity.value.nextAttemptAt !== undefined &&
-        new Date(entity.value.nextAttemptAt).getTime() > this.clock().getTime()
-      ) {
-        continue;
-      }
       const safetyCompensation =
         entity.value.mutation.type === 'dequeue' || entity.value.mutation.type === 'disable-auto-merge';
       if (!safetyCompensation && !repositoryInScope(entity.value.mutation.pr.repo, this.config.github)) {
@@ -307,6 +318,12 @@ export class ShepherdEngine {
           this.cancelAction(entity.key, entity.value, 'reviewer nudge was superseded');
           continue;
         }
+      }
+      if (
+        entity.value.nextAttemptAt !== undefined &&
+        new Date(entity.value.nextAttemptAt).getTime() > this.clock().getTime()
+      ) {
+        continue;
       }
       try {
         if (entity.value.mutation.type === 'enable-auto-merge' && supportsReleaseGate(this.store)) {
@@ -327,18 +344,26 @@ export class ShepherdEngine {
           entity.value.mutation.type === 'merge-exact-head' ||
           entity.value.mutation.type === 'enqueue-exact-head'
         ) {
-          const mutated = await this.releaseMutex().runExclusive(async (lease) => {
+          const mutateExactHead = async (assertOwned: () => void): Promise<boolean> => {
             const details = await this.github.getPullRequest(entity.value.mutation.pr);
-            if (!this.gatedActionStillApplicable(entity.value, details)) {
-              this.cancelAction(entity.key, entity.value, 'exact-head release gate is no longer applicable');
+            const applicable =
+              entity.value.trackedGeneration === undefined && entity.value.mutation.type === 'enqueue-exact-head'
+                ? this.actionStillApplicable(entity.value) &&
+                  this.authoredQueueActionStillApplicable(entity.value, details)
+                : this.gatedActionStillApplicable(entity.value, details);
+            if (!applicable) {
+              this.cancelAction(entity.key, entity.value, 'exact-head mutation is no longer applicable');
               return false;
             }
-            lease.assertOwned();
+            assertOwned();
             await this.github.mutate(entity.value.mutation);
-            lease.assertOwned();
+            assertOwned();
             this.completeAction(entity.key, entity.value, this.clock().toISOString());
             return true;
-          });
+          };
+          const mutated = supportsReleaseGate(this.store)
+            ? await this.releaseMutex().runExclusive((lease) => mutateExactHead(() => lease.assertOwned()))
+            : await mutateExactHead(() => undefined);
           if (mutated) completed += 1;
           continue;
         } else if (entity.value.mutation.type === 'dequeue' || entity.value.mutation.type === 'disable-auto-merge') {
@@ -381,7 +406,18 @@ export class ShepherdEngine {
         const attempts = (entity.value.attempts ?? 0) + 1;
         const message = error instanceof Error ? error.message : String(error);
         this.store.logHealth('github-mutation-failed', `${entity.key}: ${message.slice(0, 500)}`);
-        if (entity.value.mutation.type === 'update-branch' && attempts >= 5) {
+        if (entity.value.mutation.type === 'enqueue-exact-head' && attempts >= 5) {
+          this.store.commit(
+            [
+              {
+                key: entity.key,
+                kind: 'action',
+                value: { ...entity.value, status: 'failed', attempts, completedAt: this.clock().toISOString() },
+              },
+            ],
+            [],
+          );
+        } else if (entity.value.mutation.type === 'update-branch' && attempts >= 5) {
           const event = buildEvent(
             this.config,
             'branch-update-failed',
@@ -425,7 +461,9 @@ export class ShepherdEngine {
 
   private cancelAction(key: string, action: ActionState, reason: string): void {
     const occurredAt = this.clock().toISOString();
-    if (supportsReleaseGate(this.store)) {
+    const ordinaryQueueAttempt =
+      action.mutation.type === 'enqueue-exact-head' && action.trackedGeneration === undefined;
+    if (supportsReleaseGate(this.store) && !ordinaryQueueAttempt) {
       this.store.prepareActionCancellation(key, occurredAt);
     } else {
       this.store.commit(
@@ -464,7 +502,7 @@ export class ShepherdEngine {
     if (action.mutation.type === 'dequeue' || action.mutation.type === 'disable-auto-merge') {
       return supportsReleaseGate(this.store);
     }
-    if (action.mutation.type === 'merge-exact-head' || action.mutation.type === 'enqueue-exact-head') {
+    if (action.mutation.type === 'merge-exact-head' || action.trackedGeneration !== undefined) {
       return (
         this.config.features.trackedPRs.enabled &&
         this.config.features.trackedPRs.releaseGate === 'exact-head-attestation' &&
@@ -504,6 +542,20 @@ export class ShepherdEngine {
       this.checksReady(details) &&
       !changesRequested &&
       approvals.length >= this.config.reviews.requiredApprovals
+    );
+  }
+
+  private authoredQueueActionStillApplicable(action: ActionState, details: PullRequestDetails): boolean {
+    if (action.mutation.type !== 'enqueue-exact-head' || this.config.github.mode !== 'merge-queue') return false;
+    if (details.state !== 'OPEN' || details.headSha !== action.mutation.headSha || details.autoMergeRequest !== null) {
+      return false;
+    }
+    const reviews = latestReviews(details.reviews);
+    return (
+      details.mergeable === 'MERGEABLE' &&
+      this.checksReady(details) &&
+      !reviews.some((review) => review.state === 'CHANGES_REQUESTED') &&
+      reviews.filter((review) => review.state === 'APPROVED').length >= this.config.reviews.requiredApprovals
     );
   }
 
@@ -673,6 +725,7 @@ export class ShepherdEngine {
         async () => {
           const details = await this.github.getPullRequest(item);
           if (!repositoryInScope(details.repo, this.config.github)) return;
+          const mergeAutomation = await this.mergeAutomationSnapshot(details);
           const key = prKey('authored', details);
           observed.add(key);
           const previous = this.store.getEntity<AuthoredState>(key)?.value;
@@ -685,6 +738,7 @@ export class ShepherdEngine {
             tracked !== undefined,
             authoredKeys.has(key),
             tracked?.generation,
+            mergeAutomation,
           );
           if (tracked !== undefined) {
             const result = this.trackedStore().commitTrackedObservation(
@@ -700,7 +754,15 @@ export class ShepherdEngine {
             if (!result.applied && authoredKeys.has(key)) {
               const currentTracked = this.trackedStore().getTrackedPullRequest(details);
               if (currentTracked?.status === 'active') return;
-              const fallback = this.evaluateAuthored(details, previous, isBaseline, false, true);
+              const fallback = this.evaluateAuthored(
+                details,
+                previous,
+                isBaseline,
+                false,
+                true,
+                undefined,
+                mergeAutomation,
+              );
               const fallbackResult = this.trackedStore().commitAuthoredObservationAfterTrackedRelease(
                 details,
                 tracked.generation,
@@ -741,6 +803,18 @@ export class ShepherdEngine {
     }
   }
 
+  private async mergeAutomationSnapshot(details: PullRequestDetails): Promise<MergeAutomationState | undefined> {
+    if (this.config.github.mode !== 'merge-queue') return undefined;
+    if (this.github.getMergeAutomationState === undefined) return undefined;
+    const state = await this.github.getMergeAutomationState(details);
+    if (state.headSha.toLowerCase() !== details.headSha.toLowerCase()) {
+      throw new Error(
+        `GitHub head changed while observing merge-queue state for ${details.repo}#${String(details.number)}.`,
+      );
+    }
+    return state;
+  }
+
   private evaluateAuthored(
     details: PullRequestDetails,
     previous: AuthoredState | undefined,
@@ -748,6 +822,7 @@ export class ShepherdEngine {
     tracked = false,
     authored = true,
     trackedGeneration?: number,
+    mergeAutomation?: MergeAutomationState,
   ): { state: AuthoredState; events: ShepherdEvent[]; actions: EntityUpdate[]; nudges: EntityUpdate[] } {
     const now = this.clock();
     const events: ShepherdEvent[] = [];
@@ -758,6 +833,7 @@ export class ShepherdEngine {
     const botAttempts = { ...(previous?.botAttempts ?? {}) };
     let staleCycle = previous?.staleCycle ?? 0;
     let conflictCycle = previous?.conflictCycle ?? 0;
+    let mergeQueueRetry = previous?.mergeQueueRetry?.headSha === details.headSha ? previous.mergeQueueRetry : undefined;
     const receivedReviewFeedback = this.receivedReviewFeedback(details, previous, baseline);
     if (baseline) {
       const threshold = this.config.features.staleThresholdHours;
@@ -909,16 +985,26 @@ export class ShepherdEngine {
                 now.toISOString(),
               ),
             );
+          } else if (this.config.github.mode === 'merge-queue') {
+            mergeQueueRetry = this.addMergeQueueDecision(
+              this.config.automation.autoMerge,
+              pr,
+              details,
+              mergeAutomation,
+              mergeQueueRetry,
+              {
+                releaseGate: 'exact-head-attestation',
+                attestationId: attestation.idempotencyKey,
+              },
+              {
+                trackedGeneration: trackedClaim.generation,
+                attestationHeadSha: details.headSha,
+                attestationId: attestation.idempotencyKey,
+              },
+              events,
+              actions,
+            );
           } else {
-            const mutation: GitHubMutation =
-              this.config.github.mode === 'merge-queue'
-                ? { type: 'enqueue-exact-head', pr, headSha: details.headSha }
-                : {
-                    type: 'merge-exact-head',
-                    pr,
-                    headSha: details.headSha,
-                    mergeMethod: this.config.github.mergeMethod,
-                  };
             this.addDecision(
               'auto-merge-decision',
               this.config.automation.autoMerge,
@@ -930,7 +1016,12 @@ export class ShepherdEngine {
                 attestationId: attestation.idempotencyKey,
               },
               { mergeMethod: this.config.github.mergeMethod, title: details.title, url: details.url },
-              mutation,
+              {
+                type: 'merge-exact-head',
+                pr,
+                headSha: details.headSha,
+                mergeMethod: this.config.github.mergeMethod,
+              },
               events,
               actions,
               {
@@ -945,16 +1036,43 @@ export class ShepherdEngine {
             tracked && !authored && this.config.automation.autoMerge === 'execute'
               ? 'notify'
               : this.config.automation.autoMerge;
-          this.addDecision(
-            'auto-merge-decision',
-            autoMergeMode,
-            pr,
-            { headSha: details.headSha, mergeMethod: this.config.github.mergeMethod },
-            { mergeMethod: this.config.github.mergeMethod, title: details.title, url: details.url },
-            { type: 'enable-auto-merge', pr, mergeMethod: this.config.github.mergeMethod },
-            events,
-            actions,
-          );
+          if (this.config.github.mode === 'merge-queue') {
+            if (mergeAutomation === undefined) {
+              this.addDecision(
+                'auto-merge-decision',
+                autoMergeMode,
+                pr,
+                { headSha: details.headSha, mergeMethod: this.config.github.mergeMethod },
+                { mergeMethod: this.config.github.mergeMethod, title: details.title, url: details.url },
+                { type: 'enable-auto-merge', pr, mergeMethod: this.config.github.mergeMethod },
+                events,
+                actions,
+              );
+            } else {
+              mergeQueueRetry = this.addMergeQueueDecision(
+                autoMergeMode,
+                pr,
+                details,
+                mergeAutomation,
+                mergeQueueRetry,
+                {},
+                {},
+                events,
+                actions,
+              );
+            }
+          } else {
+            this.addDecision(
+              'auto-merge-decision',
+              autoMergeMode,
+              pr,
+              { headSha: details.headSha, mergeMethod: this.config.github.mergeMethod },
+              { mergeMethod: this.config.github.mergeMethod, title: details.title, url: details.url },
+              { type: 'enable-auto-merge', pr, mergeMethod: this.config.github.mergeMethod },
+              events,
+              actions,
+            );
+          }
         }
       }
 
@@ -1063,6 +1181,7 @@ export class ShepherdEngine {
         staleCycle,
         conflictCycle,
         receivedReviewThreads: receivedReviewFeedback.threads,
+        ...(mergeQueueRetry === undefined ? {} : { mergeQueueRetry }),
         sources: { authored, ...(trackedGeneration === undefined ? {} : { trackedGeneration }) },
       },
       events: baseline ? [] : events,
@@ -1509,6 +1628,225 @@ export class ShepherdEngine {
         ),
       );
     }
+  }
+
+  private addMergeQueueDecision(
+    mode: 'off' | 'notify' | 'execute',
+    pr: PullRequestRef,
+    details: PullRequestDetails,
+    automation: MergeAutomationState | undefined,
+    previous: MergeQueueRetryState | undefined,
+    identityContext: Record<string, unknown>,
+    actionContext: Pick<ActionState, 'trackedGeneration' | 'attestationHeadSha' | 'attestationId'>,
+    events: ShepherdEvent[],
+    actions: EntityUpdate[],
+  ): MergeQueueRetryState | undefined {
+    if (automation === undefined) throw new Error('Merge-queue automation state was not observed.');
+    const scope = typeof identityContext.attestationId === 'string' ? identityContext.attestationId : 'authored';
+    const retry = previous?.scope === scope ? previous : this.recoverMergeQueueRetry(pr, details.headSha, scope);
+
+    if (automation.queued) {
+      return {
+        headSha: details.headSha,
+        scope,
+        attempts: retry?.attempts ?? 0,
+        ...(retry?.lastActionKey === undefined ? {} : { lastActionKey: retry.lastActionKey }),
+        observedQueued: true,
+        exhausted: retry?.exhausted ?? false,
+      };
+    }
+    if (automation.autoMergeEnabled) return retry;
+
+    if (retry === undefined) {
+      return this.scheduleMergeQueueAttempt(
+        mode,
+        pr,
+        details,
+        scope,
+        1,
+        undefined,
+        identityContext,
+        actionContext,
+        events,
+        actions,
+      );
+    }
+
+    const priorAction =
+      retry.lastActionKey === undefined ? undefined : this.store.getEntity<ActionState>(retry.lastActionKey);
+    if (priorAction === undefined) {
+      if (!retry.observedQueued || retry.attempts > 0) return { ...retry, exhausted: true };
+      return this.retryAfterQueueRemoval(
+        mode,
+        pr,
+        details,
+        automation,
+        retry,
+        undefined,
+        identityContext,
+        actionContext,
+        events,
+        actions,
+      );
+    }
+    if (priorAction.value.status === 'pending') return retry;
+    if (priorAction.value.status !== 'completed') return { ...retry, exhausted: true };
+    return this.retryAfterQueueRemoval(
+      mode,
+      pr,
+      details,
+      automation,
+      retry,
+      priorAction.value.completedAt ?? priorAction.updatedAt,
+      identityContext,
+      actionContext,
+      events,
+      actions,
+    );
+  }
+
+  private retryAfterQueueRemoval(
+    mode: 'off' | 'notify' | 'execute',
+    pr: PullRequestRef,
+    details: PullRequestDetails,
+    automation: MergeAutomationState,
+    retry: MergeQueueRetryState,
+    completedAt: string | undefined,
+    identityContext: Record<string, unknown>,
+    actionContext: Pick<ActionState, 'trackedGeneration' | 'attestationHeadSha' | 'attestationId'>,
+    events: ShepherdEvent[],
+    actions: EntityUpdate[],
+  ): MergeQueueRetryState {
+    const removal = automation.latestQueueRemoval;
+    const removalAfterAttempt =
+      removal !== undefined && (completedAt === undefined || removal.createdAt >= completedAt) ? removal : undefined;
+    const anchor = removalAfterAttempt?.createdAt ?? completedAt ?? this.clock().toISOString();
+    const delayIndex = Math.min(Math.max(retry.attempts, 1) - 1, MERGE_QUEUE_RETRY_DELAYS_MS.length - 1);
+    const delayMs = MERGE_QUEUE_RETRY_DELAYS_MS[delayIndex] ?? MERGE_QUEUE_RETRY_DELAYS_MS.at(-1) ?? 60_000;
+    const retryAt = new Date(new Date(anchor).getTime() + delayMs).toISOString();
+    const confirmed = retry.observedQueued || removalAfterAttempt !== undefined;
+    if (!confirmed && this.clock().getTime() < new Date(retryAt).getTime()) return retry;
+
+    const exhausted = retry.attempts >= MERGE_QUEUE_MAX_ATTEMPTS;
+    const removalIdentity = removalAfterAttempt?.id ?? retry.lastActionKey ?? `${retry.scope}:observed-queue`;
+    events.push(
+      buildEvent(
+        this.config,
+        'merge-queue-evicted',
+        pr,
+        { headSha: details.headSha, attempt: retry.attempts, removalId: removalIdentity },
+        {
+          reason: removalAfterAttempt?.reason ?? 'queue-entry-absent-after-submission',
+          ...(removalAfterAttempt === undefined ? {} : { removedAt: removalAfterAttempt.createdAt }),
+          attempts: retry.attempts,
+          retryExhausted: exhausted,
+          ...(exhausted || mode !== 'execute' ? {} : { retryAt }),
+          title: details.title,
+          url: details.url,
+        },
+        removalAfterAttempt?.createdAt ?? this.clock().toISOString(),
+      ),
+    );
+    if (exhausted || mode !== 'execute') return { ...retry, observedQueued: false, exhausted };
+    return (
+      this.scheduleMergeQueueAttempt(
+        mode,
+        pr,
+        details,
+        retry.scope,
+        retry.attempts + 1,
+        retryAt,
+        identityContext,
+        actionContext,
+        events,
+        actions,
+      ) ?? { ...retry, observedQueued: false, exhausted: true }
+    );
+  }
+
+  private scheduleMergeQueueAttempt(
+    mode: 'off' | 'notify' | 'execute',
+    pr: PullRequestRef,
+    details: PullRequestDetails,
+    scope: string,
+    attempt: number,
+    nextAttemptAt: string | undefined,
+    identityContext: Record<string, unknown>,
+    actionContext: Pick<ActionState, 'trackedGeneration' | 'attestationHeadSha' | 'attestationId'>,
+    events: ShepherdEvent[],
+    actions: EntityUpdate[],
+  ): MergeQueueRetryState | undefined {
+    if (mode === 'off') return undefined;
+    const event = buildEvent(
+      this.config,
+      'auto-merge-decision',
+      pr,
+      {
+        headSha: details.headSha,
+        mergeMethod: this.config.github.mergeMethod,
+        enqueueAttempt: attempt,
+        ...identityContext,
+      },
+      {
+        mode,
+        mergeMethod: this.config.github.mergeMethod,
+        enqueueAttempt: attempt,
+        title: details.title,
+        url: details.url,
+      },
+      this.clock().toISOString(),
+    );
+    events.push(event);
+    const key = `action:${event.id}`;
+    if (mode === 'execute' && this.store.getEntity(key) === undefined) {
+      actions.push({
+        key,
+        kind: 'action',
+        value: {
+          status: 'pending',
+          mutation: { type: 'enqueue-exact-head', pr, headSha: details.headSha },
+          expectedHeadSha: details.headSha,
+          enqueueAttempt: attempt,
+          ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }),
+          ...actionContext,
+        } satisfies ActionState,
+      });
+    }
+    return mode === 'execute'
+      ? {
+          headSha: details.headSha,
+          scope,
+          attempts: attempt,
+          lastActionKey: key,
+          observedQueued: false,
+          exhausted: false,
+        }
+      : undefined;
+  }
+
+  private recoverMergeQueueRetry(pr: PullRequestRef, headSha: string, scope: string): MergeQueueRetryState | undefined {
+    const candidates = this.store
+      .listEntities<ActionState>('action')
+      .filter((entity) => {
+        const mutation = entity.value.mutation;
+        if (mutation.pr.number !== pr.number || mutation.pr.repo.toLowerCase() !== pr.repo.toLowerCase()) return false;
+        if (!['pending', 'completed', 'failed', 'cancelled'].includes(entity.value.status)) return false;
+        const actionHead = mutation.type === 'enqueue-exact-head' ? mutation.headSha : entity.value.expectedHeadSha;
+        if (actionHead?.toLowerCase() !== headSha.toLowerCase()) return false;
+        if (mutation.type !== 'enqueue-exact-head' && mutation.type !== 'enable-auto-merge') return false;
+        return scope === 'authored' ? entity.value.attestationId === undefined : entity.value.attestationId === scope;
+      })
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    const latest = candidates[0];
+    if (latest === undefined) return undefined;
+    return {
+      headSha,
+      scope,
+      attempts: latest.value.enqueueAttempt ?? 1,
+      lastActionKey: latest.key,
+      observedQueued: false,
+      exhausted: latest.value.status === 'failed' || latest.value.status === 'cancelled',
+    };
   }
 
   private addDecision(

@@ -794,9 +794,14 @@ and profiles are deployment policy and must not enter the reusable product.
 
 In direct mode, a mergeable PR behind its base is updated before prior checks or approvals count as
 merge-ready. With branch updates off, Shepherd emits `branch-behind` and withholds readiness. In
-merge-queue mode a merely-behind ready PR is queued without an unnecessary update. `UNKNOWN`
-mergeability waits; `CONFLICTING` emits a conflict fact and requires coordinator/operator
-resolution on each transition into that state. Shepherd never pretends to resolve textual conflicts.
+merge-queue mode a merely-behind ready PR is queued without an unnecessary update. Queue submission
+uses an exact-head precondition. Shepherd observes current queue membership and GitHub's latest
+removal reason on every owned-PR poll; a same-head eviction emits `merge-queue-evicted` and creates a
+durable delayed retry while the PR remains eligible. The fixed retry sequence is bounded to five
+submissions per head and release-attestation cycle, persists across restart, and resets for a new
+head or new attestation. `UNKNOWN` mergeability waits; `CONFLICTING` emits a conflict fact and
+requires coordinator/operator resolution on each transition into that state. Shepherd never
+pretends to resolve textual conflicts.
 
 While the managed companion has a fresh healthy heartbeat, fleet `/status` adds
 `PR Shepherd Status Online` directly below the Conductor heading and marks the configured

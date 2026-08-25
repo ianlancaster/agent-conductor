@@ -438,6 +438,42 @@ describe('async gh provider', () => {
     ]);
   });
 
+  it('observes current queue membership and the latest removal reason', async () => {
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        expect(query).toContain('REMOVED_FROM_MERGE_QUEUE_EVENT');
+        return JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                id: 'PR_node',
+                headRefOid: 'a'.repeat(40),
+                autoMergeRequest: null,
+                mergeQueueEntry: { id: 'queue-entry-1' },
+                timelineItems: {
+                  nodes: [{ id: 'removed-1', createdAt: '2026-08-25T22:05:19Z', reason: 'failed_checks' }],
+                },
+              },
+            },
+          },
+        });
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+
+    await expect(provider.getMergeAutomationState({ repo: 'acme/api', number: 7 })).resolves.toEqual({
+      headSha: 'a'.repeat(40),
+      autoMergeEnabled: false,
+      queued: true,
+      queueEntryId: 'queue-entry-1',
+      latestQueueRemoval: { id: 'removed-1', createdAt: '2026-08-25T22:05:19Z', reason: 'failed_checks' },
+    });
+  });
+
   it('uses expectedHeadOid for direct merge and merge-queue enqueue mutations', async () => {
     const calls: string[][] = [];
     const headSha = 'a'.repeat(40);

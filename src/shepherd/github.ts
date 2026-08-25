@@ -10,6 +10,7 @@ import type {
   DiscoveryResult,
   GitHubMutation,
   GitHubProvider,
+  MergeAutomationState,
   PullRequestDetails,
   PullRequestRef,
   PullRequestSummary,
@@ -168,6 +169,9 @@ interface RawPullRequestMutationState {
         headRefOid: string;
         autoMergeRequest: { enabledAt: string } | null;
         mergeQueueEntry: { id: string } | null;
+        timelineItems?: {
+          nodes: { id: string; createdAt: string; reason: string | null }[];
+        };
       } | null;
     } | null;
   };
@@ -311,7 +315,17 @@ mutation DisableAutoMerge($pullRequestId: ID!) {
 const PULL_REQUEST_MUTATION_STATE_QUERY = `
 query PullRequestMutationState($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) { id headRefOid autoMergeRequest { enabledAt } mergeQueueEntry { id } }
+    pullRequest(number: $number) {
+      id
+      headRefOid
+      autoMergeRequest { enabledAt }
+      mergeQueueEntry { id }
+      timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+        nodes {
+          ... on RemovedFromMergeQueueEvent { id createdAt reason }
+        }
+      }
+    }
   }
 }`;
 
@@ -522,16 +536,15 @@ export class GhGitHubProvider implements GitHubProvider {
     };
   }
 
-  async getMergeAutomationState(pr: PullRequestRef): Promise<{
-    headSha: string;
-    autoMergeEnabled: boolean;
-    queued: boolean;
-  }> {
+  async getMergeAutomationState(pr: PullRequestRef): Promise<MergeAutomationState> {
     const state = await this.pullRequestMutationState(pr);
+    const latestQueueRemoval = state.timelineItems?.nodes[0];
     return {
       headSha: state.headRefOid,
       autoMergeEnabled: state.autoMergeRequest !== null,
       queued: state.mergeQueueEntry !== null,
+      ...(state.mergeQueueEntry === null ? {} : { queueEntryId: state.mergeQueueEntry.id }),
+      ...(latestQueueRemoval === undefined ? {} : { latestQueueRemoval }),
     };
   }
 
@@ -769,6 +782,7 @@ export class GhGitHubProvider implements GitHubProvider {
     headRefOid: string;
     autoMergeRequest: { enabledAt: string } | null;
     mergeQueueEntry: { id: string } | null;
+    timelineItems?: { nodes: { id: string; createdAt: string; reason: string | null }[] };
   }> {
     const { owner, name } = this.repoParts(pr.repo);
     const raw = await this.graphql(PULL_REQUEST_MUTATION_STATE_QUERY, { owner, name, number: pr.number });
