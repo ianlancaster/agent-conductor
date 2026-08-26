@@ -96,6 +96,22 @@ describe('renderStatusDashboard', () => {
     expect(view).toContain('\u001b[1mcoordinator\u001b[22m - CC 🐑 · 🟢 working');
   });
 
+  it('keeps a paused Shepherd visible as offline with its recovery context', () => {
+    const view = renderStatusDashboard(
+      {
+        connection: 'online',
+        status:
+          'Agent Conductor Status\n' +
+          'PR Shepherd Status Offline (coordinator paused since 2026-08-26T21:16:20.638Z)\n\n' +
+          'Sessions:\n  coordinator - CC 🐑 · 🟢 working (paused)',
+      },
+      options,
+      false,
+    );
+    expect(view).toContain('PR Shepherd Status  ○ OFFLINE · (coordinator paused since 2026-08-26T21:16:20.638Z)');
+    expect(view).toContain('coordinator - CC 🐑 · 🟢 working (paused)');
+  });
+
   it('keeps the last good snapshot visible while offline', () => {
     const view = renderStatusDashboard(
       {

@@ -459,6 +459,16 @@ describe('surface contract', () => {
     expect(states.get('watch')?.runtime).toBe('claude-code');
   });
 
+  it('allows a paused session to explicitly resume itself but still forbids self-pause', async () => {
+    states.pause('alpha', '2026-08-26T21:16:20.638Z');
+
+    await expect(tool('resume_session').handler({ codename: 'alpha' }, 'alpha')).resolves.toBe('alpha: resumed');
+    expect(states.isPaused('alpha')).toBe(false);
+    await expect(tool('pause_session').handler({ codename: 'alpha' }, 'alpha')).rejects.toThrow(
+      'You cannot pause yourself.',
+    );
+  });
+
   it('routes a targeted native conversation through spawn_session', async () => {
     const spawn = vi.spyOn(Lifecycle.prototype, 'spawn').mockResolvedValue('spawned and resumed');
 

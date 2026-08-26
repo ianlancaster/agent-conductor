@@ -144,6 +144,23 @@ describe('Messaging delivery receipts', () => {
     ]);
   });
 
+  it('warns both the operator and recipient when direct interaction reaches a paused session', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    states.pause('beta', '2026-08-26T21:16:20.638Z');
+    const notice =
+      '[Conductor pause notice] This session is paused since 2026-08-26T21:16:20.638Z. ' +
+      'Call resume_session with {"codename":"beta"}.';
+    const messaging = makeMessaging(makeQueue(new FakeRuntime(), pane.id), undefined, () => notice);
+
+    const receipt = await messaging.sendToSession('operator', 'beta', 'Did CI arrive?');
+
+    expect(receipt).toMatchObject({ status: 'delivered', notice });
+    expect(backend.panes.get(pane.id)?.received).toEqual([`${notice}\n\n[Message from operator] Did CI arrive?`]);
+    expect(store.getMessage(receipt.messageId)?.content).toBe('Did CI arrive?');
+  });
+
   it('revives a restart-cancelled integration delivery with the same identity and envelope', async () => {
     const pane = await backend.createPane('beta', 'pane');
     states.setSession('beta', pane.id);
@@ -268,6 +285,28 @@ describe('Messaging delivery receipts', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual([]);
   });
 
+  it('records a specific flush state for sequential receipts waiting behind an occupied head', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const runtime = new FakeRuntime();
+    runtime.inputState = 'draft';
+    const queue = makeQueue(runtime, pane.id);
+    const messaging = makeMessaging(queue);
+
+    await messaging.sendToSession('alpha', 'beta', 'first');
+    await messaging.sendToSession('alpha', 'beta', 'second');
+
+    expect(JSON.parse(messaging.messageStatus(1, 'alpha'))).toMatchObject({
+      status: 'pending',
+      flushSkipReason: 'input-occupied',
+    });
+    expect(JSON.parse(messaging.messageStatus(2, 'alpha'))).toMatchObject({
+      status: 'pending',
+      flushSkipReason: 'waiting-behind-earlier-message',
+    });
+  });
+
   it("does not let a recipient cancel another sender's receipt", async () => {
     const pane = await backend.createPane('beta', 'pane');
     states.setSession('beta', pane.id);
@@ -309,13 +348,18 @@ describe('Messaging delivery receipts', () => {
     return queue;
   }
 
-  function makeMessaging(delivery: DeliveryQueue, events?: FakeEventPublisher): Messaging {
+  function makeMessaging(
+    delivery: DeliveryQueue,
+    events?: FakeEventPublisher,
+    pausedNotice?: (codename: string) => string | undefined,
+  ): Messaging {
     return new Messaging({
       store,
       delivery,
       states,
       sessions: () => sessions,
       startSession: async () => 'started',
+      pausedNotice,
       events,
     });
   }

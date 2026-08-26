@@ -234,6 +234,34 @@ describe('DeliveryQueue', () => {
     expect(attempts).toEqual(['input-occupied', null]);
   });
 
+  it('records FIFO waiting on every later receipt and refreshes it on each drain pass', async () => {
+    runtime.inputState = 'draft';
+    const firstAttempts: (string | null)[] = [];
+    const secondAttempts: (string | null)[] = [];
+    const thirdAttempts: (string | null)[] = [];
+    await queue.deliverOrQueue('alpha', 'first', {
+      deliveryId: 41,
+      onAttempt: (reason) => firstAttempts.push(reason),
+    });
+    await queue.deliverOrQueue('alpha', 'second', {
+      deliveryId: 42,
+      onAttempt: (reason) => secondAttempts.push(reason),
+    });
+    await queue.deliverOrQueue('alpha', 'third', {
+      deliveryId: 43,
+      onAttempt: (reason) => thirdAttempts.push(reason),
+    });
+
+    expect(firstAttempts).toEqual(['input-occupied']);
+    expect(secondAttempts).toEqual(['waiting-behind-earlier-message']);
+    expect(thirdAttempts).toEqual(['waiting-behind-earlier-message']);
+
+    await queue.drainNow();
+    expect(firstAttempts.at(-1)).toBe('input-occupied');
+    expect(secondAttempts.at(-1)).toBe('waiting-behind-earlier-message');
+    expect(thirdAttempts.at(-1)).toBe('waiting-behind-earlier-message');
+  });
+
   it('cancels a queued delivery by durable receipt id', async () => {
     runtime.inputState = 'draft';
     await queue.deliverOrQueue('alpha', 'do not send', { deliveryId: 42 });

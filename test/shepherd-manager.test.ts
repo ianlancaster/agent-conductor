@@ -113,14 +113,14 @@ describe('managed PR Shepherd lifecycle', () => {
         spawner,
       );
       await manager.start();
-      expect(await manager.pause()).toBe(true);
-      expect(manager.status().state).toBe('paused');
+      expect(await manager.pause('2026-08-26T21:16:20.638Z')).toBe(true);
+      expect(manager.status()).toMatchObject({ state: 'paused', pausedAt: '2026-08-26T21:16:20.638Z' });
       expect(manager.recipientSession()).toBe('coordinator');
       expect(children[0]?.signalCode).toBe('SIGTERM');
       expect(await manager.pause()).toBe(false);
 
       expect(await manager.resume()).toBe(true);
-      expect(manager.status().state).toBe('starting');
+      expect(manager.status()).toMatchObject({ state: 'starting', pausedAt: null });
       expect(children).toHaveLength(2);
       expect(await manager.resume()).toBe(false);
       await manager.stop();
@@ -158,8 +158,8 @@ describe('managed PR Shepherd lifecycle', () => {
         spawner,
         control,
       );
-      await manager.start((recipient) => recipient === 'coordinator');
-      expect(manager.status().state).toBe('paused');
+      await manager.start((recipient) => (recipient === 'coordinator' ? '2026-08-26T21:16:20.638Z' : null));
+      expect(manager.status()).toMatchObject({ state: 'paused', pausedAt: '2026-08-26T21:16:20.638Z' });
       expect(manager.recipientSession()).toBe('coordinator');
       expect(spawns).toBe(0);
       expect(signals).toEqual(['SIGTERM']);

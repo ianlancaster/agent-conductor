@@ -12,6 +12,7 @@ export type DeliverySkipReason =
   | 'capture-failed'
   | 'composer-not-visible'
   | 'input-occupied'
+  | 'waiting-behind-earlier-message'
   | 'recipient-paused'
   | 'pane-changed'
   | 'write-failed';
@@ -167,6 +168,11 @@ export class DeliveryQueue {
       }
     } else if (classification !== undefined) {
       this.recordAttempt(session, options.onAttempt, classification.skipReason);
+    } else {
+      // A later receipt is still being actively managed even though FIFO
+      // safety prevents classifying or writing it yet. Record that fact so a
+      // sender never sees a ready recipient with an apparently dead queue.
+      this.recordAttempt(session, options.onAttempt, 'waiting-behind-earlier-message');
     }
 
     return this.enqueue(session, text, options, existing);
@@ -221,14 +227,27 @@ export class DeliveryQueue {
         // Durable direct messages are also recovered from SQLite after a
         // conductor restart, so neither lifecycle boundary loses them.
         log().debug('delivery', `${session}: no live pane — holding ${queue.length} queued message(s)`);
-        this.recordAttempt(session, queue[0]?.onAttempt, pane === undefined ? 'no-pane' : 'pane-not-alive');
+        const reason = pane === undefined ? 'no-pane' : 'pane-not-alive';
+        for (const message of queue) this.recordAttempt(session, message.onAttempt, reason);
         continue;
       }
       const oldestIndex = queue.findIndex((message) => !this.automationPaused(session, message.automated));
       const oldest = oldestIndex < 0 ? undefined : queue[oldestIndex];
       if (oldest === undefined) {
-        this.recordAttempt(session, queue[0]?.onAttempt, 'recipient-paused');
+        for (const message of queue) this.recordAttempt(session, message.onAttempt, 'recipient-paused');
         continue;
+      }
+      // Paused automated work may be bypassed by a later human message. Every
+      // other receipt still gets a truthful reason for this drain pass.
+      for (let index = 0; index < queue.length; index += 1) {
+        if (index === oldestIndex) continue;
+        const message = queue[index];
+        if (message === undefined) continue;
+        this.recordAttempt(
+          session,
+          message.onAttempt,
+          index < oldestIndex ? 'recipient-paused' : 'waiting-behind-earlier-message',
+        );
       }
       const classification = await this.typingState(session, pane);
       // Cancellation can remove the item while capture is in flight.

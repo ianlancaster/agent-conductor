@@ -19,6 +19,8 @@ export interface SessionState {
   auto: boolean;
   tag?: string;
   paused: boolean;
+  /** ISO timestamp at which the current pause began; absent while unpaused. */
+  pausedAt?: string;
   /** Runtime for the active run. Absent while stopped; the session config remains the default. */
   runtime?: RuntimeName;
   /** Reasoning effort resolved for the active process. Absent when the runtime chooses. */

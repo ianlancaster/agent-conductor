@@ -269,7 +269,9 @@ Direct-message receipts are observable:
 - `delivered` means protected pane submission completed.
 - A Conductor restart cancels queued local messages rather than replaying stale conversation.
 - `get_message_status` reports `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`, so a
-  sender can distinguish a queue that has not run from one waiting on occupied input.
+  sender can distinguish occupied input, missing runtime chrome, and
+  `waiting-behind-earlier-message`. Every current-run queued receipt receives an attempt timestamp;
+  a ready recipient cannot leave a later FIFO receipt looking unscheduled.
 - Receipt IDs are unique only within the destination fleet. Remote message receipts include a
   `fleet` field; pass that fleet to status or cancellation calls. A session can inspect only
   receipts it sent or received, so a
@@ -277,6 +279,8 @@ Direct-message receipts are observable:
   The operator command can inspect any receipt.
 - `cancel_message` can cancel a pending receipt before its pane write starts.
 - Reusing a sender-scoped `idempotencyKey` returns the original receipt.
+- Operator-originated receipts may include a `notice`; operator adapters render it after the
+  acknowledgement, and Conductor prepends the same notice to the protected recipient envelope.
 
 The delivery queue will not write over any text waiting in the recipient's composer. It waits
 without a force-delivery deadline. Do not bypass that protection with `type_in_pane` merely because
@@ -580,8 +584,12 @@ target from schedules, stall routing, background integrations, and PR Shepherd w
 the configured auto state or blocking human messages. Pausing `all` or the configured PR Shepherd
 coordinator also stops the managed Shepherd process; resuming that target starts Shepherd again.
 The coordinator's persisted pause state suppresses Shepherd startup after a Conductor restart.
-Use pause for maintenance, intentional waiting, or operator review; `resume_session` restores the
-prior behavior.
+Direct operator input still starts turns, but Conductor prepends and returns a pause notice that
+names the durable pause start, suspended automation, and recovery action. The notice explicitly
+calls out delayed GitHub ingestion when the target is the paused Shepherd coordinator. A paused
+session may call `resume_session` for its own codename, providing a narrow self-recovery path; other
+self-lifecycle and self-pause operations remain forbidden. Use pause for maintenance, intentional
+waiting, or operator review; `resume_session` restores the prior behavior.
 
 Fleet watch detects campaign-level darkness when individual idle states are normal but no worker is
 making progress. `toggle_fleet_watch` is a single fleet-level boolean. When enabled, it watches every
@@ -812,9 +820,11 @@ pretends to resolve textual conflicts.
 
 While the managed companion has a fresh healthy heartbeat, fleet `/status` adds
 `PR Shepherd Status Online` directly below the Conductor heading and marks the configured
-coordinator session with `🐑`. Disabled and unhealthy companions are omitted from the concise
-fleet view. Use `pr-shepherd -C <fleet> status` and the Conductor logs for detailed lifecycle
-diagnostics. A failed optional companion never makes the Conductor control plane unavailable.
+coordinator session with `🐑`. Other configured states remain visible, including
+`PR Shepherd Status Offline (coordinator paused since <timestamp>)`, Starting, Restarting,
+Degraded, and failure summaries. Use `pr-shepherd -C <fleet> status` and the Conductor logs for
+detailed lifecycle diagnostics. A failed optional companion never makes the Conductor control
+plane unavailable.
 
 PR Shepherd does not decide the depth of a code review. A coordinator can compose that policy from
 PR facts: inexpensive review for ordinary changes, a specialist review for material risk, or
@@ -1135,7 +1145,10 @@ design; use `conductor daemon uninstall` when the fleet is service-managed.
 
 Inspect `get_message_status`. Any text in the target composer prevents protected delivery,
 regardless of age or length. Ask the operator to submit or clear it. Do not bypass the queue unless
-raw terminal control is explicitly intended.
+raw terminal control is explicitly intended. `waiting-behind-earlier-message` means the receipt is
+scheduled but FIFO safety is holding it behind an older receipt; inspect that older known receipt
+instead of treating the later one as a dead queue. Raw recipient activation and runtime turn events
+both trigger a fresh protected-delivery pass.
 
 Receipt IDs share one fleet-wide sequence. A managed session sees only receipts it sent or
 received; unrelated IDs return the same not-found/not-visible result as absent IDs. Do not infer

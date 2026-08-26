@@ -55,6 +55,7 @@ export interface PersistedSessionState {
   auto: boolean;
   tag: string | null;
   paused: boolean;
+  pausedAt?: string | null;
   activeRuntime: RuntimeName | null;
   activeEffort: string | null;
   activity: Activity;
@@ -279,6 +280,12 @@ const MIGRATIONS: string[] = [
   `
   DROP TABLE IF EXISTS federation_inbox;
   DROP TABLE IF EXISTS federation_outbox;
+  `,
+  `
+  ALTER TABLE session_state ADD COLUMN paused_at TEXT;
+  UPDATE session_state
+  SET paused_at = strftime('%Y-%m-%dT%H:%M:%fZ', updated_at)
+  WHERE is_paused = 1 AND paused_at IS NULL;
   `,
 ];
 
@@ -680,6 +687,7 @@ export class Store {
           auto: number;
           tag: string | null;
           is_paused: number;
+          paused_at: string | null;
           active_runtime: RuntimeName | null;
           active_effort: string | null;
           activity: string;
@@ -691,6 +699,7 @@ export class Store {
       auto: row.auto === 1,
       tag: row.tag,
       paused: row.is_paused === 1,
+      pausedAt: row.paused_at,
       activeRuntime: row.active_runtime,
       activeEffort: row.active_effort,
       activity: normalizedActivity(row.activity),
@@ -707,10 +716,12 @@ export class Store {
   upsertSessionState(state: PersistedSessionState): void {
     this.db
       .prepare(
-        `INSERT INTO session_state (session, auto, tag, is_paused, active_runtime, active_effort, activity, updated_at)
-         VALUES (@session, @auto, @tag, @paused, @activeRuntime, @activeEffort, @activity, datetime('now'))
+        `INSERT INTO session_state
+           (session, auto, tag, is_paused, paused_at, active_runtime, active_effort, activity, updated_at)
+         VALUES
+           (@session, @auto, @tag, @paused, @pausedAt, @activeRuntime, @activeEffort, @activity, datetime('now'))
          ON CONFLICT(session) DO UPDATE SET
-           auto = @auto, tag = @tag, is_paused = @paused, active_runtime = @activeRuntime,
+           auto = @auto, tag = @tag, is_paused = @paused, paused_at = @pausedAt, active_runtime = @activeRuntime,
            active_effort = @activeEffort, activity = @activity,
            updated_at = datetime('now')`,
       )
@@ -719,6 +730,7 @@ export class Store {
         '@auto': state.auto ? 1 : 0,
         '@tag': state.tag,
         '@paused': state.paused ? 1 : 0,
+        '@pausedAt': state.pausedAt ?? null,
         '@activeRuntime': state.activeRuntime,
         '@activeEffort': state.activeEffort,
         '@activity': state.activity,

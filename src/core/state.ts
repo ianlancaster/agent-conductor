@@ -32,6 +32,9 @@ export class SessionStateManager {
       auto: persisted?.auto ?? this.defaultAuto,
       tag,
       paused: persisted?.paused ?? false,
+      ...(persisted?.paused === true && persisted.pausedAt !== null && persisted.pausedAt !== undefined
+        ? { pausedAt: persisted.pausedAt }
+        : {}),
       runtime: persisted?.activeRuntime ?? undefined,
       effort: persisted?.activeEffort ?? undefined,
       running: false,
@@ -100,10 +103,11 @@ export class SessionStateManager {
     this.persist(codename);
   }
 
-  pause(codename: string): boolean {
+  pause(codename: string, pausedAt = new Date().toISOString()): boolean {
     const state = this.mustGet(codename);
     if (state.paused) return false;
     state.paused = true;
+    state.pausedAt = pausedAt;
     this.persist(codename);
     return true;
   }
@@ -112,6 +116,7 @@ export class SessionStateManager {
     const state = this.mustGet(codename);
     if (!state.paused) return false;
     state.paused = false;
+    state.pausedAt = undefined;
     this.persist(codename);
     return true;
   }
@@ -179,6 +184,7 @@ export class SessionStateManager {
       auto: state.auto,
       tag: state.tag ?? null,
       paused: state.paused,
+      pausedAt: state.pausedAt ?? null,
       activeRuntime: state.runtime ?? null,
       activeEffort: state.effort ?? null,
       activity: state.activity,

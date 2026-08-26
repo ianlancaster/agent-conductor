@@ -89,12 +89,22 @@ state is persisted, Conductor does not start Shepherd while its coordinator rema
 restart. Conductor also rejects a delivery request that reaches it while the coordinator is paused
 as retryable, so Shepherd retains it in the outbox for delivery after resume.
 
+Human conversation remains available during pause. Every direct operator message to a paused
+coordinator carries an in-band notice before the operator text, and the operator receives the same
+warning with the delivery receipt. It identifies when the pause began, says that PR Shepherd and
+GitHub ingestion are offline, and gives the exact `resume_session` recovery call. A coordinator may
+explicitly resume its own codename; self-pause and other self-lifecycle controls remain forbidden.
+Resume restarts Shepherd's durable catch-up polling, preserves event identities for exactly-once
+outbox delivery, and records a `shepherd_recovered` health fact with the outage start.
+
 While the managed companion has a fresh healthy heartbeat, fleet `/status` adds
 `PR Shepherd Status Online` directly below `Agent Conductor Status` and marks the configured
-coordinator session with `🐑`. If Shepherd is disabled or unhealthy, the concise fleet view omits
-it entirely. Use `pr-shepherd -C <fleet> status` and the Conductor logs for the resolved profile,
-PID, heartbeat, restart state, and bounded diagnostic detail. A `failed` state means the bounded
-crash-restart policy gave up; fix the reported cause and restart Conductor.
+coordinator session with `🐑`. A configured unhealthy companion never disappears: pause renders
+`PR Shepherd Status Offline (coordinator paused since <timestamp>)`, and startup, restart, stale,
+configuration, and failure states have concise summaries. Use `pr-shepherd -C <fleet> status` and
+the Conductor logs for the resolved profile, PID, heartbeat, restart state, and bounded diagnostic
+detail. A `failed` state means the bounded crash-restart policy gave up; fix the reported cause and
+restart Conductor.
 
 ## Configuration reference
 

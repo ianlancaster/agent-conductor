@@ -47,3 +47,21 @@ describe('SessionStateManager tags', () => {
     expect(store.getSessionState('alpha')?.tag).toBeNull();
   });
 });
+
+describe('SessionStateManager pause state', () => {
+  it('persists when the active pause began and clears it on resume', () => {
+    const states = new SessionStateManager(store, false);
+    states.register('alpha', false);
+
+    expect(states.pause('alpha', '2026-08-26T21:16:20.638Z')).toBe(true);
+    expect(states.get('alpha')).toMatchObject({ paused: true, pausedAt: '2026-08-26T21:16:20.638Z' });
+    expect(store.getSessionState('alpha')).toMatchObject({
+      paused: true,
+      pausedAt: '2026-08-26T21:16:20.638Z',
+    });
+
+    expect(states.resume('alpha')).toBe(true);
+    expect(states.get('alpha')?.pausedAt).toBeUndefined();
+    expect(store.getSessionState('alpha')?.pausedAt).toBeNull();
+  });
+});

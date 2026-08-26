@@ -45,6 +45,11 @@ describe('formatTerminalReply', () => {
     );
   });
 
+  it('keeps an offline paused Shepherd heading prominent', () => {
+    const status = 'PR Shepherd Status Offline (coordinator paused since 2026-08-26T21:16:20.638Z)';
+    expect(formatTerminalReply('/status', status, true)).toBe(`\u001b[1m${status}\u001b[22m`);
+  });
+
   it('bolds the codename value in detailed terminal status', () => {
     const status = '{\n  "codename": "alpha",\n  "path": "~/Projects/alpha"\n}';
     expect(formatTerminalReply('/status alpha', status, true)).toBe(

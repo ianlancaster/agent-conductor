@@ -174,7 +174,7 @@ beforeEach(() => {
     },
     setShepherdPausedForSession: (session, paused) => {
       shepherdPauseChanges.push({ session, paused });
-      return Promise.resolve();
+      return Promise.resolve(undefined);
     },
     getDocumentation: async (topic) => `docs:${topic ?? 'index'}`,
     runbookAdoptions: {

@@ -146,6 +146,9 @@ const BELOW_COMPOSER_CHROME: readonly RegExp[] = [
  * a draft; in particular, we never learn arbitrary first-seen text.
  */
 const PLAIN_GHOST_HINTS: readonly RegExp[] = [
+  /^Ask Codex to do anything$/u,
+  /^Ask a follow-up question$/u,
+  /^Compose new task$/u,
   /^What['’]s on your mind\?$/u,
   /^Explain this codebase$/u,
   /^Summarize recent commits$/u,

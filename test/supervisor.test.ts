@@ -215,6 +215,91 @@ describe('Supervisor construction', () => {
     expect(terminal.paneFor('alpha')?.received).toEqual(['[Integration: water-cooler] scheduled bulletin']);
   });
 
+  it('shows and injects a persisted paused-coordinator Shepherd outage during operator interaction', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\nshepherd:\n  enabled: true\n`, {
+      coordinator: `codename: coordinator\nrepo: ${baseDir}\nruntime: fake\n`,
+    });
+    writeFileSync(
+      join(baseDir, 'config', 'pr-shepherd.yaml'),
+      `version: 2\nprofile:\n  githubUser: octocat\npolling:\n  intervalSeconds: 30\n` +
+        `delivery:\n  type: conductor\n  endpoint: http://127.0.0.1:${String(port)}/mcp/pr-shepherd\n` +
+        `  coordinatorSession: coordinator\ndatabasePath: ../data/shepherd.db\n`,
+    );
+    mkdirSync(join(baseDir, 'data'), { recursive: true });
+    const persisted = new Store(join(baseDir, 'data', 'conductor.db'));
+    persisted.upsertSessionState({
+      session: 'coordinator',
+      auto: false,
+      tag: null,
+      paused: true,
+      pausedAt: '2026-08-26T21:16:20.638Z',
+      activeRuntime: null,
+      activeEffort: null,
+      activity: 'stopped',
+    });
+    persisted.close();
+    const terminal = new FakeTerminalBackend();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      runtimes: [new FakeRuntime('fake')],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start({ startAll: true });
+
+    expect(supervisor.statusReport()).toContain(
+      'PR Shepherd Status Offline (coordinator paused since 2026-08-26T21:16:20.638Z)',
+    );
+    const reply = await supervisor.command('/coordinator Did CI arrive?');
+    expect(reply).toContain('This session is paused since 2026-08-26T21:16:20.638Z');
+    expect(reply).toContain('PR Shepherd has been offline');
+    expect(reply).toContain('resume_session');
+    expect(terminal.paneFor('coordinator')?.received[0]).toContain(
+      '[Conductor pause notice] This session is paused since 2026-08-26T21:16:20.638Z',
+    );
+    expect(terminal.paneFor('coordinator')?.received[0]).toContain('[Message from operator] Did CI arrive?');
+  });
+
+  it('retries two protected receipts across raw activation and a recipient turn transition', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\nruntime: fake\n`,
+    });
+    const terminal = new FakeTerminalBackend();
+    const runtime = new FakeRuntime('fake');
+    runtime.inputState = 'draft';
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      runtimes: [runtime],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start({ startAll: true });
+
+    expect(await supervisor.command('/tell alpha first protected')).toBe('Queued message #1 for alpha.');
+    expect(await supervisor.command('/tell alpha second protected')).toBe('Queued message #2 for alpha.');
+    expect(JSON.parse(await supervisor.command('/message-status 2'))).toMatchObject({
+      flushSkipReason: 'waiting-behind-earlier-message',
+    });
+
+    runtime.inputState = 'clear';
+    await supervisor.command('/type alpha raw activation');
+    await until(() => terminal.paneFor('alpha')?.received.includes('[Message from operator] first protected') === true);
+    await fetch(`http://127.0.0.1:${String(port)}/events/alpha`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'turn-start' }),
+    });
+    await until(
+      () => terminal.paneFor('alpha')?.received.includes('[Message from operator] second protected') === true,
+    );
+
+    expect(JSON.parse(await supervisor.command('/message-status 1'))).toMatchObject({ status: 'delivered' });
+    expect(JSON.parse(await supervisor.command('/message-status 2'))).toMatchObject({ status: 'delivered' });
+  });
+
   it('aborts integrations and stops Shepherd before protected delivery and MCP teardown', async () => {
     const port = await freePort();
     writeConfig(`mcp:\n  port: ${String(port)}\n`, {});

@@ -67,7 +67,7 @@ export interface ConductorOperationDeps {
   banish(codename: string): Promise<string>;
   setSentinel(codename: string | undefined): void;
   /** Pause or resume managed PR Shepherd when codename is its configured coordinator session. */
-  setShepherdPausedForSession(codename: string, paused: boolean): Promise<void>;
+  setShepherdPausedForSession(codename: string, paused: boolean): Promise<string | undefined>;
   getDocumentation(topic?: string): Promise<string>;
   /** Present only when federation is enabled; keeps discovery absent otherwise. */
   listFederation?(): Promise<FederationListing>;
@@ -491,25 +491,33 @@ export class ConductorOperations {
           this.forTargets(args, actor, 'pause', async (codename) => {
             const paused = this.deps.states.pause(codename);
             if (paused) this.deps.sentinel.resetRouting(codename);
-            await this.deps.setShepherdPausedForSession(codename, true);
-            return paused ? `${codename}: paused` : `${codename}: already paused`;
+            const companion = await this.deps.setShepherdPausedForSession(codename, true);
+            const result = paused ? `${codename}: paused` : `${codename}: already paused`;
+            return companion === undefined ? result : `${result}. ${companion}`;
           }),
       },
       {
         name: 'resume_session',
         description:
-          'Resume one paused session, or all paused sessions, restoring automated delivery and managed PR Shepherd when its coordinator is targeted.',
+          'Resume one paused session, or all paused sessions, restoring automated delivery and managed PR Shepherd when its coordinator is targeted; a paused session may explicitly resume itself.',
         resultDescription: 'Returns the resulting pause state for each targeted session.',
         audiences: BOTH,
         federation: 'routable',
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
-          this.forTargets(args, actor, 'resume', async (codename) => {
-            const resumed = this.deps.states.resume(codename);
-            if (resumed) this.deps.sentinel.resetRouting(codename);
-            await this.deps.setShepherdPausedForSession(codename, false);
-            return resumed ? `${codename}: resumed` : `${codename}: not paused`;
-          }),
+          this.forTargets(
+            args,
+            actor,
+            'resume',
+            async (codename) => {
+              const resumed = this.deps.states.resume(codename);
+              if (resumed) this.deps.sentinel.resetRouting(codename);
+              const companion = await this.deps.setShepherdPausedForSession(codename, false);
+              const result = resumed ? `${codename}: resumed` : `${codename}: not paused`;
+              return companion === undefined ? result : `${result}. ${companion}`;
+            },
+            { allowExplicitSelf: true },
+          ),
       },
       {
         name: 'set_sentinel',
@@ -795,10 +803,11 @@ export class ConductorOperations {
     actor: OperationActor,
     verb: string,
     action: (codename: string) => Promise<string>,
+    options: { allowExplicitSelf?: boolean } = {},
   ): Promise<string> {
     const target = requireString(args, 'codename');
     if (target !== 'all') {
-      this.noSelf(actor, target, verb);
+      if (options.allowExplicitSelf !== true) this.noSelf(actor, target, verb);
       if (!this.isVisible(actor, target) || !this.deps.states.has(target)) return `Unknown session: ${target}`;
       return action(target);
     }

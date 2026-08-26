@@ -13,6 +13,8 @@ export interface MessagingDeps {
   states: SessionStateManager;
   sessions(): Map<string, SessionConfig>;
   startSession(codename: string, opts: { prompt?: string }): Promise<string>;
+  /** High-visibility notice prepended to operator input while automation is paused. */
+  pausedNotice?(codename: string): string | undefined;
   events?: ConductorEventPublisher;
 }
 
@@ -23,6 +25,8 @@ export interface MessageReceipt {
   fleet?: string;
   status: 'delivered' | 'queued' | 'cancelled';
   deduplicated: boolean;
+  /** Operator-visible warning associated with this delivery, when applicable. */
+  notice?: string;
 }
 
 export function isMessageReceipt(value: unknown): value is MessageReceipt {
@@ -32,7 +36,8 @@ export function isMessageReceipt(value: unknown): value is MessageReceipt {
     typeof receipt.messageId === 'number' &&
     typeof receipt.recipient === 'string' &&
     (receipt.status === 'delivered' || receipt.status === 'queued' || receipt.status === 'cancelled') &&
-    typeof receipt.deduplicated === 'boolean'
+    typeof receipt.deduplicated === 'boolean' &&
+    (receipt.notice === undefined || typeof receipt.notice === 'string')
   );
 }
 
@@ -40,7 +45,8 @@ export function renderMessageReceipt(receipt: MessageReceipt): string {
   const action = receipt.status === 'delivered' ? 'Delivered' : receipt.status === 'cancelled' ? 'Cancelled' : 'Queued';
   const duplicate = receipt.deduplicated ? ' (deduplicated)' : '';
   const destination = receipt.fleet === undefined ? receipt.recipient : `${receipt.recipient}@${receipt.fleet}`;
-  return `${action} message #${String(receipt.messageId)} for ${destination}${duplicate}.`;
+  const acknowledgement = `${action} message #${String(receipt.messageId)} for ${destination}${duplicate}.`;
+  return receipt.notice === undefined ? acknowledgement : `${acknowledgement}\n${receipt.notice}`;
 }
 
 /** Inter-session and session-to-operator messaging primitives behind the MCP tools. */
@@ -55,13 +61,18 @@ export class Messaging {
   constructor(private readonly deps: MessagingDeps) {}
 
   async sendToSession(from: string, target: string, message: string, idempotencyKey?: string): Promise<MessageReceipt> {
+    const notice = from === 'operator' ? this.deps.pausedNotice?.(target) : undefined;
     return this.sendProtected(
       from,
       target,
       message,
-      (content) => messageEnvelope(from, content),
+      (content) => {
+        const envelope = messageEnvelope(from, content);
+        return notice === undefined ? envelope : `${notice}\n\n${envelope}`;
+      },
       idempotencyKey,
       from === 'pr-shepherd',
+      notice,
     );
   }
 
@@ -89,6 +100,7 @@ export class Messaging {
     envelopeFor: (persistedContent: string) => string,
     idempotencyKey?: string,
     automated = false,
+    notice?: string,
   ): Promise<MessageReceipt> {
     if (idempotencyKey !== undefined) {
       const existing = this.deps.store.getDirectMessageByIdempotencyKey(from, idempotencyKey);
@@ -99,7 +111,7 @@ export class Messaging {
         if (existing.status === 'pending') {
           this.pendingEnvelopes.set(existing.id, envelopeFor(existing.content));
         }
-        return this.receipt(existing, true);
+        return this.receipt(existing, true, notice);
       }
     }
     if (!this.deps.sessions().has(target)) throw new InvalidRequestError(`Unknown session: ${target}`);
@@ -113,7 +125,7 @@ export class Messaging {
     if (inserted.row.status === 'pending') this.pendingEnvelopes.set(id, envelope);
 
     if (inserted.deduplicated) {
-      return this.receipt(inserted.row, true);
+      return this.receipt(inserted.row, true, notice);
     }
     this.deps.events?.emit({
       type: 'message.created',
@@ -130,6 +142,7 @@ export class Messaging {
         recipient: target,
         status: result === 'delivered' ? 'delivered' : result === 'cancelled' ? 'cancelled' : 'queued',
         deduplicated: false,
+        ...(notice === undefined ? {} : { notice }),
       };
     }
 
@@ -149,13 +162,26 @@ export class Messaging {
           recipient: target,
           status: result === 'delivered' ? 'delivered' : result === 'cancelled' ? 'cancelled' : 'queued',
           deduplicated: false,
+          ...(notice === undefined ? {} : { notice }),
         };
       }
       if (started !== `${target} started.`) {
-        return { messageId: id, recipient: target, status: 'queued', deduplicated: false };
+        return {
+          messageId: id,
+          recipient: target,
+          status: 'queued',
+          deduplicated: false,
+          ...(notice === undefined ? {} : { notice }),
+        };
       }
       this.markDelivered(id);
-      return { messageId: id, recipient: target, status: 'delivered', deduplicated: false };
+      return {
+        messageId: id,
+        recipient: target,
+        status: 'delivered',
+        deduplicated: false,
+        ...(notice === undefined ? {} : { notice }),
+      };
     } finally {
       this.startingDelivery.delete(id);
       if (releaseStartReservation) this.scheduled.delete(id);
@@ -278,12 +304,13 @@ export class Messaging {
     });
   }
 
-  private receipt(row: MessageRow, deduplicated: boolean): MessageReceipt {
+  private receipt(row: MessageRow, deduplicated: boolean, notice?: string): MessageReceipt {
     return {
       messageId: row.id,
       recipient: row.recipient,
       status: row.status === 'delivered' ? 'delivered' : row.status === 'cancelled' ? 'cancelled' : 'queued',
       deduplicated,
+      ...(notice === undefined ? {} : { notice }),
     };
   }
 

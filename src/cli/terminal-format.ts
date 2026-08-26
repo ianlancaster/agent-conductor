@@ -11,7 +11,7 @@ export function formatTerminalReply(command: string, reply: string, colors: bool
     return reply
       .split('\n')
       .map((line) => {
-        if (/^(?:Agent Conductor Status(?: 🔄)?|PR Shepherd Status Online)$/.test(line)) {
+        if (/^(?:Agent Conductor Status(?: 🔄)?|PR Shepherd Status .+)$/.test(line)) {
           return `${BOLD}${line}${NORMAL_INTENSITY}`;
         }
 

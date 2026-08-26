@@ -30,6 +30,8 @@ export interface ManagedShepherdStatus {
   configPath: string;
   pid: number | null;
   lastSuccessAt: string | null;
+  /** Beginning of the current coordinator-controlled outage, when paused. */
+  pausedAt: string | null;
   detail: string | null;
 }
 
@@ -86,6 +88,7 @@ export class ShepherdManager {
       configPath: config.configPath,
       pid: null,
       lastSuccessAt: null,
+      pausedAt: null,
       detail: null,
     };
   }
@@ -100,7 +103,7 @@ export class ShepherdManager {
     return this.config.enabled ? this.coordinatorSession : undefined;
   }
 
-  async start(isRecipientPaused: (recipient: string) => boolean = () => false): Promise<void> {
+  async start(recipientPausedAt: (recipient: string) => string | null = () => null): Promise<void> {
     if (!this.config.enabled) return;
     this.stopping = false;
     this.restartCount = 0;
@@ -121,9 +124,10 @@ export class ShepherdManager {
     this.pollingIntervalMs = profile.polling.intervalSeconds * 1000;
     try {
       await this.reconcilePriorProcess();
-      if (this.coordinatorSession !== undefined && isRecipientPaused(this.coordinatorSession)) {
+      const pausedAt = this.coordinatorSession === undefined ? null : recipientPausedAt(this.coordinatorSession);
+      if (pausedAt !== null) {
         this.stopping = true;
-        this.setStatus('paused', null);
+        this.setStatus('paused', null, pausedAt);
         return;
       }
       this.spawnChild();
@@ -140,12 +144,12 @@ export class ShepherdManager {
   }
 
   /** Pause the managed companion without losing its validated delivery recipient. */
-  async pause(): Promise<boolean> {
+  async pause(pausedAt = new Date().toISOString()): Promise<boolean> {
     if (!this.config.enabled || this.statusValue.state === 'paused') return false;
     this.stopping = true;
     this.clearTimers();
     await this.terminateChild();
-    this.setStatus('paused', null);
+    this.setStatus('paused', null, pausedAt);
     return true;
   }
 
@@ -308,11 +312,12 @@ export class ShepherdManager {
     return !this.processControl.isAlive(pid);
   }
 
-  private setStatus(state: ManagedShepherdState, detail: string | null): void {
+  private setStatus(state: ManagedShepherdState, detail: string | null, pausedAt: string | null = null): void {
     this.statusValue = {
       ...this.statusValue,
       state,
       pid: this.child?.pid ?? null,
+      pausedAt,
       detail,
     };
   }

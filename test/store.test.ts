@@ -273,6 +273,7 @@ describe('session state', () => {
       auto: true,
       tag: 'refactor',
       paused: true,
+      pausedAt: '2026-08-26T21:16:20.638Z',
       activeRuntime: 'codex',
       activeEffort: 'xhigh',
       activity: 'working',
@@ -281,6 +282,7 @@ describe('session state', () => {
     expect(state?.auto).toBe(true);
     expect(state?.tag).toBe('refactor');
     expect(state?.paused).toBe(true);
+    expect(state?.pausedAt).toBe('2026-08-26T21:16:20.638Z');
     expect(state?.activeRuntime).toBe('codex');
     expect(state?.activeEffort).toBe('xhigh');
 
@@ -296,6 +298,7 @@ describe('session state', () => {
     const updated = store.getSessionState('alpha');
     expect(updated?.auto).toBe(false);
     expect(updated?.paused).toBe(false);
+    expect(updated?.pausedAt).toBeNull();
     expect(store.getAllSessionStates().length).toBe(1);
   });
 
@@ -360,6 +363,7 @@ describe('session state', () => {
       'updated_at',
       'active_runtime',
       'active_effort',
+      'paused_at',
     ]);
   });
 
@@ -382,7 +386,8 @@ describe('session state', () => {
     const versionRow = legacy.prepare('PRAGMA user_version').get() as { user_version: number };
     const currentVersion = versionRow.user_version;
     legacy.exec("UPDATE session_state SET activity = 'stalled' WHERE session = 'alpha'");
-    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 1)}`);
+    legacy.exec('ALTER TABLE session_state DROP COLUMN paused_at');
+    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 3)}`);
     legacy.close();
 
     const migrated = new Store(dbPath);
@@ -402,7 +407,8 @@ describe('session state', () => {
     legacy.exec(`
       CREATE TABLE federation_outbox (message_id TEXT PRIMARY KEY);
       CREATE TABLE federation_inbox (message_id TEXT PRIMARY KEY);
-      PRAGMA user_version = ${String(versionRow.user_version - 1)};
+      ALTER TABLE session_state DROP COLUMN paused_at;
+      PRAGMA user_version = ${String(versionRow.user_version - 2)};
     `);
     legacy.close();
 

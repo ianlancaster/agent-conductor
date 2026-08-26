@@ -6,6 +6,7 @@ import { currentBranch } from './worktree.js';
 import type { ConductorEventJournalStatus } from '../events/types.js';
 import type { IntegrationStatus } from '../integrations/types.js';
 import type { ProcessObservation } from './lifecycle.js';
+import type { ManagedShepherdStatus } from './shepherd-manager.js';
 
 const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
   working: '🟢',
@@ -19,6 +20,35 @@ const RUNTIME_LABELS: Record<string, string> = {
 };
 
 export const PR_SHEPHERD_ONLINE_STATUS = 'PR Shepherd Status Online';
+export const PR_SHEPHERD_STATUS_PREFIX = 'PR Shepherd Status ';
+
+/** Render configured companion health without leaking profile paths or error detail. */
+export function formatShepherdStatus(status: ManagedShepherdStatus): string | undefined {
+  switch (status.state) {
+    case 'disabled':
+      return undefined;
+    case 'healthy':
+      return PR_SHEPHERD_ONLINE_STATUS;
+    case 'paused':
+      return `${PR_SHEPHERD_STATUS_PREFIX}Offline (coordinator paused${
+        status.pausedAt === null ? '' : ` since ${status.pausedAt}`
+      })`;
+    case 'starting':
+      return `${PR_SHEPHERD_STATUS_PREFIX}Starting`;
+    case 'restarting':
+      return `${PR_SHEPHERD_STATUS_PREFIX}Restarting`;
+    case 'stale':
+      return `${PR_SHEPHERD_STATUS_PREFIX}Degraded (stale)`;
+    case 'config-invalid':
+      return `${PR_SHEPHERD_STATUS_PREFIX}Offline (configuration invalid)`;
+    case 'panel-unsupported':
+      return `${PR_SHEPHERD_STATUS_PREFIX}Offline (panel unsupported)`;
+    case 'failed':
+      return `${PR_SHEPHERD_STATUS_PREFIX}Offline (failed)`;
+    case 'stopped':
+      return `${PR_SHEPHERD_STATUS_PREFIX}Offline (stopped)`;
+  }
+}
 
 export interface StatusDeps {
   sessions(): Map<string, SessionConfig>;
@@ -107,6 +137,7 @@ export function statusReport(
         effort: deps.effortFor(codename) ?? null,
         auto: state.auto,
         paused: state.paused,
+        pausedAt: state.pausedAt ?? null,
         tag: state.tag ?? null,
         running: state.running,
         processActive: process?.active ?? null,
@@ -160,6 +191,8 @@ export function formatFleetStatusReport(
   options: {
     fleetWatchActive: boolean;
     shepherdOnline: boolean;
+    /** Full configured companion state; preferred over the legacy online boolean. */
+    shepherd?: ManagedShepherdStatus;
     eventJournal?: ConductorEventJournalStatus;
     integrations?: readonly IntegrationStatus[];
     federation?: { name: string; exposedSessions: readonly string[]; peerCount: number };
@@ -167,9 +200,15 @@ export function formatFleetStatusReport(
 ): string {
   const heading = `Agent Conductor Status${options.fleetWatchActive ? ' 🔄' : ''}`;
   const integrations = options.integrations ?? [];
+  const shepherdStatus =
+    options.shepherd === undefined
+      ? options.shepherdOnline
+        ? PR_SHEPHERD_ONLINE_STATUS
+        : undefined
+      : formatShepherdStatus(options.shepherd);
   return [
     heading,
-    ...(options.shepherdOnline ? [PR_SHEPHERD_ONLINE_STATUS] : []),
+    ...(shepherdStatus === undefined ? [] : [shepherdStatus]),
     ...(options.federation === undefined
       ? []
       : [

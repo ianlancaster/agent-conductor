@@ -662,6 +662,9 @@ describe('parseInputState', () => {
     // requires an explicit finite pool rather than learning first-seen text.
     expect(fresh.parseInputState("› What's on your mind?", 'alpha')).toBe('clear');
     expect(fresh.parseInputState('› Use /skills to list available skills', 'alpha')).toBe('clear');
+    expect(fresh.parseInputState('› Ask Codex to do anything', 'alpha')).toBe('clear');
+    expect(fresh.parseInputState('› Ask a follow-up question', 'alpha')).toBe('clear');
+    expect(fresh.parseInputState('› Compose new task', 'alpha')).toBe('clear');
     expect(fresh.parseInputState('› Explain this codebase', 'alpha')).toBe('clear');
     expect(fresh.parseInputState('› refactor the parser', 'alpha')).toBe('draft');
     expect(fresh.parseInputState('› my half-typed operator draft', 'beta')).toBe('draft');

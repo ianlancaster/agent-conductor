@@ -1,5 +1,5 @@
 import type { ReadStream, WriteStream } from 'node:tty';
-import { PR_SHEPHERD_ONLINE_STATUS } from '../core/status.js';
+import { PR_SHEPHERD_STATUS_PREFIX } from '../core/status.js';
 import { formatTerminalReply } from './terminal-format.js';
 
 const ALT_SCREEN_ON = '\u001b[?1049h';
@@ -44,21 +44,20 @@ const PR_SHEPHERD_STATUS_HEADING = 'PR Shepherd Status';
 function statusContent(status: string | undefined): {
   body: string | undefined;
   fleetWatchActive: boolean;
-  shepherdOnline: boolean;
+  shepherdStatus: string | undefined;
   federation: string | undefined;
 } {
   if (status === undefined)
-    return { body: undefined, fleetWatchActive: false, shepherdOnline: false, federation: undefined };
+    return { body: undefined, fleetWatchActive: false, shepherdStatus: undefined, federation: undefined };
   const [firstLine, ...remaining] = status.split('\n');
   if (firstLine !== CANONICAL_STATUS_HEADING && firstLine !== `${CANONICAL_STATUS_HEADING} 🔄`) {
-    return { body: status, fleetWatchActive: false, shepherdOnline: false, federation: undefined };
+    return { body: status, fleetWatchActive: false, shepherdStatus: undefined, federation: undefined };
   }
-  let shepherdOnline = false;
+  let shepherdStatus: string | undefined;
   let federation: string | undefined;
   for (let index = 0; index < 2; index += 1) {
-    if (remaining[0] === PR_SHEPHERD_ONLINE_STATUS) {
-      shepherdOnline = true;
-      remaining.shift();
+    if (remaining[0]?.startsWith(PR_SHEPHERD_STATUS_PREFIX) === true) {
+      shepherdStatus = remaining.shift()?.slice(PR_SHEPHERD_STATUS_PREFIX.length);
     } else if (remaining[0]?.startsWith('Federation: ') === true) {
       federation = remaining.shift();
     } else {
@@ -66,7 +65,7 @@ function statusContent(status: string | undefined): {
     }
   }
   if (remaining[0] === '') remaining.shift();
-  return { body: remaining.join('\n'), fleetWatchActive: firstLine.endsWith(' 🔄'), shepherdOnline, federation };
+  return { body: remaining.join('\n'), fleetWatchActive: firstLine.endsWith(' 🔄'), shepherdStatus, federation };
 }
 
 /** Parse a dashboard refresh duration such as `2`, `2s`, or `500ms`. */
@@ -105,11 +104,26 @@ export function renderStatusDashboard(
   const canonical = statusContent(state.status);
   const heading = colors ? `${BOLD}${CANONICAL_STATUS_HEADING}${NORMAL_INTENSITY}` : CANONICAL_STATUS_HEADING;
   const fleetWatch = canonical.fleetWatchActive ? ' 🔄 fleet watch on' : '';
+  const shepherdConnection: StatusConnection | undefined =
+    canonical.shepherdStatus === undefined
+      ? undefined
+      : canonical.shepherdStatus === 'Online'
+        ? 'online'
+        : /^(?:Starting|Restarting|Degraded)/u.test(canonical.shepherdStatus)
+          ? 'checking'
+          : 'offline';
+  const shepherdDetail =
+    canonical.shepherdStatus?.startsWith('Offline ') === true
+      ? canonical.shepherdStatus.slice('Offline '.length)
+      : canonical.shepherdStatus === 'Online'
+        ? undefined
+        : canonical.shepherdStatus;
   const shepherd =
-    state.connection === 'online' && canonical.shepherdOnline
-      ? colors
-        ? `${BOLD}${PR_SHEPHERD_STATUS_HEADING}${NORMAL_INTENSITY}  ${connectionLabel('online', true)}`
-        : `${PR_SHEPHERD_STATUS_HEADING}  ${connectionLabel('online', false)}`
+    state.connection === 'online' && shepherdConnection !== undefined
+      ? `${colors ? `${BOLD}${PR_SHEPHERD_STATUS_HEADING}${NORMAL_INTENSITY}` : PR_SHEPHERD_STATUS_HEADING}  ${connectionLabel(
+          shepherdConnection,
+          colors,
+        )}${shepherdDetail === undefined ? '' : ` · ${shepherdDetail}`}`
       : undefined;
   const metadata = colors
     ? `${DIM}${updatedLabel(state)} · fleet: ${options.fleetDir}${NORMAL}`

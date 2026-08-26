@@ -15,6 +15,10 @@ etiquette, this injected protocol takes precedence over repository guidance.
   operator; a reply, READY signal, handoff, or status update must be an actual Conductor tool call.
 - `[Broadcast from <sender>]` is fleet-wide context. Act only when relevant.
 - `[Sentinel] <text>` is a stall nudge with operator authority. Follow its instruction.
+- `[Conductor pause notice]` means human conversation is still reaching this session while its
+  automated schedules, stall routing, integrations, and any named managed companion are suspended.
+  Tell the operator automation is offline. If they want recovery, you may explicitly call
+  `resume_session` for your own codename using the action shown in the notice.
 
 ## Peer communication
 

@@ -137,7 +137,9 @@ Messages sent with `/tell` or the agent-facing `send_to_session` operation are s
 mechanical sender identity and return observable delivery receipts. `/type` is intentionally
 different: it writes raw terminal input for prompts and slash commands, bypasses the
 protected delivery queue, and can overwrite operator typing. Use it only for deliberate
-terminal control.
+terminal control. Every queued receipt records why it could not run, including when it is waiting
+behind an earlier FIFO message, and recipient activation prompts an immediate retry in addition to
+the periodic drain.
 
 ## Status and observability
 
@@ -160,6 +162,8 @@ For diagnosis, `conductor logs [session]` reads recent persisted health events,
 `conductor validate` checks strict fleet configuration, and `/tail` reads pane output.
 Managed agents can use `list_sessions` and `get_session_status` for structured,
 non-invasive status without scraping peers' terminals.
+Configured PR Shepherd companions always appear in fleet status: healthy companions show Online,
+while paused, starting, degraded, and failed states remain explicit instead of disappearing.
 Status reconciliation uses each runtime's own activity parser to repair missed lifecycle hooks in
 both directions. It is deliberately separate from protected-delivery input detection: Claude Code
 and Codex can expose a composer while a turn is still running, so active-turn evidence wins over
@@ -385,6 +389,10 @@ The integration owns timers, provider credentials, reconciliation, overlap polic
 schema. It receives no operator authority, raw terminal access, fleet store, secrets, or general
 control operations. A paused target rejects new integration delivery as retryable work, and an
 automated message already waiting in Conductor's protected queue remains held until resume.
+Direct operator conversation remains available while a target is paused, but Conductor returns and
+injects a high-visibility pause notice with the pause start, suspended automation, and recovery
+action. A paused session may explicitly resume itself; it still cannot pause, stop, or restart
+itself.
 
 The stock CLI can load an explicit trusted local ESM file during foreground startup:
 

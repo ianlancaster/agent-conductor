@@ -342,6 +342,7 @@ export class Supervisor {
       states: this.states,
       sessions: () => this.sessions,
       startSession: (codename, opts) => this.lifecycle.start(codename, opts),
+      pausedNotice: (codename) => this.pausedAutomationNotice(codename),
       events: this.eventBus,
     });
     this.integrations = new IntegrationManager({
@@ -456,9 +457,22 @@ export class Supervisor {
       banish: (session) => this.paneAction(session, 'banish'),
       setSentinel: (session) => this.setSentinel(session),
       setShepherdPausedForSession: async (session, paused) => {
-        if (this.shepherd.recipientSession() !== session) return;
-        if (paused) await this.shepherd.pause();
-        else await this.shepherd.resume();
+        if (this.shepherd.recipientSession() !== session) return undefined;
+        if (paused) {
+          const pausedAt = this.states.get(session)?.pausedAt;
+          const changed = await this.shepherd.pause(pausedAt);
+          return changed
+            ? `PR Shepherd is offline; GitHub event ingestion is suspended${pausedAt === undefined ? '' : ` since ${pausedAt}`}.`
+            : undefined;
+        }
+        const outageStartedAt = this.shepherd.status().pausedAt;
+        const changed = await this.shepherd.resume();
+        if (!changed) return undefined;
+        const detail = `PR Shepherd is restarting catch-up polling${
+          outageStartedAt === null ? '' : ` after an outage beginning ${outageStartedAt}`
+        }; delayed durable events will retain exactly-once delivery identity.`;
+        this.store.logHealthEvent(session, 'shepherd_recovered', detail);
+        return detail;
       },
       getDocumentation: (topic) => this.documentation.read(topic),
       ...(this.federationRegistry === undefined
@@ -643,7 +657,7 @@ export class Supervisor {
 
     this.watcher.start(heartbeatMs);
     this.scheduler.rebuild();
-    await this.shepherd.start((recipient) => this.states.isPaused(recipient));
+    await this.shepherd.start((recipient) => this.states.get(recipient)?.pausedAt ?? null);
 
     if (opts.startAll === true) {
       for (const codename of this.sessions.keys()) {
@@ -729,6 +743,7 @@ export class Supervisor {
     return formatFleetStatusReport(report, {
       fleetWatchActive: this.sentinel.isFleetWatchEnabled(),
       shepherdOnline: shepherd.state === 'healthy',
+      shepherd,
       eventJournal: this.eventBus.journalStatus(),
       integrations: this.integrations.status(),
       ...(this.config.federation === undefined || this.federationRegistry === undefined
@@ -750,6 +765,21 @@ export class Supervisor {
     return this.shepherd.status();
   }
 
+  private pausedAutomationNotice(session: string): string | undefined {
+    const state = this.states.get(session);
+    if (state?.paused !== true) return undefined;
+    const since = state.pausedAt === undefined ? '' : ` since ${state.pausedAt}`;
+    const shepherdPaused = this.shepherd.recipientSession() === session && this.shepherd.status().state === 'paused';
+    const companion = shepherdPaused ? ` PR Shepherd has been offline${since}; GitHub events may be delayed.` : '';
+    return (
+      `[Conductor pause notice] This session is paused${since}. Automated schedules, stall routing, and ` +
+      `background integration delivery are suspended.${companion} ` +
+      `Call resume_session with {"codename":"${session}"} to restore automation${
+        shepherdPaused ? ' and GitHub event ingestion' : ''
+      }.`
+    );
+  }
+
   /** Structured status for trusted embedding integrations. */
   integrationStatus(): ReturnType<IntegrationManager['status']> {
     return this.integrations.status();
@@ -768,6 +798,10 @@ export class Supervisor {
     if (pane === undefined) return `${codename} has no active pane.`;
     try {
       await this.backend.run(pane, text);
+      // Raw input is exceptional, but it is still recipient activation. Give
+      // protected delivery a fresh pass instead of waiting solely on a
+      // best-effort runtime hook or the periodic timer.
+      void this.delivery.drainNow();
       return `Typed into ${codename}'s pane.`;
     } catch (err) {
       return `Failed to type into ${codename}'s pane: ${err instanceof Error ? err.message : String(err)}`;

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   displayPath,
   formatFleetStatusReport,
+  formatShepherdStatus,
   formatSessionLine,
   resolvedSessionEffort,
   resolvedSessionModel,
@@ -93,6 +94,28 @@ describe('formatFleetStatusReport', () => {
         'Federation: reviews · exposing review-coordinator · 1 peer(s)\n\n' +
         'Sessions:\n  coordinator - CC 🐑 · 🟢 working',
     );
+  });
+
+  it('shows a configured paused Shepherd as offline with the outage start', () => {
+    const shepherd = {
+      state: 'paused',
+      presentation: 'headless',
+      configPath: '/private/profile.yaml',
+      pid: null,
+      lastSuccessAt: '2026-08-26T21:15:00.000Z',
+      pausedAt: '2026-08-26T21:16:20.638Z',
+      detail: null,
+    } as const;
+    expect(formatShepherdStatus(shepherd)).toBe(
+      'PR Shepherd Status Offline (coordinator paused since 2026-08-26T21:16:20.638Z)',
+    );
+    expect(
+      formatFleetStatusReport('Sessions:\n  coordinator - CC 🐑 · 🟢 working (paused)', {
+        fleetWatchActive: false,
+        shepherdOnline: false,
+        shepherd,
+      }),
+    ).toContain('PR Shepherd Status Offline (coordinator paused since 2026-08-26T21:16:20.638Z)');
   });
 
   it('surfaces a degraded event journal without exposing its error text', () => {
