@@ -329,6 +329,111 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
+  it('baselines tracked drafts without events and emits each ready-for-review transition once', async () => {
+    const github = new FakeGitHub();
+    const initial = pr({ isDraft: true, headRefName: 'Abby/improve-api' });
+    github.details.set('acme/api#7', initial);
+    github.selectorDiscovery = {
+      exhaustive: true,
+      items: [
+        {
+          ...initial,
+          matches: [{ selectorId: 'abby-branch', type: 'head-prefix', value: 'Abby/' }],
+        },
+      ],
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: {
+          enabled: true,
+          suppressDraftEvents: true,
+          selectors: [{ id: 'abby-branch', type: 'head-prefix', values: ['Abby/'] }],
+        },
+        staleThresholdHours: 24,
+      },
+      guidance: { 'ready-for-review': 'Run tracked pull-request intake.' },
+    });
+    const clock = () => new Date('2026-08-18T10:00:00Z');
+    const engine = new ShepherdEngine(resolved, github, store, clock);
+
+    expect(await engine.pollOnce()).toMatchObject({ discovered: 1, emitted: 0 });
+    expect(store.getTrackedPullRequest(initial)).toMatchObject({ status: 'active', generation: 1 });
+    expect(store.listEvents()).toEqual([]);
+    expect(store.listOutbox()).toEqual([]);
+
+    const changedDraft = pr({
+      isDraft: true,
+      headRefName: 'Abby/improve-api',
+      headSha: 'head-b',
+      updatedAt: '2026-08-18T09:30:00Z',
+      checks: [{ id: 'failed', name: 'test', state: 'FAILURE', bucket: 'fail', workflow: 'CI' }],
+      comments: [
+        {
+          id: 'comment-1',
+          author: 'stakeholder',
+          body: 'This draft comment is long enough that it would normally create an event.',
+          createdAt: '2026-08-18T09:35:00Z',
+        },
+      ],
+    });
+    github.details.set('acme/api#7', changedDraft);
+    expect(await engine.pollOnce()).toMatchObject({ discovered: 1, emitted: 0 });
+    expect(store.getEntity<{ details: PullRequestDetails }>('authored:acme/api#7')?.value.details).toMatchObject({
+      isDraft: true,
+      headSha: 'head-b',
+    });
+    expect(store.listEvents()).toEqual([]);
+
+    const ready = { ...changedDraft, isDraft: false, updatedAt: '2026-08-18T09:45:00Z' };
+    github.details.set('acme/api#7', ready);
+    expect(await engine.pollOnce()).toMatchObject({ discovered: 1, emitted: 1 });
+    const readyEvents = store.listEvents().filter((event) => event.type === 'ready-for-review');
+    expect(readyEvents).toHaveLength(1);
+    expect(readyEvents[0]).toMatchObject({ repo: 'acme/api', prNumber: 7 });
+    expect(readyEvents[0]?.source).toMatchObject({
+      generation: 1,
+      readyForReviewCycle: 1,
+      headRefName: 'Abby/improve-api',
+      headSha: 'head-b',
+      title: 'Improve API',
+      claimActor: 'selector:abby-branch',
+      claimEvidence: {
+        selectors: [{ selectorId: 'abby-branch', type: 'head-prefix', value: 'Abby/' }],
+      },
+    });
+    expect(readyEvents[0]?.message).toContain('Guidance:\nRun tracked pull-request intake.');
+
+    expect(await engine.pollOnce()).toMatchObject({ discovered: 1, emitted: 0 });
+    expect(store.listEvents().filter((event) => event.type === 'ready-for-review')).toHaveLength(1);
+    store.close();
+  });
+
+  it('emits ready-for-review with the backward-compatible draft event setting', async () => {
+    const github = new FakeGitHub();
+    const draft = pr({ isDraft: true });
+    github.details.set('acme/api#7', draft);
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      features: { authoredPRs: { enabled: false }, trackedPRs: { enabled: true }, staleThresholdHours: 24 },
+    });
+    const control = new TrackedPullRequestControl(resolved, github, store);
+    await control.claim({
+      repo: draft.repo,
+      number: draft.number,
+      actor: 'operator',
+      evidence: { reason: 'owned' },
+      idempotencyKey: 'claim-draft-default-delivery',
+    });
+    const engine = new ShepherdEngine(resolved, github, store);
+
+    github.details.set('acme/api#7', { ...draft, isDraft: false });
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    expect(store.listEvents().map((event) => event.type)).toEqual(['ready-for-review', 'tracked-pr-claimed']);
+    store.close();
+  });
+
   it('persists and coalesces received review-thread transitions for a tracked PR', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'shepherd-owned-review-threads-'));
     const path = join(dir, 'shepherd.db');

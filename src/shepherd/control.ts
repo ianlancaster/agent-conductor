@@ -286,6 +286,7 @@ export class TrackedPullRequestControl {
   }
 
   private claimEvent(request: TrackedControlRequest, details: PullRequestDetails) {
+    if (details.isDraft && this.config.features.trackedPRs.suppressDraftEvents) return undefined;
     return buildEvent(
       this.config,
       'tracked-pr-claimed',

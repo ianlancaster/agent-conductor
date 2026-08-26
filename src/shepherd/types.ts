@@ -19,6 +19,7 @@ export const SHEPHERD_EVENT_TYPES = [
   'reviewer-comment-decision',
   'tracked-pr-claimed',
   'tracked-pr-unclaimed',
+  'ready-for-review',
   'head-changed',
   'release-attested',
   'release-revoked',
@@ -451,7 +452,7 @@ export interface TrackedClaimHandoffStore extends ReleaseGateStore {
     request: TrackedControlRequest,
     details: PullRequestDetails,
     baseline: TrackedClaimBaseline,
-    event: ShepherdEvent,
+    event: ShepherdEvent | undefined,
     recipient?: string,
   ): TrackedControlResult;
 }

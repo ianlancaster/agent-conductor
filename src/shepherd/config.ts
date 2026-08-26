@@ -71,6 +71,7 @@ const configSchema = strictObject({
     authoredPRs: strictObject({ enabled: z.boolean().default(true) }).default({}),
     trackedPRs: strictObject({
       enabled: z.boolean().default(false),
+      suppressDraftEvents: z.boolean().default(false),
       releaseGate: z.enum(['none', 'exact-head-attestation']).default('none'),
       selectors: z
         .array(trackedSelector)

@@ -30,6 +30,7 @@ interface AuthoredState {
   botAttempts: Record<string, number>;
   staleCycle: number;
   conflictCycle: number;
+  readyForReviewCycle?: number;
   receivedReviewThreads?: Record<string, ReceivedReviewThreadState>;
   mergeQueueRetry?: MergeQueueRetryState;
   sources?: { authored: boolean; trackedGeneration?: number };
@@ -670,7 +671,12 @@ export class ShepherdEngine {
             },
             idempotencyKey: `selector-claim:${digest}`,
           });
-          if (result.outcome === 'claimed' || result.outcome === 'reclaimed') summary.emitted += 1;
+          if (result.outcome === 'claimed' || result.outcome === 'reclaimed') {
+            const claimedDetails = store.getEntity<AuthoredState>(prKey('authored', candidate))?.value.details;
+            if (!(this.config.features.trackedPRs.suppressDraftEvents && claimedDetails?.isDraft === true)) {
+              summary.emitted += 1;
+            }
+          }
         },
         summary,
       );
@@ -735,9 +741,8 @@ export class ShepherdEngine {
             details,
             previous,
             baseline,
-            tracked !== undefined,
+            tracked,
             authoredKeys.has(key),
-            tracked?.generation,
             mergeAutomation,
           );
           if (tracked !== undefined) {
@@ -754,15 +759,7 @@ export class ShepherdEngine {
             if (!result.applied && authoredKeys.has(key)) {
               const currentTracked = this.trackedStore().getTrackedPullRequest(details);
               if (currentTracked?.status === 'active') return;
-              const fallback = this.evaluateAuthored(
-                details,
-                previous,
-                isBaseline,
-                false,
-                true,
-                undefined,
-                mergeAutomation,
-              );
+              const fallback = this.evaluateAuthored(details, previous, isBaseline, undefined, true, mergeAutomation);
               const fallbackResult = this.trackedStore().commitAuthoredObservationAfterTrackedRelease(
                 details,
                 tracked.generation,
@@ -819,9 +816,8 @@ export class ShepherdEngine {
     details: PullRequestDetails,
     previous: AuthoredState | undefined,
     baseline: boolean,
-    tracked = false,
+    trackedClaim?: TrackedPullRequest,
     authored = true,
-    trackedGeneration?: number,
     mergeAutomation?: MergeAutomationState,
   ): { state: AuthoredState; events: ShepherdEvent[]; actions: EntityUpdate[]; nudges: EntityUpdate[] } {
     const now = this.clock();
@@ -830,9 +826,12 @@ export class ShepherdEngine {
     const nudges: EntityUpdate[] = [];
     const pr: PullRequestRef = { repo: details.repo, number: details.number };
     const previousDetails = previous?.details;
+    const tracked = trackedClaim !== undefined;
+    const trackedGeneration = trackedClaim?.generation;
     const botAttempts = { ...(previous?.botAttempts ?? {}) };
     let staleCycle = previous?.staleCycle ?? 0;
     let conflictCycle = previous?.conflictCycle ?? 0;
+    let readyForReviewCycle = previous?.readyForReviewCycle ?? 0;
     let mergeQueueRetry = previous?.mergeQueueRetry?.headSha === details.headSha ? previous.mergeQueueRetry : undefined;
     const receivedReviewFeedback = this.receivedReviewFeedback(details, previous, baseline);
     if (baseline) {
@@ -858,6 +857,30 @@ export class ShepherdEngine {
         ),
       );
     } else if (!baseline && details.state === 'OPEN') {
+      if (trackedClaim !== undefined && previousDetails?.isDraft === true && !details.isDraft) {
+        readyForReviewCycle += 1;
+        events.push(
+          buildEvent(
+            this.config,
+            'ready-for-review',
+            pr,
+            {
+              generation: trackedClaim.generation,
+              readyForReviewCycle,
+              headSha: details.headSha,
+            },
+            {
+              title: details.title,
+              url: details.url,
+              headRefName: details.headRefName,
+              headSha: details.headSha,
+              claimActor: trackedClaim.actor,
+              claimEvidence: trackedClaim.evidence,
+            },
+            now.toISOString(),
+          ),
+        );
+      }
       if (tracked && previousDetails !== undefined && previousDetails.headSha !== details.headSha) {
         events.push(
           buildEvent(
@@ -1180,11 +1203,13 @@ export class ShepherdEngine {
         botAttempts,
         staleCycle,
         conflictCycle,
+        readyForReviewCycle,
         receivedReviewThreads: receivedReviewFeedback.threads,
         ...(mergeQueueRetry === undefined ? {} : { mergeQueueRetry }),
         sources: { authored, ...(trackedGeneration === undefined ? {} : { trackedGeneration }) },
       },
-      events: baseline ? [] : events,
+      events:
+        baseline || (tracked && details.isDraft && this.config.features.trackedPRs.suppressDraftEvents) ? [] : events,
       actions: baseline ? [] : actions,
       nudges: baseline ? [] : nudges,
     };

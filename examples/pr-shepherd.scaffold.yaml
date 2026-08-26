@@ -20,6 +20,7 @@ features:
   authoredPRs: { enabled: true }
   trackedPRs:
     enabled: false
+    suppressDraftEvents: false
     releaseGate: none
     selectors: []
   # ignoredHeadPatterns are case-insensitive headRefName exclusions applied before review-lane state or delivery.

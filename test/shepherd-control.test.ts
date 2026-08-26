@@ -24,11 +24,15 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function config(enabled = true, releaseGate: 'none' | 'exact-head-attestation' = 'none'): ShepherdConfig {
+function config(
+  enabled = true,
+  releaseGate: 'none' | 'exact-head-attestation' = 'none',
+  suppressDraftEvents = false,
+): ShepherdConfig {
   return parseShepherdConfig({
     version: 2,
     profile: { githubUser: 'octocat' },
-    features: { authoredPRs: { enabled: false }, trackedPRs: { enabled, releaseGate } },
+    features: { authoredPRs: { enabled: false }, trackedPRs: { enabled, releaseGate, suppressDraftEvents } },
     delivery: { type: 'conductor', endpoint: 'http://localhost:3000', coordinatorSession: 'coord' },
   });
 }
@@ -529,6 +533,22 @@ describe('exact-head release controls', () => {
       store.close();
     },
   );
+
+  it('suppresses the claim event after a gated draft handoff', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    const github = new FakeGitHub();
+    github.details = { ...pullRequest(), isDraft: true, headSha };
+    github.queued = true;
+
+    await expect(
+      new TrackedPullRequestControl(config(true, 'exact-head-attestation', true), github, store).claim(
+        input('claim-existing-draft-queue'),
+      ),
+    ).resolves.toMatchObject({ outcome: 'claimed', generation: 1, handoff: 'completed' });
+    expect(store.listEvents()).toEqual([]);
+    expect(store.listOutbox()).toEqual([]);
+    store.close();
+  });
 
   it('leaves provider failures durable and resumes the same claim key without a false claim', async () => {
     const store = new SqliteShepherdStore(':memory:');

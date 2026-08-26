@@ -417,7 +417,9 @@ observation first: authenticate `gh`, validate the profile, run one baseline-onl
 `execute` only after the observed decisions are correct. A managed Shepherd runs headless by
 default, appears in fleet status while healthy, and cannot take down Conductor if it fails.
 An optional durable tracked-PR lane can claim open PRs independently of that GitHub identity;
-its manual controls and lifecycle remain inside Shepherd rather than Conductor core.
+its manual controls and lifecycle remain inside Shepherd rather than Conductor core. Tracked claims
+can suppress draft events while retaining a baseline, then emit a dedicated ready-for-review
+transition with the current head and claim evidence.
 Case-insensitive review-inbox head patterns can exclude assigned-review PRs before lifecycle state
 or delivery without affecting ownership through another profile's authored or tracked lane.
 Merge-queue mode observes queue membership, reports GitHub eviction reasons, and uses bounded,

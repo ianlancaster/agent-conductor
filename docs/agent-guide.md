@@ -740,6 +740,13 @@ notify mode even if global authored automation is `execute`. Selectors never cha
 automation; use the explicit `claim` control when an exact-head candidate needs a safe handoff from
 an existing queue entry or persistent auto-merge.
 
+For fleets where drafts are not actionable, set `trackedPRs.suppressDraftEvents: true`. Shepherd
+still creates selector and manual claims and continuously baselines their state, but queues no claim
+or lifecycle events while they remain drafts. A tracked `true` to `false` draft transition emits one
+`ready-for-review` event with the new head and durable claim evidence, even when no other field
+changes; fleet-specific intake routing belongs in that event's `guidance` entry. The default `false`
+preserves draft event delivery.
+
 For both profile-authored and explicitly tracked PRs, `review-feedback` coalesces new review bodies
 with received inline-thread creation, replies, and transitions into outdated or resolved state.
 Thread facts include stable review/thread/comment IDs, author, bounded body, URL, path and line,

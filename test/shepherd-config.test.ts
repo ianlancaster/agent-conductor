@@ -12,6 +12,7 @@ describe('PR Shepherd V2 configuration', () => {
     const config = parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } });
     expect(config.features.authoredPRs.enabled).toBe(true);
     expect(config.features.trackedPRs.enabled).toBe(false);
+    expect(config.features.trackedPRs.suppressDraftEvents).toBe(false);
     expect(config.features.trackedPRs.releaseGate).toBe('none');
     expect(config.features.trackedPRs.selectors).toEqual([]);
     expect(config.features.reviewInbox.enabled).toBe(false);
@@ -28,14 +29,19 @@ describe('PR Shepherd V2 configuration', () => {
         profile: { githubUser: 'octocat' },
         features: { trackedPRs: { enabled: true } },
       }).features.trackedPRs,
-    ).toEqual({ enabled: true, releaseGate: 'none', selectors: [] });
+    ).toEqual({ enabled: true, suppressDraftEvents: false, releaseGate: 'none', selectors: [] });
     expect(
       parseShepherdConfig({
         version: 2,
         profile: { githubUser: 'octocat' },
         features: { trackedPRs: { enabled: true, releaseGate: 'exact-head-attestation' } },
       }).features.trackedPRs,
-    ).toEqual({ enabled: true, releaseGate: 'exact-head-attestation', selectors: [] });
+    ).toEqual({
+      enabled: true,
+      suppressDraftEvents: false,
+      releaseGate: 'exact-head-attestation',
+      selectors: [],
+    });
     expect(
       parseShepherdConfig({
         version: 2,

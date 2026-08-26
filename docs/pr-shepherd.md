@@ -119,6 +119,7 @@ Configuration is strict, versioned YAML: unknown keys and unknown guidance event
 | `reviews.bots[]`                           | Configurable bot username, actionable and positive patterns, inbox gating, and feedback-attempt limit.                                 |
 | `features.authoredPRs.enabled`             | Monitor authored pull requests; default `true`.                                                                                        |
 | `features.trackedPRs.enabled`              | Enable durable claim controls and the tracked owned-PR lane; disabled by default.                                                      |
+| `features.trackedPRs.suppressDraftEvents`  | Suppress events for tracked drafts while continuing to baseline their state; default `false`.                                          |
 | `features.trackedPRs.releaseGate`          | `none` or `exact-head-attestation`; default `none`. The value is captured on each new claim generation.                                |
 | `features.trackedPRs.selectors`            | Optional generic auto-claim rules for exact labels or case-insensitive head-branch prefixes; default `[]`.                             |
 | `features.reviewInbox`                     | Optional assigned-review workflow with draft, repository, age, and case-insensitive head-regex exclusions; disabled by default.        |
@@ -154,7 +155,7 @@ Coordinator and endpoint overrides apply only when YAML already declares `delive
 
 ## Events and organization-specific guidance
 
-The engine emits generic facts for CI failures, review feedback, bot findings, human comments, approvals, conflicts, merges, staleness, tracked-PR claims and head changes, release attest/revoke/gate state, review dispatch/completion, scoped re-review, reviewer escalation, automation decisions, merge-queue eviction, `branch-behind`, and `branch-update-failed`. Production messages contain no hard-coded organization, repository, bot, CI-command, or worker-routing policy.
+The engine emits generic facts for CI failures, review feedback, bot findings, human comments, approvals, conflicts, merges, staleness, tracked-PR claims, draft-to-ready and head transitions, release attest/revoke/gate state, review dispatch/completion, scoped re-review, reviewer escalation, automation decisions, merge-queue eviction, `branch-behind`, and `branch-update-failed`. Production messages contain no hard-coded organization, repository, bot, CI-command, or worker-routing policy.
 
 In `merge-queue` mode Shepherd observes the current queue entry and latest GitHub removal event on
 every owned-PR poll. A ready PR with no active queue entry or persistent auto-merge is submitted
@@ -210,6 +211,7 @@ label qualifier. Head-prefix matching is case-insensitive and examines the pull 
 features:
   trackedPRs:
     enabled: true
+    suppressDraftEvents: true
     releaseGate: exact-head-attestation
     selectors:
       - { id: generated-branch, type: head-prefix, values: [generated/] }
@@ -224,6 +226,16 @@ may start a new generation. Non-exhaustive GitHub search is reported as a covera
 never interpreted as absence. Selectors remain observation-only with respect to provider merge
 automation: an exact-head candidate that is already queued or has persistent auto-merge remains
 unclaimed until an operator uses the explicit `claim` control to perform the safe handoff.
+
+Set `suppressDraftEvents: true` when tracked drafts should remain owned and continuously baselined
+without creating coordinator events. A draft claim is still durable, but its `tracked-pr-claimed`
+event and subsequent lifecycle events are suppressed. When an observed tracked PR changes from
+draft to ready, Shepherd emits `ready-for-review` exactly once for that transition. Its facts include
+the title, head branch and SHA, claim actor, and durable claim evidence (including selector matches
+for selector-created claims). Other actionable transitions observed in the same poll may emit their
+normal events. With the default `false`, draft events retain the pre-existing behavior; the
+`ready-for-review` transition is emitted regardless of the suppression setting and supports its own
+`guidance` entry.
 
 Control mutations require a caller-supplied idempotency key. Reusing the same key and arguments
 returns the stored result; reusing it for different arguments is rejected. Evidence is a generic

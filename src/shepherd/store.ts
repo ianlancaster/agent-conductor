@@ -469,7 +469,7 @@ export class SqliteShepherdStore implements TrackedClaimHandoffStore {
     request: TrackedControlRequest,
     details: PullRequestDetails,
     baseline: TrackedClaimBaseline,
-    event: ShepherdEvent,
+    event: ShepherdEvent | undefined,
     recipient?: string,
   ): TrackedControlResult {
     return withTransaction(this.db, () => {

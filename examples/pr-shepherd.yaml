@@ -24,6 +24,7 @@ features:
   authoredPRs: { enabled: true }
   trackedPRs:
     enabled: false
+    suppressDraftEvents: false
     releaseGate: none
     selectors: []
   reviewInbox:
