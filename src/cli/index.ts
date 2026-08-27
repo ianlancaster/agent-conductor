@@ -21,6 +21,7 @@ import { loadConfiguredIntegrations } from '../integrations/configured.js';
 import { subscribeFeed } from './feed.js';
 import { killFleetConductor } from './kill.js';
 import { ensureFleetScaffold } from './scaffold.js';
+import { waitForConductorStart } from './startup.js';
 import { DEFAULT_STATUS_INTERVAL, parseStatusInterval, runStatusDashboard } from './live-status.js';
 import { configureStatusLines } from './statusline.js';
 import { formatTerminalReply } from './terminal-format.js';
@@ -335,12 +336,14 @@ program
     const childPid = child.pid;
 
     // Wait for the /health endpoint so the console's first command works.
-    const deadline = Date.now() + 15_000;
-    while (!(await conductorUp(base))) {
-      if (Date.now() > deadline || child.exitCode !== null) {
-        throw new Error(`The conductor process failed to start — see ${outPath} and ${join(dataDir, 'conductor.log')}`);
-      }
-      await sleep(250);
+    const started = await waitForConductorStart({
+      conductorUp: () => conductorUp(base),
+      childExited: () => child.exitCode !== null,
+      sleep,
+      now: Date.now,
+    });
+    if (!started) {
+      throw new Error(`The conductor process failed to start — see ${outPath} and ${join(dataDir, 'conductor.log')}`);
     }
     log(`Conductor running (pid ${String(childPid)}, logs: ${outPath}).`);
     log('This terminal is the operator console — closing it stops the conductor. Type /help.');
