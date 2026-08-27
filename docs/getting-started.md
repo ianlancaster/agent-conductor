@@ -182,7 +182,7 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    output lives in `.conductor/data/conductor.out.log` (`conductor start --foreground` runs it
    visibly instead; `conductor console` attaches an extra console from elsewhere).
    The owning console waits up to 30 seconds for health while surviving terminal panes are
-   rediscovered and reconciled.
+   rediscovered and reconciled, with terminal observations bounded to three panes at a time.
    The console opened by `conductor start` owns its Conductor, so `Ctrl+C` or closing that console
    stops the core. If a core is already running, `conductor start` refuses to attach; use
    `conductor console` only when a deliberately non-owning additional console is wanted. If the

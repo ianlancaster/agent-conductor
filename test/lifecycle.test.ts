@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadSessionConfigs } from '../src/config/loader.js';
 import type { SessionConfig } from '../src/config/schema.js';
 import { Lifecycle } from '../src/core/lifecycle.js';
@@ -26,6 +26,7 @@ let defaultBypassPermissions: boolean;
 let defaultEfforts: { 'claude-code': string | undefined; 'codex': string | undefined };
 let lifecycleEvents: FakeEventPublisher;
 let recoveredActivity: PaneActivityEvidence;
+let activityObserver: (session: string) => Promise<PaneActivityEvidence>;
 
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-lc-'));
@@ -46,6 +47,7 @@ beforeEach(() => {
   defaultEfforts = { 'claude-code': undefined, 'codex': undefined };
   lifecycleEvents = new FakeEventPublisher();
   recoveredActivity = 'idle';
+  activityObserver = async () => recoveredActivity;
 
   lifecycle = new Lifecycle({
     store,
@@ -83,7 +85,7 @@ beforeEach(() => {
       supervisionResets.push(session);
       supervisionRunningStates.push(states.get(session)?.running === true);
     },
-    observeActivity: async () => recoveredActivity,
+    observeActivity: (session) => activityObserver(session),
     events: lifecycleEvents,
   });
   states.register('alpha', false);
@@ -224,6 +226,62 @@ describe('lifecycle edges', () => {
     expect(lifecycle.getPane('alpha')).toEqual(pane);
     expect(states.get('alpha')?.running).toBe(true);
     expect(states.get('alpha')?.activity).toBe('idle');
+  });
+
+  it('adopts and reconciles at most three surviving panes concurrently', async () => {
+    const alpha = sessions.get('alpha');
+    if (alpha === undefined) throw new Error('alpha missing');
+    const codenames = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta'];
+    for (const codename of codenames.slice(1)) {
+      sessions.set(codename, { ...alpha, codename });
+      states.register(codename, false);
+    }
+    const panes = await Promise.all(
+      codenames.map(async (codename) => [codename, await backend.createPane(codename, 'pane')] as const),
+    );
+
+    let active = 0;
+    let maximum = 0;
+    let releaseAdoption: (() => void) | undefined;
+    const adoptionGate = new Promise<void>((resolve) => {
+      releaseAdoption = resolve;
+    });
+    activityObserver = async () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await adoptionGate;
+      active -= 1;
+      return 'idle';
+    };
+
+    const adopting = lifecycle.adoptAll(panes);
+    await vi.waitFor(() => expect(active).toBe(3));
+    expect(maximum).toBe(3);
+    releaseAdoption?.();
+    await adopting;
+    expect(maximum).toBe(3);
+
+    const originalIsAlive = backend.isAlive.bind(backend);
+    active = 0;
+    maximum = 0;
+    let releaseReconciliation: (() => void) | undefined;
+    const reconciliationGate = new Promise<void>((resolve) => {
+      releaseReconciliation = resolve;
+    });
+    backend.isAlive = async (pane) => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await reconciliationGate;
+      active -= 1;
+      return originalIsAlive(pane);
+    };
+
+    const reconciling = lifecycle.reconcile();
+    await vi.waitFor(() => expect(active).toBe(3));
+    expect(maximum).toBe(3);
+    releaseReconciliation?.();
+    await reconciling;
+    expect(maximum).toBe(3);
   });
 
   it('keeps a surviving pane working when no composer is visible', async () => {

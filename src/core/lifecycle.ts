@@ -8,7 +8,7 @@ import type { SessionRuntime, IdentityEndpoints } from '../runtimes/types.js';
 import type { Store } from '../store/index.js';
 import type { TerminalBackend } from '../terminals/types.js';
 import type { SessionStateManager } from './state.js';
-import { truncate } from './utils.js';
+import { forEachConcurrent, truncate } from './utils.js';
 import type { PaneActivityEvidence, PaneRef, Placement } from './types.js';
 import { materializeWorkspace, type WorkspaceSource } from './workspace.js';
 import { isWorktree, removeWorktree } from './worktree.js';
@@ -34,6 +34,9 @@ export interface ProcessObservation {
   /** ISO timestamp for the most recent process-state determination. */
   observedAt: string;
 }
+
+/** Bound terminal automation during multi-pane recovery, especially through iTerm Apple Events. */
+export const PANE_RECOVERY_CONCURRENCY = 3;
 
 export interface SpawnOptions {
   path?: string;
@@ -141,6 +144,13 @@ export class Lifecycle {
     }
   }
 
+  /** Adopt a rediscovered pane set with bounded terminal-observation concurrency. */
+  async adoptAll(panes: Iterable<readonly [string, PaneRef]>): Promise<void> {
+    await forEachConcurrent(panes, PANE_RECOVERY_CONCURRENCY, async ([codename, pane]) => {
+      await this.adopt(codename, pane);
+    });
+  }
+
   /**
    * Reconcile conductor state with both layers of terminal liveness: the pane
    * may still exist after its Claude/Codex process has returned to the shell.
@@ -148,9 +158,9 @@ export class Lifecycle {
    */
   async reconcile(codename?: string): Promise<void> {
     const targets = codename === undefined ? [...this.panes.keys()] : [codename];
-    for (const target of targets) {
+    await forEachConcurrent(targets, PANE_RECOVERY_CONCURRENCY, async (target) => {
       const pane = this.panes.get(target);
-      if (pane === undefined || !this.deps.states.has(target)) continue;
+      if (pane === undefined || !this.deps.states.has(target)) return;
 
       const paneAlive = await this.safePaneAlive(pane);
       if (paneAlive === false) {
@@ -159,11 +169,11 @@ export class Lifecycle {
           log().info('lifecycle', `${target}: pane ${pane.id} ended — marking stopped`);
         }
         this.clearSession(target, 'pane-missing');
-        continue;
+        return;
       }
       if (paneAlive === undefined) {
         this.observeProcess(target, null);
-        continue;
+        return;
       }
 
       const sessionActive = await this.safeSessionActive(pane);
@@ -180,7 +190,7 @@ export class Lifecycle {
         }
         await this.deps.reconcileActivity?.(target, pane);
       }
-    }
+    });
   }
 
   start(codename: string, opts: StartOptions = {}): Promise<string> {

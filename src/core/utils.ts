@@ -52,3 +52,35 @@ export function truncate(text: string, max: number): string {
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/** Run independent async work with a fixed upper bound and no orphaned workers after failure. */
+export async function forEachConcurrent<T>(
+  items: Iterable<T>,
+  concurrency: number,
+  action: (item: T) => Promise<void>,
+): Promise<void> {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new RangeError('Concurrency must be a positive integer.');
+  }
+  const pending = [...items];
+  let nextIndex = 0;
+  let failed = false;
+  let firstError: unknown;
+  const worker = async (): Promise<void> => {
+    while (!failed) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= pending.length) return;
+      const item = pending[index] as T;
+      try {
+        await action(item);
+      } catch (error) {
+        if (!failed) firstError = error;
+        failed = true;
+      }
+    }
+  };
+  const workerCount = Math.min(concurrency, pending.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  if (failed) throw firstError;
+}

@@ -597,11 +597,11 @@ export class Supervisor {
 
     // Re-adopt panes that survived a conductor restart.
     try {
-      for (const [codename, pane] of await this.backend.rediscover()) {
-        if (this.sessions.has(codename)) {
-          await this.lifecycle.adopt(codename, pane);
-          void this.retitle(codename);
-        }
+      const discovered = await this.backend.rediscover();
+      const configuredPanes = [...discovered].filter(([codename]) => this.sessions.has(codename));
+      await this.lifecycle.adoptAll(configuredPanes);
+      for (const [codename] of configuredPanes) {
+        void this.retitle(codename);
       }
       // Rediscovery proves that panes survived, not that their agent processes
       // did. A pane may now be an idle shell after Ctrl-C while the conductor
