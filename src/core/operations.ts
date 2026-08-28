@@ -699,7 +699,7 @@ export class ConductorOperations {
           if (visible === undefined) {
             await this.deps.lifecycle.reconcile();
           } else {
-            for (const codename of visible) await this.deps.lifecycle.reconcile(codename);
+            await this.deps.lifecycle.reconcile(visible);
           }
           return this.deps.statusReport(undefined, visible);
         },

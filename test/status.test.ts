@@ -7,6 +7,7 @@ import {
   formatSessionLine,
   resolvedSessionEffort,
   resolvedSessionModel,
+  statusReport,
 } from '../src/core/status.js';
 import type { SessionState } from '../src/core/types.js';
 
@@ -198,5 +199,48 @@ describe('resolvedSessionEffort', () => {
 
   it('leaves effort selection to the runtime when no override is configured', () => {
     expect(resolvedSessionEffort(session, 'codex', {})).toBeUndefined();
+  });
+});
+
+describe('canonical status compatibility', () => {
+  it('keeps the detailed status JSON keys and formatting byte-for-byte stable', () => {
+    const state = sessionState({ tag: 'qc', auto: true, paused: true, pausedAt: '2026-08-28T19:00:00.000Z' });
+    expect(
+      statusReport(
+        {
+          sessions: () =>
+            new Map([
+              ['alpha', { codename: 'alpha', repo: '/definitely/not/a/repository', runtime: 'codex' as const }],
+            ]),
+          getState: () => state,
+          runtimeFor: () => 'codex',
+          modelFor: () => 'gpt-test',
+          effortFor: () => 'high',
+          sentinelCodename: () => 'alpha',
+          processObservation: () => ({ active: true, observedAt: '2026-08-28T20:00:00.000Z' }),
+        },
+        'alpha',
+        { shepherdRecipient: 'alpha' },
+      ),
+    ).toBe(`{
+  "codename": "alpha",
+  "path": "/definitely/not/a/repository",
+  "branch": null,
+  "runtime": "codex",
+  "model": "gpt-test",
+  "effort": "high",
+  "auto": true,
+  "paused": true,
+  "pausedAt": "2026-08-28T19:00:00.000Z",
+  "tag": "qc",
+  "running": true,
+  "processActive": true,
+  "processObservedAt": "2026-08-28T20:00:00.000Z",
+  "ready": true,
+  "activity": "working",
+  "agentProject": false,
+  "isSentinel": true,
+  "isShepherdRecipient": true
+}`);
   });
 });

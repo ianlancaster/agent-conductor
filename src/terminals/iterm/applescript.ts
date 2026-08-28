@@ -26,8 +26,9 @@ const ESC = '\u001b';
  * Run an AppleScript via osascript without blocking the event loop.
  * Returns raw stdout (callers trim as needed).
  */
-export async function runOsa(script: string): Promise<string> {
-  const { stdout } = await execFileAsync('osascript', ['-e', script], {
+export async function runOsa(script: string, args: readonly string[] = []): Promise<string> {
+  const osaArgs = args.length === 0 ? ['-e', script] : ['-e', script, '--', ...args];
+  const { stdout } = await execFileAsync('osascript', osaArgs, {
     maxBuffer: OSA_MAX_BUFFER,
     timeout: OSA_TIMEOUT_MS,
   });
@@ -454,6 +455,9 @@ export function buildSplitPaneScript(
  * that keeps one window's churn out of another window's answer.
  */
 const VANISHED_ELEMENT_ERRORS = '{-1719, -1728}';
+export const LIVENESS_SNAPSHOT_HEADER = 'CONDUCTOR_ITERM_LIVENESS_V1';
+const ITERM_SESSION_ID_PATTERN = /^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$/;
+const ITERM_TTY_PATTERN = /^\/dev\/(?:tty|cu)[A-Za-z0-9._-]+$/;
 
 /**
  * Enumerate every session of every tab of every window, running `body` with `s`
@@ -505,6 +509,87 @@ export function buildInSessionScript(sessionId: string, operations: string, retu
       return "${SESSION_NOT_FOUND_RESULT}"
     end tell
   `;
+}
+
+export type ITermLivenessRecord =
+  | { sessionId: string; activity: { state: 'not-requested' } }
+  | { sessionId: string; activity: { state: 'observed'; tty: string } }
+  | { sessionId: string; activity: { state: 'unknown' } };
+
+export function isITermSessionId(value: string): boolean {
+  return ITERM_SESSION_ID_PATTERN.test(value);
+}
+
+/**
+ * Build one global iTerm traversal for a requested pane set. The activity form
+ * reads tty only for requested ids; the existence-only form never touches it.
+ */
+export function buildLivenessSnapshotScript(includeSessionActivity: boolean): string {
+  const record = includeSessionActivity
+    ? `set ttyValue to ""
+              set ttyKnown to true
+              try
+                tell s to set ttyValue to (tty as string)
+              on error
+                set ttyKnown to false
+              end try
+              if ttyKnown and ttyValue is not "" then
+                set out to out & "PRESENT" & (ASCII character 9) & sid & (ASCII character 9) & "OBSERVED" & (ASCII character 9) & ttyValue & linefeed
+              else
+                set out to out & "PRESENT" & (ASCII character 9) & sid & (ASCII character 9) & "UNKNOWN" & linefeed
+              end if`
+    : `set out to out & "PRESENT" & (ASCII character 9) & sid & (ASCII character 9) & "NOT_REQUESTED" & linefeed`;
+  return `
+    on run requestedIds
+      tell application "iTerm2"
+      set out to "${LIVENESS_SNAPSHOT_HEADER}" & linefeed
+      set recordCount to 0
+      ${forEachSession(`set sid to (id of s as string)
+            if requestedIds contains sid then
+              ${record}
+              set recordCount to recordCount + 1
+            end if`)}
+        return out & "END" & (ASCII character 9) & (recordCount as string)
+      end tell
+    end run
+  `;
+}
+
+/** Parse the exact, counted liveness envelope; reject truncation and garbage. */
+export function parseLivenessSnapshotOutput(output: string): ReadonlyMap<string, ITermLivenessRecord> {
+  const lines = output.replace(/\r\n/g, '\n').split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  if (lines[0] !== LIVENESS_SNAPSHOT_HEADER || lines.length < 2) {
+    throw new Error('iTerm returned an invalid liveness snapshot header');
+  }
+  const trailer = /^END\t(\d+)$/.exec(lines.at(-1) ?? '');
+  if (trailer === null) throw new Error('iTerm returned an invalid liveness snapshot trailer');
+  const records = new Map<string, ITermLivenessRecord>();
+  let recordCount = 0;
+  for (const line of lines.slice(1, -1)) {
+    recordCount += 1;
+    const fields = line.split('\t');
+    const [kind, sessionId, activity, tty, ...extra] = fields;
+    if (kind !== 'PRESENT' || sessionId === undefined || !isITermSessionId(sessionId)) {
+      throw new Error('iTerm returned a malformed liveness snapshot record');
+    }
+    if (records.has(sessionId)) {
+      records.set(sessionId, { sessionId, activity: { state: 'unknown' } });
+    } else if (activity === 'NOT_REQUESTED' && fields.length === 3) {
+      records.set(sessionId, { sessionId, activity: { state: 'not-requested' } });
+    } else if (activity === 'OBSERVED' && tty !== undefined && ITERM_TTY_PATTERN.test(tty) && fields.length === 4) {
+      records.set(sessionId, { sessionId, activity: { state: 'observed', tty } });
+    } else if (activity === 'UNKNOWN' && fields.length === 3) {
+      records.set(sessionId, { sessionId, activity: { state: 'unknown' } });
+    } else {
+      // Framing and UUID are trustworthy, so isolate a malformed activity or
+      // tty to this record. A duplicate is handled the same way above.
+      void extra;
+      records.set(sessionId, { sessionId, activity: { state: 'unknown' } });
+    }
+  }
+  if (recordCount !== Number(trailer[1])) throw new Error('iTerm returned a truncated liveness snapshot');
+  return records;
 }
 
 /**

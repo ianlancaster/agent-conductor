@@ -6,7 +6,8 @@ import { log } from '../logger.js';
 import { isValidCodename, type SessionConfig, type SpawnTemplate } from '../config/schema.js';
 import type { SessionRuntime, IdentityEndpoints } from '../runtimes/types.js';
 import type { Store } from '../store/index.js';
-import type { TerminalBackend } from '../terminals/types.js';
+import type { TerminalBackend, TerminalLivenessObservation } from '../terminals/types.js';
+import { observeLiveness } from '../terminals/liveness.js';
 import type { SessionStateManager } from './state.js';
 import { forEachConcurrent, truncate } from './utils.js';
 import type { PaneActivityEvidence, PaneRef, Placement } from './types.js';
@@ -156,40 +157,66 @@ export class Lifecycle {
    * may still exist after its Claude/Codex process has returned to the shell.
    * Idle panes stay mapped so a later start/continue can reuse them.
    */
-  async reconcile(codename?: string): Promise<void> {
-    const targets = codename === undefined ? [...this.panes.keys()] : [codename];
-    await forEachConcurrent(targets, PANE_RECOVERY_CONCURRENCY, async (target) => {
+  async reconcile(codename?: string | Iterable<string>): Promise<void> {
+    const targets =
+      codename === undefined ? [...this.panes.keys()] : typeof codename === 'string' ? [codename] : [...codename];
+    const observable = targets.flatMap((target) => {
       const pane = this.panes.get(target);
-      if (pane === undefined || !this.deps.states.has(target)) return;
-
-      const paneAlive = await this.safePaneAlive(pane);
-      if (paneAlive === false) {
-        this.observeProcess(target, false);
+      return pane === undefined || !this.deps.states.has(target) ? [] : [{ target, pane }];
+    });
+    const applyObservation = async (
+      { target, pane }: { target: string; pane: PaneRef },
+      observation: TerminalLivenessObservation,
+    ): Promise<void> => {
+      if (observation.pane === 'missing') {
+        this.observeProcess(target, false, observation.observedAt);
         if (this.deps.states.get(target)?.running === true) {
           log().info('lifecycle', `${target}: pane ${pane.id} ended — marking stopped`);
         }
         this.clearSession(target, 'pane-missing');
         return;
       }
-      if (paneAlive === undefined) {
-        this.observeProcess(target, null);
+      if (observation.pane === 'unknown') {
+        this.observeProcess(target, null, observation.observedAt);
         return;
       }
 
-      const sessionActive = await this.safeSessionActive(pane);
-      this.observeProcess(target, sessionActive ?? null);
-      if (sessionActive === false) {
+      const sessionActive = observation.activity.state === 'observed' ? observation.activity.active : undefined;
+      this.observeProcess(target, sessionActive ?? null, observation.observedAt);
+      if (sessionActive === undefined) {
+        log().warn('lifecycle', `${pane.id}: could not inspect foreground process`);
+      } else if (sessionActive === false) {
         if (this.deps.states.get(target)?.running === true) {
           log().info('lifecycle', `${target}: runtime exited in pane ${pane.id} — keeping pane for restart`);
           this.clearSession(target, 'runtime-exit', true);
         }
-      } else if (sessionActive === true) {
+      } else {
         if (this.deps.states.get(target)?.running !== true) {
           await this.markRunning(target, pane);
           log().info('lifecycle', `${target}: found active runtime in pane ${pane.id}`);
         }
         await this.deps.reconcileActivity?.(target, pane);
       }
+    };
+    if (this.deps.backend.snapshotLiveness === undefined) {
+      await forEachConcurrent(observable, PANE_RECOVERY_CONCURRENCY, async (entry) => {
+        const snapshot = await observeLiveness(this.deps.backend, [entry.pane], { includeSessionActivity: true });
+        await applyObservation(
+          entry,
+          snapshot.get(entry.pane.id) ?? { pane: 'unknown', observedAt: new Date().toISOString() },
+        );
+      });
+      return;
+    }
+    const snapshot = await observeLiveness(
+      this.deps.backend,
+      observable.map(({ pane }) => pane),
+      { includeSessionActivity: true },
+      PANE_RECOVERY_CONCURRENCY,
+    );
+    await forEachConcurrent(observable, PANE_RECOVERY_CONCURRENCY, async ({ target, pane }) => {
+      const observation = snapshot.get(pane.id) ?? { pane: 'unknown' as const, observedAt: new Date().toISOString() };
+      await applyObservation({ target, pane }, observation);
     });
   }
 
@@ -212,19 +239,20 @@ export class Lifecycle {
 
     let existingPane = await this.findPane(codename);
     if (existingPane !== undefined) {
-      const paneAlive = await this.safePaneAlive(existingPane);
-      if (paneAlive === false) {
+      const observation = (
+        await observeLiveness(this.deps.backend, [existingPane], { includeSessionActivity: true })
+      ).get(existingPane.id);
+      if (observation?.pane === 'missing') {
         log().warn('lifecycle', `${codename}: remembered pane is dead — creating a replacement`);
         this.clearSession(codename, 'pane-missing');
         existingPane = undefined;
-      } else if (paneAlive === true) {
-        const sessionActive = await this.safeSessionActive(existingPane);
-        if (sessionActive === undefined) {
+      } else if (observation?.pane === 'alive') {
+        if (observation.activity.state !== 'observed') {
           // Launching a second runtime into a pane that might still host one is
           // worse than reporting that the process inspection was inconclusive.
           return `${codename} has a pane, but its runtime status could not be determined.`;
         }
-        if (sessionActive) {
+        if (observation.activity.active) {
           if (this.deps.states.get(codename)?.running !== true) await this.markRunning(codename, existingPane);
           return `${codename} is already running.`;
         }
@@ -575,27 +603,7 @@ export class Lifecycle {
     return this.panes.get(codename);
   }
 
-  private async safePaneAlive(pane: PaneRef): Promise<boolean | undefined> {
-    try {
-      return await this.deps.backend.isAlive(pane);
-    } catch {
-      return undefined;
-    }
-  }
-
-  private async safeSessionActive(pane: PaneRef): Promise<boolean | undefined> {
-    try {
-      return await this.deps.backend.isSessionActive(pane);
-    } catch (err) {
-      log().warn(
-        'lifecycle',
-        `${pane.id}: could not inspect foreground process: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return undefined;
-    }
-  }
-
-  private observeProcess(codename: string, active: boolean | null): void {
-    this.processObservations.set(codename, { active, observedAt: new Date().toISOString() });
+  private observeProcess(codename: string, active: boolean | null, observedAt = new Date().toISOString()): void {
+    this.processObservations.set(codename, { active, observedAt });
   }
 }

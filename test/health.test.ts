@@ -292,6 +292,32 @@ describe('event-driven signals', () => {
   });
 });
 
+describe('heartbeat liveness snapshots', () => {
+  it('observes every active pane in one activity snapshot', async () => {
+    const betaPane = await backend.createPane('beta', 'pane');
+    backend.panes.get(betaPane.id)!.sessionActive = true;
+    monitor.stop();
+    monitor = new HealthMonitor({
+      config: CONFIG,
+      backend,
+      runtimeFor: () => runtime,
+      getPane: (session) =>
+        session === 'alpha' ? { backend: 'fake', id: paneId } : session === 'beta' ? betaPane : undefined,
+      getActiveSessions: () => ['alpha', 'beta'],
+      observeActivity: async () => 'idle',
+      observeInputState: async () => 'clear',
+      onStall: () => undefined,
+      onWorking: () => undefined,
+      onSessionEnd: () => undefined,
+      logEvent: () => undefined,
+    });
+
+    await monitor.heartbeat();
+
+    expect(backend.snapshotCalls).toEqual([{ paneIds: [paneId, betaPane.id], includeSessionActivity: true }]);
+  });
+});
+
 describe('fallback pane-diff watchdog', () => {
   it('reports a live foreground runtime before any lifecycle event arrives', async () => {
     await monitor.heartbeat();

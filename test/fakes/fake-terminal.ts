@@ -4,6 +4,8 @@ import type {
   DeliveryCapture,
   TerminalBackend,
   TerminalCapabilities,
+  TerminalLivenessObservation,
+  TerminalLivenessSnapshotOptions,
 } from '../../src/terminals/types.js';
 
 export interface FakePane {
@@ -33,6 +35,7 @@ export class FakeTerminalBackend implements TerminalBackend {
    * fact from a pane that is gone, and callers must not conflate them.
    */
   readonly unobservable = new Set<string>();
+  readonly snapshotCalls: { paneIds: string[]; includeSessionActivity: boolean }[] = [];
   private counter = 0;
 
   async init(): Promise<void> {
@@ -93,6 +96,28 @@ export class FakeTerminalBackend implements TerminalBackend {
   async isSessionActive(pane: PaneRef): Promise<boolean> {
     const p = this.panes.get(pane.id);
     return p?.alive === true && p.sessionActive;
+  }
+
+  async snapshotLiveness(
+    panes: readonly PaneRef[],
+    options: TerminalLivenessSnapshotOptions,
+  ): Promise<ReadonlyMap<string, TerminalLivenessObservation>> {
+    this.snapshotCalls.push({
+      paneIds: panes.map((pane) => pane.id),
+      includeSessionActivity: options.includeSessionActivity,
+    });
+    const observedAt = new Date().toISOString();
+    return new Map(
+      panes.map((pane) => {
+        if (this.unobservable.has(pane.id)) return [pane.id, { pane: 'unknown', observedAt }] as const;
+        const state = this.panes.get(pane.id);
+        if (state?.alive !== true) return [pane.id, { pane: 'missing', observedAt }] as const;
+        const activity = options.includeSessionActivity
+          ? ({ state: 'observed', active: state.sessionActive } as const)
+          : ({ state: 'not-requested' } as const);
+        return [pane.id, { pane: 'alive', activity, observedAt }] as const;
+      }),
+    );
   }
 
   async kill(pane: PaneRef): Promise<void> {

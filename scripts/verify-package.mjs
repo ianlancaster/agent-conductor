@@ -160,7 +160,8 @@ try {
   writeFileSync(
     join(consumer, 'index.ts'),
     `import { Supervisor, type ChannelAdapter, type ConductorEventSubscriber, type ConductorIntegration, type ConductorIntegrationFactory, type RunbookManifest, type SessionRuntime, type TerminalBackend } from 'agent-conductor';\n` +
-      `declare const channel: ChannelAdapter; declare const subscriber: ConductorEventSubscriber; declare const integration: ConductorIntegration; declare const runbook: RunbookManifest; declare const runtime: SessionRuntime; declare const terminal: TerminalBackend; void runbook;\n` +
+      `declare const channel: ChannelAdapter; declare const subscriber: ConductorEventSubscriber; declare const integration: ConductorIntegration; declare const runbook: RunbookManifest; declare const runtime: SessionRuntime; void runbook;\n` +
+      `const terminal: TerminalBackend = { name: 'legacy', capabilities: { headless: false }, init: async () => {}, createPane: async () => ({ backend: 'legacy', id: 'pane' }), launch: async () => {}, run: async () => {}, capture: async () => '', isAlive: async () => true, isSessionActive: async () => true, kill: async () => {}, rename: async () => {}, rediscover: async () => new Map() };\n` +
       `const factory: ConductorIntegrationFactory = ({ fleetDir, options }) => { void fleetDir; void options; return integration; }; void factory;\n` +
       `new Supervisor('.', { channels: [channel], eventSubscribers: [subscriber], integrations: [integration], runtimes: [runtime], terminalBackend: terminal });\n`,
   );

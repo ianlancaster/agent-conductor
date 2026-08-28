@@ -1,13 +1,19 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { PaneRef, Placement } from '../../core/types.js';
 import { sleep } from '../../core/utils.js';
 import { log } from '../../logger.js';
 import type { Store } from '../../store/index.js';
-import type { DeliveryCapture, TerminalBackend, TerminalCapabilities } from '../types.js';
-import { ttyHasForegroundJob } from '../process.js';
+import type {
+  DeliveryCapture,
+  TerminalBackend,
+  TerminalCapabilities,
+  TerminalLivenessObservation,
+  TerminalLivenessSnapshotOptions,
+} from '../types.js';
+import { ttyHasForegroundJob, ttysHaveForegroundJobs } from '../process.js';
 import {
   awaitLaunchReadiness,
   buildCloseSessionScript,
@@ -18,6 +24,7 @@ import {
   buildNameTtySessionScript,
   buildInSessionScript,
   buildListSessionIdsScript,
+  buildLivenessSnapshotScript,
   buildRediscoverScript,
   buildRevealSessionScript,
   buildSessionTtyScript,
@@ -31,6 +38,8 @@ import {
   encodeSessionVar,
   escapeAppleScript,
   parseRediscoveryOutput,
+  parseLivenessSnapshotOutput,
+  isITermSessionId,
   parseWindowCreateResult,
   runOsa,
   SESSION_NOT_FOUND_RESULT,
@@ -168,12 +177,15 @@ export class ITermBackend implements TerminalBackend {
       // creation fails rather than opening a second pane that may be a
       // duplicate of a live one. Failing to start is recoverable; two panes
       // claiming one identity is not.
-      if (await this.sessionAlive(existing)) {
+      const pane = { backend: this.name, id: existing };
+      const observation = (await this.snapshotLiveness([pane], { includeSessionActivity: false })).get(existing);
+      if (observation?.pane === 'alive') {
         log().debug('iterm', `${session}: pane already exists, reusing (session=${existing.slice(0, 8)})`);
-        return { backend: this.name, id: existing };
+        return pane;
       }
-      this.panes.delete(session);
-      this.persistPanes();
+      if (observation?.pane !== 'missing') {
+        throw new Error(`iTerm session ${existing} could not be observed`);
+      }
     }
 
     log().info('iterm', `${session}: creating ${placement}`);
@@ -264,6 +276,107 @@ export class ITermBackend implements TerminalBackend {
     const tty = await this.sessionTty(pane.id);
     if (tty === null) throw new Error(`iTerm session ${pane.id} has no tty`);
     return ttyHasForegroundJob(tty);
+  }
+
+  async snapshotLiveness(
+    panes: readonly PaneRef[],
+    options: TerminalLivenessSnapshotOptions,
+  ): Promise<ReadonlyMap<string, TerminalLivenessObservation>> {
+    const unique = [...new Map(panes.map((pane) => [pane.id, pane])).values()];
+    if (unique.length === 0) return new Map();
+    if (unique.some((pane) => pane.backend !== this.name)) {
+      throw new Error('Cannot inspect iTerm liveness for panes from another backend');
+    }
+    const requestedIds = unique.map((pane) => pane.id);
+    if (requestedIds.some((id) => !isITermSessionId(id))) {
+      throw new Error('Cannot inspect iTerm liveness for an invalid session id');
+    }
+    const requested = new Set(requestedIds);
+    const firstOutput = await runOsa(buildLivenessSnapshotScript(options.includeSessionActivity), requestedIds);
+    const firstObservedAt = new Date().toISOString();
+    const first = new Map(parseLivenessSnapshotOutput(firstOutput));
+    const paneObservedAt = new Map(requestedIds.map((id) => [id, firstObservedAt]));
+    for (const [id, record] of first) {
+      if (!requested.has(id)) throw new Error(`iTerm returned an unrequested liveness record for ${id}`);
+      if (options.includeSessionActivity === (record.activity.state === 'not-requested')) {
+        throw new Error(`iTerm returned the wrong liveness record variant for ${id}`);
+      }
+    }
+
+    const missingCandidates = requestedIds.filter((id) => !first.has(id));
+    const confirmedMissing = new Set<string>();
+    const unknown = new Set<string>();
+    if (missingCandidates.length > 0) {
+      await sleep(LIVENESS_CONFIRM_DELAY_MS);
+      try {
+        const confirmationOutput = await runOsa(buildLivenessSnapshotScript(false), missingCandidates);
+        const confirmationObservedAt = new Date().toISOString();
+        const confirmation = parseLivenessSnapshotOutput(confirmationOutput);
+        const candidates = new Set(missingCandidates);
+        for (const [id, record] of confirmation) {
+          if (!candidates.has(id) || record.activity.state !== 'not-requested') {
+            throw new Error(`iTerm returned an invalid confirmation record for ${id}`);
+          }
+        }
+        for (const id of missingCandidates) {
+          paneObservedAt.set(id, confirmationObservedAt);
+          if (confirmation.has(id)) first.set(id, { sessionId: id, activity: { state: 'unknown' } });
+          else confirmedMissing.add(id);
+        }
+      } catch {
+        const confirmationObservedAt = new Date().toISOString();
+        for (const id of missingCandidates) {
+          paneObservedAt.set(id, confirmationObservedAt);
+          unknown.add(id);
+        }
+      }
+    }
+
+    const observedTtys: string[] = [];
+    for (const record of first.values()) {
+      if (record.activity.state === 'observed') observedTtys.push(record.activity.tty);
+    }
+    let foreground = new Map<string, boolean>();
+    let processObservedAt: string | undefined;
+    if (observedTtys.length > 0) {
+      try {
+        foreground = new Map(await ttysHaveForegroundJobs(observedTtys));
+      } catch {
+        // A failed batch process observation makes activity unknown for every
+        // live record in this cycle; pane existence remains usable.
+      }
+      processObservedAt = new Date().toISOString();
+    }
+
+    const result = new Map<string, TerminalLivenessObservation>();
+    for (const id of requestedIds) {
+      const observedAt = paneObservedAt.get(id) ?? firstObservedAt;
+      if (unknown.has(id)) {
+        result.set(id, { pane: 'unknown', observedAt });
+        continue;
+      }
+      if (confirmedMissing.has(id)) {
+        result.set(id, { pane: 'missing', observedAt });
+        continue;
+      }
+      const record = first.get(id);
+      if (record === undefined) {
+        result.set(id, { pane: 'unknown', observedAt });
+      } else if (record.activity.state === 'not-requested') {
+        result.set(id, { pane: 'alive', activity: { state: 'not-requested' }, observedAt });
+      } else if (record.activity.state === 'unknown') {
+        result.set(id, { pane: 'alive', activity: { state: 'unknown' }, observedAt });
+      } else {
+        const active = foreground.get(basename(record.activity.tty));
+        result.set(id, {
+          pane: 'alive',
+          activity: active === undefined ? { state: 'unknown' } : { state: 'observed', active },
+          observedAt: processObservedAt ?? observedAt,
+        });
+      }
+    }
+    this.forgetSessions(confirmedMissing);
+    return result;
   }
 
   async kill(pane: PaneRef): Promise<void> {
@@ -541,9 +654,16 @@ export class ITermBackend implements TerminalBackend {
   }
 
   private forgetSession(sessionId: string): void {
+    this.forgetSessions([sessionId]);
+  }
+
+  /** Compare exact ids and persist at most once for a batch of confirmed absences. */
+  private forgetSessions(sessionIds: Iterable<string>): void {
+    const missing = new Set(sessionIds);
+    if (missing.size === 0) return;
     let changed = false;
     for (const [session, paneSessionId] of [...this.panes]) {
-      if (paneSessionId === sessionId) {
+      if (missing.has(paneSessionId)) {
         this.panes.delete(session);
         changed = true;
       }

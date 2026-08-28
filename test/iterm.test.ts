@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
   CLEAR_INPUT_LINE_OPERATIONS,
+  LIVENESS_SNAPSHOT_HEADER,
   SESSION_USER_VAR,
   SESSION_NOT_FOUND_RESULT,
   awaitLaunchReadiness,
@@ -16,6 +17,7 @@ import {
   buildInSessionScript,
   buildUnchangedContentsGuard,
   buildListSessionIdsScript,
+  buildLivenessSnapshotScript,
   buildRediscoverScript,
   buildSessionTtyScript,
   buildSplitPaneScript,
@@ -28,6 +30,7 @@ import {
   escapeAppleScript,
   interpretLivenessResult,
   parseRediscoveryOutput,
+  parseLivenessSnapshotOutput,
   parseWindowCreateResult,
   sessionSetup,
   shellQuote,
@@ -461,6 +464,66 @@ describe('confirmLiveness', () => {
         async () => undefined,
       ),
     ).rejects.toThrow('iTerm unavailable');
+  });
+});
+
+describe('batch liveness envelope', () => {
+  const sessionA = '11111111-1111-4111-8111-111111111111';
+  const sessionB = '22222222-2222-4222-8222-222222222222';
+  it('builds distinct existence-only and activity traversals', () => {
+    const existence = buildLivenessSnapshotScript(false);
+    const activity = buildLivenessSnapshotScript(true);
+    expect(existence).toContain('CONDUCTOR_ITERM_LIVENESS_V1');
+    expect(existence).toContain('on run requestedIds');
+    expect(existence).not.toContain('"A"');
+    expect(existence).toContain('NOT_REQUESTED');
+    expect(existence).toContain('ASCII character 9');
+    expect(existence).not.toContain('& tab &');
+    expect(existence).not.toContain('tty as string');
+    expect(activity).toContain('tty as string');
+    expect(activity).toContain('OBSERVED');
+    expect(activity).toContain('UNKNOWN');
+    for (const script of [existence, activity]) {
+      expect(script).toContain('set sessionList to every session of t');
+      expect(script.match(/repeat with w in windows/g)).toHaveLength(1);
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin')('passes requested ids as argv rather than source interpolation', () => {
+    const output = execFileSync('osascript', ['-e', 'on run argv\nreturn item 1 of argv\nend run', '--', sessionA], {
+      encoding: 'utf8',
+    });
+    expect(output.trim()).toBe(sessionA);
+  });
+
+  it('parses counted typed records including a valid empty snapshot', () => {
+    expect(parseLivenessSnapshotOutput('CONDUCTOR_ITERM_LIVENESS_V1\nEND\t0\n').size).toBe(0);
+    expect([
+      ...parseLivenessSnapshotOutput(
+        `CONDUCTOR_ITERM_LIVENESS_V1\nPRESENT\t${sessionA}\tOBSERVED\t/dev/ttys001\nPRESENT\t${sessionB}\tUNKNOWN\nEND\t2`,
+      ).values(),
+    ]).toEqual([
+      { sessionId: sessionA, activity: { state: 'observed', tty: '/dev/ttys001' } },
+      { sessionId: sessionB, activity: { state: 'unknown' } },
+    ]);
+  });
+
+  it.each([
+    '',
+    'CONDUCTOR_ITERM_LIVENESS_V1',
+    `CONDUCTOR_ITERM_LIVENESS_V1\nPRESENT\t${sessionA}\tNOT_REQUESTED`,
+    `CONDUCTOR_ITERM_LIVENESS_V1\nPRESENT\t${sessionA}\tNOT_REQUESTED\nEND\t2`,
+    'CONDUCTOR_ITERM_LIVENESS_V1\nGARBAGE\nEND\t1',
+  ])('rejects malformed or truncated output: %j', (output) => {
+    expect(() => parseLivenessSnapshotOutput(output)).toThrow();
+  });
+
+  it('isolates duplicate or malformed typed records when their UUID remains trustworthy', () => {
+    const duplicate = parseLivenessSnapshotOutput(
+      `${LIVENESS_SNAPSHOT_HEADER}\nPRESENT\t${sessionA}\tNOT_REQUESTED\nPRESENT\t${sessionA}\tNOT_REQUESTED\nPRESENT\t${sessionB}\tOBSERVED\tnot-a-tty\nEND\t3`,
+    );
+    expect(duplicate.get(sessionA)).toEqual({ sessionId: sessionA, activity: { state: 'unknown' } });
+    expect(duplicate.get(sessionB)).toEqual({ sessionId: sessionB, activity: { state: 'unknown' } });
   });
 });
 

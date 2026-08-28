@@ -1,6 +1,8 @@
 import { log } from '../logger.js';
 import type { InputState, SessionRuntime } from '../runtimes/types.js';
 import type { TerminalBackend } from '../terminals/types.js';
+import type { TerminalLivenessObservation } from '../terminals/types.js';
+import { observeLiveness } from '../terminals/liveness.js';
 import type { PaneActivityEvidence, PaneRef, RuntimeEvent, StallKind } from './types.js';
 
 export interface StallInfo {
@@ -181,9 +183,41 @@ export class HealthMonitor {
   }
 
   private async runHeartbeat(): Promise<void> {
-    for (const session of this.deps.getActiveSessions()) {
+    const sessions = this.deps.getActiveSessions();
+    if (this.deps.backend.snapshotLiveness === undefined) {
+      for (const session of sessions) {
+        try {
+          const pane = this.deps.getPane(session);
+          if (pane === undefined) continue;
+          const snapshot = await observeLiveness(this.deps.backend, [pane], { includeSessionActivity: true });
+          await this.checkSession(
+            session,
+            snapshot.get(pane.id) ?? { pane: 'unknown', observedAt: new Date().toISOString() },
+          );
+        } catch (err) {
+          log().warn(
+            'health',
+            `${session}: heartbeat check failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      return;
+    }
+    const panes = new Map(
+      sessions.flatMap((session) => {
+        const pane = this.deps.getPane(session);
+        return pane === undefined ? [] : [[session, pane] as const];
+      }),
+    );
+    const snapshot = await observeLiveness(this.deps.backend, [...panes.values()], { includeSessionActivity: true });
+    for (const session of sessions) {
       try {
-        await this.checkSession(session);
+        const pane = panes.get(session);
+        if (pane === undefined) continue;
+        await this.checkSession(
+          session,
+          snapshot.get(pane.id) ?? { pane: 'unknown', observedAt: new Date().toISOString() },
+        );
       } catch (err) {
         log().warn('health', `${session}: heartbeat check failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -306,16 +340,29 @@ export class HealthMonitor {
     this.idleTimers.clear();
   }
 
-  private async checkSession(session: string): Promise<void> {
+  private async checkSession(session: string, observation: TerminalLivenessObservation): Promise<void> {
     const pane = this.deps.getPane(session);
     if (pane === undefined) return;
-    if (!(await this.deps.backend.isAlive(pane))) {
+    let paneAlive: boolean;
+    let sessionActive: boolean;
+    if (observation.pane === 'unknown') {
+      throw new Error(`terminal liveness is unknown for pane ${pane.id}`);
+    } else if (observation.pane === 'missing') {
+      paneAlive = false;
+      sessionActive = false;
+    } else if (observation.activity.state !== 'observed') {
+      throw new Error(`foreground process state is unknown for pane ${pane.id}`);
+    } else {
+      paneAlive = true;
+      sessionActive = observation.activity.active;
+    }
+    if (!paneAlive) {
       this.deps.logEvent(session, 'pane_dead');
       this.reset(session);
       this.deps.onSessionEnd(session);
       return;
     }
-    if (!(await this.deps.backend.isSessionActive(pane))) {
+    if (!sessionActive) {
       this.deps.logEvent(session, 'runtime_ended');
       this.reset(session);
       this.deps.onSessionEnd(session);

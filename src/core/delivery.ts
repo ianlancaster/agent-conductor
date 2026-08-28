@@ -1,6 +1,7 @@
 import { log } from '../logger.js';
 import type { InputState, SessionRuntime } from '../runtimes/types.js';
 import type { TerminalBackend } from '../terminals/types.js';
+import { observeLiveness } from '../terminals/liveness.js';
 import type { PaneRef } from './types.js';
 
 export type DeliveryResult = 'delivered' | 'queued' | 'cancelled' | 'no-pane';
@@ -215,13 +216,29 @@ export class DeliveryQueue {
   }
 
   private async drainPass(): Promise<void> {
+    let batchAlive: ReadonlyMap<string, boolean> | undefined;
+    if (this.deps.backend.snapshotLiveness !== undefined) {
+      const panes = [...this.queues.keys()].flatMap((session) => {
+        const pane = this.deps.getPane(session);
+        return pane === undefined ? [] : [pane];
+      });
+      const snapshot = await observeLiveness(this.deps.backend, panes, { includeSessionActivity: false });
+      batchAlive = new Map(panes.map((pane) => [pane.id, snapshot.get(pane.id)?.pane === 'alive']));
+    }
     for (const [session, queue] of [...this.queues.entries()]) {
       if (queue.length === 0) {
         this.queues.delete(session);
         continue;
       }
       const pane = this.deps.getPane(session);
-      if (pane === undefined || !(await this.safeIsAlive(pane))) {
+      const paneAlive =
+        pane === undefined
+          ? false
+          : batchAlive === undefined
+            ? (await observeLiveness(this.deps.backend, [pane], { includeSessionActivity: false })).get(pane.id)
+                ?.pane === 'alive'
+            : batchAlive.get(pane.id) === true;
+      if (pane === undefined || !paneAlive) {
         // A pane can disappear transiently during an agent restart. Keep the
         // queue: the next drain resolves the replacement pane by codename.
         // Durable direct messages are also recovered from SQLite after a
@@ -433,14 +450,6 @@ export class DeliveryQueue {
         'delivery',
         `${session}: submission observer failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-    }
-  }
-
-  private async safeIsAlive(pane: PaneRef): Promise<boolean> {
-    try {
-      return await this.deps.backend.isAlive(pane);
-    } catch {
-      return false;
     }
   }
 

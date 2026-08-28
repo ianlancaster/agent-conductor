@@ -47,6 +47,9 @@ export type {
   DeliveryCaptureOptions,
   TerminalBackend,
   TerminalCapabilities,
+  TerminalLivenessObservation,
+  TerminalLivenessSnapshotOptions,
+  TerminalSessionActivityObservation,
 } from './terminals/types.js';
 export type {
   IdentityEndpoints,

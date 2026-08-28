@@ -172,6 +172,24 @@ describe('DeliveryQueue', () => {
     expect(deliveryEvents).toEqual(['alpha', 'alpha']);
   });
 
+  it('checks all queued panes in one existence-only snapshot per drain', async () => {
+    const betaPane = await backend.createPane('beta', 'pane');
+    runtime.inputState = 'draft';
+    queue.stop();
+    queue = new DeliveryQueue({
+      backend,
+      runtimeFor: () => runtime,
+      getPane: (session) => (session === 'alpha' ? pane : session === 'beta' ? betaPane : undefined),
+      config: CONFIG,
+    });
+    await queue.deliverOrQueue('alpha', 'one');
+    await queue.deliverOrQueue('beta', 'two');
+
+    await queue.drainNow();
+
+    expect(backend.snapshotCalls).toEqual([{ paneIds: [pane.id, betaPane.id], includeSessionActivity: false }]);
+  });
+
   it('holds queued automated delivery for the full pause interval and drains after resume', async () => {
     runtime.inputState = 'draft';
     expect(await queue.deliverOrQueue('alpha', 'scheduled', { automated: true })).toBe('queued');

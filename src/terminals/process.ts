@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const PS_TIMEOUT_MS = 5_000;
+const PS_MAX_BUFFER = 1024 * 1024;
 
 export interface ProcessGroupState {
   pid: number;
@@ -11,6 +12,10 @@ export interface ProcessGroupState {
   processGroupId: number;
   foregroundProcessGroupId: number;
   command?: string;
+}
+
+export interface TtyProcessGroupState extends ProcessGroupState {
+  tty: string;
 }
 
 /** Parse `ps -o pid=,ppid=,pgid=,tpgid=,comm=` output. Exported for unit tests. */
@@ -30,6 +35,46 @@ export function parseProcessGroups(output: string): ProcessGroupState[] {
     rows.push(row);
   }
   return rows;
+}
+
+/** Parse the multi-tty liveness form of ps output. Exported for unit tests. */
+export function parseTtyProcessGroups(output: string): TtyProcessGroupState[] {
+  const rows: TtyProcessGroupState[] = [];
+  for (const line of output.split('\n')) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)(?:\s+(.+?))?\s*$/.exec(line);
+    if (match === null) continue;
+    const [, pid, parentPid, processGroupId, foregroundProcessGroupId, tty, command] = match;
+    if (tty === undefined) continue;
+    rows.push({
+      pid: Number(pid),
+      parentPid: Number(parentPid),
+      processGroupId: Number(processGroupId),
+      foregroundProcessGroupId: Number(foregroundProcessGroupId),
+      tty,
+      ...(command === undefined ? {} : { command }),
+    });
+  }
+  return rows;
+}
+
+/** Classify each requested tty independently; omitted ttys remain unknown. */
+export function foregroundJobsByTty(
+  rows: readonly TtyProcessGroupState[],
+  requestedTtys: readonly string[],
+): ReadonlyMap<string, boolean> {
+  const byTty = new Map<string, ProcessGroupState[]>();
+  for (const row of rows) {
+    const tty = basename(row.tty);
+    const grouped = byTty.get(tty) ?? [];
+    grouped.push(row);
+    byTty.set(tty, grouped);
+  }
+  const result = new Map<string, boolean>();
+  for (const tty of requestedTtys) {
+    const shell = findInteractiveShell(byTty.get(tty) ?? []);
+    if (shell !== undefined) result.set(tty, hasForegroundJob(shell));
+  }
+  return result;
 }
 
 /**
@@ -95,4 +140,24 @@ export async function ttyHasForegroundJob(ttyPath: string): Promise<boolean> {
   const shell = findInteractiveShell(rows);
   if (shell === undefined) throw new Error(`No processes found for tty ${ttyPath}`);
   return hasForegroundJob(shell);
+}
+
+/**
+ * Inspect all requested iTerm ttys with one bounded ps subprocess. The result
+ * is keyed by normalized tty basename; missing/unusable rows are omitted so
+ * callers can represent activity as unknown without guessing.
+ */
+export async function ttysHaveForegroundJobs(ttyPaths: readonly string[]): Promise<ReadonlyMap<string, boolean>> {
+  const ttys = [
+    ...new Set(
+      ttyPaths.map((ttyPath) => basename(ttyPath)).filter((tty) => tty.length > 0 && /^[A-Za-z0-9._-]+$/.test(tty)),
+    ),
+  ];
+  if (ttys.length === 0) return new Map();
+  const { stdout } = await execFileAsync(
+    '/bin/ps',
+    ['-o', 'pid=,ppid=,pgid=,tpgid=,tty=,comm=', '-t', ttys.join(',')],
+    { timeout: PS_TIMEOUT_MS, maxBuffer: PS_MAX_BUFFER },
+  );
+  return foregroundJobsByTty(parseTtyProcessGroups(stdout), ttys);
 }

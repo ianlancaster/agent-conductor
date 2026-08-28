@@ -263,6 +263,12 @@ launching, process liveness, capture, delivery, rediscovery, titles, and teardow
 headless support through `capabilities`; unsupported placement can be mapped explicitly by the
 backend.
 
+Backends that can observe several panes more efficiently may implement the optional
+`snapshotLiveness` capability. It must return a fresh result keyed by pane id and preserve the
+distinction between missing and unknown; a timeout, malformed result, or omitted entry is never
+evidence that a pane disappeared. Existing backends can omit the capability and retain the scalar
+`isAlive`/`isSessionActive` path. An existence-only snapshot must not inspect session activity.
+
 Protected message delivery uses `captureForDelivery` and `submitIfUnchanged` when both exist.
 Their token is backend-owned and must reject a submit if pane input changed after capture. If
 those methods are absent, Conductor remains conservative but cannot close the backend-specific

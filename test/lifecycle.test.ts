@@ -228,7 +228,7 @@ describe('lifecycle edges', () => {
     expect(states.get('alpha')?.activity).toBe('idle');
   });
 
-  it('adopts and reconciles at most three surviving panes concurrently', async () => {
+  it('adopts at most three panes concurrently and reconciles all panes in one snapshot', async () => {
     const alpha = sessions.get('alpha');
     if (alpha === undefined) throw new Error('alpha missing');
     const codenames = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta'];
@@ -261,27 +261,31 @@ describe('lifecycle edges', () => {
     await adopting;
     expect(maximum).toBe(3);
 
-    const originalIsAlive = backend.isAlive.bind(backend);
+    const originalSnapshot = backend.snapshotLiveness.bind(backend);
     active = 0;
     maximum = 0;
     let releaseReconciliation: (() => void) | undefined;
     const reconciliationGate = new Promise<void>((resolve) => {
       releaseReconciliation = resolve;
     });
-    backend.isAlive = async (pane) => {
+    backend.snapshotLiveness = async (requestedPanes, options) => {
       active += 1;
       maximum = Math.max(maximum, active);
       await reconciliationGate;
       active -= 1;
-      return originalIsAlive(pane);
+      return originalSnapshot(requestedPanes, options);
     };
 
     const reconciling = lifecycle.reconcile();
-    await vi.waitFor(() => expect(active).toBe(3));
-    expect(maximum).toBe(3);
+    await vi.waitFor(() => expect(active).toBe(1));
+    expect(maximum).toBe(1);
     releaseReconciliation?.();
     await reconciling;
-    expect(maximum).toBe(3);
+    expect(maximum).toBe(1);
+    expect(backend.snapshotCalls.at(-1)).toEqual({
+      paneIds: panes.map(([, pane]) => pane.id),
+      includeSessionActivity: true,
+    });
   });
 
   it('keeps a surviving pane working when no composer is visible', async () => {

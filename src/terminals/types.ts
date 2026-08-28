@@ -29,6 +29,19 @@ export interface CreatePaneOptions {
   headless?: boolean;
 }
 
+export type TerminalSessionActivityObservation =
+  { state: 'not-requested' } | { state: 'observed'; active: boolean } | { state: 'unknown' };
+
+export type TerminalLivenessObservation =
+  | { pane: 'alive'; activity: TerminalSessionActivityObservation; observedAt: string }
+  | { pane: 'missing'; observedAt: string }
+  | { pane: 'unknown'; observedAt: string };
+
+export interface TerminalLivenessSnapshotOptions {
+  /** Also inspect whether each live pane's interactive shell has a foreground job. */
+  includeSessionActivity: boolean;
+}
+
 /**
  * The seam between the conductor and a terminal multiplexer/emulator.
  *
@@ -112,6 +125,18 @@ export interface TerminalBackend {
    * Codex with Ctrl-C and the pane returns to its shell prompt.
    */
   isSessionActive(pane: PaneRef): Promise<boolean>;
+
+  /**
+   * Observe a set of panes in one backend-owned snapshot. Implementations may
+   * collapse terminal automation and process inspection across the full set.
+   * The map is keyed by PaneRef.id. Missing or malformed entries are treated
+   * as unknown by callers; they must never trigger scalar retries in the same
+   * cycle because that would recreate multiplicative probe work.
+   */
+  snapshotLiveness?(
+    panes: readonly PaneRef[],
+    options: TerminalLivenessSnapshotOptions,
+  ): Promise<ReadonlyMap<string, TerminalLivenessObservation>>;
 
   kill(pane: PaneRef): Promise<void>;
 
