@@ -6,3 +6,5 @@ repo: ../my-other-project
 runtime: codex
 # bypassPermissions: false # optional override of defaults.bypassPermissions
 # effort: xhigh # optional; falls back to runtimes.codex.defaultEffort, then the CLI default
+# systemPromptFile: ./.conductor/prompts/codex-role.md # static snapshot, refreshed on start/continue
+# continuityStateFile: ./records/codex-state.md # fresh bounded state at startup/resume/compaction

@@ -145,6 +145,9 @@ export function parseSessionConfig(
   if (session.systemPromptFile !== undefined && !isAbsolute(session.systemPromptFile)) {
     session.systemPromptFile = resolve(baseDir, session.systemPromptFile);
   }
+  if (session.continuityStateFile !== undefined && !isAbsolute(session.continuityStateFile)) {
+    session.continuityStateFile = resolve(baseDir, session.continuityStateFile);
+  }
   return session;
 }
 

@@ -6,6 +6,13 @@ import { runGit } from '../../core/git.js';
 import type { PaneActivityEvidence, RuntimeEvent } from '../../core/types.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
 import { prepareInstructionLayers, writeAtomicFile } from '../instructions.js';
+import {
+  cleanupContinuityReaderGenerations,
+  parseContinuityRestorationEvent,
+  prepareContinuityStateSource,
+  renderContinuityReaderScript,
+  writeContinuityReaderGeneration,
+} from '../continuity-state.js';
 import { log } from '../../logger.js';
 import {
   GENERATED_MARKER,
@@ -20,6 +27,7 @@ import {
   renderLifecycleHookScript,
   renderNotifyScript,
   renderProtocolHooks,
+  renderProtocolReminderContext,
   renderProtocolReminderScript,
   shellQuote,
   tomlString,
@@ -301,6 +309,7 @@ export class CodexRuntime implements SessionRuntime {
     targetedResume: true,
     authoritativeTurnCompletion: true,
     contextProbe: false,
+    continuityState: true,
     styledCapture: true,
   };
 
@@ -321,6 +330,10 @@ export class CodexRuntime implements SessionRuntime {
     const repo = this.resolvePath(session.repo);
     await mkdir(identity.configDir, { recursive: true });
     const protocolText = await this.readProtocolText();
+    const continuityState =
+      session.continuityStateFile === undefined
+        ? undefined
+        : await prepareContinuityStateSource(this.resolvePath(session.continuityStateFile));
     let reminderScript: string | undefined;
     const preparedInstructions = await prepareInstructionLayers({
       configDir: identity.configDir,
@@ -332,6 +345,16 @@ export class CodexRuntime implements SessionRuntime {
           layers.protocol?.content ?? protocolText,
           layers.session?.content ?? null,
         );
+        if (continuityState !== undefined) {
+          renderContinuityReaderScript({
+            prepared: continuityState,
+            eventsUrl: identity.eventsUrl,
+            compactPrefix: renderProtocolReminderContext(
+              layers.protocol?.content ?? protocolText,
+              layers.session?.content ?? null,
+            ),
+          });
+        }
       },
     });
     const preparedProtocolText = preparedInstructions.protocol?.content ?? protocolText;
@@ -357,13 +380,24 @@ export class CodexRuntime implements SessionRuntime {
       reminderScript ?? renderProtocolReminderScript(preparedProtocolText, sessionPromptText),
       0o700,
     );
-    await writeFile(
+    const continuityReader =
+      continuityState === undefined
+        ? undefined
+        : await writeContinuityReaderGeneration(identity.configDir, {
+            prepared: continuityState,
+            eventsUrl: identity.eventsUrl,
+            compactPrefix: renderProtocolReminderContext(preparedProtocolText, sessionPromptText),
+          });
+    await writeAtomicFile(
       path.join(this.codexHomePath(identity), HOOKS_NAME),
       renderProtocolHooks(
         `${shellQuote(process.execPath)} ${shellQuote(this.protocolReminderScriptPath(identity))}`,
         `${shellQuote(process.execPath)} ${shellQuote(this.lifecycleHookScriptPath(identity))}`,
+        continuityReader === undefined ? undefined : `${shellQuote(process.execPath)} ${shellQuote(continuityReader)}`,
       ),
+      0o600,
     );
+    await cleanupContinuityReaderGenerations(identity.configDir, continuityReader);
     await this.warnForProjectDocLimit(repo, minimumDocBytes);
     await this.cleanupLegacyRepoOverride(repo);
   }
@@ -504,6 +538,8 @@ export class CodexRuntime implements SessionRuntime {
    */
   parseEvent(body: unknown): Omit<RuntimeEvent, 'session' | 'receivedAt'> | null {
     const hook = asRecord(body);
+    const continuity = hook === null ? null : parseContinuityRestorationEvent(hook);
+    if (continuity !== null) return continuity;
     const hookName = hook === null ? undefined : stringField(hook, 'hook_event_name');
     if (hookName === 'UserPromptSubmit') {
       return { type: 'turn-start', turnId: stringField(hook ?? {}, 'turn_id', 'turn-id') };

@@ -48,6 +48,8 @@ export interface SpawnOptions {
   additionalDirs?: string[];
   /** Persisted role/policy instructions appended after the Conductor protocol. */
   systemPromptFile?: string;
+  /** Persisted bounded state read fresh at startup, resume, and compaction. */
+  continuityStateFile?: string;
   prompt?: string;
   placement?: Placement;
   /** Runtime for the new session (default: the supervisor's configured runtime). */
@@ -270,6 +272,9 @@ export class Lifecycle {
     if (opts.resumeSessionId !== undefined && runtime.capabilities.targetedResume !== true) {
       return `Runtime '${runtimeName}' does not support resuming a specific native conversation.`;
     }
+    if (session.continuityStateFile !== undefined && runtime.capabilities.continuityState !== true) {
+      return `Runtime '${runtimeName}' does not support continuityStateFile across startup, resume, and compaction.`;
+    }
 
     // Model and effort pins for the configured runtime are not portable across
     // agent CLIs. An override uses the selected runtime's own defaults unless
@@ -392,11 +397,12 @@ export class Lifecycle {
       return `Unknown runtime '${opts.runtime}'. Available: ${[...this.deps.runtimes.keys()].sort().join(', ')}.`;
     }
     const runtimeName = opts.runtime ?? this.deps.config.defaultRuntime;
-    if (
-      opts.resumeSessionId !== undefined &&
-      this.deps.runtimes.get(runtimeName)?.capabilities.targetedResume !== true
-    ) {
+    const runtime = this.deps.runtimes.get(runtimeName);
+    if (opts.resumeSessionId !== undefined && runtime?.capabilities.targetedResume !== true) {
       return `Runtime '${runtimeName}' does not support resuming a specific native conversation.`;
+    }
+    if (opts.continuityStateFile !== undefined && runtime?.capabilities.continuityState !== true) {
+      return `Runtime '${runtimeName}' does not support continuityStateFile across startup, resume, and compaction.`;
     }
     if (opts.template !== undefined && opts.worktreeRepo !== undefined) {
       return 'Template and worktree sources are mutually exclusive.';
@@ -443,6 +449,7 @@ export class Lifecycle {
     if (opts.effort !== undefined) config.effort = opts.effort;
     if (opts.additionalDirs !== undefined) config.additionalDirs = opts.additionalDirs;
     if (opts.systemPromptFile !== undefined) config.systemPromptFile = opts.systemPromptFile;
+    if (opts.continuityStateFile !== undefined) config.continuityStateFile = opts.continuityStateFile;
     if (opts.bypassPermissions !== undefined) config.bypassPermissions = opts.bypassPermissions;
     mkdirSync(this.deps.sessionConfigDir, { recursive: true });
     writeFileSync(join(this.deps.sessionConfigDir, `${codename}.yaml`), yaml.dump(config));

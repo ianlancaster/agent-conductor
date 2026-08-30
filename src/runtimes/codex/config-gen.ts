@@ -155,7 +155,7 @@ export function renderLifecycleHookScript(eventsUrl: string): string {
 }
 
 /** Model-visible reminder injected by the generated SessionStart(source=compact) hook. */
-export function renderProtocolReminderScript(protocolText: string, sessionPromptText?: string | null): string {
+export function renderProtocolReminderContext(protocolText: string, sessionPromptText?: string | null): string {
   const labelledLayers = [
     '# Conductor protocol',
     protocolText,
@@ -163,7 +163,12 @@ export function renderProtocolReminderScript(protocolText: string, sessionPrompt
       ? []
       : ['# Session instructions', sessionPromptText]),
   ].join('\n');
-  const additionalContext = `Agent Conductor instructions restored after context compaction.\n\n${labelledLayers}`;
+  return `Agent Conductor instructions restored after context compaction.\n\n${labelledLayers}`;
+}
+
+/** Model-visible reminder injected by the generated SessionStart(source=compact) hook. */
+export function renderProtocolReminderScript(protocolText: string, sessionPromptText?: string | null): string {
+  const additionalContext = renderProtocolReminderContext(protocolText, sessionPromptText);
   assertHookContextFits(additionalContext);
   const output = {
     hookSpecificOutput: {
@@ -180,7 +185,11 @@ export function renderProtocolReminderScript(protocolText: string, sessionPrompt
 }
 
 /** User-level hook config inside the isolated CODEX_HOME. */
-export function renderProtocolHooks(reminderCommand: string, lifecycleCommand?: string): string {
+export function renderProtocolHooks(
+  reminderCommand: string,
+  lifecycleCommand?: string,
+  continuityCommand?: string,
+): string {
   return `${JSON.stringify(
     {
       description: 'Agent Conductor managed protocol persistence.',
@@ -201,13 +210,17 @@ export function renderProtocolHooks(reminderCommand: string, lifecycleCommand?: 
             }),
         SessionStart: [
           {
-            matcher: '^compact$',
+            matcher: continuityCommand === undefined ? '^compact$' : '^(startup|resume|compact)$',
             hooks: [
               {
                 type: 'command',
-                command: reminderCommand,
+                command: continuityCommand ?? reminderCommand,
                 timeout: 5,
-                statusMessage: 'Restoring Conductor instructions',
+                additionalContextLimit: 0,
+                statusMessage:
+                  continuityCommand === undefined
+                    ? 'Restoring Conductor instructions'
+                    : 'Restoring Conductor continuity state',
               },
               ...(lifecycleCommand === undefined ? [] : [{ type: 'command', command: lifecycleCommand, timeout: 5 }]),
             ],

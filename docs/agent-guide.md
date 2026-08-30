@@ -156,6 +156,7 @@ model: provider/model-id
 effort: high
 additionalDirs: []
 systemPromptFile: /optional/path/to/instructions.md
+continuityStateFile: /optional/path/to/current-state.md
 schedules: []
 ```
 
@@ -179,6 +180,14 @@ Important rules:
   not change a running process; start or continue to activate a new snapshot. Relative paths
   resolve from the fleet root. Use this layer for a role such as sentinel policy, not to replace
   identity or safety rules.
+- A session's `continuityStateFile` is a separate dynamic layer for bounded current work state.
+  It has an independent 5 KiB UTF-8 limit and is read fresh at runtime startup, native resume, and
+  every confirmed manual or automatic compaction. Explicit clear is excluded. The dynamic state is
+  subordinate to the protocol and prepared static session instructions; it cannot grant itself
+  authority. Conductor validates the source before start/continue, reads but never writes or
+  interprets it, and does not reuse stale contents if a later read fails. Relative paths resolve
+  from the fleet root. The final component must be a regular file, not a symlink. Do not put
+  credentials or secrets in either instruction file because the runtime/provider receives them.
 - Secrets belong in `.conductor/.env`, never supervisor or session YAML. The environment file may
   contain channel credentials; never print, quote, summarize, or message its values.
 - `defaults.bypassPermissions` controls the fleet launch default, and a session's
@@ -343,9 +352,11 @@ the detached fleet session. Operator-only `/summon` and `/banish` move supported
 of view without stopping them.
 
 Spawn can also set repeatable `additionalDirs` for runtime access outside the workspace and a
-`systemPromptFile` for durable role instructions appended after the mandatory protocol. The operator
-command equivalents are `--add-dir`/`-a` and `--system-prompt`; the 5 KiB UTF-8 source is validated
-and snapshotted on start/continue. These primitives support shared
+`systemPromptFile` for durable role instructions appended after the mandatory protocol, and a
+`continuityStateFile` for bounded current state. The operator command equivalents are
+`--add-dir`/`-a`, `--system-prompt`, and `--continuity-state`; each instruction source has an
+independent 5 KiB UTF-8 limit. Static instructions are snapshotted on start/continue, while current
+state is reread at startup, resume, and compaction. These primitives support shared
 records and role policy without writing generated instructions into disposable worktrees.
 
 Use:
@@ -460,12 +471,18 @@ Worktree practices:
   `AGENTS.override.md` entry in `.gitignore`; remove that ignore line manually when convenient.
 - Claude Code receives the prepared protocol and optional session layer through its supported
   launch system-prompt files. Claude Code's compaction contract retains those system-prompt layers;
-  Conductor does not add a second reinjection hook that would duplicate them.
+  Conductor does not add a second static reinjection hook that would duplicate them. A configured
+  dynamic state reader adds only the fresh subordinate state layer on startup, resume, and compact.
 - Codex reads `AGENTS.md` guidance once when a run starts. Conductor also generates a
-  `SessionStart` hook matched to `source=compact` in the isolated session home; after manual or
-  automatic compaction it restores the exact prepared Conductor protocol and optional session
-  instructions as one labelled developer-context payload. The lifecycle relay is a separate,
-  best-effort hook, so an unavailable Conductor endpoint cannot suppress local restoration.
+  `SessionStart` hook in the isolated session home. Without dynamic state it remains compact-only;
+  with `continuityStateFile` it matches startup, resume, and compact. Startup/resume add only fresh
+  dynamic state. After manual or automatic compaction it restores the exact prepared Conductor
+  protocol and optional session instructions followed by fresh dynamic state as one labelled
+  developer-context payload. Codex hook output uses `additionalContextLimit: 0`; Conductor's own
+  byte guards provide the hard cap and prevent the provider default from truncating token-dense
+  valid content. The continuity lifecycle contract was provider-tested on Codex 0.149.1 and
+  0.151.0; use 0.149.1 or newer. The lifecycle relay is a separate, best-effort hook, so an
+  unavailable Conductor endpoint cannot suppress local restoration.
   Managed Codex launches default `runtimes.codex.bypassHookTrust` to `true` so these hooks run
   without a startup review prompt. That CLI switch trusts every hook Codex discovers from the
   shared config, repository, and enabled plugins—not only Conductor's generated hook. Set it to
@@ -1118,6 +1135,27 @@ hook. Codex restores them with generated per-session hooks. If a fleet sets
 approval/sandbox bypass does not imply hook trust. Conductor keeps the local restoration output
 independent from its lifecycle endpoint, so a temporarily unavailable Conductor can lose the compact
 event without removing the restored local context.
+
+### Continuity state is degraded or stale
+
+`continuityStateFile` is validated before launch and reread from the prepared canonical path on
+each matching `SessionStart`. Missing, unreadable, non-regular, final-symlink, malformed UTF-8, or
+oversized sources block start/continue. If a running session's source later becomes invalid, the
+hook emits a model-visible degraded notice and never reuses stale state. Restoration telemetry
+records only lifecycle source, outcome, and successful byte count—not file contents, previews,
+hashes, or source paths. Repair the owner-controlled file atomically; the next startup, resume, or
+compact event will reread it. Conductor cannot classify every consequential action, so any required
+hold-and-escalate behavior belongs in the static session constitution.
+
+The configured path remains visible in session YAML and authorized preparation errors, and the
+private generated reader embeds the prepared canonical path. These are expected local ownership
+surfaces, not telemetry.
+
+`continuityStateFile` does not replace full assignments, evidence, memory, or transcripts. Keep
+those as durable source documents and use the bounded ledger for current objective, phase,
+approvals or holds, blockers, evidence pointers, and the next action. A source-path configuration
+change activates only after start/continue; edits at the already-prepared path activate at the next
+matching lifecycle event.
 
 ### The wrong fleet responds
 

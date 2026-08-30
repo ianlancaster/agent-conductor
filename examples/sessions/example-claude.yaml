@@ -7,6 +7,8 @@ model: claude-opus-4-8 # optional; falls back to runtimes.claudeCode.defaultMode
 # effort: xhigh # optional; falls back to runtimes.claudeCode.defaultEffort, then the CLI default
 additionalDirs:
   - ../shared-notes
+# systemPromptFile: ./.conductor/prompts/alpha-role.md # static snapshot, refreshed on start/continue
+# continuityStateFile: ./records/alpha-state.md # fresh bounded state at startup/resume/compaction
 schedules:
   - label: morning-standup
     cron: '0 9 * * 1-5'

@@ -10,7 +10,14 @@ import {
   prepareInstructionLayers,
   PROTOCOL_SNAPSHOT_NAME,
   SESSION_INSTRUCTIONS_SNAPSHOT_NAME,
+  writeAtomicFile,
 } from '../instructions.js';
+import {
+  cleanupContinuityReaderGenerations,
+  parseContinuityRestorationEvent,
+  prepareContinuityStateSource,
+  writeContinuityReaderGeneration,
+} from '../continuity-state.js';
 import { parseClaudeActivityState, parseClaudeInputState, stripClaudeChrome } from './chrome.js';
 import { readLastAssistantMessage } from './transcript.js';
 
@@ -75,6 +82,7 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     targetedResume: true,
     authoritativeTurnCompletion: true,
     contextProbe: true,
+    continuityState: true,
     styledCapture: false,
   };
 
@@ -90,6 +98,10 @@ export class ClaudeCodeRuntime implements SessionRuntime {
 
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
     await mkdir(identity.configDir, { recursive: true });
+    const continuityState =
+      session.continuityStateFile === undefined
+        ? undefined
+        : await prepareContinuityStateSource(session.continuityStateFile);
     const protocolText =
       this.protocolPath !== undefined && existsSync(this.protocolPath)
         ? await readFile(this.protocolPath, 'utf8')
@@ -99,8 +111,24 @@ export class ClaudeCodeRuntime implements SessionRuntime {
       protocolText,
       sessionSourcePath: session.systemPromptFile,
     });
-    await writeFile(this.mcpConfigPath(identity), `${JSON.stringify(this.buildMcpConfig(identity), null, 2)}\n`);
-    await writeFile(this.hooksSettingsPath(identity), `${JSON.stringify(this.buildHookSettings(identity), null, 2)}\n`);
+    const continuityReader =
+      continuityState === undefined
+        ? undefined
+        : await writeContinuityReaderGeneration(identity.configDir, {
+            prepared: continuityState,
+            eventsUrl: identity.eventsUrl,
+          });
+    await writeAtomicFile(
+      this.mcpConfigPath(identity),
+      `${JSON.stringify(this.buildMcpConfig(identity), null, 2)}\n`,
+      0o600,
+    );
+    await writeAtomicFile(
+      this.hooksSettingsPath(identity),
+      `${JSON.stringify(this.buildHookSettings(identity, continuityReader), null, 2)}\n`,
+      0o600,
+    );
+    await cleanupContinuityReaderGenerations(identity.configDir, continuityReader);
     await seedFolderTrust(this.claudeJsonPath, session.repo);
   }
 
@@ -166,6 +194,8 @@ export class ClaudeCodeRuntime implements SessionRuntime {
   parseEvent(body: unknown): Omit<RuntimeEvent, 'session' | 'receivedAt'> | null {
     if (typeof body !== 'object' || body === null) return null;
     const record = body as Record<string, unknown>;
+    const continuity = parseContinuityRestorationEvent(record);
+    if (continuity !== null) return continuity;
     const hookEvent = record.hook_event_name;
     if (typeof hookEvent !== 'string') return null;
     if (hookEvent === 'SessionStart' && record.source === 'compact') {
@@ -230,14 +260,31 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     };
   }
 
-  private buildHookSettings(identity: IdentityEndpoints): unknown {
+  private buildHookSettings(identity: IdentityEndpoints, continuityReader?: string): unknown {
     const command = `curl -s -m 5 -X POST -H 'Content-Type: application/json' --data-binary @- ${shellQuote(
       identity.eventsUrl,
     )} >/dev/null 2>&1 || true`;
     const hooks: Record<string, unknown> = {};
     for (const event of HOOK_EVENTS) {
-      hooks[event] = [{ hooks: [{ type: 'command', command }] }];
+      if (event !== 'SessionStart') hooks[event] = [{ hooks: [{ type: 'command', command }] }];
     }
+    hooks.SessionStart = [
+      ...(continuityReader === undefined
+        ? []
+        : [
+            {
+              matcher: '^(startup|resume|compact)$',
+              hooks: [
+                {
+                  type: 'command',
+                  command: `${shellQuote(process.execPath)} ${shellQuote(continuityReader)}`,
+                  timeout: 5,
+                },
+              ],
+            },
+          ]),
+      { hooks: [{ type: 'command', command }] },
+    ];
     return { hooks, ...(this.config.bareUi ? { spinnerTipsEnabled: false } : {}) };
   }
 }

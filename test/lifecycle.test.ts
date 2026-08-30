@@ -505,6 +505,15 @@ describe('lifecycle edges', () => {
     expect(runtime.launches).toHaveLength(0);
   });
 
+  it('rejects continuity state for an unsupported runtime before materializing a workspace', async () => {
+    expect(await lifecycle.spawn('worker', { continuityStateFile: '/tmp/state.md' })).toBe(
+      "Runtime 'claude-code' does not support continuityStateFile across startup, resume, and compaction.",
+    );
+    expect(existsSync(join(baseDir, 'spawned', 'worker'))).toBe(false);
+    expect(sessions.has('worker')).toBe(false);
+    expect(runtime.launches).toHaveLength(0);
+  });
+
   it('never falls back to a fresh conversation when targeted spawn launch setup fails', async () => {
     runtime.buildLaunchCommand = (session, _identity, opts) => {
       runtime.launches.push({ session, opts: { ...opts } });

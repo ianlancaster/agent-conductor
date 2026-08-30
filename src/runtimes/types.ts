@@ -10,6 +10,8 @@ export interface RuntimeCapabilities {
   authoritativeTurnCompletion?: boolean;
   /** Runtime supports an interactive context probe (e.g. Claude's /context). */
   contextProbe: boolean;
+  /** Runtime implements fresh continuity state on startup, resume, and compact SessionStart events. */
+  continuityState?: true;
   /**
    * parseInputState understands ANSI-styled captures and prefers them (e.g.
    * Codex marks ghost hints dim — deterministic where plain text must guess).

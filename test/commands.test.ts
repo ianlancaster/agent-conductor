@@ -556,6 +556,7 @@ describe('help', () => {
     expect(help).toContain('-t/--template <name>');
     expect(help).toContain('-a/--add-dir <dir> (repeatable)');
     expect(help).toContain('--system-prompt <file>');
+    expect(help).toContain('--continuity-state <file>');
     expect(help).toContain('/fleet-watch');
     expect(help).not.toContain('*Sessions*');
     expect(help).not.toContain('`/status');
@@ -652,26 +653,32 @@ describe('spawn and teardown', () => {
     await router.route('/teardown thinker --delete');
   });
 
-  it('spawns with repeatable external directories and a role prompt', async () => {
+  it('spawns with repeatable external directories, a static role prompt, and fresh continuity state', async () => {
     const prompt = join(baseDir, 'roles', 'worker.md');
+    const state = join(baseDir, 'roles', 'worker-state.md');
     mkdirSync(join(baseDir, 'roles'), { recursive: true });
     writeFileSync(prompt, '# Worker role\n');
+    writeFileSync(state, '# Current work\n');
+    runtime.capabilities.continuityState = true;
 
     const reply = await router.route(
-      `/spawn scoped -a ${join(baseDir, 'records')} --add-dir ${join(baseDir, 'shared')} --system-prompt ${prompt}`,
+      `/spawn scoped -a ${join(baseDir, 'records')} --add-dir ${join(baseDir, 'shared')} --system-prompt ${prompt} --continuity-state ${state}`,
     );
 
     expect(reply).toContain('Spawned scoped');
     expect(sessions.get('scoped')?.additionalDirs).toEqual([join(baseDir, 'records'), join(baseDir, 'shared')]);
     expect(sessions.get('scoped')?.systemPromptFile).toBe(prompt);
+    expect(sessions.get('scoped')?.continuityStateFile).toBe(state);
     expect(runtime.launches.at(-1)?.session.additionalDirs).toEqual([
       join(baseDir, 'records'),
       join(baseDir, 'shared'),
     ]);
     expect(runtime.launches.at(-1)?.session.systemPromptFile).toBe(prompt);
+    expect(runtime.launches.at(-1)?.session.continuityStateFile).toBe(state);
     const config = readFileSync(join(baseDir, 'config', 'sessions', 'scoped.yaml'), 'utf8');
     expect(config).toContain('additionalDirs:');
     expect(config).toContain('systemPromptFile:');
+    expect(config).toContain('continuityStateFile:');
     await router.route('/teardown scoped --delete');
   });
 

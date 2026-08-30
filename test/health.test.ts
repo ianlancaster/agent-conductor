@@ -23,6 +23,7 @@ let working: string[];
 let observed: string[];
 let paneId: string;
 let paneActivity: PaneActivityEvidence;
+let healthEvents: { session: string; type: string; detail?: string }[];
 
 beforeEach(async () => {
   vi.useFakeTimers();
@@ -37,6 +38,7 @@ beforeEach(async () => {
   working = [];
   observed = [];
   paneActivity = 'idle';
+  healthEvents = [];
   monitor = new HealthMonitor({
     config: CONFIG,
     backend,
@@ -52,7 +54,7 @@ beforeEach(async () => {
     },
     onWorking: (session) => working.push(session),
     onSessionEnd: (session) => sessionEnds.push(session),
-    logEvent: () => undefined,
+    logEvent: (session, type, detail) => healthEvents.push({ session, type, detail }),
   });
 });
 
@@ -289,6 +291,27 @@ describe('event-driven signals', () => {
   it('does not treat a runtime session boundary as process death', () => {
     event('session-end');
     expect(sessionEnds).toEqual([]);
+  });
+
+  it('records content-free continuity metadata without changing turn activity', async () => {
+    event('stop', 'turn complete');
+    monitor.handleEvent({
+      session: 'alpha',
+      type: 'continuity-restoration',
+      continuitySource: 'compact',
+      continuityOutcome: 'emitted',
+      byteCount: 5120,
+      receivedAt: Date.now(),
+    });
+
+    expect(healthEvents).toContainEqual({
+      session: 'alpha',
+      type: 'continuity_state_restoration',
+      detail: 'source=compact outcome=emitted bytes=5120',
+    });
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'turn complete' }]);
+    expect(JSON.stringify(healthEvents)).not.toContain('continuityStateFile');
   });
 });
 

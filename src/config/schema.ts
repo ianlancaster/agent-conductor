@@ -119,6 +119,11 @@ export const sessionConfigSchema = z
      * relative to the fleet root.
      */
     systemPromptFile: z.string().trim().min(1).optional(),
+    /**
+     * Bounded current-state text read fresh at supported startup, resume, and
+     * compact SessionStart boundaries. Absolute, or fleet-root-relative.
+     */
+    continuityStateFile: z.string().trim().min(1).optional(),
     schedules: z.array(scheduleEntrySchema).default([]),
   })
   .strict();

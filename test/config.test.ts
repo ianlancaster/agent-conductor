@@ -386,18 +386,26 @@ describe('backend auto-detection', () => {
 
 describe('loadSessionConfigs', () => {
   it('loads sessions and resolves relative repo paths', () => {
-    writeSession('alpha', 'codename: alpha\nrepo: ./alpha-repo\n');
+    writeSession(
+      'alpha',
+      'codename: alpha\nrepo: ./alpha-repo\nsystemPromptFile: ./roles/alpha.md\ncontinuityStateFile: ./state/alpha.md\n',
+    );
     const sessions = loadSessionConfigs(baseDir);
     expect(sessions.size).toBe(1);
     const alpha = sessions.get('alpha');
     expect(alpha?.repo).toBe(join(baseDir, 'alpha-repo'));
+    expect(alpha?.systemPromptFile).toBe(join(baseDir, 'roles', 'alpha.md'));
+    expect(alpha?.continuityStateFile).toBe(join(baseDir, 'state', 'alpha.md'));
     expect(alpha?.runtime).toBe('claude-code');
     expect(alpha?.schedules).toEqual([]);
   });
 
   it('keeps absolute repo paths untouched', () => {
-    writeSession('alpha', 'codename: alpha\nrepo: /tmp/alpha\n');
-    expect(loadSessionConfigs(baseDir).get('alpha')?.repo).toBe('/tmp/alpha');
+    writeSession('alpha', 'codename: alpha\nrepo: /tmp/alpha\ncontinuityStateFile: /tmp/alpha-state.md\n');
+    expect(loadSessionConfigs(baseDir).get('alpha')).toMatchObject({
+      repo: '/tmp/alpha',
+      continuityStateFile: '/tmp/alpha-state.md',
+    });
   });
 
   it('uses the configured default runtime while preserving per-session overrides', () => {

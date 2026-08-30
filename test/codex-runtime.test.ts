@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -122,6 +122,7 @@ describe('config generation', () => {
     expect(script).not.toContain('curl');
     expect(hooks.hooks.SessionStart[0]?.matcher).toBe('^compact$');
     expect(hooks.hooks.SessionStart[0]?.hooks[0]?.command).toContain('protocol-reminder.mjs');
+    expect(hooks.hooks.SessionStart[0]?.hooks[0]).toMatchObject({ additionalContextLimit: 0 });
     expect(hooks.hooks.SessionStart[0]?.hooks[1]?.command).toContain('lifecycle-hook.mjs');
     expect(hooks.hooks.UserPromptSubmit[0]?.hooks[0]?.command).toContain('lifecycle-hook.mjs');
     expect(hooks.hooks.PreCompact[0]?.hooks[0]?.command).toContain('lifecycle-hook.mjs');
@@ -400,6 +401,56 @@ describe('prepare', () => {
     expect(context()).not.toContain('SESSION VERSION ONE');
   });
 
+  it('restores fresh continuity state with ordered compact layers and cleans it after removal', async () => {
+    const protocolPath = path.join(workDir, 'protocol.md');
+    const promptPath = path.join(workDir, 'session.md');
+    const statePath = path.join(workDir, 'state.md');
+    await writeFile(protocolPath, 'PROTOCOL LAYER');
+    await writeFile(promptPath, 'STATIC VERSION ONE');
+    await writeFile(statePath, 'STATE VERSION ONE');
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir, protocolPath });
+    const configured = makeSession({
+      repo: repoDir,
+      systemPromptFile: promptPath,
+      continuityStateFile: statePath,
+    });
+    await runtime.prepare(configured, makeIdentity(configDir));
+
+    const hooks = JSON.parse(await readFile(path.join(configDir, 'codex-home', 'hooks.json'), 'utf8')) as {
+      hooks: Record<string, { matcher?: string; hooks: { command: string; additionalContextLimit?: number }[] }[]>;
+    };
+    expect(hooks.hooks.SessionStart?.[0]?.matcher).toBe('^(startup|resume|compact)$');
+    expect(hooks.hooks.SessionStart?.[0]?.hooks[0]?.additionalContextLimit).toBe(0);
+    const readerName = (await readdir(configDir)).find((entry) => entry.startsWith('continuity-state-reader-'));
+    expect(readerName).toBeDefined();
+    const run = (source: 'startup' | 'resume' | 'compact'): string => {
+      const output = JSON.parse(
+        execFileSync(process.execPath, [path.join(configDir, readerName!)], {
+          input: JSON.stringify({ hook_event_name: 'SessionStart', source }),
+          encoding: 'utf8',
+          env: { ...process.env, PATH: '' },
+        }),
+      ) as { hookSpecificOutput: { additionalContext: string } };
+      return output.hookSpecificOutput.additionalContext;
+    };
+
+    expect(run('startup')).toContain('STATE VERSION ONE');
+    expect(run('startup')).not.toContain('PROTOCOL LAYER');
+    await writeFile(statePath, 'STATE VERSION TWO');
+    await writeFile(promptPath, 'STATIC VERSION TWO');
+    const compact = run('compact');
+    expect(compact.indexOf('PROTOCOL LAYER')).toBeLessThan(compact.indexOf('STATIC VERSION ONE'));
+    expect(compact.indexOf('STATIC VERSION ONE')).toBeLessThan(compact.indexOf('STATE VERSION TWO'));
+    expect(compact).not.toContain('STATIC VERSION TWO');
+    expect(compact).not.toContain('STATE VERSION ONE');
+
+    await runtime.prepare(makeSession({ repo: repoDir, systemPromptFile: promptPath }), makeIdentity(configDir));
+    expect((await readdir(configDir)).some((entry) => entry.startsWith('continuity-state-reader-'))).toBe(false);
+    const restoredHooks = await readFile(path.join(configDir, 'codex-home', 'hooks.json'), 'utf8');
+    expect(restoredHooks).toContain('^compact$');
+    expect(restoredHooks).not.toContain('continuity-state-reader-');
+  });
+
   it('preserves known-good snapshots when aggregate compact context validation fails', async () => {
     const protocolPath = path.join(workDir, 'protocol.md');
     const promptPath = path.join(workDir, 'session.md');
@@ -632,6 +683,17 @@ describe('parseEvent', () => {
     });
     expect(runtime.parseEvent({ hook_event_name: 'SessionStart', source: 'startup' })).toEqual({
       type: 'session-start',
+    });
+    expect(
+      runtime.parseEvent({
+        hook_event_name: 'ContinuityStateRestoration',
+        source: 'resume',
+        outcome: 'missing',
+      }),
+    ).toEqual({
+      type: 'continuity-restoration',
+      continuitySource: 'resume',
+      continuityOutcome: 'missing',
     });
   });
 

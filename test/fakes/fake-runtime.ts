@@ -16,6 +16,7 @@ const EVENT_TYPES = new Set([
   'compaction-complete',
   'session-start',
   'session-end',
+  'continuity-restoration',
 ]);
 
 /** In-memory SessionRuntime for tests. Events are accepted as plain JSON `{type, reason?, transcriptPath?}`. */

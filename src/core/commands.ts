@@ -354,7 +354,8 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       details: [
         `    -r/--runtime ${runtimeChoices} · -m/--model <model> · -e/--effort <level> · -s/--session-id <id>`,
         '    -d/--path <dir> · -t/--template <name> · -w/--worktree <repo> · -b/--branch <name>',
-        '    -a/--add-dir <dir> (repeatable) · --system-prompt <file> (durable across compaction; max 5 KiB)',
+        '    -a/--add-dir <dir> (repeatable) · --system-prompt <file> (durable static instructions; max 5 KiB)',
+        '    --continuity-state <file> (fresh startup/resume/compact state; max 5 KiB)',
         '    --bypass-permissions · --require-permissions',
       ],
       invoke: (args, actor) => invoke('spawn_session', parseSpawn(args), actor),
@@ -403,6 +404,7 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     '--branch': 'branch',
     '-b': 'branch',
     '--system-prompt': 'systemPromptFile',
+    '--continuity-state': 'continuityStateFile',
   };
   for (let index = 1; index < parsed.rest.length;) {
     const flag = parsed.rest[index];
@@ -426,7 +428,7 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     const value = parsed.rest[index + 1];
     if (flag === undefined || value === undefined || flags[flag] === undefined) {
       usage(
-        '/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-s session-id] [-t template] [-w repo] [-b branch] [-a dir] [--system-prompt file] [placement]',
+        '/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-s session-id] [-t template] [-w repo] [-b branch] [-a dir] [--system-prompt file] [--continuity-state file] [placement]',
       );
     }
     output[flags[flag]] = value;

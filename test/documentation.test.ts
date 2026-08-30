@@ -74,6 +74,19 @@ describe('agent documentation', () => {
     expect(result.safety).toContain('Never print');
   });
 
+  it('documents static and fresh continuity layers with their privacy and failure boundaries', async () => {
+    const fleetConfig = JSON.parse(await documentation().read('fleet-configuration')) as { content: string };
+    expect(fleetConfig.content).toContain('continuityStateFile');
+    expect(fleetConfig.content).toContain('startup, native resume');
+    expect(fleetConfig.content).toMatch(/cannot grant itself\s+authority/u);
+    expect(fleetConfig.content).toContain('credentials or secrets');
+
+    const troubleshooting = JSON.parse(await documentation().read('troubleshooting')) as { content: string };
+    expect(troubleshooting.content).toContain('Continuity state is degraded or stale');
+    expect(troubleshooting.content).toContain('never reuses stale state');
+    expect(troubleshooting.content).toContain('source paths');
+  });
+
   it('offers the runbook as a catalog plus canonical resources and byte-identical aliases', async () => {
     const index = JSON.parse(await documentation().read()) as {
       runbooks: { id: string; version: string; source: string; topics: { id: string }[] }[];

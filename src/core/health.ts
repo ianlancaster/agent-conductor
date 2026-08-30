@@ -77,6 +77,18 @@ export class HealthMonitor {
 
   handleEvent(event: RuntimeEvent): void {
     const { session } = event;
+    if (event.type === 'continuity-restoration') {
+      const detail = [
+        `source=${event.continuitySource ?? 'unknown'}`,
+        `outcome=${event.continuityOutcome ?? 'unknown'}`,
+        ...(event.byteCount === undefined ? [] : [`bytes=${String(event.byteCount)}`]),
+      ].join(' ');
+      this.deps.logEvent(session, 'continuity_state_restoration', detail);
+      if (event.continuityOutcome !== 'emitted') {
+        log().warn('continuity', `${session}: continuity restoration degraded (${detail})`);
+      }
+      return;
+    }
     this.bumpEventSequence(session);
     if (event.type === 'stop' && event.turnId !== undefined) {
       const activeTurnIds = this.activeTurnIds.get(session);

@@ -40,7 +40,14 @@ export interface SessionState {
 }
 
 export type RuntimeEventType =
-  'turn-start' | 'stop' | 'notification' | 'compaction' | 'compaction-complete' | 'session-start' | 'session-end';
+  | 'turn-start'
+  | 'stop'
+  | 'notification'
+  | 'compaction'
+  | 'compaction-complete'
+  | 'session-start'
+  | 'session-end'
+  | 'continuity-restoration';
 
 /** A lifecycle event pushed by a session's runtime hooks (Claude hooks / Codex notify). */
 export interface RuntimeEvent {
@@ -50,6 +57,9 @@ export interface RuntimeEvent {
   turnId?: string;
   reason?: string;
   transcriptPath?: string;
+  continuitySource?: 'startup' | 'resume' | 'compact';
+  continuityOutcome?: 'emitted' | 'missing' | 'unreadable' | 'not-file' | 'invalid-utf8' | 'oversized';
+  byteCount?: number;
   receivedAt: number;
 }
 

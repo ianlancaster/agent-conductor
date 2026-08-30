@@ -367,6 +367,9 @@ export class ConductorOperations {
             systemPromptFile: stringProperty(
               'Durable role or policy instructions (max 5 KiB UTF-8), applied after the mandatory Conductor protocol at start/continue and retained across compaction',
             ),
+            continuityStateFile: stringProperty(
+              'Bounded current-state text (max 5 KiB UTF-8), read fresh at runtime startup, native resume, and each confirmed compaction',
+            ),
             template: {
               ...stringProperty(
                 `Registered Git template${templateNames.length > 0 ? ` (${templateNames.join(', ')})` : ' (none configured)'}`,
@@ -392,6 +395,7 @@ export class ConductorOperations {
             resumeSessionId: optionalString(args, 'sessionId'),
             additionalDirs: optionalStringArray(args, 'additionalDirs'),
             systemPromptFile: optionalString(args, 'systemPromptFile'),
+            continuityStateFile: optionalString(args, 'continuityStateFile'),
             template: optionalString(args, 'template'),
             worktreeRepo: optionalString(args, 'worktreeRepo'),
             branch: optionalString(args, 'branch'),

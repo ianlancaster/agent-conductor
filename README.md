@@ -203,6 +203,11 @@ hot-reload. `systemPromptFile` is a private, per-session instruction layer (maxi
 UTF-8): Conductor validates and snapshots it on each start or continue, applies it after the
 mandatory protocol, and retains it across Claude Code and Codex compaction without typing into
 the pane or modifying the repository. Source edits take effect on the next start or continue.
+For evolving work state, an optional `continuityStateFile` is also capped at 5 KiB UTF-8 but is
+read fresh at runtime startup, native resume, and every confirmed manual or automatic compaction.
+It is subordinate to the protocol and static session instructions; Conductor reads but never
+updates or interprets it. Do not put credentials or secrets in either file because both become
+provider-visible context.
 Then start and designate the sentinel before enabling autonomous workers:
 
 ```text
@@ -315,9 +320,10 @@ semantics, exposure boundary, and copyable same-directory example.
 `/spawn` can create an empty workspace, clone a registered Git template with `--template`,
 or create a linked Git worktree with `--worktree` and `--branch`. Repeatable `--add-dir`
 flags expose shared records outside the workspace, and `--system-prompt` attaches a durable,
-5 KiB role script without writing generated instructions into the worktree. Missing, unreadable,
-non-file, invalid UTF-8, or oversized instruction sources fail the start visibly rather than being
-silently skipped. `/teardown --delete`
+5 KiB static role script without writing generated instructions into the worktree.
+`--continuity-state` attaches a separate 5 KiB current-state file that is reread on startup,
+resume, and compaction. Missing, unreadable, non-file, invalid UTF-8, or oversized configured
+sources fail the start visibly rather than being silently skipped. `/teardown --delete`
 removes only safe, Conductor-owned directories and refuses dirty worktrees. Teardown retains the
 codename's native conversation data; deleting that history is not implicit in workspace or
 registration cleanup. A later `/spawn <same-name> --session-id <id>` can therefore rebuild a

@@ -18,6 +18,12 @@ or continue. Claude Code retains its launch system-prompt layers across compacti
 the same prepared layers through its compact-only `SessionStart` hook. Neither path types a
 continuation prompt or writes instruction files into the working repository.
 
+An optional `continuityStateFile` adds a separate, bounded current-state layer. Conductor validates
+the file before start or continue, then reads it fresh at runtime startup, native resume, and each
+confirmed manual or automatic compaction. It is limited to 5 KiB UTF-8, subordinate to the protocol
+and static instructions, and never written or interpreted by Conductor. Keep full source documents
+on disk and never place secrets in either model-visible instruction file.
+
 ```bash
 mkdir ~/fleet && cd ~/fleet
 conductor start
@@ -349,7 +355,9 @@ primitive, not an approval or execution queue.
 --delete` reverses it. Every common flag has a short alias (`-r` runtime, `-m` model, `-e` effort,
   `-d` path, `-t` template, `-w` worktree, `-b` branch, `-a` additional directory, `-D` delete;
   `-s` native session ID, placement `-P`/`-T`/`-W`) — `/help` lists them. `--system-prompt` attaches a durable role prompt
-  (maximum 5 KiB UTF-8) that is refreshed on start/continue and retained across compaction.
+  (maximum 5 KiB UTF-8) that is refreshed on start/continue and retained across compaction;
+  `--continuity-state` attaches bounded current state that is reread at startup, resume, and
+  compaction.
   `--runtime codex` spawns a Codex session instead of Claude Code; `--runtime cc` is shorthand
   for `--runtime claude-code` on spawn, start, and continue commands.
 - **Template sessions**: `/spawn researcher --template agent` clones a registered Git source,
@@ -395,9 +403,10 @@ primitive, not an approval or execution queue.
 - **Codex sessions**: set `runtime: codex`. Before every start or continue, the conductor
   generates `AGENTS.override.md` inside that session's isolated `CODEX_HOME`. The generated file
   inherits the active global Codex instructions, then adds the Conductor protocol and optional
-  session prompt. Its compact-only `SessionStart` hook restores those same prepared protocol and
-  session layers as developer context; a down Conductor endpoint cannot suppress the local
-  restoration output. Repository instruction files still load through Codex normally; Conductor does
+  session prompt. Its `SessionStart` hook restores those same prepared protocol and session layers
+  at compaction and, when `continuityStateFile` is configured, appends the freshly read dynamic
+  layer. Startup and resume receive only that dynamic layer. A down Conductor endpoint cannot
+  suppress the local restoration output. Repository instruction files still load through Codex normally; Conductor does
   not edit the repository or its `.gitignore`. The session also receives a mechanically scoped
   Conductor MCP endpoint and lifecycle notify hook.
 
@@ -438,6 +447,8 @@ snapshot. Piped or redirected status output is automatically one-shot.
 | `conductor validate` says OK but nothing is configured  | You ran it outside the fleet dir — `cd` in, or pass `-C ~/fleet`                                                   |
 | Pane never launches / hangs on start                    | `claude`/`codex` not on PATH, or bad `repo:` path                                                                  |
 | Start/continue rejects `systemPromptFile`               | Fix the reported path, permissions, UTF-8 encoding, file type, or 5 KiB size limit                                 |
+| Start/continue rejects `continuityStateFile`            | Fix the path, permissions, UTF-8, regular-file type, final symlink, or 5 KiB limit                                 |
+| Session reports continuity restoration degraded         | Repair the configured state file; no stale state is reused, and static instructions still apply                    |
 | Codex shows `Hooks need review` or loses instructions   | The fleet opted out with `bypassHookTrust: false`; use `/hooks`, or vet all sources and restore the `true` default |
 | macOS dialog on first start                             | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)                                 |
 | Auto session stalls but nothing happens                 | No sentinel configured/running, or the sentinel lacks `systemPromptFile`                                           |

@@ -286,6 +286,7 @@ describe('surface contract', () => {
     expect(spawnProperties.sessionId).toMatchObject({ type: 'string', minLength: 1 });
     expect(spawnProperties).toHaveProperty('additionalDirs');
     expect(spawnProperties).toHaveProperty('systemPromptFile');
+    expect(spawnProperties).toHaveProperty('continuityStateFile');
   });
 
   it('validates arguments in the shared layer for every adapter', async () => {
@@ -481,6 +482,19 @@ describe('surface contract', () => {
     expect(spawn).toHaveBeenCalledWith(
       'restored',
       expect.objectContaining({ runtime: 'codex', effort: 'high', resumeSessionId: 'provider-session' }),
+    );
+    spawn.mockRestore();
+  });
+
+  it('routes fresh continuity state through spawn_session', async () => {
+    const spawn = vi.spyOn(Lifecycle.prototype, 'spawn').mockResolvedValue('spawned with continuity');
+
+    await expect(
+      tool('spawn_session').handler({ codename: 'stateful', continuityStateFile: './records/state.md' }, 'alpha'),
+    ).resolves.toBe('spawned with continuity');
+    expect(spawn).toHaveBeenCalledWith(
+      'stateful',
+      expect.objectContaining({ continuityStateFile: './records/state.md' }),
     );
     spawn.mockRestore();
   });

@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -236,6 +237,41 @@ describe('prepare', () => {
       custom.prepare({ ...session, systemPromptFile: join(configDir, 'missing.md') }, identity),
     ).rejects.toThrow(/Could not read session instructions/u);
   });
+
+  it('reads continuity state fresh at startup, resume, and compact without restoring it on clear', async () => {
+    const statePath = join(configDir, 'state.md');
+    writeFileSync(statePath, 'STATE VERSION ONE');
+    await runtime.prepare({ ...session, continuityStateFile: statePath }, identity);
+
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as {
+      hooks: Record<string, { matcher?: string; hooks: { command: string; timeout?: number }[] }[]>;
+    };
+    expect(settings.hooks.SessionStart).toHaveLength(2);
+    expect(settings.hooks.SessionStart?.[0]?.matcher).toBe('^(startup|resume|compact)$');
+    expect(settings.hooks.SessionStart?.[0]?.hooks[0]?.timeout).toBe(5);
+    expect(settings.hooks.SessionStart?.[1]?.hooks[0]?.command).toContain(identity.eventsUrl);
+
+    const readerName = readdirSync(configDir).find((entry) => entry.startsWith('continuity-state-reader-'));
+    expect(readerName).toBeDefined();
+    const run = (source: 'startup' | 'resume' | 'compact'): string => {
+      const output = JSON.parse(
+        execFileSync(process.execPath, [join(configDir, readerName!)], {
+          input: JSON.stringify({ hook_event_name: 'SessionStart', source }),
+          encoding: 'utf8',
+          env: { ...process.env, PATH: '' },
+        }),
+      ) as { hookSpecificOutput: { additionalContext: string } };
+      return output.hookSpecificOutput.additionalContext;
+    };
+    expect(run('startup')).toContain('STATE VERSION ONE');
+    writeFileSync(statePath, 'STATE VERSION TWO');
+    expect(run('resume')).toContain('STATE VERSION TWO');
+    expect(run('compact')).toContain('STATE VERSION TWO');
+    expect(JSON.stringify(settings.hooks.SessionStart)).not.toContain('clear');
+
+    await runtime.prepare(session, identity);
+    expect(readdirSync(configDir).some((entry) => entry.startsWith('continuity-state-reader-'))).toBe(false);
+  });
 });
 
 describe('parseEvent', () => {
@@ -255,6 +291,19 @@ describe('parseEvent', () => {
     expect(runtime.parseEvent({ hook_event_name: 'SessionStart', source: 'startup' })?.type).toBe('session-start');
     expect(runtime.parseEvent({ hook_event_name: 'UserPromptSubmit' })?.type).toBe('turn-start');
     expect(runtime.parseEvent({ hook_event_name: 'SessionEnd' })?.type).toBe('session-end');
+    expect(
+      runtime.parseEvent({
+        hook_event_name: 'ContinuityStateRestoration',
+        source: 'compact',
+        outcome: 'emitted',
+        byte_count: 17,
+      }),
+    ).toEqual({
+      type: 'continuity-restoration',
+      continuitySource: 'compact',
+      continuityOutcome: 'emitted',
+      byteCount: 17,
+    });
     expect(runtime.parseEvent({ hook_event_name: 'Whatever' })).toBeNull();
     expect(runtime.parseEvent('garbage')).toBeNull();
   });
