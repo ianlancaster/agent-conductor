@@ -117,6 +117,8 @@ beforeEach(() => {
     sessions: () => sessions,
     modelHints: { 'claude-code': ['claude-test'], 'codex': ['codex-test', 'custom-provider/model'] },
     effortHints: { 'claude-code': ['low', 'max'], 'codex': ['minimal', 'xhigh', 'ultra'] },
+    attestSessionStatus: async (codename, actor, kind, namespace, key, owner, idempotencyKey) =>
+      JSON.stringify({ codename, actor, kind, namespace, key, owner, idempotencyKey }),
     statusReport: (c) =>
       statusReport(
         {
@@ -193,7 +195,7 @@ describe('surface contract', () => {
         .filter((definition) => definition.federation === 'local-only')
         .map((definition) => definition.name)
         .sort(),
-    ).toEqual(['get_conductor_docs', 'send_to_operator', 'whoami'].sort());
+    ).toEqual(['attest_session_status', 'get_conductor_docs', 'send_to_operator', 'whoami'].sort());
     expect(
       operations
         .definitions()
@@ -218,6 +220,26 @@ describe('surface contract', () => {
       expect(operatorNames.has(operation.name), `${operation.name} missing from operator commands`).toBe(true);
       expect(tool(operation.name).inputSchema).toEqual(operation.inputSchema);
     }
+  });
+
+  it('derives signed recovery-receipt requester identity from the MCP connection', async () => {
+    const result = JSON.parse(
+      String(
+        await tool('attest_session_status').handler(
+          {
+            codename: 'beta',
+            resourceKind: 'exclusive',
+            resourceNamespace: 'dev-port-block',
+            resourceKey: 'instance-1',
+            owner: 'fleet-one',
+            idempotencyKey: 'recovery-001',
+          },
+          'alpha',
+        ),
+      ),
+    ) as Record<string, unknown>;
+    expect(result.actor).toEqual({ audience: 'session', codename: 'alpha' });
+    expect(result.codename).toBe('beta');
   });
 
   it('keeps audience-specific operations explicit', () => {

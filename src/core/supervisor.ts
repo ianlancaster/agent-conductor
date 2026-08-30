@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +16,7 @@ import {
 import { resolveConductorInstance, resolveFleetDataDir, type ResolvedInstance } from '../config/paths.js';
 import type { SessionConfig, SupervisorConfig } from '../config/schema.js';
 import { ConfigWatcher } from '../config/watcher.js';
+import { SessionClaimAdmission } from '../config/admission.js';
 import { initLogger, log } from '../logger.js';
 import { ConductorMcpServer } from '../mcp/server.js';
 import { buildMcpTools } from '../mcp/tools.js';
@@ -38,7 +41,7 @@ import { identityFor } from './identity.js';
 import { Lifecycle } from './lifecycle.js';
 import { FleetLock } from './lock.js';
 import { Messaging } from './messaging.js';
-import { ConductorOperations } from './operations.js';
+import { ConductorOperations, type OperationActor } from './operations.js';
 import { OperatorRequests } from './operator-requests.js';
 import { RunbookAdoptions } from './runbook-adoptions.js';
 import { StallSentinelRouter } from './sentinel.js';
@@ -47,6 +50,7 @@ import { formatFleetStatusReport, resolvedSessionEffort, resolvedSessionModel, s
 import { observePaneActivity, observePaneInputState } from './activity.js';
 import { ShepherdManager } from './shepherd-manager.js';
 import { IntegrationManager } from './integration-manager.js';
+import { SessionStatusAttestor } from './attestation.js';
 import { FederationRegistry } from '../federation/registry.js';
 import { FederationRouter } from '../federation/router.js';
 
@@ -120,6 +124,8 @@ export class Supervisor {
   private readonly env: NodeJS.ProcessEnv;
   private readonly resolvedInstance: ResolvedInstance;
   private readonly lock: FleetLock;
+  private readonly admission: SessionClaimAdmission;
+  private readonly attestor: SessionStatusAttestor;
   private heartbeatTimer: NodeJS.Timeout | undefined;
 
   constructor(baseDir: string, options: SupervisorOptions = {}) {
@@ -129,8 +135,15 @@ export class Supervisor {
     const inheritedEnv = options.env ?? process.env;
     this.env = resolveFleetEnvironment(this.resolvedInstance, inheritedEnv);
     this.config = loadSupervisorConfig(this.resolvedInstance, this.env);
+    this.admission = new SessionClaimAdmission(
+      this.config.admission.sessionClaims,
+      this.baseDir,
+      this.resolvedInstance.fleetId,
+      this.resolvedInstance.name ?? 'default',
+    );
     this.shepherd = new ShepherdManager(this.config.shepherd);
     const dataDir = resolveFleetDataDir(baseDir, this.config.paths.dataDir);
+    this.attestor = new SessionStatusAttestor(dataDir);
     const fleetPaths = this.resolvedInstance.paths;
     initLogger({ level: this.config.supervisor.logLevel, filePath: join(dataDir, 'conductor.log') });
     this.lock = new FleetLock(join(dataDir, 'conductor.lock'), process.pid, baseDir);
@@ -146,6 +159,7 @@ export class Supervisor {
     this.sessions = loadSessionConfigs(this.resolvedInstance, {
       tolerant: true,
       defaultRuntime: this.config.defaults.runtime,
+      admission: this.admission,
     });
     validateFederationExposure(this.config, this.sessions, fleetPaths.supervisorFile, {
       sessionsDir: fleetPaths.sessionsDir,
@@ -319,6 +333,7 @@ export class Supervisor {
       },
       baseDir,
       sessionConfigDir: sessionConfigDir(this.resolvedInstance),
+      admission: this.admission,
       reloadSessions: (teardownSession) => {
         this.reloadSessions(teardownSession);
       },
@@ -446,6 +461,8 @@ export class Supervisor {
       },
       runtimeNames: [...this.runtimes.keys()].sort(),
       statusReport: (codename, only) => this.statusReport(codename, only),
+      attestSessionStatus: (codename, actor, resourceKind, resourceNamespace, resourceKey, owner, idempotencyKey) =>
+        this.attestSessionStatus(codename, actor, resourceKind, resourceNamespace, resourceKey, owner, idempotencyKey),
       tail: (codename, lines) => this.tail(codename, lines),
       typeInPane: (codename, text) => this.typeInPane(codename, text),
       tailLimits: {
@@ -785,6 +802,66 @@ export class Supervisor {
     return this.integrations.status();
   }
 
+  private async attestSessionStatus(
+    codename: string,
+    actor: OperationActor,
+    resourceKind: string,
+    resourceNamespace: string,
+    resourceKey: string,
+    owner: string,
+    idempotencyKey: string,
+  ): Promise<string> {
+    const receiptConfig = this.config.admission.recoveryReceipts;
+    if (!receiptConfig.enabled) throw new Error('Signed recovery receipts are disabled for this fleet.');
+    if (actor.audience === 'operator') {
+      if (!receiptConfig.allowOperator)
+        throw new Error('Operator-issued recovery receipts are disabled for this fleet.');
+    } else if (!receiptConfig.authorizedSessions.includes(actor.codename)) {
+      throw new Error(`Session '${actor.codename}' is not an authorized recovery receipt issuer.`);
+    }
+    if (!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(resourceKind)) throw new Error('resourceKind is invalid.');
+    if (!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(resourceNamespace)) {
+      throw new Error('resourceNamespace is invalid.');
+    }
+    if (!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(resourceKey)) throw new Error('resourceKey is invalid.');
+    if (owner.length < 1 || owner.length > 256) throw new Error('owner is invalid.');
+    if (idempotencyKey.length < 1 || idempotencyKey.length > 128) throw new Error('idempotencyKey is invalid.');
+    await this.lifecycle.reconcile(codename);
+    const state = this.states.get(codename);
+    const process = this.lifecycle.processObservation(codename);
+    const configDir = sessionConfigDir(this.resolvedInstance);
+    const now = new Date();
+    const result = this.attestor.attest({
+      schemaVersion: 1,
+      kind: 'conductor_session_status',
+      fleetId: this.resolvedInstance.fleetId,
+      conductorInstance: this.resolvedInstance.name ?? 'default',
+      host: hostname(),
+      codename,
+      issuedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + receiptConfig.ttlSeconds * 1000).toISOString(),
+      nonce: randomUUID(),
+      idempotencyKey,
+      resource: { kind: resourceKind, namespace: resourceNamespace, key: resourceKey, owner },
+      registered: this.sessions.has(codename),
+      configPresent: existsSync(join(configDir, `${codename}.yaml`)) || existsSync(join(configDir, `${codename}.yml`)),
+      running: state?.running === true,
+      activity: state?.activity ?? 'stopped',
+      processActive: process?.active ?? null,
+      processObservedAt: process?.observedAt ?? null,
+      issuer:
+        actor.audience === 'operator'
+          ? { type: 'operator', id: actor.id, role: 'operator' }
+          : {
+              type: 'conductor_session',
+              id: actor.codename,
+              fleet: this.resolvedInstance.fleetId,
+              role: 'durable_coordinator',
+            },
+    });
+    return JSON.stringify(result);
+  }
+
   private async tail(codename: string, lines: number): Promise<string> {
     const pane = this.lifecycle.getPane(codename);
     if (pane === undefined) return `${codename} has no active pane.`;
@@ -1011,6 +1088,7 @@ export class Supervisor {
     const fresh = loadSessionConfigs(this.resolvedInstance, {
       tolerant: true,
       defaultRuntime: this.config.defaults.runtime,
+      admission: this.admission,
     });
     for (const [codename, session] of fresh) {
       if (this.runtimes.has(session.runtime)) continue;

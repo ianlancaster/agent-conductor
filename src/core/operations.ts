@@ -58,6 +58,15 @@ export interface ConductorOperationDeps {
   effortHints: Record<string, readonly string[]>;
   runtimeNames?: readonly string[];
   statusReport(codename?: string, only?: ReadonlySet<string>): string;
+  attestSessionStatus(
+    codename: string,
+    actor: OperationActor,
+    resourceKind: string,
+    resourceNamespace: string,
+    resourceKey: string,
+    owner: string,
+    idempotencyKey: string,
+  ): Promise<string>;
   tail(codename: string, lines: number): Promise<string>;
   /** Deliberately bypass the protected delivery queue for terminal control input. */
   typeInPane(codename: string, text: string): Promise<string>;
@@ -189,6 +198,36 @@ export class ConductorOperations {
     const templateNames = this.deps.lifecycle.templateNames();
     const runRuntimeProperty = runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex']);
     const definitions: OperationDefinition[] = [
+      {
+        name: 'attest_session_status',
+        description:
+          'Create a signed, short-lived session-status receipt for evidence-backed external resource recovery.',
+        resultDescription: 'Returns a signed receipt, its durable path, and its SHA-256 digest.',
+        audiences: BOTH,
+        federation: 'local-only',
+        signedIdentity: true,
+        inputSchema: schema(
+          {
+            codename: stringProperty('Target session codename'),
+            resourceKind: stringProperty('External resource kind expected by the recovery policy'),
+            resourceNamespace: stringProperty('External resource namespace expected by the recovery policy'),
+            resourceKey: stringProperty('External resource key expected by the recovery policy'),
+            owner: stringProperty('External resource owner expected by the recovery policy'),
+            idempotencyKey: stringProperty('Caller-stable recovery observation key'),
+          },
+          ['codename', 'resourceKind', 'resourceNamespace', 'resourceKey', 'owner', 'idempotencyKey'],
+        ),
+        handler: (args, actor) =>
+          this.deps.attestSessionStatus(
+            requireString(args, 'codename'),
+            actor,
+            requireString(args, 'resourceKind'),
+            requireString(args, 'resourceNamespace'),
+            requireString(args, 'resourceKey'),
+            requireString(args, 'owner'),
+            requireString(args, 'idempotencyKey'),
+          ),
+      },
       {
         name: 'send_to_session',
         description: "Send a message to another session's pane, starting it if needed.",
@@ -370,6 +409,9 @@ export class ConductorOperations {
             continuityStateFile: stringProperty(
               'Bounded current-state text (max 5 KiB UTF-8), read fresh at runtime startup, native resume, and each confirmed compaction',
             ),
+            admissionClaim: stringProperty(
+              'External host-resource admission claim ID (required only when fleet session admission is enabled)',
+            ),
             template: {
               ...stringProperty(
                 `Registered Git template${templateNames.length > 0 ? ` (${templateNames.join(', ')})` : ' (none configured)'}`,
@@ -396,6 +438,7 @@ export class ConductorOperations {
             additionalDirs: optionalStringArray(args, 'additionalDirs'),
             systemPromptFile: optionalString(args, 'systemPromptFile'),
             continuityStateFile: optionalString(args, 'continuityStateFile'),
+            admissionClaim: optionalString(args, 'admissionClaim'),
             template: optionalString(args, 'template'),
             worktreeRepo: optionalString(args, 'worktreeRepo'),
             branch: optionalString(args, 'branch'),

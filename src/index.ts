@@ -1,6 +1,13 @@
 export { Supervisor } from './core/supervisor.js';
 export type { SupervisorOptions } from './core/supervisor.js';
 export type { MessageReceipt } from './core/messaging.js';
+export type { SessionAdmissionClaim, SessionAdmissionGate } from './config/admission.js';
+export { verifySessionStatusReceipt } from './core/attestation.js';
+export type {
+  SessionStatusAttestationPayload,
+  SessionStatusReceiptExpectations,
+  SignedSessionStatusReceipt,
+} from './core/attestation.js';
 export type {
   ConfiguredIntegration,
   FederationConfig,

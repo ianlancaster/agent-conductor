@@ -31,6 +31,8 @@ compose:
   Conductor.
 - **Status lines:** optional Claude Code and Codex footer configuration for runtime and repository
   context.
+- **Admission evidence:** optional external session-claim enforcement and signed, short-lived
+  `attest_session_status` receipts for host-resource recovery decisions.
 
 The most important architectural distinctions are:
 
@@ -214,6 +216,38 @@ Before proposing or making config changes:
 5. Run `conductor -C <fleetDir> validate`.
 6. State whether the change hot-reloads or needs a deliberate restart.
 7. Never restart a live fleet merely to test a speculative edit; coordinate with the operator.
+
+### External host-resource admission and recovery evidence
+
+`admission.sessionClaims` is an opt-in enforcement seam for an external machine-wide allocator.
+When enabled, every session YAML must name an immutable claim with `admissionClaim` and repeat its
+`admissionResource.kind`, `admissionResource.namespace`, and `admissionResource.key`. Initial load, hot-load, every start, and
+direct spawn all fail closed unless the claim exactly binds schema version, claim kind, fleet ID,
+Conductor instance, owner and owner hash, codename, canonical YAML path, resource identity, and
+either a lease-token hash or explicit legacy-reservation evidence. Claims are canonical strict
+JSON, regular non-symlink files, at most 16 KiB, and have no write bits. YAML filenames must match
+their codename. An invalid hot-loaded session stays unavailable, and a denied direct spawn creates
+no workspace, branch, YAML, pane, or state registration.
+
+Conductor does not choose, acquire, reassign, or release resources. The allocator writes claims
+atomically into the configured directory before session configuration becomes runnable. A legacy
+claim uses `status: reserved`, pins the existing YAML SHA-256 and durable census evidence, and can
+keep a registered stopped fleet's resource protected. It cannot authorize a new spawn. Never
+synthesize a reservation after enforcement begins or infer release from process liveness.
+
+`admission.recoveryReceipts` separately enables short-lived Ed25519 status receipts. The
+`attest_session_status` operation uses the authenticated Conductor connection to identify an
+allowed durable coordinator or operator, reconciles the target, and signs host, fleet, instance,
+target, status, resource owner, issue and expiry times, nonce, idempotency key, and key ID. A
+recovery controller must call the exported `verifySessionStatusReceipt`, pin the expected public
+key SHA-256 through a durable trust record, enforce all expected bindings, record consumed nonces,
+and reject unknown or rotated keys until an explicit re-pin. Receipt creation is evidence only:
+ordinary token-bound release remains the allocator's responsibility. Never use a caller-authored
+status document or an unsigned process observation as stale-recovery authority.
+
+Both admission blocks are disabled by default and supervisor changes require a deliberate
+restart. Stage explicit legacy claims before first enforcement, refuse activation on duplicates,
+and validate every fleet before restarting it.
 
 Older fleets may use root-level `config/`, `data/`, and `.env`. The returned paths are
 authoritative. Do not migrate a live legacy fleet by moving files ad hoc; follow

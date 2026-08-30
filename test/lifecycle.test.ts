@@ -514,6 +514,48 @@ describe('lifecycle edges', () => {
     expect(runtime.launches).toHaveLength(0);
   });
 
+  it('denies admission before creating a workspace, branch, YAML, pane, or state registration', async () => {
+    const denied = new Lifecycle({
+      store,
+      backend,
+      states,
+      runtimes: new Map([['claude-code', runtime]]),
+      sessions: () => sessions,
+      identityFor: (codename) => ({ mcpUrl: '', eventsUrl: '', configDir: join(baseDir, 'data', codename) }),
+      config: {
+        defaultPlacement: 'pane',
+        defaultRuntime: 'claude-code',
+        defaultEfforts: { 'claude-code': undefined },
+        defaultBypassPermissions: true,
+        markerFile: '.agent-marker',
+        spawnDirPattern: './spawned/{codename}',
+        spawnTemplates: {},
+        templateCloneTimeoutMs: 5_000,
+      },
+      baseDir,
+      sessionConfigDir: join(baseDir, 'config', 'sessions'),
+      admission: {
+        enabled: true,
+        assertConfiguredSession: () => undefined,
+        assertSpawn: () => {
+          throw new Error('Session admission denied: no matching claim.');
+        },
+      },
+      events: lifecycleEvents,
+      reloadSessions: () => undefined,
+      supervisionReset: () => undefined,
+    });
+
+    expect(await denied.spawn('denied')).toBe('Session admission denied: no matching claim.');
+    expect(existsSync(join(baseDir, 'spawned', 'denied'))).toBe(false);
+    expect(existsSync(join(baseDir, 'config', 'sessions', 'denied.yaml'))).toBe(false);
+    expect(denied.getPane('denied')).toBeUndefined();
+    expect(states.has('denied')).toBe(false);
+    expect(lifecycleEvents.events).not.toContainEqual(
+      expect.objectContaining({ type: 'workspace.provisioned', session: 'denied' }),
+    );
+  });
+
   it('never falls back to a fresh conversation when targeted spawn launch setup fails', async () => {
     runtime.buildLaunchCommand = (session, _identity, opts) => {
       runtime.launches.push({ session, opts: { ...opts } });

@@ -156,6 +156,7 @@ beforeEach(() => {
     sessions: () => sessions,
     modelHints: { 'claude-code': [], 'codex': [] },
     effortHints: { 'claude-code': [], 'codex': [] },
+    attestSessionStatus: async () => 'attested',
     statusReport: (codename) => (codename !== undefined ? `status:${codename}` : 'status:all'),
     tail: async (codename, lines) => `tail:${codename}:${lines}`,
     typeInPane: async (codename, text) => {

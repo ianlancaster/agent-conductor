@@ -163,6 +163,30 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
     },
     targetCommand('stop', 'stop_session', 'Sessions'),
     {
+      command: 'attest',
+      operations: ['attest_session_status'],
+      group: 'Sessions',
+      usage: '/attest <session> <resource-kind> <resource-namespace> <resource-key> <owner> <idempotency-key>',
+      description: operationDescription(operations, 'attest_session_status'),
+      invoke: (args, actor) => {
+        if (args.length !== 6) {
+          usage('/attest <session> <resource-kind> <resource-namespace> <resource-key> <owner> <idempotency-key>');
+        }
+        return invoke(
+          'attest_session_status',
+          {
+            codename: args[0],
+            resourceKind: args[1],
+            resourceNamespace: args[2],
+            resourceKey: args[3],
+            owner: args[4],
+            idempotencyKey: args[5],
+          },
+          actor,
+        );
+      },
+    },
+    {
       command: 'tail',
       operations: ['tail_session'],
       group: 'Sessions',
@@ -356,6 +380,7 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
         '    -d/--path <dir> · -t/--template <name> · -w/--worktree <repo> · -b/--branch <name>',
         '    -a/--add-dir <dir> (repeatable) · --system-prompt <file> (durable static instructions; max 5 KiB)',
         '    --continuity-state <file> (fresh startup/resume/compact state; max 5 KiB)',
+        '    --admission-claim <id> (external host-resource claim when fleet admission is enabled)',
         '    --bypass-permissions · --require-permissions',
       ],
       invoke: (args, actor) => invoke('spawn_session', parseSpawn(args), actor),
@@ -405,6 +430,7 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     '-b': 'branch',
     '--system-prompt': 'systemPromptFile',
     '--continuity-state': 'continuityStateFile',
+    '--admission-claim': 'admissionClaim',
   };
   for (let index = 1; index < parsed.rest.length;) {
     const flag = parsed.rest[index];
@@ -428,7 +454,7 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     const value = parsed.rest[index + 1];
     if (flag === undefined || value === undefined || flags[flag] === undefined) {
       usage(
-        '/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-s session-id] [-t template] [-w repo] [-b branch] [-a dir] [--system-prompt file] [--continuity-state file] [placement]',
+        '/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-s session-id] [-t template] [-w repo] [-b branch] [-a dir] [--system-prompt file] [--continuity-state file] [--admission-claim id] [placement]',
       );
     }
     output[flags[flag]] = value;

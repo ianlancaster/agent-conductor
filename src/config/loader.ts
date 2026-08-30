@@ -9,6 +9,7 @@ import { sessionConfigSchema, supervisorConfigSchema, type SessionConfig, type S
 import { configuredRunbookRegistry } from '../runbooks/registry.js';
 import { PACKAGE_VERSION } from '../version.js';
 import { resolveConfiguredIntegrations } from '../integrations/configured.js';
+import { SessionClaimAdmission, type SessionAdmissionGate } from './admission.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 
@@ -161,7 +162,11 @@ export function sessionConfigDir(source: InstanceSource, instance?: string): str
  */
 export function loadSessionConfigs(
   source: InstanceSource,
-  opts: { tolerant?: boolean; defaultRuntime?: SessionConfig['runtime'] } = {},
+  opts: {
+    tolerant?: boolean;
+    defaultRuntime?: SessionConfig['runtime'];
+    admission?: SessionAdmissionGate;
+  } = {},
 ): Map<string, SessionConfig> {
   const resolvedInstance = asResolvedInstance(source);
   const { baseDir } = resolvedInstance;
@@ -174,6 +179,7 @@ export function loadSessionConfigs(
     try {
       const raw = yaml.load(readFileSync(file, 'utf8'));
       const session = parseSessionConfig(raw, file, baseDir, opts.defaultRuntime);
+      opts.admission?.assertConfiguredSession(file, session);
       if (sessions.has(session.codename)) {
         throw new ConfigError(`Duplicate codename '${session.codename}'`, file);
       }
@@ -192,7 +198,17 @@ export function loadSessionConfigs(
 export function loadConfig(baseDir: string, opts: { tolerant?: boolean; instance?: string } = {}): LoadedConfig {
   const resolvedInstance = resolveConductorInstance(baseDir, opts.instance);
   const supervisor = loadSupervisorConfig(resolvedInstance);
-  const sessions = loadSessionConfigs(resolvedInstance, { ...opts, defaultRuntime: supervisor.defaults.runtime });
+  const admission = new SessionClaimAdmission(
+    supervisor.admission.sessionClaims,
+    resolvedInstance.baseDir,
+    resolvedInstance.fleetId,
+    resolvedInstance.name ?? 'default',
+  );
+  const sessions = loadSessionConfigs(resolvedInstance, {
+    ...opts,
+    defaultRuntime: supervisor.defaults.runtime,
+    admission,
+  });
   validateFederationExposure(supervisor, sessions, resolvedInstance.paths.supervisorFile, {
     sessionsDir: resolvedInstance.paths.sessionsDir,
     tolerateUnparsed: opts.tolerant === true,
@@ -221,9 +237,16 @@ export function validateConfig(baseDir: string, options: ValidateConfigOptions =
     return [err instanceof Error ? err.message : String(err)];
   }
   let defaultRuntime: SessionConfig['runtime'] = 'claude-code';
+  let admission: SessionAdmissionGate | undefined;
   try {
     const supervisor = loadSupervisorConfig(resolvedInstance);
     defaultRuntime = supervisor.defaults.runtime;
+    admission = new SessionClaimAdmission(
+      supervisor.admission.sessionClaims,
+      resolvedInstance.baseDir,
+      resolvedInstance.fleetId,
+      resolvedInstance.name ?? 'default',
+    );
     if (options.configuredIntegrations !== false) {
       try {
         resolveConfiguredIntegrations(baseDir, supervisor.integrations);
@@ -250,6 +273,7 @@ export function validateConfig(baseDir: string, options: ValidateConfigOptions =
       try {
         const raw = yaml.load(readFileSync(file, 'utf8'));
         const session = parseSessionConfig(raw, file, baseDir, defaultRuntime);
+        admission?.assertConfiguredSession(file, session);
         if (seen.has(session.codename)) problems.push(`${file}: duplicate codename '${session.codename}'`);
         seen.add(session.codename);
       } catch (err) {
@@ -260,7 +284,7 @@ export function validateConfig(baseDir: string, options: ValidateConfigOptions =
   if (problems.length === 0) {
     try {
       const supervisor = loadSupervisorConfig(resolvedInstance);
-      const sessions = loadSessionConfigs(resolvedInstance, { defaultRuntime });
+      const sessions = loadSessionConfigs(resolvedInstance, { defaultRuntime, admission });
       validateFederationExposure(supervisor, sessions, resolvedInstance.paths.supervisorFile, {
         sessionsDir: resolvedInstance.paths.sessionsDir,
       });

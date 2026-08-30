@@ -73,6 +73,26 @@ export const configuredIntegrationSchema = z
   })
   .strict();
 
+export const sessionClaimAdmissionSchema = z
+  .object({
+    /** Opt in to external, host-wide admission claims for every session registration and start. */
+    enabled: z.boolean().default(false),
+    /** Directory containing trusted claim JSON files named <claim-id>.json. */
+    claimDirectory: z.string().trim().min(1).nullable().default(null),
+    /** Stable owner identity that claims must name for this fleet or named instance. */
+    owner: z.string().trim().min(1).nullable().default(null),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.enabled) return;
+    if (value.claimDirectory === null) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['claimDirectory'], message: 'is required when enabled' });
+    }
+    if (value.owner === null) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['owner'], message: 'is required when enabled' });
+    }
+  });
+
 export const federationConfigSchema = z
   .object({
     name: z.string().regex(FEDERATION_NAME_PATTERN, 'federation name must match ^[a-z0-9][a-z0-9-]{0,63}$'),
@@ -124,6 +144,20 @@ export const sessionConfigSchema = z
      * compact SessionStart boundaries. Absolute, or fleet-root-relative.
      */
     continuityStateFile: z.string().trim().min(1).optional(),
+    /** External host-resource admission claim ID. Required only when supervisor admission is enabled. */
+    admissionClaim: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9._-]{0,127}$/i, 'admission claim ID is invalid')
+      .optional(),
+    /** Resource identity copied from the admission claim so YAML and claim cannot drift independently. */
+    admissionResource: z
+      .object({
+        kind: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/i),
+        namespace: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/i),
+        key: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/i),
+      })
+      .strict()
+      .optional(),
     schedules: z.array(scheduleEntrySchema).default([]),
   })
   .strict();
@@ -168,6 +202,21 @@ export const supervisorConfigSchema = z
       .default({}),
     /** Trusted local executable modules loaded only by the stock foreground CLI. */
     integrations: z.array(configuredIntegrationSchema).default([]),
+    admission: z
+      .object({
+        sessionClaims: sessionClaimAdmissionSchema.default({}),
+        recoveryReceipts: z
+          .object({
+            enabled: z.boolean().default(false),
+            authorizedSessions: z.array(z.string().regex(CODENAME_PATTERN)).default([]),
+            allowOperator: z.boolean().default(true),
+            ttlSeconds: z.number().int().min(30).max(3600).default(300),
+          })
+          .strict()
+          .default({}),
+      })
+      .strict()
+      .default({}),
     mcp: z
       .object({
         /** Default: derived per fleet dir (stable hash into 3456..3955) so multiple conductors don't collide. */

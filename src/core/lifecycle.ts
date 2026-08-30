@@ -14,6 +14,7 @@ import type { PaneActivityEvidence, PaneRef, Placement } from './types.js';
 import { materializeWorkspace, type WorkspaceSource } from './workspace.js';
 import { isWorktree, removeWorktree } from './worktree.js';
 import type { ConductorEventPublisher } from '../events/types.js';
+import type { SessionAdmissionGate } from '../config/admission.js';
 
 export interface StartOptions {
   prompt?: string;
@@ -66,6 +67,8 @@ export interface SpawnOptions {
   branch?: string;
   /** Create the pane in the detached fleet session (tmux only). */
   headless?: boolean;
+  /** External host-resource admission claim ID, when the fleet requires one. */
+  admissionClaim?: string;
 }
 
 export interface LifecycleDeps {
@@ -88,6 +91,7 @@ export interface LifecycleDeps {
   };
   baseDir: string;
   sessionConfigDir: string;
+  admission?: SessionAdmissionGate;
   /** Re-read session configs immediately (after spawn/teardown writes). */
   reloadSessions(teardownSession?: string): void;
   /** Reset per-run health and stall-routing tracking on lifecycle boundaries. */
@@ -238,6 +242,11 @@ export class Lifecycle {
   private async startInner(codename: string, opts: StartOptions): Promise<string> {
     const session = this.deps.sessions().get(codename);
     if (session === undefined) return `Unknown session: ${codename}`;
+    try {
+      this.deps.admission?.assertConfiguredSession(this.sessionConfigFile(codename), session);
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
 
     let existingPane = await this.findPane(codename);
     if (existingPane !== undefined) {
@@ -421,6 +430,13 @@ export class Lifecycle {
 
     const rawDir = opts.path ?? this.deps.config.spawnDirPattern.replace('{codename}', codename);
     const dir = isAbsolute(rawDir) ? rawDir : resolve(this.deps.baseDir, rawDir);
+    const configFile = join(this.deps.sessionConfigDir, `${codename}.yaml`);
+    let admissionResource: { kind: string; namespace: string; key: string } | undefined;
+    try {
+      admissionResource = this.deps.admission?.assertSpawn(codename, opts.admissionClaim, configFile);
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
     let workspaceSource: WorkspaceSource;
     if (opts.worktreeRepo !== undefined) {
       const repo = isAbsolute(opts.worktreeRepo) ? opts.worktreeRepo : resolve(this.deps.baseDir, opts.worktreeRepo);
@@ -440,7 +456,7 @@ export class Lifecycle {
 
     // Serialize with js-yaml, never string interpolation: a model/effort value
     // containing a newline would otherwise inject arbitrary YAML keys.
-    const config: Record<string, string | boolean | string[]> = {
+    const config: Record<string, unknown> = {
       codename,
       repo: dir,
       runtime: opts.runtime ?? this.deps.config.defaultRuntime,
@@ -450,9 +466,11 @@ export class Lifecycle {
     if (opts.additionalDirs !== undefined) config.additionalDirs = opts.additionalDirs;
     if (opts.systemPromptFile !== undefined) config.systemPromptFile = opts.systemPromptFile;
     if (opts.continuityStateFile !== undefined) config.continuityStateFile = opts.continuityStateFile;
+    if (opts.admissionClaim !== undefined) config.admissionClaim = opts.admissionClaim;
+    if (admissionResource !== undefined) config.admissionResource = admissionResource;
     if (opts.bypassPermissions !== undefined) config.bypassPermissions = opts.bypassPermissions;
     mkdirSync(this.deps.sessionConfigDir, { recursive: true });
-    writeFileSync(join(this.deps.sessionConfigDir, `${codename}.yaml`), yaml.dump(config));
+    writeFileSync(configFile, yaml.dump(config));
 
     this.deps.reloadSessions();
     const started = await this.start(codename, {
@@ -521,6 +539,12 @@ export class Lifecycle {
 
   isAgentProject(session: SessionConfig): boolean {
     return existsSync(join(session.repo, this.deps.config.markerFile));
+  }
+
+  private sessionConfigFile(codename: string): string {
+    const yamlFile = join(this.deps.sessionConfigDir, `${codename}.yaml`);
+    if (existsSync(yamlFile)) return yamlFile;
+    return join(this.deps.sessionConfigDir, `${codename}.yml`);
   }
 
   private clearSession(
