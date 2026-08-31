@@ -78,7 +78,7 @@ function validatedInput(
     number: input.number,
     actor,
     evidence,
-    ...(releaseGate === 'exact-head-attestation' ? { releaseGate } : {}),
+    ...(releaseGate === undefined || releaseGate === 'none' ? {} : { releaseGate }),
     ...(onlyIfUntracked ? { onlyIfUntracked: true } : {}),
   };
   return {
@@ -229,8 +229,9 @@ export class TrackedPullRequestControl {
     const request = validatedInput('unclaim', input, this.clock());
     const replay = this.store.getTrackedControlResult(request);
     if (replay !== undefined) return replay;
-    if (this.store.getTrackedPullRequest(request)?.releaseGate === 'exact-head-attestation') {
-      throw new Error('Exact-head gated claims must be unclaimed with the asynchronous safe control path.');
+    const tracked = this.store.getTrackedPullRequest(request);
+    if (tracked?.status === 'active' && tracked.releaseGate !== 'none') {
+      throw new Error('Executable tracked claims must be unclaimed with the asynchronous safe control path.');
     }
     return this.persistUnclaim(request);
   }
@@ -241,8 +242,14 @@ export class TrackedPullRequestControl {
     const replay = this.store.getTrackedControlResult(request);
     if (replay !== undefined) return replay;
     const tracked = this.store.getTrackedPullRequest(request);
-    if (tracked?.status !== 'active' || tracked.releaseGate !== 'exact-head-attestation') {
+    if (tracked?.status !== 'active' || tracked.releaseGate === 'none') {
       return this.persistUnclaim(request);
+    }
+    if (tracked.releaseGate === 'provider-action-ready') {
+      return this.releaseMutex().runExclusive(async (lease) => {
+        lease.assertOwned();
+        return this.persistUnclaim(request);
+      });
     }
     const releaseStore = this.releaseStore();
     return this.releaseMutex().runExclusive(async (lease) => {

@@ -32,6 +32,8 @@ class FakeGitHub implements GitHubProvider {
   getHandler: ((pr: PullRequestRef) => Promise<PullRequestDetails>) | undefined;
   queued = false;
   latestQueueRemoval: { id: string; createdAt: string; reason: string | null } | undefined;
+  enqueueAvailable = false;
+  automationHeadSha: string | undefined;
 
   async discover(kind: DiscoveryKind): Promise<DiscoveryResult<PullRequestSummary>> {
     this.discoverCalls += 1;
@@ -61,9 +63,10 @@ class FakeGitHub implements GitHubProvider {
     const details = this.details.get(`${pr.repo}#${String(pr.number)}`);
     if (details === undefined) throw new Error(`missing ${pr.repo}#${String(pr.number)}`);
     return {
-      headSha: details.headSha,
+      headSha: this.automationHeadSha ?? details.headSha,
       autoMergeEnabled: details.autoMergeRequest !== null,
       queued: this.queued,
+      enqueueAvailable: this.enqueueAvailable,
       ...(this.latestQueueRemoval === undefined ? {} : { latestQueueRemoval: this.latestQueueRemoval }),
     };
   }
@@ -799,6 +802,120 @@ describe('Shepherd engine', () => {
       expect.arrayContaining(['reply-self', 'reply-bot', 'reply-thread-human']),
     );
     expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    store.close();
+  });
+
+  it('submits provider-ready tracked PRs solely from provider action availability', async () => {
+    const github = new FakeGitHub();
+    github.details.set(
+      'acme/api#7',
+      pr({
+        mergeable: 'CONFLICTING',
+        mergeStateStatus: 'DIRTY',
+        autoMergeRequest: { mergeMethod: 'SQUASH' },
+        checks: [{ id: 'failed', name: 'test', state: 'FAILURE', bucket: 'fail', workflow: 'CI' }],
+        reviews: [
+          {
+            id: 'blocker',
+            author: 'abby',
+            state: 'CHANGES_REQUESTED',
+            body: 'A local coordinator-authored blocker that provider-ready admission must ignore.',
+            submittedAt: '2026-08-17T10:00:00Z',
+          },
+        ],
+        reviewThreads: [reviewThread({ isResolved: false })],
+      }),
+    );
+    github.enqueueAvailable = true;
+    github.automationHeadSha = 'provider-observed-different-head';
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      github: { mode: 'merge-queue' },
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: { enabled: true, releaseGate: 'provider-action-ready' },
+        staleThresholdHours: 24,
+      },
+      automation: { autoMerge: 'execute' },
+    });
+    await new TrackedPullRequestControl(resolved, github, store).claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: { policy: 'provider-action-ready' },
+      idempotencyKey: 'claim-provider-ready',
+    });
+
+    expect(await new ShepherdEngine(resolved, github, store).pollOnce()).toMatchObject({ mutations: 1 });
+    expect(github.mutations).toEqual([{ type: 'enqueue-provider-ready', pr: { repo: 'acme/api', number: 7 } }]);
+    expect(store.listEvents().some((event) => event.type === 'release-gate-blocked')).toBe(false);
+    expect(store.listReleaseControlOperations(10)).toEqual([]);
+    store.close();
+  });
+
+  it('does not create provider-ready queue work when GitHub does not expose the action', async () => {
+    const github = new FakeGitHub();
+    github.details.set('acme/api#7', pr());
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      github: { mode: 'merge-queue' },
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: { enabled: true, releaseGate: 'provider-action-ready' },
+        staleThresholdHours: 24,
+      },
+      automation: { autoMerge: 'execute' },
+    });
+    await new TrackedPullRequestControl(resolved, github, store).claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'claim-provider-unavailable',
+    });
+
+    expect(await new ShepherdEngine(resolved, github, store).pollOnce()).toMatchObject({ mutations: 0 });
+    expect(github.mutations).toEqual([]);
+    expect(store.listEntities('action')).toEqual([]);
+    expect(store.listEvents().some((event) => event.type === 'auto-merge-decision')).toBe(false);
+    store.close();
+  });
+
+  it('records a bounded failed action when GitHub rejects provider-ready enqueue', async () => {
+    let now = new Date('2026-08-17T10:00:00Z');
+    const github = new FakeGitHub();
+    github.details.set('acme/api#7', pr());
+    github.enqueueAvailable = true;
+    github.mutationError = new Error('provider rejected Add to merge queue');
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      github: { mode: 'merge-queue' },
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: { enabled: true, releaseGate: 'provider-action-ready' },
+        staleThresholdHours: 24,
+      },
+      automation: { autoMerge: 'execute' },
+    });
+    await new TrackedPullRequestControl(resolved, github, store, () => now).claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'claim-provider-rejected',
+    });
+    const engine = new ShepherdEngine(resolved, github, store, () => now);
+
+    await engine.pollOnce();
+    for (let attempt = 2; attempt <= 5; attempt += 1) {
+      now = new Date(now.getTime() + 10 * 60_000);
+      await engine.drainActions();
+    }
+    expect(store.listEntities<{ status: string; attempts: number }>('action')[0]?.value).toMatchObject({
+      status: 'failed',
+      attempts: 5,
+    });
+    expect(github.mutations).toEqual([]);
     store.close();
   });
 

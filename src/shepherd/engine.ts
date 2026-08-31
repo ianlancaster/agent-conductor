@@ -130,6 +130,8 @@ interface ActionState {
   compensationFor?: string;
   compensatesActionKey?: string;
   enqueueAttempt?: number;
+  queueScope?: string;
+  queueObservationHeadSha?: string;
 }
 
 const MERGE_QUEUE_MAX_ATTEMPTS = 5;
@@ -294,9 +296,10 @@ export class ShepherdEngine {
     if (supportsReleaseGate(this.store)) {
       const recoveredAt = this.clock().toISOString();
       for (const entity of this.store.listEntities<ActionState>('action')) {
-        const ordinaryQueueAttempt =
-          entity.value.mutation.type === 'enqueue-exact-head' && entity.value.trackedGeneration === undefined;
-        if (entity.value.status === 'cancelled' && !ordinaryQueueAttempt) {
+        const queueAttemptWithoutCompensation =
+          entity.value.mutation.type === 'enqueue-provider-ready' ||
+          (entity.value.mutation.type === 'enqueue-exact-head' && entity.value.trackedGeneration === undefined);
+        if (entity.value.status === 'cancelled' && !queueAttemptWithoutCompensation) {
           this.store.ensureActionSafetyCompensation(entity.key, recoveredAt);
         }
       }
@@ -331,6 +334,29 @@ export class ShepherdEngine {
           const mutated = await this.releaseMutex().runExclusive(async (lease) => {
             if (!this.actionStillApplicable(entity.value)) {
               this.cancelAction(entity.key, entity.value, 'ownership changed before persistent auto-merge');
+              return false;
+            }
+            lease.assertOwned();
+            await this.github.mutate(entity.value.mutation);
+            lease.assertOwned();
+            this.completeAction(entity.key, entity.value, this.clock().toISOString());
+            return true;
+          });
+          if (mutated) completed += 1;
+          continue;
+        } else if (entity.value.mutation.type === 'enqueue-provider-ready') {
+          const mutated = await this.releaseMutex().runExclusive(async (lease) => {
+            if (!this.providerReadyActionContextStillApplicable(entity.value)) {
+              this.cancelAction(entity.key, entity.value, 'tracked provider-ready ownership changed');
+              return false;
+            }
+            if (this.github.getMergeAutomationState === undefined) {
+              this.cancelAction(entity.key, entity.value, 'provider cannot observe merge-queue action availability');
+              return false;
+            }
+            const automation = await this.github.getMergeAutomationState(entity.value.mutation.pr);
+            if (!automation.queued && automation.enqueueAvailable !== true) {
+              this.cancelAction(entity.key, entity.value, 'provider no longer exposes Add to merge queue');
               return false;
             }
             lease.assertOwned();
@@ -407,7 +433,11 @@ export class ShepherdEngine {
         const attempts = (entity.value.attempts ?? 0) + 1;
         const message = error instanceof Error ? error.message : String(error);
         this.store.logHealth('github-mutation-failed', `${entity.key}: ${message.slice(0, 500)}`);
-        if (entity.value.mutation.type === 'enqueue-exact-head' && attempts >= 5) {
+        if (
+          (entity.value.mutation.type === 'enqueue-exact-head' ||
+            entity.value.mutation.type === 'enqueue-provider-ready') &&
+          attempts >= 5
+        ) {
           this.store.commit(
             [
               {
@@ -462,9 +492,10 @@ export class ShepherdEngine {
 
   private cancelAction(key: string, action: ActionState, reason: string): void {
     const occurredAt = this.clock().toISOString();
-    const ordinaryQueueAttempt =
-      action.mutation.type === 'enqueue-exact-head' && action.trackedGeneration === undefined;
-    if (supportsReleaseGate(this.store) && !ordinaryQueueAttempt) {
+    const queueAttemptWithoutCompensation =
+      action.mutation.type === 'enqueue-provider-ready' ||
+      (action.mutation.type === 'enqueue-exact-head' && action.trackedGeneration === undefined);
+    if (supportsReleaseGate(this.store) && !queueAttemptWithoutCompensation) {
       this.store.prepareActionCancellation(key, occurredAt);
     } else {
       this.store.commit(
@@ -490,7 +521,7 @@ export class ShepherdEngine {
 
   private releaseStore(): ReleaseGateStore {
     if (!supportsReleaseGate(this.store))
-      throw new Error('The Shepherd store does not support exact-head release gates.');
+      throw new Error('The Shepherd store does not support durable release mutations.');
     return this.store;
   }
 
@@ -502,6 +533,9 @@ export class ShepherdEngine {
   private actionStillApplicable(action: ActionState): boolean {
     if (action.mutation.type === 'dequeue' || action.mutation.type === 'disable-auto-merge') {
       return supportsReleaseGate(this.store);
+    }
+    if (action.mutation.type === 'enqueue-provider-ready') {
+      return this.providerReadyActionContextStillApplicable(action);
     }
     if (action.mutation.type === 'merge-exact-head' || action.trackedGeneration !== undefined) {
       return (
@@ -543,6 +577,25 @@ export class ShepherdEngine {
       this.checksReady(details) &&
       !changesRequested &&
       approvals.length >= this.config.reviews.requiredApprovals
+    );
+  }
+
+  private providerReadyActionContextStillApplicable(action: ActionState): boolean {
+    if (
+      action.mutation.type !== 'enqueue-provider-ready' ||
+      action.trackedGeneration === undefined ||
+      !this.config.features.trackedPRs.enabled ||
+      this.config.features.trackedPRs.releaseGate !== 'provider-action-ready' ||
+      !supportsTrackedPullRequests(this.store) ||
+      !supportsReleaseGate(this.store)
+    ) {
+      return false;
+    }
+    const tracked = this.store.getTrackedPullRequest(action.mutation.pr);
+    return (
+      tracked?.status === 'active' &&
+      tracked.generation === action.trackedGeneration &&
+      tracked.releaseGate === 'provider-action-ready'
     );
   }
 
@@ -731,11 +784,14 @@ export class ShepherdEngine {
         async () => {
           const details = await this.github.getPullRequest(item);
           if (!repositoryInScope(details.repo, this.config.github)) return;
-          const mergeAutomation = await this.mergeAutomationSnapshot(details);
           const key = prKey('authored', details);
           observed.add(key);
           const previous = this.store.getEntity<AuthoredState>(key)?.value;
           const tracked = trackedByKey.get(key);
+          const mergeAutomation = await this.mergeAutomationSnapshot(
+            details,
+            tracked?.releaseGate !== 'provider-action-ready',
+          );
           const baseline = isBaseline || (previous === undefined && tracked?.baselinePending === true);
           const { state, events, actions, nudges } = this.evaluateAuthored(
             details,
@@ -800,11 +856,14 @@ export class ShepherdEngine {
     }
   }
 
-  private async mergeAutomationSnapshot(details: PullRequestDetails): Promise<MergeAutomationState | undefined> {
+  private async mergeAutomationSnapshot(
+    details: PullRequestDetails,
+    requireMatchingHead = true,
+  ): Promise<MergeAutomationState | undefined> {
     if (this.config.github.mode !== 'merge-queue') return undefined;
     if (this.github.getMergeAutomationState === undefined) return undefined;
     const state = await this.github.getMergeAutomationState(details);
-    if (state.headSha.toLowerCase() !== details.headSha.toLowerCase()) {
+    if (requireMatchingHead && state.headSha.toLowerCase() !== details.headSha.toLowerCase()) {
       throw new Error(
         `GitHub head changed while observing merge-queue state for ${details.repo}#${String(details.number)}.`,
       );
@@ -980,7 +1039,31 @@ export class ShepherdEngine {
           ),
         );
       }
-      if (releaseReady && details.autoMergeRequest === null) {
+      const providerReadyClaim =
+        trackedClaim?.status === 'active' &&
+        trackedClaim.generation === trackedGeneration &&
+        trackedClaim.releaseGate === 'provider-action-ready';
+      if (providerReadyClaim) {
+        if (mergeAutomation === undefined) {
+          throw new Error('The GitHub provider cannot observe Add to merge queue availability.');
+        }
+        if (mergeAutomation.queued || mergeAutomation.enqueueAvailable === true) {
+          mergeQueueRetry = this.addMergeQueueDecision(
+            this.config.automation.autoMerge,
+            pr,
+            details,
+            mergeAutomation,
+            mergeQueueRetry,
+            {
+              releaseGate: 'provider-action-ready',
+              trackedGeneration: trackedClaim.generation,
+            },
+            { trackedGeneration: trackedClaim.generation },
+            events,
+            actions,
+          );
+        }
+      } else if (releaseReady && details.autoMergeRequest === null) {
         const trackedClaim = tracked ? this.trackedStore().getTrackedPullRequest(pr) : undefined;
         if (
           trackedClaim?.status === 'active' &&
@@ -1667,7 +1750,13 @@ export class ShepherdEngine {
     actions: EntityUpdate[],
   ): MergeQueueRetryState | undefined {
     if (automation === undefined) throw new Error('Merge-queue automation state was not observed.');
-    const scope = typeof identityContext.attestationId === 'string' ? identityContext.attestationId : 'authored';
+    const providerReady = identityContext.releaseGate === 'provider-action-ready';
+    const scope =
+      typeof identityContext.attestationId === 'string'
+        ? identityContext.attestationId
+        : providerReady && actionContext.trackedGeneration !== undefined
+          ? `provider-action-ready:${String(actionContext.trackedGeneration)}`
+          : 'authored';
     const retry = previous?.scope === scope ? previous : this.recoverMergeQueueRetry(pr, details.headSha, scope);
 
     if (automation.queued) {
@@ -1680,7 +1769,7 @@ export class ShepherdEngine {
         exhausted: retry?.exhausted ?? false,
       };
     }
-    if (automation.autoMergeEnabled) return retry;
+    if (providerReady ? automation.enqueueAvailable !== true : automation.autoMergeEnabled) return retry;
 
     if (retry === undefined) {
       return this.scheduleMergeQueueAttempt(
@@ -1829,9 +1918,15 @@ export class ShepherdEngine {
         kind: 'action',
         value: {
           status: 'pending',
-          mutation: { type: 'enqueue-exact-head', pr, headSha: details.headSha },
-          expectedHeadSha: details.headSha,
+          mutation:
+            identityContext.releaseGate === 'provider-action-ready'
+              ? { type: 'enqueue-provider-ready', pr }
+              : { type: 'enqueue-exact-head', pr, headSha: details.headSha },
+          ...(identityContext.releaseGate === 'provider-action-ready'
+            ? { queueObservationHeadSha: details.headSha }
+            : { expectedHeadSha: details.headSha }),
           enqueueAttempt: attempt,
+          queueScope: scope,
           ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }),
           ...actionContext,
         } satisfies ActionState,
@@ -1856,10 +1951,21 @@ export class ShepherdEngine {
         const mutation = entity.value.mutation;
         if (mutation.pr.number !== pr.number || mutation.pr.repo.toLowerCase() !== pr.repo.toLowerCase()) return false;
         if (!['pending', 'completed', 'failed', 'cancelled'].includes(entity.value.status)) return false;
-        const actionHead = mutation.type === 'enqueue-exact-head' ? mutation.headSha : entity.value.expectedHeadSha;
+        const actionHead =
+          mutation.type === 'enqueue-exact-head'
+            ? mutation.headSha
+            : mutation.type === 'enqueue-provider-ready'
+              ? entity.value.queueObservationHeadSha
+              : entity.value.expectedHeadSha;
         if (actionHead?.toLowerCase() !== headSha.toLowerCase()) return false;
-        if (mutation.type !== 'enqueue-exact-head' && mutation.type !== 'enable-auto-merge') return false;
-        return scope === 'authored' ? entity.value.attestationId === undefined : entity.value.attestationId === scope;
+        if (
+          mutation.type !== 'enqueue-exact-head' &&
+          mutation.type !== 'enqueue-provider-ready' &&
+          mutation.type !== 'enable-auto-merge'
+        )
+          return false;
+        const actionScope = entity.value.queueScope ?? entity.value.attestationId ?? 'authored';
+        return actionScope === scope;
       })
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     const latest = candidates[0];

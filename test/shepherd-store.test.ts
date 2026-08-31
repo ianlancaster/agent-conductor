@@ -19,6 +19,58 @@ afterEach(() => {
 });
 
 describe('PR Shepherd SQLite store', () => {
+  it('migrates exact-head claims while admitting the provider-action-ready policy', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-provider-policy-migration-'));
+    dirs.push(dir);
+    const path = join(dir, 'shepherd.db');
+    const previous = openSqliteDatabase(path);
+    previous.exec(`
+      CREATE TABLE shepherd_tracked_prs (
+        repo_key TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        pr_number INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'unclaimed', 'terminal')),
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        actor TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        claimed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        unclaimed_at TEXT,
+        terminal_state TEXT CHECK (terminal_state IN ('CLOSED', 'MERGED')),
+        baseline_pending INTEGER NOT NULL DEFAULT 1 CHECK (baseline_pending IN (0, 1)),
+        release_gate TEXT NOT NULL DEFAULT 'none'
+          CHECK (release_gate IN ('none', 'exact-head-attestation')),
+        PRIMARY KEY (repo_key, pr_number)
+      );
+      CREATE INDEX idx_shepherd_tracked_prs_status
+        ON shepherd_tracked_prs(status, repo_key, pr_number);
+      INSERT INTO shepherd_tracked_prs VALUES
+        ('acme/api', 'Acme/API', 7, 'active', 2, 'operator', '{}',
+         '2026-08-17T00:00:00Z', '2026-08-17T00:00:00Z', NULL, NULL, 0, 'exact-head-attestation');
+      PRAGMA user_version = 3;
+    `);
+    previous.close();
+
+    const migrated = new SqliteShepherdStore(path);
+    expect(migrated.getTrackedPullRequest({ repo: 'acme/api', number: 7 })).toMatchObject({
+      generation: 2,
+      releaseGate: 'exact-head-attestation',
+    });
+    migrated.close();
+
+    const inspected = openSqliteDatabase(path);
+    expect(
+      (
+        inspected
+          .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shepherd_tracked_prs'")
+          .get() as {
+          sql: string;
+        }
+      ).sql,
+    ).toContain("'provider-action-ready'");
+    inspected.close();
+  });
+
   it('migrates a Stage 1 tracked claim to the inert release-gate default', () => {
     const dir = mkdtempSync(join(tmpdir(), 'shepherd-release-migration-'));
     dirs.push(dir);

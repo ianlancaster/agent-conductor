@@ -26,12 +26,13 @@ afterEach(() => {
 
 function config(
   enabled = true,
-  releaseGate: 'none' | 'exact-head-attestation' = 'none',
+  releaseGate: 'none' | 'provider-action-ready' | 'exact-head-attestation' = 'none',
   suppressDraftEvents = false,
 ): ShepherdConfig {
   return parseShepherdConfig({
     version: 2,
     profile: { githubUser: 'octocat' },
+    github: { mode: releaseGate === 'provider-action-ready' ? 'merge-queue' : 'direct' },
     features: { authoredPRs: { enabled: false }, trackedPRs: { enabled, releaseGate, suppressDraftEvents } },
     delivery: { type: 'conductor', endpoint: 'http://localhost:3000', coordinatorSession: 'coord' },
   });
@@ -695,6 +696,28 @@ describe('exact-head release controls', () => {
     ).resolves.toMatchObject({ outcome: 'claimed', generation: 1 });
     expect(github.mutations).toEqual([]);
     expect(store.listEntities('claim-handoff')).toEqual([]);
+    store.close();
+  });
+
+  it('captures provider-action-ready per generation and serializes safe unclaim', async () => {
+    const store = new SqliteShepherdStore(':memory:');
+    const github = new FakeGitHub();
+    const resolved = config(true, 'provider-action-ready');
+    const control = new TrackedPullRequestControl(resolved, github, store);
+
+    await expect(control.claim(input('claim-provider-ready'))).resolves.toMatchObject({
+      outcome: 'claimed',
+      generation: 1,
+    });
+    expect(store.getTrackedPullRequest(input('unused'))).toMatchObject({
+      status: 'active',
+      releaseGate: 'provider-action-ready',
+    });
+    expect(() => control.unclaim(input('unclaim-provider-ready'))).toThrow(/asynchronous safe control path/);
+    await expect(control.unclaimSafely(input('unclaim-provider-ready'))).resolves.toMatchObject({
+      outcome: 'unclaimed',
+      generation: 1,
+    });
     store.close();
   });
 

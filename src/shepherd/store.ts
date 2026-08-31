@@ -238,6 +238,33 @@ const MIGRATIONS = [
     expires_at TEXT NOT NULL
   );
   `,
+  `
+  CREATE TABLE shepherd_tracked_prs_next (
+    repo_key TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    pr_number INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'unclaimed', 'terminal')),
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    actor TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    claimed_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    unclaimed_at TEXT,
+    terminal_state TEXT CHECK (terminal_state IN ('CLOSED', 'MERGED')),
+    baseline_pending INTEGER NOT NULL DEFAULT 1 CHECK (baseline_pending IN (0, 1)),
+    release_gate TEXT NOT NULL DEFAULT 'none'
+      CHECK (release_gate IN ('none', 'provider-action-ready', 'exact-head-attestation')),
+    PRIMARY KEY (repo_key, pr_number)
+  );
+  INSERT INTO shepherd_tracked_prs_next
+    SELECT repo_key, repo, pr_number, status, generation, actor, evidence_json, claimed_at, updated_at,
+      unclaimed_at, terminal_state, baseline_pending, release_gate
+    FROM shepherd_tracked_prs;
+  DROP TABLE shepherd_tracked_prs;
+  ALTER TABLE shepherd_tracked_prs_next RENAME TO shepherd_tracked_prs;
+  CREATE INDEX idx_shepherd_tracked_prs_status
+    ON shepherd_tracked_prs(status, repo_key, pr_number);
+  `,
 ] as const;
 
 function parseJson<T>(raw: string, label: string): T {

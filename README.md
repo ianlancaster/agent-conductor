@@ -438,6 +438,8 @@ Case-insensitive review-inbox head patterns can exclude assigned-review PRs befo
 or delivery without affecting ownership through another profile's authored or tracked lane.
 Merge-queue mode observes queue membership, reports GitHub eviction reasons, and uses bounded,
 durable exact-head retries so a transient merge-group failure does not permanently strand a ready PR.
+Tracked claims may instead select provider-action-ready admission, where GitHub's current Add to
+merge queue availability is authoritative and Shepherd adds no local readiness or attestation gate.
 See [PR Shepherd V2](docs/pr-shepherd.md) for its policy and delivery model.
 
 ## How it works

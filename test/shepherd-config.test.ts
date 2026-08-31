@@ -74,6 +74,24 @@ describe('PR Shepherd V2 configuration', () => {
     ).toThrow(/Duplicate tracked pull-request selector id/);
   });
 
+  it('accepts provider-action-ready only for merge-queue profiles', () => {
+    expect(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        github: { mode: 'merge-queue' },
+        features: { trackedPRs: { enabled: true, releaseGate: 'provider-action-ready' } },
+      }).features.trackedPRs.releaseGate,
+    ).toBe('provider-action-ready');
+    expect(() =>
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        features: { trackedPRs: { enabled: true, releaseGate: 'provider-action-ready' } },
+      }),
+    ).toThrow(/requires github.mode: merge-queue/);
+  });
+
   it('rejects unknown keys, guidance event names, remote endpoints, and invalid timezones', () => {
     expect(() => parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' }, surprise: true })).toThrow(
       /Unrecognized key/,

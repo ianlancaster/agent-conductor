@@ -21,6 +21,7 @@ features:
   trackedPRs:
     enabled: false
     suppressDraftEvents: false
+    # none | provider-action-ready (merge-queue only) | exact-head-attestation
     releaseGate: none
     selectors: []
   # ignoredHeadPatterns are case-insensitive headRefName exclusions applied before review-lane state or delivery.

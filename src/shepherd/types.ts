@@ -29,7 +29,7 @@ export const SHEPHERD_EVENT_TYPES = [
 export type ShepherdEventType = (typeof SHEPHERD_EVENT_TYPES)[number];
 export type AutomationMode = 'off' | 'notify' | 'execute';
 export type MergeMethod = 'squash' | 'merge' | 'rebase';
-export type ReleaseGate = 'none' | 'exact-head-attestation';
+export type ReleaseGate = 'none' | 'provider-action-ready' | 'exact-head-attestation';
 export type DiscoveryKind = 'authored' | 'review-inbox' | 'review-follow-up' | 'reviewer-nudge';
 export type TrackedPullRequestSelector =
   { id: string; type: 'head-prefix'; values: string[] } | { id: string; type: 'label'; values: string[] };
@@ -145,6 +145,8 @@ export interface MergeAutomationState {
   headSha: string;
   autoMergeEnabled: boolean;
   queued: boolean;
+  /** Whether the provider currently exposes its merge-queue admission action. */
+  enqueueAvailable?: boolean;
   queueEntryId?: string;
   latestQueueRemoval?: MergeQueueRemoval;
 }
@@ -159,6 +161,7 @@ export type GitHubMutation =
   | { type: 'enable-auto-merge'; pr: PullRequestRef; mergeMethod: MergeMethod }
   | { type: 'merge-exact-head'; pr: PullRequestRef; headSha: string; mergeMethod: MergeMethod }
   | { type: 'enqueue-exact-head'; pr: PullRequestRef; headSha: string }
+  | { type: 'enqueue-provider-ready'; pr: PullRequestRef }
   | { type: 'dequeue'; pr: PullRequestRef }
   | { type: 'disable-auto-merge'; pr: PullRequestRef }
   | { type: 'update-branch'; pr: PullRequestRef }

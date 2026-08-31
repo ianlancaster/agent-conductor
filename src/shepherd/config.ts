@@ -72,7 +72,7 @@ const configSchema = strictObject({
     trackedPRs: strictObject({
       enabled: z.boolean().default(false),
       suppressDraftEvents: z.boolean().default(false),
-      releaseGate: z.enum(['none', 'exact-head-attestation']).default('none'),
+      releaseGate: z.enum(['none', 'provider-action-ready', 'exact-head-attestation']).default('none'),
       selectors: z
         .array(trackedSelector)
         .superRefine((selectors, context) => {
@@ -181,6 +181,9 @@ function applyOverrides(input: unknown, overrides: ConfigOverrides): unknown {
 
 export function parseShepherdConfig(input: unknown, overrides: ConfigOverrides = {}): ShepherdConfig {
   const parsed = configSchema.parse(applyOverrides(input, overrides));
+  if (parsed.features.trackedPRs.releaseGate === 'provider-action-ready' && parsed.github.mode !== 'merge-queue') {
+    throw new Error('trackedPRs.releaseGate: provider-action-ready requires github.mode: merge-queue.');
+  }
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: parsed.features.reviewerNudge.timezone }).format(new Date());
   } catch {

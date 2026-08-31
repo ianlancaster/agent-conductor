@@ -449,6 +449,7 @@ describe('async gh provider', () => {
               pullRequest: {
                 id: 'PR_node',
                 headRefOid: 'a'.repeat(40),
+                isMergeQueueEnabled: true,
                 autoMergeRequest: null,
                 mergeQueueEntry: { id: 'queue-entry-1' },
                 timelineItems: {
@@ -461,7 +462,12 @@ describe('async gh provider', () => {
       },
     };
     const provider = new GhGitHubProvider(
-      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        github: { mode: 'merge-queue' },
+        features: { trackedPRs: { releaseGate: 'provider-action-ready' } },
+      }),
       executor,
     );
 
@@ -469,6 +475,7 @@ describe('async gh provider', () => {
       headSha: 'a'.repeat(40),
       autoMergeEnabled: false,
       queued: true,
+      enqueueAvailable: false,
       queueEntryId: 'queue-entry-1',
       latestQueueRemoval: { id: 'removed-1', createdAt: '2026-08-25T22:05:19Z', reason: 'failed_checks' },
     });
@@ -512,6 +519,83 @@ describe('async gh provider', () => {
     expect(mutations[0]?.find((arg) => arg.startsWith('query='))).toContain('mergePullRequest');
     expect(mutations[1]).toEqual(expect.arrayContaining([`expectedHeadOid=${headSha}`]));
     expect(mutations[1]?.find((arg) => arg.startsWith('query='))).toContain('enqueuePullRequest');
+  });
+
+  it('uses provider queue availability without adding an expected-head precondition', async () => {
+    const calls: string[][] = [];
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query ProviderReadyMutationState')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  id: 'PR_node',
+                  headRefOid: 'provider-current-head',
+                  isMergeQueueEnabled: true,
+                  autoMergeRequest: null,
+                  mergeQueueEntry: null,
+                },
+              },
+            },
+          });
+        }
+        return JSON.stringify({ data: {} });
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        github: { mode: 'merge-queue' },
+        features: { trackedPRs: { releaseGate: 'provider-action-ready' } },
+      }),
+      executor,
+    );
+
+    await provider.mutate({ type: 'enqueue-provider-ready', pr: { repo: 'acme/api', number: 7 } });
+
+    const mutation = calls.find((args) => (args.find((arg) => arg.startsWith('query=')) ?? '').includes('mutation'));
+    expect(mutation?.find((arg) => arg.startsWith('query='))).toContain('enqueuePullRequest');
+    expect(mutation).not.toEqual(expect.arrayContaining([expect.stringMatching(/^expectedHeadOid=/)]));
+  });
+
+  it('rejects provider-ready enqueue when GitHub does not expose the queue action', async () => {
+    const calls: string[][] = [];
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        return JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                id: 'PR_node',
+                headRefOid: 'provider-current-head',
+                isMergeQueueEnabled: false,
+                autoMergeRequest: null,
+                mergeQueueEntry: null,
+              },
+            },
+          },
+        });
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        github: { mode: 'merge-queue' },
+        features: { trackedPRs: { releaseGate: 'provider-action-ready' } },
+      }),
+      executor,
+    );
+
+    await expect(
+      provider.mutate({ type: 'enqueue-provider-ready', pr: { repo: 'acme/api', number: 7 } }),
+    ).rejects.toThrow(/does not currently expose Add to merge queue/);
+    expect(calls.some((args) => (args.find((arg) => arg.startsWith('query=')) ?? '').includes('mutation'))).toBe(false);
   });
 
   it('makes enqueue and dequeue retries state-aware and rejects a changed head before mutation', async () => {

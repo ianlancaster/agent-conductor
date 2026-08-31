@@ -25,6 +25,7 @@ features:
   trackedPRs:
     enabled: false
     suppressDraftEvents: false
+    # none | provider-action-ready (merge-queue only) | exact-head-attestation
     releaseGate: none
     selectors: []
   reviewInbox:

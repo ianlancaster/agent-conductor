@@ -130,7 +130,7 @@ Configuration is strict, versioned YAML: unknown keys and unknown guidance event
 | `features.authoredPRs.enabled`             | Monitor authored pull requests; default `true`.                                                                                        |
 | `features.trackedPRs.enabled`              | Enable durable claim controls and the tracked owned-PR lane; disabled by default.                                                      |
 | `features.trackedPRs.suppressDraftEvents`  | Suppress events for tracked drafts while continuing to baseline their state; default `false`.                                          |
-| `features.trackedPRs.releaseGate`          | `none` or `exact-head-attestation`; default `none`. The value is captured on each new claim generation.                                |
+| `features.trackedPRs.releaseGate`          | `none`, `provider-action-ready`, or `exact-head-attestation`; default `none`. The value is captured on each new claim generation.      |
 | `features.trackedPRs.selectors`            | Optional generic auto-claim rules for exact labels or case-insensitive head-branch prefixes; default `[]`.                             |
 | `features.reviewInbox`                     | Optional assigned-review workflow with draft, repository, age, and case-insensitive head-regex exclusions; disabled by default.        |
 | `features.reviewInbox.ignoredHeadPatterns` | Case-insensitive regular expressions matched against `headRefName` before review-inbox/follow-up state or delivery; default `[]`.      |
@@ -258,6 +258,34 @@ the existing same-user local trust boundary; it is not cryptographic identity.
 With the default `releaseGate: none`, tracked-only merge execution remains at `notify`, even when
 global `automation.autoMerge` is `execute`, and the prohibition is rechecked before executing a
 persisted action. Ordinary profile-authored PR behavior remains unchanged.
+
+### Provider-action-ready queue admission
+
+Set `github.mode: merge-queue` and
+`features.trackedPRs.releaseGate: provider-action-ready` before creating a claim generation when
+GitHub's current Add to merge queue availability should be the admission policy. Existing claims
+retain the policy they captured; safely unclaim and create a new generation to change it. With
+`automation.autoMerge: execute`, an active tracked claim is submitted whenever the provider reports
+that action available. `notify` emits the same factual decision without submitting, and `off`
+remains inert.
+
+This mode does not require a coordinator attestation, a matching locally observed head, Shepherd's
+check/review/mergeability readiness calculation, comment or review-thread clearance, or another
+coordinator-authored decision. The built-in adapter derives availability from GitHub's merge-queue
+state and uses an enqueue mutation without `expectedHeadOid`; GitHub's own action exposure and
+mutation acceptance are authoritative. A PR that is already queued is treated idempotently, while
+persistent auto-merge or a base branch without merge queue support means the action is not exposed.
+An injected `GitHubProvider` must report `getMergeAutomationState().enqueueAvailable` to support
+this policy.
+
+The decision and pending action remain durable and generation-scoped. Immediately before enqueue,
+Shepherd rechecks the active claim generation and provider action state under the existing durable
+mutation mutex. If GitHub no longer exposes the action, the local action is cancelled without a
+provider mutation. If GitHub rejects enqueue, the durable action records the error, retries with
+bounded backoff, and becomes failed after five attempts. Claim/unclaim ordering uses the same mutex;
+unclaim does not dequeue provider state or add a separate release-policy decision. Queue membership,
+eviction observation, bounded resubmission, restart recovery, and provider-side already-queued
+idempotency reuse the normal merge-queue machinery.
 
 ### Owned pull-request review threads
 

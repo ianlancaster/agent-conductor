@@ -803,6 +803,17 @@ notify mode even if global authored automation is `execute`. Selectors never cha
 automation; use the explicit `claim` control when an exact-head candidate needs a safe handoff from
 an existing queue entry or persistent auto-merge.
 
+For merge-queue fleets that deliberately use GitHub's current action availability as the whole
+tracked-PR admission boundary, set `trackedPRs.releaseGate: provider-action-ready` before claiming
+and use `automation.autoMerge: execute`. When GitHub exposes Add to merge queue, Shepherd submits it
+without requiring an attestation, local check/review/mergeability readiness, comment or thread
+clearance, a locally matching head, or another coordinator decision. When GitHub does not expose
+the action, no queue work is created; rejection is recorded and bounded like other provider
+mutation failures. The claim generation and action are durable, serialized, and rechecked before
+submission. This policy requires `github.mode: merge-queue` and a provider adapter that reports
+`enqueueAvailable`; it never falls back to persistent auto-merge. Existing `none` and
+`exact-head-attestation` claims keep their prior semantics.
+
 For fleets where drafts are not actionable, set `trackedPRs.suppressDraftEvents: true`. Shepherd
 still creates selector and manual claims and continuously baselines their state, but queues no claim
 or lifecycle events while they remain drafts. A tracked `true` to `false` draft transition emits one
@@ -864,14 +875,15 @@ and profiles are deployment policy and must not enter the reusable product.
 
 In direct mode, a mergeable PR behind its base is updated before prior checks or approvals count as
 merge-ready. With branch updates off, Shepherd emits `branch-behind` and withholds readiness. In
-merge-queue mode a merely-behind ready PR is queued without an unnecessary update. Queue submission
-uses an exact-head precondition. Shepherd observes current queue membership and GitHub's latest
-removal reason on every owned-PR poll; a same-head eviction emits `merge-queue-evicted` and creates a
-durable delayed retry while the PR remains eligible. The fixed retry sequence is bounded to five
-submissions per head and release-attestation cycle, persists across restart, and resets for a new
-head or new attestation. `UNKNOWN` mergeability waits; `CONFLICTING` emits a conflict fact and
-requires coordinator/operator resolution on each transition into that state. Shepherd never
-pretends to resolve textual conflicts.
+merge-queue mode a merely-behind ready PR is queued without an unnecessary update. Ordinary and
+exact-head-attested queue submission uses an exact-head precondition; provider-action-ready claims
+intentionally leave head acceptance to GitHub. Shepherd observes current queue membership and
+GitHub's latest removal reason on every owned-PR poll; a same-head eviction emits
+`merge-queue-evicted` and creates a durable delayed retry while the PR remains eligible. The fixed
+retry sequence is bounded to five submissions per head and release-attestation cycle, persists
+across restart, and resets for a new head or new attestation. `UNKNOWN` mergeability waits;
+`CONFLICTING` emits a conflict fact and requires coordinator/operator resolution on each transition
+into that state. Shepherd never pretends to resolve textual conflicts.
 
 While the managed companion has a fresh healthy heartbeat, fleet `/status` adds
 `PR Shepherd Status Online` directly below the Conductor heading and marks the configured
