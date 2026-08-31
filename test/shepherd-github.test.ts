@@ -26,6 +26,65 @@ class ScriptedExecutor implements ProcessExecutor {
   }
 }
 
+const pageInfo = (hasNextPage = false) => ({ hasNextPage, endCursor: hasNextPage ? 'next' : null });
+
+function commitCheckResponse(sha: string, suites: unknown[], options: { hasNextPage?: boolean } = {}): string {
+  return JSON.stringify({
+    data: {
+      repository: {
+        object: {
+          oid: sha,
+          checkSuites: { nodes: suites, pageInfo: pageInfo(options.hasNextPage ?? false) },
+        },
+      },
+    },
+  });
+}
+
+function checkSuite(
+  conclusion: string | null,
+  options: {
+    event?: string;
+    ref?: string | null;
+    summary?: string | null;
+    jobConclusion?: string | null;
+    stepsTruncated?: boolean;
+  } = {},
+): Record<string, unknown> {
+  const event = options.event ?? 'merge_group';
+  const jobConclusion = options.jobConclusion ?? conclusion;
+  return {
+    id: 'suite-1',
+    status: 'COMPLETED',
+    conclusion,
+    branch: options.ref === null ? null : { name: options.ref ?? 'gh-readonly-queue/main/pr-7-abcdef1' },
+    workflowRun: {
+      id: 'run-node',
+      databaseId: 33448057090,
+      event,
+      url: 'https://github.com/acme/api/actions/runs/33448057090',
+    },
+    checkRuns: {
+      nodes: [
+        {
+          id: 'job-1',
+          name: 'lint',
+          status: 'COMPLETED',
+          conclusion: jobConclusion,
+          permalink: 'https://github.com/acme/api/actions/runs/33448057090/job/1',
+          summary: options.summary ?? 'lint failed in generated artifact validation',
+          text: null,
+          steps: {
+            nodes: [{ name: 'lint', number: 1, status: 'COMPLETED', conclusion: jobConclusion }],
+            pageInfo: pageInfo(options.stepsTruncated ?? false),
+          },
+        },
+      ],
+      pageInfo: pageInfo(),
+    },
+  };
+}
+
 describe('async gh provider', () => {
   it('retains JSON output from explicitly accepted nonzero command statuses', async () => {
     const executor = new AsyncProcessExecutor();
@@ -453,7 +512,14 @@ describe('async gh provider', () => {
                 autoMergeRequest: null,
                 mergeQueueEntry: { id: 'queue-entry-1' },
                 timelineItems: {
-                  nodes: [{ id: 'removed-1', createdAt: '2026-08-25T22:05:19Z', reason: 'failed_checks' }],
+                  nodes: [
+                    {
+                      id: 'removed-1',
+                      createdAt: '2026-08-25T22:05:19Z',
+                      reason: 'failed_checks',
+                      beforeCommit: null,
+                    },
+                  ],
                 },
               },
             },
@@ -477,8 +543,302 @@ describe('async gh provider', () => {
       queued: true,
       enqueueAvailable: false,
       queueEntryId: 'queue-entry-1',
-      latestQueueRemoval: { id: 'removed-1', createdAt: '2026-08-25T22:05:19Z', reason: 'failed_checks' },
+      latestQueueRemoval: {
+        id: 'removed-1',
+        createdAt: '2026-08-25T22:05:19Z',
+        reason: 'failed_checks',
+        evidence: {
+          status: 'unavailable',
+          workflowRuns: [],
+          queueStack: {
+            status: 'unavailable',
+            attribution: 'unavailable',
+            currentPrNumber: 7,
+            detail: 'GitHub did not expose the removed merge-group commit.',
+          },
+          errors: ['GitHub did not expose the removed merge-group commit.'],
+          truncated: false,
+        },
+      },
     });
+  });
+
+  it('enriches failed-check eviction with complete merge_group job and queue-stack evidence', async () => {
+    const headSha = 'a'.repeat(40);
+    const mergeGroupSha = 'b'.repeat(40);
+    const baseSha = 'c'.repeat(40);
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query ProviderReadyMutationState')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  id: 'PR_node',
+                  headRefOid: headSha,
+                  isMergeQueueEnabled: true,
+                  autoMergeRequest: null,
+                  mergeQueueEntry: null,
+                  timelineItems: {
+                    nodes: [
+                      {
+                        id: 'removed-complete',
+                        createdAt: '2026-08-31T22:56:42Z',
+                        reason: 'failed_checks',
+                        beforeCommit: { oid: mergeGroupSha, parents: { nodes: [{ oid: baseSha }] } },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          });
+        }
+        if (args.includes(`oid=${mergeGroupSha}`)) {
+          return commitCheckResponse(mergeGroupSha, [checkSuite('FAILURE', { ref: null })]);
+        }
+        if (args.includes(`oid=${headSha}`)) {
+          return commitCheckResponse(headSha, [
+            checkSuite('SUCCESS', { event: 'pull_request', jobConclusion: 'SUCCESS' }),
+          ]);
+        }
+        if (args[0] === 'api' && args[1] === 'repos/acme/api/actions/runs/33448057090') {
+          return JSON.stringify({
+            id: 33448057090,
+            event: 'merge_group',
+            head_branch: `gh-readonly-queue/main/pr-7-${baseSha}`,
+            head_sha: mergeGroupSha,
+            html_url: 'https://github.com/acme/api/actions/runs/33448057090',
+          });
+        }
+        throw new Error(`unexpected gh call: ${args.join(' ')}`);
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        github: { mode: 'merge-queue' },
+        features: { trackedPRs: { releaseGate: 'provider-action-ready' } },
+      }),
+      executor,
+    );
+
+    const state = await provider.getMergeAutomationState({ repo: 'acme/api', number: 7 });
+    expect(state.latestQueueRemoval?.evidence).toMatchObject({
+      status: 'complete',
+      mergeGroupSha,
+      mergeGroupRef: `gh-readonly-queue/main/pr-7-${baseSha}`,
+      workflowRuns: [
+        {
+          id: '33448057090',
+          event: 'merge_group',
+          conclusion: 'FAILURE',
+          failedJobs: [
+            {
+              name: 'lint',
+              failedSteps: ['lint'],
+              errorExcerpt: 'lint failed in generated artifact validation',
+            },
+          ],
+        },
+      ],
+      queueStack: { status: 'complete', attribution: 'current-main-interaction', baseSha, parentSha: baseSha },
+      truncated: false,
+    });
+    expect(JSON.parse(JSON.stringify(state.latestQueueRemoval)) as unknown).toEqual(state.latestQueueRemoval);
+  });
+
+  it.each([
+    {
+      expected: 'branch-local',
+      parentDiffersFromBase: false,
+      headConclusion: 'FAILURE',
+      parentConclusion: undefined,
+    },
+    {
+      expected: 'upstream-queued-pr',
+      parentDiffersFromBase: true,
+      headConclusion: 'SUCCESS',
+      parentConclusion: 'FAILURE',
+    },
+  ] as const)(
+    'attributes exact failed-job provenance as $expected',
+    async ({ expected, parentDiffersFromBase, headConclusion, parentConclusion }) => {
+      const headSha = 'a'.repeat(40);
+      const mergeGroupSha = 'b'.repeat(40);
+      const baseSha = 'c'.repeat(40);
+      const parentSha = parentDiffersFromBase ? 'd'.repeat(40) : baseSha;
+      const executor: ProcessExecutor = {
+        run: async (_file, args) => {
+          const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+          if (query.includes('query PullRequestMutationState')) {
+            return JSON.stringify({
+              data: {
+                repository: {
+                  pullRequest: {
+                    id: 'PR_node',
+                    headRefOid: headSha,
+                    autoMergeRequest: null,
+                    mergeQueueEntry: null,
+                    timelineItems: {
+                      nodes: [
+                        {
+                          id: `removed-${expected}`,
+                          createdAt: '2026-08-31T22:56:42Z',
+                          reason: 'failed_checks',
+                          beforeCommit: { oid: mergeGroupSha, parents: { nodes: [{ oid: parentSha }] } },
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
+            });
+          }
+          if (args.includes(`oid=${mergeGroupSha}`)) {
+            return commitCheckResponse(mergeGroupSha, [
+              checkSuite('FAILURE', { ref: `gh-readonly-queue/main/pr-7-${baseSha}` }),
+            ]);
+          }
+          if (args.includes(`oid=${headSha}`)) {
+            return commitCheckResponse(headSha, [
+              checkSuite(headConclusion, { event: 'pull_request', jobConclusion: headConclusion }),
+            ]);
+          }
+          if (parentConclusion !== undefined && args.includes(`oid=${parentSha}`)) {
+            return commitCheckResponse(parentSha, [
+              checkSuite(parentConclusion, { event: 'merge_group', jobConclusion: parentConclusion }),
+            ]);
+          }
+          throw new Error(`unexpected gh call: ${args.join(' ')}`);
+        },
+      };
+      const provider = new GhGitHubProvider(
+        parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' }, github: { mode: 'merge-queue' } }),
+        executor,
+      );
+
+      const evidence = (await provider.getMergeAutomationState({ repo: 'acme/api', number: 7 })).latestQueueRemoval
+        ?.evidence;
+      expect(evidence).toMatchObject({
+        status: 'complete',
+        queueStack: { status: 'complete', attribution: expected, baseSha, parentSha },
+      });
+    },
+  );
+
+  it('preserves ambiguous merge_group attribution instead of consulting the PR rollup', async () => {
+    const headSha = 'a'.repeat(40);
+    const mergeGroupSha = 'b'.repeat(40);
+    const baseSha = 'c'.repeat(40);
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query PullRequestMutationState')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  id: 'PR_node',
+                  headRefOid: headSha,
+                  autoMergeRequest: null,
+                  mergeQueueEntry: null,
+                  timelineItems: {
+                    nodes: [
+                      {
+                        id: 'removed-ambiguous',
+                        createdAt: '2026-08-31T22:56:42Z',
+                        reason: 'failed_checks',
+                        beforeCommit: { oid: mergeGroupSha, parents: { nodes: [{ oid: baseSha }] } },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          });
+        }
+        if (args.includes(`oid=${mergeGroupSha}`)) {
+          return commitCheckResponse(mergeGroupSha, [checkSuite('FAILURE', { event: 'push', ref: null })]);
+        }
+        if (args.includes(`oid=${headSha}`)) return commitCheckResponse(headSha, []);
+        throw new Error(`unexpected gh call: ${args.join(' ')}`);
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' }, github: { mode: 'merge-queue' } }),
+      executor,
+    );
+
+    const state = await provider.getMergeAutomationState({ repo: 'acme/api', number: 7 });
+    expect(state).toMatchObject({
+      latestQueueRemoval: {
+        evidence: {
+          status: 'ambiguous',
+          workflowRuns: [],
+        },
+      },
+    });
+    expect(state.latestQueueRemoval?.evidence?.errors.some((error) => error.includes('No check suite'))).toBe(true);
+  });
+
+  it('bounds excerpts and marks nested provider pagination as truncated', async () => {
+    const headSha = 'a'.repeat(40);
+    const mergeGroupSha = 'b'.repeat(40);
+    const baseSha = 'c'.repeat(40);
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query PullRequestMutationState')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  id: 'PR_node',
+                  headRefOid: headSha,
+                  autoMergeRequest: null,
+                  mergeQueueEntry: null,
+                  timelineItems: {
+                    nodes: [
+                      {
+                        id: 'removed-truncated',
+                        createdAt: '2026-08-31T22:56:42Z',
+                        reason: 'failed_checks',
+                        beforeCommit: { oid: mergeGroupSha, parents: { nodes: [{ oid: baseSha }] } },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          });
+        }
+        if (args.includes(`oid=${mergeGroupSha}`)) {
+          return commitCheckResponse(mergeGroupSha, [
+            checkSuite('FAILURE', {
+              ref: `gh-readonly-queue/main/pr-7-${baseSha}`,
+              summary: 'failure '.repeat(200),
+              stepsTruncated: true,
+            }),
+          ]);
+        }
+        if (args.includes(`oid=${headSha}`)) return commitCheckResponse(headSha, []);
+        throw new Error(`unexpected gh call: ${args.join(' ')}`);
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' }, github: { mode: 'merge-queue' } }),
+      executor,
+    );
+
+    const evidence = (await provider.getMergeAutomationState({ repo: 'acme/api', number: 7 })).latestQueueRemoval
+      ?.evidence;
+    const excerpt = evidence?.workflowRuns[0]?.failedJobs[0]?.errorExcerpt ?? '';
+    expect(evidence).toMatchObject({ status: 'truncated', truncated: true });
+    expect(Buffer.byteLength(excerpt, 'utf8')).toBeLessThanOrEqual(500);
+    expect(excerpt.endsWith('…')).toBe(true);
   });
 
   it('uses expectedHeadOid for direct merge and merge-queue enqueue mutations', async () => {

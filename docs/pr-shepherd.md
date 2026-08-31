@@ -170,13 +170,43 @@ The engine emits generic facts for CI failures, review feedback, bot findings, h
 In `merge-queue` mode Shepherd observes the current queue entry and latest GitHub removal event on
 every owned-PR poll. A ready PR with no active queue entry or persistent auto-merge is submitted
 with GitHub's exact-head precondition. While the entry exists, repeated polls are inert. If GitHub
-later removes the same head, Shepherd emits `merge-queue-evicted` with GitHub's removal reason when
-available and durably schedules another exact-head attempt. Retry delays increase from one minute
-to five minutes, fifteen minutes, and one hour; Shepherd stops after five queue submissions for one
-head and release-attestation cycle. Provider mutation failures are also parked after five attempts.
-A new head or a new same-head attestation starts a fresh bounded cycle. Pending attempts, backoff,
-and exhaustion survive restart, and completed queue submissions from older Shepherd versions seed
-the same recovery state. The built-in GitHub provider supplies this capability. An injected
+later removes the same head, Shepherd emits `merge-queue-evicted` with the provider reason and a
+retry classification. Only provider-confirmed transient reasons are retried. Retry delays increase
+from one minute to five minutes, fifteen minutes, and one hour; Shepherd stops after five queue
+submissions for one head and release-attestation cycle. Provider mutation failures are also parked
+after five attempts.
+
+For `failed_checks`, the built-in adapter follows the removal event's `beforeCommit` to the exact
+merge-group commit, then reads its check suites and the linked workflow run's `event`. A
+`merge_group` workflow with conclusion `FAILURE` creates a durable repository/PR/exact-head fence;
+an unchanged head is not submitted again across polls, restart, same-head re-attestation, or claim
+generation replacement. A new head is a new eligibility identity and clears the fence. Missing,
+truncated, or contradictory attribution fails closed: the eviction remains explicit as unavailable
+or ambiguous and does not retry. Completed `merge_group` runs whose provider conclusion is
+`CANCELLED`, `STALE`, `STARTUP_FAILURE`, or `TIMED_OUT`, plus the explicit transient reason allowlist
+below, retain the bounded same-head retry cycle.
+
+`merge-queue-evicted.providerEvidence` is bounded and JSON-safe. It can include the merge-group SHA
+and ref, Actions run ID/URL, failed job and step names, job/check log permalinks, and up to 500 UTF-8
+bytes of provider-authored summary/text per failed job. Pagination or field bounds set
+`status: truncated`; read or correlation failures preserve `unavailable`/`ambiguous` status and
+bounded errors. Queue-stack attribution is one of `branch-local`, `current-main-interaction`,
+`upstream-queued-pr`, `ambiguous`, or `unavailable`. It compares exact job conclusions on the PR
+head, the merge-group commit, and an upstream queue parent when GitHub exposes a parseable
+`gh-readonly-queue` ref; it never substitutes the aggregate PR rollup.
+
+| Provider removal evidence                                                                       | Same-head behavior           |
+| ----------------------------------------------------------------------------------------------- | ---------------------------- |
+| `failed_checks` + `merge_group` workflow `FAILURE`                                              | Fence; no retry              |
+| `failed_checks` + only `CANCELLED`, `STALE`, `STARTUP_FAILURE`, or `TIMED_OUT` merge-group runs | Bounded retry                |
+| `checks_timed_out` or `stack_invalidated`                                                       | Bounded retry                |
+| Missing removal event, missing/contradictory merge-group provenance, unknown/null reason        | Fence as ambiguous; no retry |
+| Any other explicit non-transient reason                                                         | Fence; no retry              |
+
+Pending attempts, backoff, fences, and exhaustion survive restart, and completed queue submissions
+from older Shepherd versions seed the same recovery state. Fence persistence uses the existing
+schema-free Shepherd entity store, so no SQLite migration is required. The built-in GitHub provider
+supplies this capability. An injected
 `GitHubProvider` that omits the optional `getMergeAutomationState` method retains legacy
 `enable-auto-merge` submission and cannot report or retry queue eviction until its adapter exposes
 that state.
@@ -284,8 +314,17 @@ mutation mutex. If GitHub no longer exposes the action, the local action is canc
 provider mutation. If GitHub rejects enqueue, the durable action records the error, retries with
 bounded backoff, and becomes failed after five attempts. Claim/unclaim ordering uses the same mutex;
 unclaim does not dequeue provider state or add a separate release-policy decision. Queue membership,
-eviction observation, bounded resubmission, restart recovery, and provider-side already-queued
-idempotency reuse the normal merge-queue machinery.
+eviction observation, code-failure fencing, bounded transient resubmission, restart recovery, and
+provider-side already-queued idempotency reuse the normal merge-queue machinery. Add to merge queue
+availability remains the initial admission boundary; the fence is consulted only after an enqueue
+has been observed and then removed.
+
+For `releaseGate: none`, profile-authored PRs still use Shepherd's existing readiness calculation
+and exact-head enqueue; tracked-only execution remains notify-only. The post-enqueue fence applies
+to an authored head without adding an admission gate. For `exact-head-attestation`, the attestation
+still controls initial enqueue, but a new attestation for the same failed head cannot clear the
+code-failure fence. Only a new PR head restores enqueue eligibility. `provider-action-ready` likewise
+keeps provider action exposure as the initial boundary and adds no local readiness check.
 
 ### Owned pull-request review threads
 

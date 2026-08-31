@@ -879,9 +879,14 @@ merge-queue mode a merely-behind ready PR is queued without an unnecessary updat
 exact-head-attested queue submission uses an exact-head precondition; provider-action-ready claims
 intentionally leave head acceptance to GitHub. Shepherd observes current queue membership and
 GitHub's latest removal reason on every owned-PR poll; a same-head eviction emits
-`merge-queue-evicted` and creates a durable delayed retry while the PR remains eligible. The fixed
-retry sequence is bounded to five submissions per head and release-attestation cycle, persists
-across restart, and resets for a new head or new attestation. `UNKNOWN` mergeability waits;
+`merge-queue-evicted`. Provider-confirmed transient removals use a durable retry sequence bounded to
+five submissions. A `failed_checks` removal backed by a failing `merge_group` workflow creates a
+durable exact-head fence instead; missing or ambiguous merge-group attribution also fails closed.
+The event carries bounded merge-group run, failed-job/step, log-link, and queue-stack evidence when
+GitHub exposes it. A new head clears the fence; restart, same-head re-attestation, or a replacement
+claim generation does not. `none` and `exact-head-attestation` keep their existing initial admission
+semantics, and `provider-action-ready` still treats Add to merge queue as the initial boundary.
+`UNKNOWN` mergeability waits;
 `CONFLICTING` emits a conflict fact and requires coordinator/operator resolution on each transition
 into that state. Shepherd never pretends to resolve textual conflicts.
 

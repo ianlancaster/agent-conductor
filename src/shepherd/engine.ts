@@ -12,6 +12,7 @@ import type {
   GitHubMutation,
   GitHubProvider,
   MergeAutomationState,
+  MergeQueueRemoval,
   PullRequestDetails,
   PullRequestRef,
   ReleaseGateStore,
@@ -43,6 +44,18 @@ interface MergeQueueRetryState {
   lastActionKey?: string;
   observedQueued: boolean;
   exhausted: boolean;
+  fence?: MergeQueueFence;
+}
+
+interface MergeQueueFence {
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  trackedGeneration?: number;
+  removalId: string;
+  removalReason: string;
+  classification: 'code-failure' | 'provider-evidence-ambiguous' | 'non-retryable-removal';
+  createdAt: string;
 }
 
 interface ReceivedReviewThreadState {
@@ -136,12 +149,81 @@ interface ActionState {
 
 const MERGE_QUEUE_MAX_ATTEMPTS = 5;
 const MERGE_QUEUE_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000] as const;
+const RETRYABLE_QUEUE_REMOVAL_REASONS = new Set(['checks_timed_out', 'stack_invalidated']);
 
 export interface PollSummary {
   discovered: number;
   emitted: number;
   mutations: number;
   warnings: string[];
+}
+
+function normalizedQueueRemovalReason(reason: string | null): string {
+  return (reason ?? '')
+    .trim()
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, '_')
+    .replaceAll(/^_+|_+$/g, '');
+}
+
+function mergeQueueRetryDisposition(removal: MergeQueueRemoval | undefined):
+  | {
+      retryable: true;
+      classification: 'provider-confirmed-transient';
+      fenceClassification: 'non-retryable-removal';
+    }
+  | {
+      retryable: false;
+      classification: 'code-failure-fenced' | 'provider-evidence-ambiguous-fenced' | 'non-retryable-removal-fenced';
+      fenceClassification: MergeQueueFence['classification'];
+    } {
+  if (removal === undefined) {
+    return {
+      retryable: false,
+      classification: 'provider-evidence-ambiguous-fenced',
+      fenceClassification: 'provider-evidence-ambiguous',
+    };
+  }
+  const reason = normalizedQueueRemovalReason(removal.reason);
+  if (reason === 'failed_checks') {
+    const mergeGroupRuns = removal.evidence?.workflowRuns.filter((run) => run.event === 'merge_group') ?? [];
+    if (mergeGroupRuns.some((run) => run.conclusion === 'FAILURE')) {
+      return {
+        retryable: false,
+        classification: 'code-failure-fenced',
+        fenceClassification: 'code-failure',
+      };
+    }
+    if (
+      mergeGroupRuns.length > 0 &&
+      mergeGroupRuns.every((run) =>
+        ['CANCELLED', 'STALE', 'STARTUP_FAILURE', 'TIMED_OUT'].includes(run.conclusion ?? ''),
+      )
+    ) {
+      return {
+        retryable: true,
+        classification: 'provider-confirmed-transient',
+        fenceClassification: 'non-retryable-removal',
+      };
+    }
+    return {
+      retryable: false,
+      classification: 'provider-evidence-ambiguous-fenced',
+      fenceClassification: 'provider-evidence-ambiguous',
+    };
+  }
+  if (RETRYABLE_QUEUE_REMOVAL_REASONS.has(reason)) {
+    return {
+      retryable: true,
+      classification: 'provider-confirmed-transient',
+      fenceClassification: 'non-retryable-removal',
+    };
+  }
+  return {
+    retryable: false,
+    classification: reason === '' ? 'provider-evidence-ambiguous-fenced' : 'non-retryable-removal-fenced',
+    fenceClassification: reason === '' ? 'provider-evidence-ambiguous' : 'non-retryable-removal',
+  };
 }
 
 function prKey(kind: string, pr: PullRequestRef): string {
@@ -1059,6 +1141,7 @@ export class ShepherdEngine {
               trackedGeneration: trackedClaim.generation,
             },
             { trackedGeneration: trackedClaim.generation },
+            trackedClaim.generation,
             events,
             actions,
           );
@@ -1107,6 +1190,7 @@ export class ShepherdEngine {
                 attestationHeadSha: details.headSha,
                 attestationId: attestation.idempotencyKey,
               },
+              trackedClaim.generation,
               events,
               actions,
             );
@@ -1163,6 +1247,7 @@ export class ShepherdEngine {
                 mergeQueueRetry,
                 {},
                 {},
+                trackedGeneration,
                 events,
                 actions,
               );
@@ -1746,6 +1831,7 @@ export class ShepherdEngine {
     previous: MergeQueueRetryState | undefined,
     identityContext: Record<string, unknown>,
     actionContext: Pick<ActionState, 'trackedGeneration' | 'attestationHeadSha' | 'attestationId'>,
+    trackedGeneration: number | undefined,
     events: ShepherdEvent[],
     actions: EntityUpdate[],
   ): MergeQueueRetryState | undefined {
@@ -1757,7 +1843,10 @@ export class ShepherdEngine {
         : providerReady && actionContext.trackedGeneration !== undefined
           ? `provider-action-ready:${String(actionContext.trackedGeneration)}`
           : 'authored';
-    const retry = previous?.scope === scope ? previous : this.recoverMergeQueueRetry(pr, details.headSha, scope);
+    const previousFence = previous?.fence ?? this.recoverMergeQueueFence(pr, details.headSha);
+    const fence = previousFence?.headSha.toLowerCase() === details.headSha.toLowerCase() ? previousFence : undefined;
+    const recovered = previous?.scope === scope ? previous : this.recoverMergeQueueRetry(pr, details.headSha, scope);
+    const retry = recovered === undefined ? undefined : { ...recovered, ...(fence === undefined ? {} : { fence }) };
 
     if (automation.queued) {
       return {
@@ -1767,9 +1856,22 @@ export class ShepherdEngine {
         ...(retry?.lastActionKey === undefined ? {} : { lastActionKey: retry.lastActionKey }),
         observedQueued: true,
         exhausted: retry?.exhausted ?? false,
+        ...(fence === undefined ? {} : { fence }),
       };
     }
     if (providerReady ? automation.enqueueAvailable !== true : automation.autoMergeEnabled) return retry;
+
+    if (fence !== undefined) {
+      return {
+        headSha: details.headSha,
+        scope,
+        attempts: retry?.attempts ?? 0,
+        ...(retry?.lastActionKey === undefined ? {} : { lastActionKey: retry.lastActionKey }),
+        observedQueued: false,
+        exhausted: true,
+        fence,
+      };
+    }
 
     if (retry === undefined) {
       return this.scheduleMergeQueueAttempt(
@@ -1799,6 +1901,7 @@ export class ShepherdEngine {
         undefined,
         identityContext,
         actionContext,
+        trackedGeneration,
         events,
         actions,
       );
@@ -1814,6 +1917,7 @@ export class ShepherdEngine {
       priorAction.value.completedAt ?? priorAction.updatedAt,
       identityContext,
       actionContext,
+      trackedGeneration,
       events,
       actions,
     );
@@ -1828,6 +1932,7 @@ export class ShepherdEngine {
     completedAt: string | undefined,
     identityContext: Record<string, unknown>,
     actionContext: Pick<ActionState, 'trackedGeneration' | 'attestationHeadSha' | 'attestationId'>,
+    trackedGeneration: number | undefined,
     events: ShepherdEvent[],
     actions: EntityUpdate[],
   ): MergeQueueRetryState {
@@ -1841,7 +1946,8 @@ export class ShepherdEngine {
     const confirmed = retry.observedQueued || removalAfterAttempt !== undefined;
     if (!confirmed && this.clock().getTime() < new Date(retryAt).getTime()) return retry;
 
-    const exhausted = retry.attempts >= MERGE_QUEUE_MAX_ATTEMPTS;
+    const disposition = mergeQueueRetryDisposition(removalAfterAttempt);
+    const exhausted = retry.attempts >= MERGE_QUEUE_MAX_ATTEMPTS || disposition.retryable === false;
     const removalIdentity = removalAfterAttempt?.id ?? retry.lastActionKey ?? `${retry.scope}:observed-queue`;
     events.push(
       buildEvent(
@@ -1854,6 +1960,8 @@ export class ShepherdEngine {
           ...(removalAfterAttempt === undefined ? {} : { removedAt: removalAfterAttempt.createdAt }),
           attempts: retry.attempts,
           retryExhausted: exhausted,
+          retryEligibility: disposition.classification,
+          ...(removalAfterAttempt?.evidence === undefined ? {} : { providerEvidence: removalAfterAttempt.evidence }),
           ...(exhausted || mode !== 'execute' ? {} : { retryAt }),
           title: details.title,
           url: details.url,
@@ -1861,6 +1969,24 @@ export class ShepherdEngine {
         removalAfterAttempt?.createdAt ?? this.clock().toISOString(),
       ),
     );
+    if (disposition.retryable === false) {
+      const fence: MergeQueueFence = {
+        repo: pr.repo,
+        prNumber: pr.number,
+        headSha: details.headSha,
+        ...(trackedGeneration === undefined ? {} : { trackedGeneration }),
+        removalId: removalIdentity,
+        removalReason: removalAfterAttempt?.reason ?? 'queue-entry-absent-after-submission',
+        classification: disposition.fenceClassification,
+        createdAt: removalAfterAttempt?.createdAt ?? this.clock().toISOString(),
+      };
+      actions.push({
+        key: `${prKey('merge-queue-fence', pr)}:${details.headSha.toLowerCase()}`,
+        kind: 'merge-queue-fence',
+        value: fence,
+      });
+      return { ...retry, observedQueued: false, exhausted: true, fence };
+    }
     if (exhausted || mode !== 'execute') return { ...retry, observedQueued: false, exhausted };
     return (
       this.scheduleMergeQueueAttempt(
@@ -1978,6 +2104,18 @@ export class ShepherdEngine {
       observedQueued: false,
       exhausted: latest.value.status === 'failed' || latest.value.status === 'cancelled',
     };
+  }
+
+  private recoverMergeQueueFence(pr: PullRequestRef, headSha: string): MergeQueueFence | undefined {
+    return this.store
+      .listEntities<MergeQueueFence>('merge-queue-fence')
+      .filter(
+        (entity) =>
+          entity.value.prNumber === pr.number &&
+          entity.value.repo.toLowerCase() === pr.repo.toLowerCase() &&
+          entity.value.headSha.toLowerCase() === headSha.toLowerCase(),
+      )
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]?.value;
   }
 
   private addDecision(

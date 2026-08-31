@@ -12,6 +12,8 @@ import type {
   DiscoveryResult,
   GitHubMutation,
   GitHubProvider,
+  MergeQueueRemoval,
+  MergeQueueRemovalEvidence,
   PullRequestDetails,
   PullRequestRef,
   PullRequestSummary,
@@ -31,7 +33,7 @@ class FakeGitHub implements GitHubProvider {
   readonly getCalls: PullRequestRef[] = [];
   getHandler: ((pr: PullRequestRef) => Promise<PullRequestDetails>) | undefined;
   queued = false;
-  latestQueueRemoval: { id: string; createdAt: string; reason: string | null } | undefined;
+  latestQueueRemoval: MergeQueueRemoval | undefined;
   enqueueAvailable = false;
   automationHeadSha: string | undefined;
 
@@ -58,7 +60,7 @@ class FakeGitHub implements GitHubProvider {
     headSha: string;
     autoMergeEnabled: boolean;
     queued: boolean;
-    latestQueueRemoval?: { id: string; createdAt: string; reason: string | null };
+    latestQueueRemoval?: MergeQueueRemoval;
   }> {
     const details = this.details.get(`${pr.repo}#${String(pr.number)}`);
     if (details === undefined) throw new Error(`missing ${pr.repo}#${String(pr.number)}`);
@@ -117,6 +119,51 @@ function approvedPr(overrides: Partial<PullRequestDetails> = {}): PullRequestDet
     ],
     ...overrides,
   });
+}
+
+function failedMergeGroupRemoval(overrides: Partial<MergeQueueRemoval> = {}): MergeQueueRemoval {
+  return {
+    id: 'removed-failed-checks',
+    createdAt: '2026-07-20T10:05:00Z',
+    reason: 'failed_checks',
+    evidence: {
+      status: 'complete',
+      mergeGroupSha: '87743c6333',
+      mergeGroupRef: 'gh-readonly-queue/main/pr-7-mainbase',
+      workflowRuns: [
+        {
+          id: '33448057090',
+          url: 'https://github.com/acme/api/actions/runs/33448057090',
+          event: 'merge_group',
+          conclusion: 'FAILURE',
+          failedJobs: [
+            {
+              name: 'lint',
+              conclusion: 'FAILURE',
+              failedSteps: ['lint'],
+              logUrl: 'https://github.com/acme/api/actions/runs/33448057090/job/1',
+              errorExcerpt: 'lint failed',
+            },
+            {
+              name: 'test-shadowfax (6)',
+              conclusion: 'FAILURE',
+              failedSteps: ['test'],
+            },
+            { name: 'lint-test', conclusion: 'FAILURE', failedSteps: ['aggregate'] },
+          ],
+        },
+      ],
+      queueStack: {
+        status: 'ambiguous',
+        attribution: 'ambiguous',
+        currentPrNumber: 7,
+        detail: 'Ordinary pull_request jobs were skipped, so branch-local versus current-main is ambiguous.',
+      },
+      errors: [],
+      truncated: false,
+    },
+    ...overrides,
+  };
 }
 
 function config(input: Record<string, unknown> = {}): ShepherdConfig {
@@ -838,7 +885,8 @@ describe('Shepherd engine', () => {
       },
       automation: { autoMerge: 'execute' },
     });
-    await new TrackedPullRequestControl(resolved, github, store).claim({
+    const control = new TrackedPullRequestControl(resolved, github, store);
+    await control.claim({
       repo: 'acme/api',
       number: 7,
       actor: 'operator',
@@ -850,6 +898,63 @@ describe('Shepherd engine', () => {
     expect(github.mutations).toEqual([{ type: 'enqueue-provider-ready', pr: { repo: 'acme/api', number: 7 } }]);
     expect(store.listEvents().some((event) => event.type === 'release-gate-blocked')).toBe(false);
     expect(store.listReleaseControlOperations(10)).toEqual([]);
+    store.close();
+  });
+
+  it('keeps provider-action-ready admission provider-owned while fencing post-enqueue failed checks', async () => {
+    let now = new Date('2026-08-17T10:00:00Z');
+    const github = new FakeGitHub();
+    github.details.set('acme/api#7', pr());
+    github.enqueueAvailable = true;
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      github: { mode: 'merge-queue' },
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: { enabled: true, releaseGate: 'provider-action-ready' },
+        staleThresholdHours: 24,
+      },
+      automation: { autoMerge: 'execute' },
+    });
+    const control = new TrackedPullRequestControl(resolved, github, store);
+    await control.claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'claim-provider-fence',
+    });
+    const engine = new ShepherdEngine(resolved, github, store, () => now);
+
+    expect(await engine.pollOnce()).toMatchObject({ mutations: 1 });
+    github.latestQueueRemoval = failedMergeGroupRemoval({ createdAt: '2026-08-17T10:05:00Z' });
+    now = new Date('2026-08-17T10:05:00Z');
+    await engine.pollOnce();
+    now = new Date('2026-08-18T10:05:00Z');
+    await engine.pollOnce();
+
+    await control.unclaimSafely({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'unclaim-provider-fence',
+    });
+    await control.claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'reclaim-provider-fence',
+    });
+    expect(await engine.pollOnce()).toMatchObject({ mutations: 0 });
+
+    expect(github.mutations).toEqual([{ type: 'enqueue-provider-ready', pr: { repo: 'acme/api', number: 7 } }]);
+    expect(store.listEvents().find((event) => event.type === 'merge-queue-evicted')?.source).toMatchObject({
+      retryEligibility: 'code-failure-fenced',
+    });
+    expect(store.getTrackedPullRequest({ repo: 'acme/api', number: 7 })?.generation).toBe(2);
+    expect(store.listEntities<{ trackedGeneration?: number }>('merge-queue-fence')[0]?.value.trackedGeneration).toBe(1);
     store.close();
   });
 
@@ -2716,7 +2821,7 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
-  it('observes same-head queue eviction and re-enqueues once after durable backoff', async () => {
+  it('re-enqueues a provider-confirmed transient same-head removal after durable backoff', async () => {
     let now = new Date('2026-07-20T10:00:00Z');
     const github = new FakeGitHub();
     setDiscovery(github, 'authored', approvedPr());
@@ -2738,7 +2843,7 @@ describe('Shepherd engine', () => {
     github.latestQueueRemoval = {
       id: 'removed-1',
       createdAt: '2026-07-20T10:05:00Z',
-      reason: 'failed_checks',
+      reason: 'stack_invalidated',
     };
     now = new Date('2026-07-20T10:05:00Z');
 
@@ -2746,7 +2851,7 @@ describe('Shepherd engine', () => {
     expect(github.mutations).toHaveLength(1);
     expect(store.listEvents().find((event) => event.type === 'merge-queue-evicted')?.source).toMatchObject({
       headSha: 'head-a',
-      reason: 'failed_checks',
+      reason: 'stack_invalidated',
       attempts: 1,
       retryExhausted: false,
     });
@@ -2760,7 +2865,53 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
-  it('bounds repeated same-head queue eviction with increasing retry delays', async () => {
+  it('fences an unchanged head after provider-attributed merge_group check failure', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    const github = new FakeGitHub();
+    setDiscovery(github, 'authored', approvedPr());
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-exact-head') github.queued = true;
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute' } }),
+      github,
+      store,
+      () => now,
+    );
+
+    await engine.pollOnce();
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = failedMergeGroupRemoval();
+    now = new Date('2026-07-20T10:05:00Z');
+    await engine.pollOnce();
+    now = new Date('2026-07-21T10:05:00Z');
+    await engine.pollOnce();
+
+    expect(github.mutations).toHaveLength(1);
+    const eviction = store.listEvents().find((event) => event.type === 'merge-queue-evicted');
+    expect(eviction?.source).toMatchObject({
+      reason: 'failed_checks',
+      retryExhausted: true,
+      retryEligibility: 'code-failure-fenced',
+      providerEvidence: {
+        mergeGroupSha: '87743c6333',
+      },
+    });
+    const evidence = eviction?.source.providerEvidence as MergeQueueRemovalEvidence | undefined;
+    expect(evidence?.workflowRuns[0]?.id).toBe('33448057090');
+    expect(evidence?.workflowRuns[0]?.failedJobs.map((job) => job.name)).toContain('lint');
+    expect(
+      store.getEntity<{ mergeQueueRetry?: { fence?: { classification: string; headSha: string } } }>(
+        'authored:acme/api#7',
+      )?.value.mergeQueueRetry?.fence,
+    ).toMatchObject({ classification: 'code-failure', headSha: 'head-a' });
+    store.close();
+  });
+
+  it('bounds repeated provider-confirmed transient same-head removal with increasing retry delays', async () => {
     let now = new Date('2026-07-20T10:00:00Z');
     const github = new FakeGitHub();
     setDiscovery(github, 'authored', approvedPr());
@@ -2784,7 +2935,7 @@ describe('Shepherd engine', () => {
       github.latestQueueRemoval = {
         id: `removed-${String(attempt)}`,
         createdAt: now.toISOString(),
-        reason: 'failed_checks',
+        reason: 'stack_invalidated',
       };
       await engine.pollOnce();
       if (attempt < 5) {
@@ -2831,7 +2982,7 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
-  it('cancels an old-head queue retry and submits the newly eligible head', async () => {
+  it('clears an old-head failed-check fence and submits the newly eligible head', async () => {
     let now = new Date('2026-07-20T10:00:00Z');
     const github = new FakeGitHub();
     setDiscovery(github, 'authored', approvedPr());
@@ -2865,16 +3016,13 @@ describe('Shepherd engine', () => {
       store
         .listEntities<{ status: string; mutation: GitHubMutation }>('action')
         .find(
-          (entity) =>
-            entity.value.mutation.type === 'enqueue-exact-head' &&
-            entity.value.mutation.headSha === 'head-a' &&
-            entity.value.status !== 'completed',
+          (entity) => entity.value.mutation.type === 'enqueue-exact-head' && entity.value.mutation.headSha === 'head-a',
         )?.value.status,
-    ).toBe('cancelled');
+    ).toBe('completed');
     store.close();
   });
 
-  it('preserves a scheduled queue retry across restart without double-enqueueing', async () => {
+  it('preserves a same-head failed-check fence across restart', async () => {
     let now = new Date('2026-07-20T10:00:00Z');
     const github = new FakeGitHub();
     setDiscovery(github, 'authored', approvedPr());
@@ -2891,7 +3039,7 @@ describe('Shepherd engine', () => {
       await first.pollOnce();
       await first.pollOnce();
       github.queued = false;
-      github.latestQueueRemoval = { id: 'removed-restart', createdAt: now.toISOString(), reason: 'failed_checks' };
+      github.latestQueueRemoval = failedMergeGroupRemoval({ id: 'removed-restart', createdAt: now.toISOString() });
       await first.pollOnce();
       firstStore.close();
 
@@ -2899,11 +3047,22 @@ describe('Shepherd engine', () => {
       const restarted = new ShepherdEngine(resolved, github, reopened, () => now);
       now = new Date('2026-07-20T10:00:30Z');
       expect(await restarted.pollOnce()).toMatchObject({ mutations: 0 });
+      now = new Date('2026-07-20T11:00:00Z');
+      expect(await restarted.pollOnce()).toMatchObject({ mutations: 0 });
       expect(github.mutations).toHaveLength(1);
-      now = new Date('2026-07-20T10:01:00Z');
-      expect(await restarted.pollOnce()).toMatchObject({ mutations: 1 });
-      await restarted.pollOnce();
-      expect(github.mutations).toHaveLength(2);
+      expect(
+        reopened.getEntity<{ mergeQueueRetry?: { fence?: { classification: string } } }>('authored:acme/api#7')?.value
+          .mergeQueueRetry?.fence,
+      ).toMatchObject({ classification: 'code-failure' });
+      const persistedEviction = reopened.listEvents().find((event) => event.type === 'merge-queue-evicted');
+      expect(persistedEviction?.source).toMatchObject({
+        providerEvidence: {
+          mergeGroupSha: '87743c6333',
+        },
+      });
+      const persistedEvidence = persistedEviction?.source.providerEvidence as MergeQueueRemovalEvidence | undefined;
+      expect(persistedEvidence?.workflowRuns[0]?.id).toBe('33448057090');
+      expect(persistedEvidence?.workflowRuns[0]?.failedJobs.map((job) => job.name)).toContain('lint');
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -2917,7 +3076,7 @@ describe('Shepherd engine', () => {
     github.latestQueueRemoval = {
       id: 'removed-legacy',
       createdAt: '2026-07-20T10:05:00Z',
-      reason: 'failed_checks',
+      reason: 'stack_invalidated',
     };
     github.mutationHandler = async (mutation) => {
       github.mutations.push(mutation);
@@ -2956,7 +3115,7 @@ describe('Shepherd engine', () => {
       { type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha: 'head-a' },
     ]);
     expect(store.listEvents().find((event) => event.type === 'merge-queue-evicted')?.source.reason).toBe(
-      'failed_checks',
+      'stack_invalidated',
     );
     store.close();
   });

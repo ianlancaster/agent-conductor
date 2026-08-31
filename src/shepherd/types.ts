@@ -139,6 +139,50 @@ export interface MergeQueueRemoval {
   id: string;
   createdAt: string;
   reason: string | null;
+  evidence?: MergeQueueRemovalEvidence;
+}
+
+export type MergeQueueEvidenceStatus = 'complete' | 'unavailable' | 'ambiguous' | 'truncated';
+export type MergeQueueFailureAttribution =
+  'branch-local' | 'current-main-interaction' | 'upstream-queued-pr' | 'ambiguous' | 'unavailable';
+
+export interface MergeQueueFailedJobEvidence {
+  name: string;
+  conclusion: string;
+  failedSteps: string[];
+  /** Provider permalink for the job/check output, when available. */
+  logUrl?: string;
+  /** Bounded provider-authored check summary/text; never fetched from raw log archives. */
+  errorExcerpt?: string;
+}
+
+export interface MergeQueueWorkflowRunEvidence {
+  id: string;
+  url: string;
+  event: string;
+  conclusion: string | null;
+  failedJobs: MergeQueueFailedJobEvidence[];
+}
+
+export interface MergeQueueStackEvidence {
+  status: MergeQueueEvidenceStatus;
+  attribution: MergeQueueFailureAttribution;
+  currentPrNumber: number;
+  mergeGroupPrNumber?: number;
+  baseSha?: string;
+  parentSha?: string;
+  detail?: string;
+}
+
+/** Immutable provider facts attached to one queue-removal timeline event. */
+export interface MergeQueueRemovalEvidence {
+  status: MergeQueueEvidenceStatus;
+  mergeGroupSha?: string;
+  mergeGroupRef?: string;
+  workflowRuns: MergeQueueWorkflowRunEvidence[];
+  queueStack: MergeQueueStackEvidence;
+  errors: string[];
+  truncated: boolean;
 }
 
 export interface MergeAutomationState {

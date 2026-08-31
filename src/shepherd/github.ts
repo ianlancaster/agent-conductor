@@ -11,6 +11,9 @@ import type {
   GitHubMutation,
   GitHubProvider,
   MergeAutomationState,
+  MergeQueueEvidenceStatus,
+  MergeQueueRemoval,
+  MergeQueueRemovalEvidence,
   PullRequestDetails,
   PullRequestRef,
   PullRequestSummary,
@@ -161,6 +164,13 @@ interface RawReviewThread {
   };
 }
 
+interface RawQueueRemoval {
+  id: string;
+  createdAt: string;
+  reason: string | null;
+  beforeCommit: { oid: string; parents: { nodes: { oid: string }[] } } | null;
+}
+
 interface RawPullRequestMutationState {
   data: {
     repository: {
@@ -171,11 +181,63 @@ interface RawPullRequestMutationState {
         autoMergeRequest: { enabledAt: string } | null;
         mergeQueueEntry: { id: string } | null;
         timelineItems?: {
-          nodes: { id: string; createdAt: string; reason: string | null }[];
+          nodes: RawQueueRemoval[];
         };
       } | null;
     } | null;
   };
+}
+
+interface RawCheckSuiteEvidence {
+  id: string;
+  status: string;
+  conclusion: string | null;
+  branch: { name: string } | null;
+  workflowRun: { id: string; databaseId: number | null; event: string; url: string } | null;
+  checkRuns: {
+    nodes: {
+      id: string;
+      name: string;
+      status: string;
+      conclusion: string | null;
+      permalink: string;
+      summary: string | null;
+      text: string | null;
+      steps: {
+        nodes: { name: string; number: number; status: string; conclusion: string | null }[];
+        pageInfo: RawPageInfo;
+      } | null;
+    }[];
+    pageInfo: RawPageInfo;
+  };
+}
+
+interface RawCommitCheckEvidence {
+  data: {
+    repository: {
+      object: {
+        oid: string;
+        checkSuites: {
+          nodes: RawCheckSuiteEvidence[];
+          pageInfo: RawPageInfo;
+        };
+      } | null;
+    } | null;
+  };
+}
+
+interface CommitCheckEvidence {
+  sha: string;
+  suites: RawCheckSuiteEvidence[];
+  truncated: boolean;
+}
+
+interface RawWorkflowRunEvidence {
+  id: number;
+  event: string;
+  head_branch: string | null;
+  head_sha: string;
+  html_url: string;
 }
 
 interface RawReviewThreadPage {
@@ -218,6 +280,8 @@ interface RawReviewRequestPage {
 const SEARCH_PAGE_SIZE = 50;
 const SEARCH_RESULT_CAP = 1_000;
 const GRAPHQL_PAGE_SIZE = 100;
+const MERGE_QUEUE_EVIDENCE_LIMIT = 100;
+const MERGE_QUEUE_ERROR_LIMIT = 500;
 
 const REVIEW_THREADS_QUERY = `
 query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
@@ -330,7 +394,12 @@ query PullRequestMutationState($owner: String!, $name: String!, $number: Int!) {
       mergeQueueEntry { id }
       timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
         nodes {
-          ... on RemovedFromMergeQueueEvent { id createdAt reason }
+          ... on RemovedFromMergeQueueEvent {
+            id
+            createdAt
+            reason
+            beforeCommit { oid parents(first: 1) { nodes { oid } } }
+          }
         }
       }
     }
@@ -348,7 +417,49 @@ query ProviderReadyMutationState($owner: String!, $name: String!, $number: Int!)
       mergeQueueEntry { id }
       timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
         nodes {
-          ... on RemovedFromMergeQueueEvent { id createdAt reason }
+          ... on RemovedFromMergeQueueEvent {
+            id
+            createdAt
+            reason
+            beforeCommit { oid parents(first: 1) { nodes { oid } } }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+const COMMIT_CHECK_EVIDENCE_QUERY = `
+query CommitCheckEvidence($owner: String!, $name: String!, $oid: GitObjectID!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    object(oid: $oid) {
+      ... on Commit {
+        oid
+        checkSuites(first: ${String(GRAPHQL_PAGE_SIZE)}, after: $cursor) {
+          nodes {
+            id
+            status
+            conclusion
+            branch { name }
+            workflowRun { id databaseId event url }
+            checkRuns(first: ${String(GRAPHQL_PAGE_SIZE)}) {
+              nodes {
+                id
+                name
+                status
+                conclusion
+                permalink
+                summary
+                text
+                steps(first: ${String(GRAPHQL_PAGE_SIZE)}) {
+                  nodes { name number status conclusion }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+          pageInfo { hasNextPage endCursor }
         }
       }
     }
@@ -375,6 +486,8 @@ query TrackedHeadSearch($queryString: String!, $cursor: String) {
 }`;
 
 export class GhGitHubProvider implements GitHubProvider {
+  private readonly removalEvidenceCache = new Map<string, MergeQueueRemovalEvidence>();
+
   constructor(
     private readonly config: ShepherdConfig,
     private readonly executor: ProcessExecutor = new AsyncProcessExecutor(),
@@ -565,7 +678,9 @@ export class GhGitHubProvider implements GitHubProvider {
   async getMergeAutomationState(pr: PullRequestRef): Promise<MergeAutomationState> {
     const providerReady = this.config.features.trackedPRs.releaseGate === 'provider-action-ready';
     const state = await this.pullRequestMutationState(pr, providerReady);
-    const latestQueueRemoval = state.timelineItems?.nodes[0];
+    const rawRemoval = state.timelineItems?.nodes[0];
+    const latestQueueRemoval =
+      rawRemoval === undefined ? undefined : await this.mergeQueueRemoval(pr, state.headRefOid, rawRemoval);
     return {
       headSha: state.headRefOid,
       autoMergeEnabled: state.autoMergeRequest !== null,
@@ -579,6 +694,193 @@ export class GhGitHubProvider implements GitHubProvider {
       ...(state.mergeQueueEntry === null ? {} : { queueEntryId: state.mergeQueueEntry.id }),
       ...(latestQueueRemoval === undefined ? {} : { latestQueueRemoval }),
     };
+  }
+
+  private async mergeQueueRemoval(
+    pr: PullRequestRef,
+    headSha: string,
+    removal: RawQueueRemoval,
+  ): Promise<MergeQueueRemoval> {
+    if (normalizeQueueRemovalReason(removal.reason) !== 'failed_checks') {
+      return { id: removal.id, createdAt: removal.createdAt, reason: removal.reason };
+    }
+    const cached = this.removalEvidenceCache.get(removal.id);
+    if (cached !== undefined)
+      return { id: removal.id, createdAt: removal.createdAt, reason: removal.reason, evidence: cached };
+
+    let evidence: MergeQueueRemovalEvidence;
+    if (removal.beforeCommit === null) {
+      evidence = unavailableMergeQueueEvidence(pr.number, 'GitHub did not expose the removed merge-group commit.');
+    } else {
+      try {
+        evidence = await this.mergeQueueRemovalEvidence(
+          pr,
+          headSha,
+          removal.beforeCommit.oid,
+          removal.beforeCommit.parents.nodes[0]?.oid,
+        );
+      } catch (error) {
+        evidence = unavailableMergeQueueEvidence(
+          pr.number,
+          boundedProviderText(error instanceof Error ? error.message : String(error), MERGE_QUEUE_ERROR_LIMIT),
+        );
+      }
+    }
+    this.removalEvidenceCache.set(removal.id, evidence);
+    if (this.removalEvidenceCache.size > MERGE_QUEUE_EVIDENCE_LIMIT) {
+      const oldest = this.removalEvidenceCache.keys().next().value;
+      if (oldest !== undefined) this.removalEvidenceCache.delete(oldest);
+    }
+    return { id: removal.id, createdAt: removal.createdAt, reason: removal.reason, evidence };
+  }
+
+  private async mergeQueueRemovalEvidence(
+    pr: PullRequestRef,
+    headSha: string,
+    mergeGroupSha: string,
+    parentSha: string | undefined,
+  ): Promise<MergeQueueRemovalEvidence> {
+    const mergeGroup = await this.commitCheckEvidence(pr.repo, mergeGroupSha);
+    const mergeSuites = mergeGroup.suites.filter((suite) => suite.workflowRun?.event === 'merge_group');
+    const failedSuites = mergeSuites.filter((suite) => suite.conclusion === 'FAILURE');
+    let mergeGroupRef = mergeSuites.find((suite) => suite.branch?.name !== undefined)?.branch?.name;
+    const failedJobNames = new Set(
+      failedSuites.flatMap((suite) =>
+        suite.checkRuns.nodes.filter((run) => run.conclusion === 'FAILURE').map((run) => run.name),
+      ),
+    );
+    const errors: string[] = [];
+    let truncated = mergeGroup.truncated;
+    truncated ||=
+      mergeSuites.length > MERGE_QUEUE_EVIDENCE_LIMIT ||
+      mergeSuites.some(
+        (suite) =>
+          suite.checkRuns.nodes.length > MERGE_QUEUE_EVIDENCE_LIMIT ||
+          suite.checkRuns.nodes.some(
+            (run) =>
+              (run.steps?.nodes.length ?? 0) > MERGE_QUEUE_EVIDENCE_LIMIT ||
+              providerTextWasTruncated(run.summary, run.text),
+          ),
+      );
+    if (mergeSuites.length === 0)
+      errors.push('No check suite on the removed commit was linked to a merge_group workflow run.');
+    if (failedSuites.length === 0) errors.push('No merge_group workflow suite reported a FAILURE conclusion.');
+    if (mergeGroupRef === undefined) {
+      const runId = mergeSuites.find(
+        (suite) => suite.workflowRun?.databaseId !== null && suite.workflowRun?.databaseId !== undefined,
+      )?.workflowRun?.databaseId;
+      if (runId !== undefined && runId !== null) {
+        try {
+          const raw = await this.gh(['api', `repos/${pr.repo}/actions/runs/${String(runId)}`]);
+          const run = this.json<RawWorkflowRunEvidence>(raw, `${pr.repo} Actions run ${String(runId)}`);
+          if (run.event !== 'merge_group' || run.head_sha.toLowerCase() !== mergeGroupSha.toLowerCase()) {
+            errors.push('Actions run metadata did not match the removed merge_group commit.');
+          } else if (run.head_branch === null || run.head_branch === '') {
+            errors.push('Actions run metadata did not retain the merge-group ref.');
+          } else {
+            mergeGroupRef = run.head_branch;
+          }
+        } catch (error) {
+          errors.push(
+            `Merge-group ref unavailable: ${boundedProviderText(error instanceof Error ? error.message : String(error), MERGE_QUEUE_ERROR_LIMIT)}`,
+          );
+        }
+      } else if (mergeSuites.length > 0) {
+        errors.push('GitHub did not expose a durable Actions run identifier for the merge-group ref.');
+      }
+    }
+    const parsedRef = mergeGroupRef === undefined ? undefined : parseMergeGroupRef(mergeGroupRef);
+
+    let headChecks: CommitCheckEvidence | undefined;
+    let parentChecks: CommitCheckEvidence | undefined;
+    try {
+      headChecks = await this.commitCheckEvidence(pr.repo, headSha);
+      truncated ||= headChecks.truncated;
+    } catch (error) {
+      errors.push(
+        `PR-head checks unavailable: ${boundedProviderText(error instanceof Error ? error.message : String(error), MERGE_QUEUE_ERROR_LIMIT)}`,
+      );
+    }
+    if (parentSha !== undefined && parsedRef?.baseSha !== undefined && parentSha.toLowerCase() !== parsedRef.baseSha) {
+      try {
+        parentChecks = await this.commitCheckEvidence(pr.repo, parentSha);
+        truncated ||= parentChecks.truncated;
+      } catch (error) {
+        errors.push(
+          `Upstream queue checks unavailable: ${boundedProviderText(error instanceof Error ? error.message : String(error), MERGE_QUEUE_ERROR_LIMIT)}`,
+        );
+      }
+    }
+
+    const queueStack = classifyQueueStack(
+      pr.number,
+      failedJobNames,
+      parsedRef,
+      parentSha,
+      headChecks,
+      parentChecks,
+      truncated,
+    );
+    const status: MergeQueueEvidenceStatus =
+      mergeSuites.length === 0 || failedSuites.length === 0
+        ? 'ambiguous'
+        : truncated
+          ? 'truncated'
+          : errors.length > 0 || queueStack.status === 'ambiguous'
+            ? 'ambiguous'
+            : queueStack.status === 'unavailable'
+              ? 'unavailable'
+              : 'complete';
+    return {
+      status,
+      mergeGroupSha,
+      ...(mergeGroupRef === undefined ? {} : { mergeGroupRef }),
+      workflowRuns: mergeSuites.slice(0, MERGE_QUEUE_EVIDENCE_LIMIT).map((suite) => ({
+        id: String(suite.workflowRun?.databaseId ?? suite.workflowRun?.id ?? suite.id),
+        url: suite.workflowRun?.url ?? '',
+        event: suite.workflowRun?.event ?? 'merge_group',
+        conclusion: suite.conclusion,
+        failedJobs: suite.checkRuns.nodes
+          .filter((run) => run.conclusion === 'FAILURE')
+          .slice(0, MERGE_QUEUE_EVIDENCE_LIMIT)
+          .map((run) => ({
+            name: run.name,
+            conclusion: run.conclusion ?? 'FAILURE',
+            failedSteps: (run.steps?.nodes ?? [])
+              .filter((step) => step.conclusion === 'FAILURE')
+              .slice(0, MERGE_QUEUE_EVIDENCE_LIMIT)
+              .map((step) => step.name),
+            ...(run.permalink === '' ? {} : { logUrl: run.permalink }),
+            ...providerExcerpt(run.summary, run.text),
+          })),
+      })),
+      queueStack,
+      errors: errors.slice(0, 10),
+      truncated,
+    };
+  }
+
+  private async commitCheckEvidence(repo: string, sha: string): Promise<CommitCheckEvidence> {
+    const { owner, name } = this.repoParts(repo);
+    const suites: RawCheckSuiteEvidence[] = [];
+    let truncated = false;
+    let cursor: string | undefined;
+    do {
+      const raw = await this.graphql(COMMIT_CHECK_EVIDENCE_QUERY, { owner, name, oid: sha, cursor });
+      const response = this.json<RawCommitCheckEvidence>(raw, `${repo}@${sha} check evidence`);
+      const commit = response.data.repository?.object;
+      if (commit === undefined || commit === null) throw new Error(`GitHub returned no commit ${sha} for ${repo}.`);
+      suites.push(...commit.checkSuites.nodes);
+      truncated ||= commit.checkSuites.nodes.some(
+        (suite) =>
+          suite.checkRuns.pageInfo.hasNextPage ||
+          suite.checkRuns.nodes.some((run) => run.steps?.pageInfo.hasNextPage === true),
+      );
+      cursor = commit.checkSuites.pageInfo.hasNextPage
+        ? this.nextCursor(commit.checkSuites.pageInfo, `${repo}@${sha} check suites`)
+        : undefined;
+    } while (cursor !== undefined);
+    return { sha, suites, truncated };
   }
 
   async mutate(mutation: GitHubMutation): Promise<void> {
@@ -834,7 +1136,7 @@ export class GhGitHubProvider implements GitHubProvider {
     isMergeQueueEnabled?: boolean;
     autoMergeRequest: { enabledAt: string } | null;
     mergeQueueEntry: { id: string } | null;
-    timelineItems?: { nodes: { id: string; createdAt: string; reason: string | null }[] };
+    timelineItems?: { nodes: RawQueueRemoval[] };
   }> {
     const { owner, name } = this.repoParts(pr.repo);
     const raw = await this.graphql(
@@ -930,4 +1232,130 @@ export class GhGitHubProvider implements GitHubProvider {
       throw new Error(`Malformed JSON from gh for ${label}.`);
     }
   }
+}
+
+function normalizeQueueRemovalReason(reason: string | null): string {
+  return (reason ?? '')
+    .trim()
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, '_')
+    .replaceAll(/^_+|_+$/g, '');
+}
+
+function unavailableMergeQueueEvidence(currentPrNumber: number, detail: string): MergeQueueRemovalEvidence {
+  return {
+    status: 'unavailable',
+    workflowRuns: [],
+    queueStack: { status: 'unavailable', attribution: 'unavailable', currentPrNumber, detail },
+    errors: [detail],
+    truncated: false,
+  };
+}
+
+function parseMergeGroupRef(ref: string): { prNumber: number; baseSha: string } | undefined {
+  const match = /(?:^|\/)gh-readonly-queue\/.+\/pr-(\d+)-([0-9a-f]{7,40})$/i.exec(ref);
+  if (match?.[1] === undefined || match[2] === undefined) return undefined;
+  return { prNumber: Number(match[1]), baseSha: match[2].toLowerCase() };
+}
+
+function checkConclusions(evidence: CommitCheckEvidence | undefined): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  for (const suite of evidence?.suites ?? []) {
+    for (const run of suite.checkRuns.nodes) {
+      if (run.conclusion === null) continue;
+      const conclusions = result.get(run.name) ?? new Set<string>();
+      conclusions.add(run.conclusion);
+      result.set(run.name, conclusions);
+    }
+  }
+  return result;
+}
+
+function classifyQueueStack(
+  currentPrNumber: number,
+  failedJobNames: Set<string>,
+  parsedRef: { prNumber: number; baseSha: string } | undefined,
+  parentSha: string | undefined,
+  headChecks: CommitCheckEvidence | undefined,
+  parentChecks: CommitCheckEvidence | undefined,
+  truncated: boolean,
+): MergeQueueRemovalEvidence['queueStack'] {
+  const common = {
+    currentPrNumber,
+    ...(parsedRef === undefined ? {} : { mergeGroupPrNumber: parsedRef.prNumber, baseSha: parsedRef.baseSha }),
+    ...(parentSha === undefined ? {} : { parentSha }),
+  };
+  if (failedJobNames.size === 0) {
+    return {
+      ...common,
+      status: truncated ? 'truncated' : 'ambiguous',
+      attribution: 'ambiguous',
+      detail: 'The merge_group suite failed, but GitHub exposed no failed job names for attribution.',
+    };
+  }
+  if (parsedRef === undefined || parentSha === undefined) {
+    return {
+      ...common,
+      status: 'unavailable',
+      attribution: 'unavailable',
+      detail: 'GitHub did not expose a parseable merge-group ref and parent commit.',
+    };
+  }
+  const head = checkConclusions(headChecks);
+  const parent = checkConclusions(parentChecks);
+  const failedNames = [...failedJobNames];
+  const branchLocal = failedNames.some((name) => head.get(name)?.has('FAILURE') === true);
+  const includesUpstream = parentSha.toLowerCase() !== parsedRef.baseSha;
+  const upstreamFailure = includesUpstream && failedNames.some((name) => parent.get(name)?.has('FAILURE') === true);
+  if (branchLocal && !upstreamFailure) {
+    return { ...common, status: truncated ? 'truncated' : 'complete', attribution: 'branch-local' };
+  }
+  if (upstreamFailure && !branchLocal) {
+    return { ...common, status: truncated ? 'truncated' : 'complete', attribution: 'upstream-queued-pr' };
+  }
+  const headPassedAll = failedNames.every((name) => {
+    const conclusions = head.get(name);
+    return conclusions?.has('SUCCESS') === true || conclusions?.has('NEUTRAL') === true;
+  });
+  if (!includesUpstream && headPassedAll) {
+    return { ...common, status: truncated ? 'truncated' : 'complete', attribution: 'current-main-interaction' };
+  }
+  return {
+    ...common,
+    status: truncated ? 'truncated' : 'ambiguous',
+    attribution: 'ambiguous',
+    detail:
+      branchLocal && upstreamFailure
+        ? 'The same failed job is present on both the PR head and an upstream queue commit.'
+        : includesUpstream
+          ? 'The merge group includes upstream queued changes, but exact failed-job provenance is incomplete.'
+          : 'PR-head checks do not distinguish branch-local failure from interaction with current main.',
+  };
+}
+
+function providerTextWasTruncated(summary: string | null, text: string | null): boolean {
+  const combined = [summary, text].filter((value): value is string => value !== null && value.trim() !== '').join('\n');
+  return Buffer.byteLength(combined, 'utf8') > MERGE_QUEUE_ERROR_LIMIT;
+}
+
+function providerExcerpt(summary: string | null, text: string | null): { errorExcerpt?: string } {
+  const combined = [summary, text].filter((value): value is string => value !== null && value.trim() !== '').join('\n');
+  const excerpt = boundedProviderText(combined, MERGE_QUEUE_ERROR_LIMIT);
+  return excerpt === '' ? {} : { errorExcerpt: excerpt };
+}
+
+function boundedProviderText(value: string, maxBytes: number): string {
+  const normalized = value.replaceAll('\u0000', '').trim();
+  if (Buffer.byteLength(normalized, 'utf8') <= maxBytes) return normalized;
+  const suffix = '…';
+  const budget = maxBytes - Buffer.byteLength(suffix, 'utf8');
+  let bytes = 0;
+  let result = '';
+  for (const character of normalized) {
+    const size = Buffer.byteLength(character, 'utf8');
+    if (bytes + size > budget) break;
+    result += character;
+    bytes += size;
+  }
+  return `${result}${suffix}`;
 }
