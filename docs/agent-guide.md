@@ -239,6 +239,10 @@ synthesize a reservation after enforcement begins or infer release from process 
 `attest_session_status` operation uses the authenticated Conductor connection to identify an
 allowed durable coordinator or operator, reconciles the target, and signs host, fleet, instance,
 target, status, resource owner, issue and expiry times, nonce, idempotency key, and key ID. A
+receipt for a deregistered target reports `processActive: false` only after a successful
+backend-wide marker census proves that no managed pane exists. A terminal timeout or incomplete
+census fails receipt creation and is never converted into absence. A discovered pane with an
+inactive or unobservable foreground process remains `null` and is not safe recovery evidence. A
 recovery controller must call the exported `verifySessionStatusReceipt`, pin the expected public
 key SHA-256 through a durable trust record, enforce all expected bindings, record consumed nonces,
 and reject unknown or rotated keys until an explicit re-pin. Receipt creation is evidence only:

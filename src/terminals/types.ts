@@ -150,6 +150,10 @@ export interface TerminalBackend {
    */
   titleShellPrefix?(displayName: string, inlineName?: string): string;
 
-  /** Map of session codename -> surviving pane, discovered after a conductor restart. */
+  /**
+   * Map of session codename to surviving marked pane, discovered across the backend.
+   * An empty map is authoritative absence. Throw when the backend-wide scan cannot
+   * complete, so callers never turn an observation failure into evidence of absence.
+   */
   rediscover(): Promise<Map<string, PaneRef>>;
 }

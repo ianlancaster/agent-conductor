@@ -480,10 +480,14 @@ export class TmuxBackend implements TerminalBackend {
     try {
       output = await tmux(['list-panes', '-a', '-F', `#{pane_id} #{${SESSION_OPTION}}`]);
     } catch (error) {
-      // No tmux server -> no surviving panes.
-      log().warn('tmux', `rediscover found no tmux server: ${String(error)}`);
-      this.writePaneMap({});
-      return result;
+      if (isNoServerError(error instanceof Error ? error.message : String(error))) {
+        // A missing tmux server authoritatively means there are no surviving panes.
+        log().warn('tmux', `rediscover found no tmux server: ${String(error)}`);
+        this.writePaneMap({});
+        return result;
+      }
+      log().warn('tmux', `rediscover failed: ${String(error)}`);
+      throw error;
     }
     const paneMap: Record<string, string> = {};
     for (const [session, paneId] of parseSessionPanes(output, this.fleetId)) {

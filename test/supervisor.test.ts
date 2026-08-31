@@ -839,6 +839,40 @@ describe('Supervisor construction', () => {
     expect(stopped.processActive).toBe(false);
   });
 
+  it('signs fresh process absence for a deregistered recovery target and fails closed when rediscovery fails', async () => {
+    writeConfig('admission:\n  recoveryReceipts:\n    enabled: true\n    allowOperator: true\n    ttlSeconds: 300\n', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    const terminal = new FakeTerminalBackend();
+    supervisor = new Supervisor(baseDir, { terminalBackend: terminal, includeConfiguredChannels: false, env: {} });
+
+    const signed = JSON.parse(
+      await supervisor.command('/attest removed-worker exclusive session-seat seat-removed fleet-owner absent-1'),
+    ) as {
+      receipt: {
+        payload: {
+          codename: string;
+          registered: boolean;
+          configPresent: boolean;
+          processActive: boolean | null;
+          processObservedAt: string | null;
+        };
+      };
+    };
+    expect(signed.receipt.payload).toMatchObject({
+      codename: 'removed-worker',
+      registered: false,
+      configPresent: false,
+      processActive: false,
+    });
+    expect(Date.parse(signed.receipt.payload.processObservedAt ?? '')).not.toBeNaN();
+
+    terminal.rediscoveryError = new Error('terminal marker census unavailable');
+    await expect(
+      supervisor.command('/attest unknown-worker exclusive session-seat seat-unknown fleet-owner absent-2'),
+    ).resolves.toBe('terminal marker census unavailable');
+  });
+
   it('repairs stale activity in both directions during an on-demand status reconciliation', async () => {
     const runtime = new FakeRuntime('claude-code');
     runtime.activityState = 'working';

@@ -354,6 +354,29 @@ describe('lifecycle edges', () => {
     expect(lifecycle.processObservation('alpha')?.active).toBe(true);
   });
 
+  it('proves an absent target stopped only after a successful backend-wide rediscovery', async () => {
+    const observation = await lifecycle.observeProcessForAttestation('removed-worker');
+    expect(observation.active).toBe(false);
+    expect(Date.parse(observation.observedAt)).not.toBeNaN();
+
+    backend.rediscoveryError = new Error('terminal marker census unavailable');
+    await expect(lifecycle.observeProcessForAttestation('another-worker')).rejects.toThrow(
+      'terminal marker census unavailable',
+    );
+    expect(lifecycle.processObservation('another-worker')).toBeUndefined();
+  });
+
+  it('does not report a discovered target absent when its process is inactive or unknown', async () => {
+    const pane = await backend.createPane('removed-worker', 'pane');
+    backend.survivors.set('removed-worker', pane);
+
+    await expect(lifecycle.observeProcessForAttestation('removed-worker')).resolves.toMatchObject({ active: null });
+
+    backend.unobservable.add(pane.id);
+
+    await expect(lifecycle.observeProcessForAttestation('removed-worker')).resolves.toMatchObject({ active: null });
+  });
+
   it('detects Ctrl-C as a stopped runtime and restarts it in the same pane', async () => {
     await lifecycle.start('alpha');
     const pane = lifecycle.getPane('alpha');

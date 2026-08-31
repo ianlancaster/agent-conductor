@@ -422,6 +422,7 @@ export class ITermBackend implements TerminalBackend {
       log().info('iterm', `Rediscovery: ${result.size} surviving session pane(s)`);
     } catch (err) {
       log().warn('iterm', `Rediscovery failed: ${String(err)}`);
+      throw err;
     }
     return result;
   }

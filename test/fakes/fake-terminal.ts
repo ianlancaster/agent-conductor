@@ -36,6 +36,7 @@ export class FakeTerminalBackend implements TerminalBackend {
    */
   readonly unobservable = new Set<string>();
   readonly snapshotCalls: { paneIds: string[]; includeSessionActivity: boolean }[] = [];
+  rediscoveryError: Error | undefined;
   private counter = 0;
 
   async init(): Promise<void> {
@@ -133,6 +134,7 @@ export class FakeTerminalBackend implements TerminalBackend {
   }
 
   async rediscover(): Promise<Map<string, PaneRef>> {
+    if (this.rediscoveryError !== undefined) throw this.rediscoveryError;
     return new Map(this.survivors);
   }
 

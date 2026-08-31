@@ -123,6 +123,35 @@ export class Lifecycle {
     return this.processObservations.get(session);
   }
 
+  /**
+   * Produce a fresh backend-wide process observation for a signed recovery receipt.
+   * A successful marker census that does not contain the codename proves that no
+   * managed pane, and therefore no managed runtime process, exists for that target.
+   * Backend observation failures throw and must never be signed as absence.
+   */
+  async observeProcessForAttestation(codename: string): Promise<ProcessObservation> {
+    const discovered = await this.deps.backend.rediscover();
+    const pane = discovered.get(codename);
+    if (pane === undefined) {
+      const observation = { active: false, observedAt: new Date().toISOString() };
+      this.processObservations.set(codename, observation);
+      return observation;
+    }
+
+    const snapshot = await observeLiveness(this.deps.backend, [pane], { includeSessionActivity: true });
+    const terminal = snapshot.get(pane.id);
+    const observedAt = terminal?.observedAt ?? new Date().toISOString();
+    const active =
+      terminal?.pane === 'missing'
+        ? false
+        : terminal?.pane === 'alive' && terminal.activity.state === 'observed' && terminal.activity.active
+          ? true
+          : null;
+    const observation = { active, observedAt };
+    this.processObservations.set(codename, observation);
+    return observation;
+  }
+
   /** Runtime supervising the current run, falling back to the session's configured default. */
   runtimeNameFor(codename: string): SessionConfig['runtime'] | undefined {
     return this.deps.states.get(codename)?.runtime ?? this.deps.sessions().get(codename)?.runtime;

@@ -826,9 +826,8 @@ export class Supervisor {
     if (!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(resourceKey)) throw new Error('resourceKey is invalid.');
     if (owner.length < 1 || owner.length > 256) throw new Error('owner is invalid.');
     if (idempotencyKey.length < 1 || idempotencyKey.length > 128) throw new Error('idempotencyKey is invalid.');
-    await this.lifecycle.reconcile(codename);
+    const process = await this.lifecycle.observeProcessForAttestation(codename);
     const state = this.states.get(codename);
-    const process = this.lifecycle.processObservation(codename);
     const configDir = sessionConfigDir(this.resolvedInstance);
     const now = new Date();
     const result = this.attestor.attest({
@@ -847,8 +846,8 @@ export class Supervisor {
       configPresent: existsSync(join(configDir, `${codename}.yaml`)) || existsSync(join(configDir, `${codename}.yml`)),
       running: state?.running === true,
       activity: state?.activity ?? 'stopped',
-      processActive: process?.active ?? null,
-      processObservedAt: process?.observedAt ?? null,
+      processActive: process.active,
+      processObservedAt: process.observedAt,
       issuer:
         actor.audience === 'operator'
           ? { type: 'operator', id: actor.id, role: 'operator' }
