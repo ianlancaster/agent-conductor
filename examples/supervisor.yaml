@@ -162,6 +162,27 @@ runtimes:
     # Managed launches trust hooks by default so they do not stop for review. This trusts EVERY hook Codex
     # discovers from the shared config, repository, and plugins; set false to require /hooks review instead.
     bypassHookTrust: true
+    # Optional strict runtime-neutral MCP bridge. Sources are resolved inside their declared
+    # repo/fleet scope and profiles are complete allowlists, not implicit inheritance.
+    # Project declarations can stay worker-only; privileged overlays remain fleet-owned.
+    # A session without toolProfile receives defaultProfile. Set an explicit profile with
+    # `/spawn em -r codex --tool-profile engineering-manager` or session YAML.
+    # declaredMcp:
+    #   defaultProfile: worker
+    #   profiles:
+    #     worker:
+    #       sources:
+    #         - scope: repo
+    #           file: .conductor/mcp.yaml
+    #           profile: worker
+    #     engineering-manager:
+    #       sources:
+    #         - scope: repo
+    #           file: .conductor/mcp.yaml
+    #           profile: worker
+    #         - scope: fleet
+    #           file: .conductor/config/mcp-engineering-manager.yaml
+    #           profile: engineering-manager
 
 channels:
   telegram:

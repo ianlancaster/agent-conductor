@@ -279,7 +279,7 @@ workflow tradeoffs, and source links.
 | Capability          | What it provides                                                                          | Learn more                                                                                           |
 | ------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | Session lifecycle   | Spawn, start, continue, stop, pause, resume, and tear down agents                         | [Lifecycle and status](docs/agent-guide.md#session-lifecycle-placement-models-and-status)            |
-| Claude Code + Codex | Runtime overrides, model and effort selection, isolated runtime configuration             | [Getting Started](docs/getting-started.md#step-1--one-hand-driven-session-the-shakedown)             |
+| Claude Code + Codex | Runtime overrides, model/effort selection, isolated config, and declared MCP profiles     | [Getting Started](docs/getting-started.md#step-1--one-hand-driven-session-the-shakedown)             |
 | Agent messaging     | Direct messages, broadcasts, operator messages, delivery receipts, and cancellation       | [Communication and receipts](docs/agent-guide.md#communication-receipts-and-operator-escalation)     |
 | Local federation    | Opt-in discovery and existing agent operations across same-machine fleets                 | [Local federation](guides/federation.md)                                                             |
 | Parallel workspaces | Empty sessions, registered Git templates, and linked Git worktrees                        | [Worktrees and templates](docs/agent-guide.md#worktrees-templates-and-full-fleet-workspace-patterns) |
@@ -483,6 +483,8 @@ Start here:
   can also read it lazily through `get_conductor_docs`.
 - [Complete supervisor example](examples/supervisor.yaml) — every setting and effective
   default.
+- [Declared MCP for Codex](guides/codex-declared-mcp.md) — strict project declarations,
+  fleet-owned profile composition, name-only credentials, readiness, and reconnect behavior.
 - [Engineering management runbook](runbooks/agent-conductor/engineering-management/README.md) — a tiered,
   end-to-end EM, worker, review, Sentinel, and PR Shepherd fleet pattern.
 - [Authoring and sharing runbooks](guides/runbooks.md) — bundle format, local discovery,

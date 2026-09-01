@@ -49,6 +49,7 @@
     "dev": "tsx src/index.ts",
     "cli": "tsx src/cli/index.ts",
     "test": "vitest run",
+    "test:codex-mcp-fixture": "tsx test/manual/codex-declared-mcp-fixture.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",

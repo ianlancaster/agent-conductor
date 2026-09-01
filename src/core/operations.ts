@@ -395,6 +395,12 @@ export class ConductorOperations {
             bypassPermissions: bypassPermissionsProperty,
             model: stringProperty(runtimeHintDescription('model', this.deps.modelHints)),
             effort: stringProperty(runtimeHintDescription('effort', this.deps.effortHints)),
+            toolProfile: {
+              ...stringProperty(
+                'Explicit declared-MCP composition identity (Codex runtime; omission uses its configured non-privileged default)',
+              ),
+              maxLength: 64,
+            },
             sessionId: stringProperty(
               'Runtime-native conversation/session ID to resume on the first launch instead of starting a fresh conversation',
             ),
@@ -434,6 +440,7 @@ export class ConductorOperations {
             bypassPermissions: typeof args.bypassPermissions === 'boolean' ? args.bypassPermissions : undefined,
             model: optionalString(args, 'model'),
             effort: optionalString(args, 'effort'),
+            toolProfile: optionalString(args, 'toolProfile'),
             resumeSessionId: optionalString(args, 'sessionId'),
             additionalDirs: optionalStringArray(args, 'additionalDirs'),
             systemPromptFile: optionalString(args, 'systemPromptFile'),

@@ -619,6 +619,37 @@ describe('spawn and teardown', () => {
     await router.route('/teardown codexer --delete');
   });
 
+  it('spawns a Codex session with an explicit persisted tool profile', async () => {
+    codexRuntime.capabilities.declaredMcp = true;
+
+    const reply = await router.route('/spawn em-tools --runtime codex --tool-profile engineering-manager');
+
+    expect(reply).toContain('Spawned em-tools');
+    expect(sessions.get('em-tools')?.toolProfile).toBe('engineering-manager');
+    expect(codexRuntime.launches.at(-1)?.session.toolProfile).toBe('engineering-manager');
+    expect(readFileSync(join(baseDir, 'config', 'sessions', 'em-tools.yaml'), 'utf8')).toContain(
+      'toolProfile: engineering-manager',
+    );
+    await router.route('/teardown em-tools --delete');
+  });
+
+  it('rejects an explicit tool profile for a runtime that cannot compose declared MCP', async () => {
+    const reply = await router.route('/spawn unsupported-profile --tool-profile engineering-manager');
+
+    expect(reply).toContain('does not support declared MCP toolProfile');
+    expect(sessions.has('unsupported-profile')).toBe(false);
+  });
+
+  it('rejects an invalid tool profile before creating its destination', async () => {
+    codexRuntime.capabilities.declaredMcp = true;
+
+    const reply = await router.route('/spawn invalid-profile --runtime codex --tool-profile ../manager');
+
+    expect(reply).toContain('Invalid toolProfile');
+    expect(sessions.has('invalid-profile')).toBe(false);
+    expect(existsSync(join(baseDir, 'spawned', 'invalid-profile'))).toBe(false);
+  });
+
   it('spawns directly into a targeted native conversation with either session ID flag', async () => {
     const long = await router.route('/spawn restored-long --runtime codex --session-id "provider session"');
     expect(long).toContain('Spawned restored-long');

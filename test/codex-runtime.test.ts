@@ -373,6 +373,143 @@ describe('prepare', () => {
     await expect(readFile(path.join(repoDir, '.gitignore'), 'utf8')).rejects.toThrow();
   });
 
+  it('refreshes declared MCP config and readiness while isolating shared/project servers and preserving Conductor', async () => {
+    const declarationDir = path.join(repoDir, '.conductor');
+    const projectCodexDir = path.join(repoDir, '.codex');
+    await mkdir(declarationDir, { recursive: true });
+    await mkdir(projectCodexDir, { recursive: true });
+    const declarationPath = path.join(declarationDir, 'mcp.yaml');
+    const renderDeclaration = (tool: string): string =>
+      [
+        'version: 1',
+        'id: fixture',
+        'servers:',
+        '  - id: disposable',
+        '    transport: stdio',
+        '    command: node',
+        '    args: [server.mjs]',
+        '    required: false',
+        '    envVars: [FIXTURE_TOKEN]',
+        `    tools: [${tool}]`,
+        'profiles:',
+        '  worker:',
+        '    servers: [disposable]',
+        '',
+      ].join('\n');
+    await writeFile(declarationPath, renderDeclaration('read_one'));
+    await writeFile(
+      path.join(sharedHome, 'config.toml'),
+      [
+        'model = "gpt-test"',
+        '[mcp_servers.slack]',
+        'url = "https://slack.example.test/mcp"',
+        '[mcp_servers.conductor]',
+        'url = "http://old.invalid/mcp"',
+        '',
+      ].join('\n'),
+    );
+    await writeFile(
+      path.join(projectCodexDir, 'config.toml'),
+      '[mcp_servers.project_slack]\nurl = "https://project-slack.example.test/mcp"\n',
+    );
+    const configured: CodexRuntimeSettings = {
+      ...SETTINGS,
+      declaredMcp: {
+        defaultProfile: 'worker',
+        profiles: {
+          worker: {
+            sources: [{ scope: 'repo', file: '.conductor/mcp.yaml', profile: 'worker' }],
+          },
+        },
+      },
+    };
+    const runtime = new CodexRuntime({
+      config: configured,
+      baseDir: workDir,
+      env: { PATH: process.env.PATH, FIXTURE_TOKEN: 'never-write-this-value' },
+    });
+    const declaredSession = makeSession({ repo: repoDir });
+    const identity = makeIdentity(configDir);
+    await runtime.prepare(declaredSession, identity);
+
+    const privateConfigPath = path.join(configDir, 'codex-home', 'config.toml');
+    const first = await readFile(privateConfigPath, 'utf8');
+    expect(first).toContain('model = "gpt-test"');
+    expect(first).toContain('[mcp_servers.disposable]');
+    expect(first).toContain('enabled_tools = ["read_one"]');
+    expect(first).not.toContain('[mcp_servers.slack]');
+    expect(first).not.toContain('[mcp_servers.conductor]');
+    expect(first).not.toContain('never-write-this-value');
+
+    const launch = runtime.buildLaunchCommand(declaredSession, identity, {});
+    expect(launch).toContain('declared-mcp-env.mjs');
+    expect(launch).toContain('mcp_servers.project_slack.enabled=false');
+    expect(launch).toContain('mcp_servers.conductor.url');
+    const readiness = JSON.parse(await readFile(path.join(configDir, 'codex-mcp-readiness.json'), 'utf8')) as {
+      schemaCacheDisposition: string;
+      callableParity: string;
+      servers: { id: string; declaredToolCount: number; schemaStatus: string }[];
+    };
+    expect(readiness).toMatchObject({
+      schemaCacheDisposition: 'fresh-process-on-launch',
+      callableParity: 'not-asserted',
+      servers: [
+        {
+          id: 'disposable',
+          declaredToolCount: 1,
+          schemaStatus: 'pending-runtime-initialization',
+        },
+      ],
+    });
+
+    await writeFile(declarationPath, renderDeclaration('read_two'));
+    await runtime.prepare(declaredSession, identity);
+    const refreshed = await readFile(privateConfigPath, 'utf8');
+    expect(refreshed).toContain('enabled_tools = ["read_two"]');
+    expect(refreshed).not.toContain('read_one');
+  });
+
+  it('writes name-only readiness before failing a required declared server prepare', async () => {
+    await mkdir(path.join(repoDir, '.conductor'), { recursive: true });
+    await writeFile(
+      path.join(repoDir, '.conductor', 'mcp.yaml'),
+      [
+        'version: 1',
+        'id: required-fixture',
+        'servers:',
+        '  - id: required-http',
+        '    transport: streamable-http',
+        '    url: https://example.test/mcp',
+        '    bearerTokenEnvVar: REQUIRED_FIXTURE_TOKEN',
+        '    required: true',
+        'profiles:',
+        '  worker:',
+        '    servers: [required-http]',
+        '',
+      ].join('\n'),
+    );
+    const runtime = new CodexRuntime({
+      config: {
+        ...SETTINGS,
+        declaredMcp: {
+          defaultProfile: 'worker',
+          profiles: {
+            worker: { sources: [{ scope: 'repo', file: '.conductor/mcp.yaml', profile: 'worker' }] },
+          },
+        },
+      },
+      baseDir: workDir,
+      env: { PATH: process.env.PATH },
+    });
+    await expect(runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir))).rejects.toThrow(
+      'Required declared MCP servers are not ready: required-http',
+    );
+    const readiness = await readFile(path.join(configDir, 'codex-mcp-readiness.json'), 'utf8');
+    expect(readiness).toContain('REQUIRED_FIXTURE_TOKEN');
+    expect(readiness).not.toContain('never-write-this-value');
+    await expect(readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8')).rejects.toThrow();
+  });
+
   it('restores the prepared session snapshot after compact and refreshes it only on prepare', async () => {
     const protocolPath = path.join(workDir, 'protocol.md');
     const promptPath = path.join(workDir, 'session.md');

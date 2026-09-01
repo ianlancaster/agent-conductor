@@ -32,6 +32,12 @@ const stringHints = (defaults: readonly string[]) => z.array(z.string().trim().m
 /** Codenames become URL path segments, filenames, and tmux targets — keep them boring. */
 export const CODENAME_PATTERN = /^[a-z0-9][a-z0-9-_]*$/i;
 export const FEDERATION_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** Stable IDs used by declared MCP profiles, manifests, and server names. */
+export const DECLARED_MCP_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+export function isValidDeclaredMcpId(value: string): boolean {
+  return DECLARED_MCP_ID_PATTERN.test(value);
+}
 
 export function isValidCodename(value: string): boolean {
   return CODENAME_PATTERN.test(value);
@@ -72,6 +78,55 @@ export const configuredIntegrationSchema = z
     options: z.record(z.unknown()).default({}),
   })
   .strict();
+
+const declaredMcpSourceSchema = z
+  .object({
+    /** Whether the declaration path is resolved inside the session repository or the fleet root. */
+    scope: z.enum(['repo', 'fleet']),
+    /** Relative declaration path. Resolution may not escape its declared scope, including through symlinks. */
+    file: z.string().trim().min(1).max(1024),
+    /** Complete manifest profile selected from this declaration. */
+    profile: z.string().regex(DECLARED_MCP_ID_PATTERN),
+  })
+  .strict();
+
+const declaredMcpCompositionSchema = z
+  .object({
+    sources: z.array(declaredMcpSourceSchema).min(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const seen = new Set<string>();
+    for (const [index, source] of value.sources.entries()) {
+      const identity = `${source.scope}\0${source.file}\0${source.profile}`;
+      if (seen.has(identity)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['sources', index],
+          message: 'duplicate declared MCP source',
+        });
+      }
+      seen.add(identity);
+    }
+  });
+
+const declaredMcpRuntimeSchema = z
+  .object({
+    /** Non-privileged composition selected when a session has no explicit toolProfile. */
+    defaultProfile: z.string().regex(DECLARED_MCP_ID_PATTERN),
+    /** Fleet-owned named compositions of repo- and fleet-scoped runtime-neutral declarations. */
+    profiles: z.record(z.string().regex(DECLARED_MCP_ID_PATTERN), declaredMcpCompositionSchema),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!(value.defaultProfile in value.profiles)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['defaultProfile'],
+        message: 'must name an entry in profiles',
+      });
+    }
+  });
 
 export const sessionClaimAdmissionSchema = z
   .object({
@@ -132,6 +187,8 @@ export const sessionConfigSchema = z
     model: z.string().optional(),
     /** Per-session effort default. Runtime/model support is intentionally not validated here. */
     effort: z.string().min(1).optional(),
+    /** Explicit fleet-owned declared MCP composition; omission uses the Codex runtime's non-privileged default. */
+    toolProfile: z.string().regex(DECLARED_MCP_ID_PATTERN).optional(),
     additionalDirs: z.array(z.string()).default([]),
     /**
      * Per-session durable role instructions, appended after the conductor protocol and
@@ -399,6 +456,8 @@ export const supervisorConfigSchema = z
              * review when shared-config, repository, or plugin hook sources are not all trusted.
              */
             bypassHookTrust: z.boolean().default(true),
+            /** Strict runtime-neutral MCP declarations bridged into isolated per-session Codex configuration. */
+            declaredMcp: declaredMcpRuntimeSchema.optional(),
           })
           .strict()
           .default({}),

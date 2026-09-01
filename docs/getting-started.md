@@ -409,6 +409,14 @@ primitive, not an approval or execution queue.
   suppress the local restoration output. Repository instruction files still load through Codex normally; Conductor does
   not edit the repository or its `.gitignore`. The session also receives a mechanically scoped
   Conductor MCP endpoint and lifecycle notify hook.
+- **Declared Codex MCP profiles**: optionally configure `runtimes.codex.declaredMcp` to compose
+  strict runtime-neutral project and fleet declarations into each session's private Codex config.
+  Sessions without `toolProfile` receive the least-privileged `defaultProfile`; an explicit
+  management surface can be selected at spawn with `--tool-profile engineering-manager`. Project
+  declarations may remain worker-only, while privileged additions stay in a separately owned fleet
+  declaration. Conductor reads declaration changes on each start/continue, reports name-only
+  prerequisites in `<configDir>/codex-mcp-readiness.json`, and requires a fresh process before any
+  schema can be treated as callable. See [Declared MCP tools for Codex](../guides/codex-declared-mcp.md).
 
 ---
 
@@ -450,6 +458,8 @@ snapshot. Piped or redirected status output is automatically one-shot.
 | Start/continue rejects `continuityStateFile`            | Fix the path, permissions, UTF-8, regular-file type, final symlink, or 5 KiB limit                                 |
 | Session reports continuity restoration degraded         | Repair the configured state file; no stale state is reused, and static instructions still apply                    |
 | Codex shows `Hooks need review` or loses instructions   | The fleet opted out with `bypassHookTrust: false`; use `/hooks`, or vet all sources and restore the `true` default |
+| A declared Codex MCP server is blocked or degraded      | Inspect the session's name-only `codex-mcp-readiness.json`, repair the named prerequisite, then start/continue     |
+| A changed MCP declaration is not visible in Codex       | The running connection has its prior schema; start/continue to prepare config and create a fresh process           |
 | macOS dialog on first start                             | iTerm2 automation permission — approve it (System Settings → Privacy → Automation)                                 |
 | Auto session stalls but nothing happens                 | No sentinel configured/running, or the sentinel lacks `systemPromptFile`                                           |
 | Session replies in its pane but not on a remote channel | Expected — it must use `send_to_operator`; check the protocol prompt is being injected                             |

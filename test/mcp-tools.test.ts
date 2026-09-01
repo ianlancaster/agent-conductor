@@ -305,6 +305,7 @@ describe('surface contract', () => {
     expect(spawnProperties).toHaveProperty('branch');
     expect(spawnProperties).toHaveProperty('bypassPermissions');
     expect(spawnProperties).toHaveProperty('effort');
+    expect(spawnProperties.toolProfile).toMatchObject({ type: 'string', minLength: 1, maxLength: 64 });
     expect(spawnProperties.sessionId).toMatchObject({ type: 'string', minLength: 1 });
     expect(spawnProperties).toHaveProperty('additionalDirs');
     expect(spawnProperties).toHaveProperty('systemPromptFile');

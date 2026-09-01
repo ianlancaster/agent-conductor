@@ -378,7 +378,8 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       details: [
         `    -r/--runtime ${runtimeChoices} · -m/--model <model> · -e/--effort <level> · -s/--session-id <id>`,
         '    -d/--path <dir> · -t/--template <name> · -w/--worktree <repo> · -b/--branch <name>',
-        '    -a/--add-dir <dir> (repeatable) · --system-prompt <file> (durable static instructions; max 5 KiB)',
+        '    -a/--add-dir <dir> (repeatable) · --tool-profile <id> (declared MCP composition)',
+        '    --system-prompt <file> (durable static instructions; max 5 KiB)',
         '    --continuity-state <file> (fresh startup/resume/compact state; max 5 KiB)',
         '    --admission-claim <id> (external host-resource claim when fleet admission is enabled)',
         '    --bypass-permissions · --require-permissions',
@@ -420,6 +421,7 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     '-m': 'model',
     '--effort': 'effort',
     '-e': 'effort',
+    '--tool-profile': 'toolProfile',
     '--session-id': 'sessionId',
     '-s': 'sessionId',
     '--worktree': 'worktreeRepo',
@@ -454,7 +456,7 @@ function parseSpawn(args: string[]): Record<string, unknown> {
     const value = parsed.rest[index + 1];
     if (flag === undefined || value === undefined || flags[flag] === undefined) {
       usage(
-        '/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-s session-id] [-t template] [-w repo] [-b branch] [-a dir] [--system-prompt file] [--continuity-state file] [--admission-claim id] [placement]',
+        '/spawn <name> [-r runtime] [-d path] [-m model] [-e effort] [-s session-id] [-t template] [-w repo] [-b branch] [-a dir] [--tool-profile id] [--system-prompt file] [--continuity-state file] [--admission-claim id] [placement]',
       );
     }
     output[flags[flag]] = value;

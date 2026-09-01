@@ -71,6 +71,13 @@ export type { ClaudeCodeRuntimeOptions } from './runtimes/claude-code/index.js';
 /** Experimental during beta: runtime harness details may evolve from provider testing. */
 export { CodexRuntime } from './runtimes/codex/index.js';
 export type { CodexRuntimeOptions, CodexRuntimeSettings } from './runtimes/codex/index.js';
+export { declaredMcpManifestSchema, parseDeclaredMcpManifest } from './runtimes/codex/declared-mcp.js';
+export type {
+  DeclaredMcpManifest,
+  DeclaredMcpReadiness,
+  DeclaredMcpReadinessServer,
+  DeclaredMcpServer,
+} from './runtimes/codex/declared-mcp.js';
 export type {
   ChannelAction,
   ChannelAdapter,

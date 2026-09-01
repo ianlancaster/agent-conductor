@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:f
 import { isAbsolute, join, resolve } from 'node:path';
 import yaml from 'js-yaml';
 import { log } from '../logger.js';
-import { isValidCodename, type SessionConfig, type SpawnTemplate } from '../config/schema.js';
+import { isValidCodename, isValidDeclaredMcpId, type SessionConfig, type SpawnTemplate } from '../config/schema.js';
 import type { SessionRuntime, IdentityEndpoints } from '../runtimes/types.js';
 import type { Store } from '../store/index.js';
 import type { TerminalBackend, TerminalLivenessObservation } from '../terminals/types.js';
@@ -45,6 +45,8 @@ export interface SpawnOptions {
   model?: string;
   /** Persisted per-session effort default for the new session. */
   effort?: string;
+  /** Explicit declared-MCP composition identity for runtimes that support it. */
+  toolProfile?: string;
   /** Persisted runtime access grants for paths outside the new workspace. */
   additionalDirs?: string[];
   /** Persisted role/policy instructions appended after the Conductor protocol. */
@@ -313,6 +315,9 @@ export class Lifecycle {
     if (session.continuityStateFile !== undefined && runtime.capabilities.continuityState !== true) {
       return `Runtime '${runtimeName}' does not support continuityStateFile across startup, resume, and compaction.`;
     }
+    if (session.toolProfile !== undefined && runtime.capabilities.declaredMcp !== true) {
+      return `Runtime '${runtimeName}' does not support declared MCP toolProfile.`;
+    }
 
     // Model and effort pins for the configured runtime are not portable across
     // agent CLIs. An override uses the selected runtime's own defaults unless
@@ -434,6 +439,9 @@ export class Lifecycle {
     if (opts.runtime !== undefined && !this.deps.runtimes.has(opts.runtime)) {
       return `Unknown runtime '${opts.runtime}'. Available: ${[...this.deps.runtimes.keys()].sort().join(', ')}.`;
     }
+    if (opts.toolProfile !== undefined && !isValidDeclaredMcpId(opts.toolProfile)) {
+      return `Invalid toolProfile '${opts.toolProfile}': use 1-64 alphanumeric, dash, or underscore characters and begin with an alphanumeric character.`;
+    }
     const runtimeName = opts.runtime ?? this.deps.config.defaultRuntime;
     const runtime = this.deps.runtimes.get(runtimeName);
     if (opts.resumeSessionId !== undefined && runtime?.capabilities.targetedResume !== true) {
@@ -441,6 +449,9 @@ export class Lifecycle {
     }
     if (opts.continuityStateFile !== undefined && runtime?.capabilities.continuityState !== true) {
       return `Runtime '${runtimeName}' does not support continuityStateFile across startup, resume, and compaction.`;
+    }
+    if (opts.toolProfile !== undefined && runtime?.capabilities.declaredMcp !== true) {
+      return `Runtime '${runtimeName}' does not support declared MCP toolProfile.`;
     }
     if (opts.template !== undefined && opts.worktreeRepo !== undefined) {
       return 'Template and worktree sources are mutually exclusive.';
@@ -492,6 +503,7 @@ export class Lifecycle {
     };
     if (opts.model !== undefined) config.model = opts.model;
     if (opts.effort !== undefined) config.effort = opts.effort;
+    if (opts.toolProfile !== undefined) config.toolProfile = opts.toolProfile;
     if (opts.additionalDirs !== undefined) config.additionalDirs = opts.additionalDirs;
     if (opts.systemPromptFile !== undefined) config.systemPromptFile = opts.systemPromptFile;
     if (opts.continuityStateFile !== undefined) config.continuityStateFile = opts.continuityStateFile;

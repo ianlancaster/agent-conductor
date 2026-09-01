@@ -1,0 +1,18 @@
+# Example fleet-owned overlay. Store it below the fleet root, such as
+# .conductor/config/mcp-engineering-manager.yaml, not in an ordinary project manifest.
+version: 1
+id: management-tools
+servers:
+  - id: management-api
+    transport: streamable-http
+    url: https://management.example.com/mcp
+    required: false
+    bearerTokenEnvVar: MANAGEMENT_API_TOKEN
+    envHttpHeaders:
+      X-Workspace: MANAGEMENT_WORKSPACE
+      Authorization:
+        env: MANAGEMENT_BASIC_AUTH
+        prefix: 'Basic '
+profiles:
+  engineering-manager:
+    servers: [management-api]

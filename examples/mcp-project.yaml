@@ -1,0 +1,30 @@
+# Runtime-neutral project MCP declaration. A fleet composition selects one complete profile;
+# Agent Conductor translates it into each managed Codex session's private config.toml.
+version: 1
+id: example-project
+servers:
+  - id: project-api
+    transport: streamable-http
+    url: https://tools.example.com/mcp
+    auth: oauth
+    required: true
+    tools: [search]
+    startupTimeoutSec: 10
+    toolTimeoutSec: 120
+
+  - id: project-local
+    transport: stdio
+    command: node
+    args: [scripts/project-mcp.mjs]
+    cwd: .
+    required: false
+    envMap:
+      SERVICE_TOKEN: PROJECT_SERVICE_TOKEN
+    literalEnv:
+      SERVICE_REGION: us-central1
+
+profiles:
+  # Profiles are complete, non-inheriting allowlists. Keep privileged additions out of
+  # an ordinary worker's project declaration; compose them from a fleet-owned source.
+  worker:
+    servers: [project-api, project-local]

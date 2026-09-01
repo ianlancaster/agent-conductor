@@ -32,6 +32,7 @@ import {
   shellQuote,
   tomlString,
 } from './config-gen.js';
+import { prepareDeclaredMcp, stripMcpServerConfig, type PreparedDeclaredMcp } from './declared-mcp.js';
 
 export type CodexRuntimeSettings = SupervisorConfig['runtimes']['codex'];
 
@@ -44,6 +45,10 @@ export interface CodexRuntimeOptions {
   protocolPath?: string;
   /** Fleet data/sessions directory, used to inspect this runtime's isolated rollout. */
   sessionDataDir?: string;
+  /** Resolved fleet environment used only for presence checks; credential values are never generated. */
+  env?: NodeJS.ProcessEnv;
+  /** Fleet-local dotenv file read by a private name-allowlisting launch wrapper, when configured. */
+  environmentFile?: string;
 }
 
 const PROTOCOL_PLACEHOLDER =
@@ -54,6 +59,7 @@ const LIFECYCLE_HOOK_SCRIPT_NAME = 'lifecycle-hook.mjs';
 const PROTOCOL_REMINDER_SCRIPT_NAME = 'protocol-reminder.mjs';
 const AGENTS_OVERRIDE_NAME = 'AGENTS.override.md';
 const HOOKS_NAME = 'hooks.json';
+const DECLARED_MCP_READINESS_NAME = 'codex-mcp-readiness.json';
 const AGENTS_NAME = 'AGENTS.md';
 const GIT_TIMEOUT_MS = 5_000;
 
@@ -310,6 +316,7 @@ export class CodexRuntime implements SessionRuntime {
     authoritativeTurnCompletion: true,
     contextProbe: false,
     continuityState: true,
+    declaredMcp: true,
     styledCapture: true,
   };
 
@@ -317,18 +324,72 @@ export class CodexRuntime implements SessionRuntime {
   private readonly baseDir: string;
   private readonly protocolPath: string | undefined;
   private readonly sessionDataDir: string | undefined;
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly environmentFile: string | undefined;
   private readonly rolloutInputCache = new Map<string, CachedRolloutInputEvidence>();
+  private readonly declaredMcpLaunch = new Map<
+    string,
+    Pick<PreparedDeclaredMcp, 'launchEnvironmentWrapper' | 'disabledProjectServerIds'>
+  >();
 
   constructor(opts: CodexRuntimeOptions) {
     this.settings = opts.config;
     this.baseDir = opts.baseDir;
     this.protocolPath = opts.protocolPath;
     this.sessionDataDir = opts.sessionDataDir;
+    this.env = opts.env ?? process.env;
+    this.environmentFile = opts.environmentFile;
   }
 
   async prepare(session: SessionConfig, identity: IdentityEndpoints): Promise<void> {
     const repo = this.resolvePath(session.repo);
     await mkdir(identity.configDir, { recursive: true });
+    await this.cleanupDeclaredMcpGenerations(identity.configDir);
+    this.declaredMcpLaunch.delete(session.codename);
+    let declaredMcp: PreparedDeclaredMcp | undefined;
+    if (this.settings.declaredMcp !== undefined) {
+      declaredMcp = await prepareDeclaredMcp({
+        settings: this.settings.declaredMcp,
+        session: { ...session, repo },
+        fleetBase: this.baseDir,
+        configDir: identity.configDir,
+        env: this.env,
+        environmentFile: this.environmentFile,
+        projectCodexConfig: await this.readIfExists(path.join(repo, '.codex', 'config.toml')),
+      });
+      for (const generated of declaredMcp.generatedFiles) {
+        await writeAtomicFile(generated.path, generated.content, generated.mode);
+      }
+      await writeAtomicFile(
+        path.join(identity.configDir, DECLARED_MCP_READINESS_NAME),
+        `${JSON.stringify(declaredMcp.readiness, null, 2)}\n`,
+        0o600,
+      );
+      for (const server of declaredMcp.readiness.servers) {
+        if (server.schemaStatus !== 'degraded-missing-prerequisites') continue;
+        const details = [
+          ...(server.missingCredentialNames.length === 0
+            ? []
+            : [`missing credentials: ${server.missingCredentialNames.join(', ')}`]),
+          ...(server.missingPrerequisites.length === 0
+            ? []
+            : [`missing prerequisites: ${server.missingPrerequisites.join(', ')}`]),
+        ];
+        log().warn(
+          'codex',
+          `${session.codename}: optional MCP server '${server.id}' is disabled (${details.join('; ')})`,
+        );
+      }
+      if (declaredMcp.fatalError !== undefined) throw new Error(declaredMcp.fatalError);
+      this.declaredMcpLaunch.set(session.codename, {
+        launchEnvironmentWrapper: declaredMcp.launchEnvironmentWrapper,
+        disabledProjectServerIds: declaredMcp.disabledProjectServerIds,
+      });
+    } else if (session.toolProfile !== undefined) {
+      throw new Error(
+        `Session '${session.codename}' selects toolProfile but runtimes.codex.declaredMcp is not configured`,
+      );
+    }
     const protocolText = await this.readProtocolText();
     const continuityState =
       session.continuityStateFile === undefined
@@ -370,7 +431,14 @@ export class CodexRuntime implements SessionRuntime {
     }
     const minimumDocBytes =
       Buffer.byteLength(rendered.content, 'utf8') + REPOSITORY_DOC_BUDGET_BYTES + PROJECT_DOC_HEADROOM_BYTES;
-    await this.prepareCodexHome(identity, repo, sharedHome, minimumDocBytes);
+    await this.prepareCodexHome(
+      identity,
+      repo,
+      sharedHome,
+      minimumDocBytes,
+      declaredMcp?.configToml ?? '',
+      declaredMcp !== undefined,
+    );
     await writeAtomicFile(this.notifyScriptPath(identity), renderNotifyScript(identity.eventsUrl), 0o700);
     const homeOverridePath = path.join(this.codexHomePath(identity), AGENTS_OVERRIDE_NAME);
     await writeAtomicFile(homeOverridePath, rendered.content, 0o600);
@@ -421,6 +489,7 @@ export class CodexRuntime implements SessionRuntime {
       bypassPermissions: opts.bypassPermissions === true,
       bareUi: this.settings.bareUi,
       effort,
+      disabledMcpServerNames: this.declaredMcpLaunch.get(session.codename)?.disabledProjectServerIds,
     });
     for (const override of overrides) parts.push('-c', shellQuote(override));
 
@@ -435,7 +504,12 @@ export class CodexRuntime implements SessionRuntime {
     if (opts.prompt !== undefined) parts.push('--', shellQuote(opts.prompt));
 
     const codexHome = this.codexHomePath(identity);
-    return `cd ${shellQuote(repo)} && export CODEX_HOME=${shellQuote(codexHome)} && ${parts.join(' ')}`;
+    const environmentWrapper = this.declaredMcpLaunch.get(session.codename)?.launchEnvironmentWrapper;
+    const invocation =
+      environmentWrapper === undefined
+        ? parts.join(' ')
+        : `${shellQuote(process.execPath)} ${shellQuote(environmentWrapper)} ${parts.join(' ')}`;
+    return `cd ${shellQuote(repo)} && export CODEX_HOME=${shellQuote(codexHome)} && ${invocation}`;
   }
 
   /**
@@ -685,6 +759,8 @@ export class CodexRuntime implements SessionRuntime {
     repo: string,
     sharedHome: string,
     minimumDocBytes: number,
+    declaredMcpConfig: string,
+    isolateMcpServers: boolean,
   ): Promise<void> {
     const home = this.codexHomePath(identity);
     await mkdir(home, { recursive: true });
@@ -706,7 +782,8 @@ export class CodexRuntime implements SessionRuntime {
     // symlink would mutate the operator's real config. Regenerated on every
     // launch, so shared-config edits are picked up on the next (re)start.
     const sharedConfig = (await this.readIfExists(path.join(sharedHome, 'config.toml'))) ?? '';
-    const protectedConfig = ensureProjectDocMaxBytes(sharedConfig, minimumDocBytes);
+    const inheritedConfig = isolateMcpServers ? stripMcpServerConfig(sharedConfig) : sharedConfig;
+    const protectedConfig = ensureProjectDocMaxBytes(inheritedConfig, minimumDocBytes);
     const trustHeader = `[projects.${tomlString(repo)}]`;
     const trustEntry = protectedConfig.includes(trustHeader)
       ? ''
@@ -714,7 +791,21 @@ export class CodexRuntime implements SessionRuntime {
     const configDest = path.join(home, 'config.toml');
     // May be a symlink from an earlier conductor version — remove, never write through it.
     await rm(configDest, { force: true });
-    await writeFile(configDest, `${protectedConfig}${trustEntry}`);
+    await writeFile(configDest, `${protectedConfig}${trustEntry}${declaredMcpConfig}`);
+  }
+
+  private async cleanupDeclaredMcpGenerations(configDir: string): Promise<void> {
+    let entries: string[];
+    try {
+      entries = await readdir(configDir);
+    } catch {
+      return;
+    }
+    await Promise.all(
+      entries
+        .filter((entry) => entry === DECLARED_MCP_READINESS_NAME || entry.startsWith('declared-mcp-'))
+        .map((entry) => rm(path.join(configDir, entry), { force: true })),
+    );
   }
 
   private async readActiveGlobalGuidance(sharedHome: string): Promise<string | null> {

@@ -196,6 +196,8 @@ export class Supervisor {
         baseDir,
         protocolPath,
         sessionDataDir: join(dataDir, 'sessions'),
+        env: this.env,
+        environmentFile: fleetPaths.environmentFile,
       }),
     );
     const injectedRuntimeNames = new Set<string>();

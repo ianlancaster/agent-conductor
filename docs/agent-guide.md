@@ -397,6 +397,13 @@ independent 5 KiB UTF-8 limit. Static instructions are snapshotted on start/cont
 state is reread at startup, resume, and compaction. These primitives support shared
 records and role policy without writing generated instructions into disposable worktrees.
 
+Managed Codex sessions may also select an explicit `toolProfile`. The operator spawn flag is
+`--tool-profile`; MCP callers use `spawn_session.toolProfile`. When omitted, the fleet's declared
+MCP `defaultProfile` applies. This identity is configuration, not a privilege heuristic: Conductor
+never derives it from a codename or path, and runtimes without declared-MCP support reject it. See
+[`guides/codex-declared-mcp.md`](../guides/codex-declared-mcp.md) for the strict manifest and
+fleet-composition contract.
+
 Use:
 
 - `list_sessions` for a fleet overview.
@@ -507,6 +514,11 @@ Worktree practices:
 - Current Codex sessions keep their generated override inside the isolated session home and do not
   dirty the worktree. Fleets upgraded from an earlier release may retain an obsolete
   `AGENTS.override.md` entry in `.gitignore`; remove that ignore line manually when convenient.
+- When `runtimes.codex.declaredMcp` is enabled, each prepare translates only the selected complete
+  profile into the private session config. Shared MCP tables are removed from that private copy,
+  unselected project-local MCP IDs are disabled at launch, and the reserved Conductor MCP entry is
+  preserved. Project and shared configuration are not mutated. Plain `.mcp.json` is not a Codex
+  configuration source.
 - Claude Code receives the prepared protocol and optional session layer through its supported
   launch system-prompt files. Claude Code's compaction contract retains those system-prompt layers;
   Conductor does not add a second static reinjection hook that would duplicate them. A configured
@@ -1211,6 +1223,23 @@ those as durable source documents and use the bounded ledger for current objecti
 approvals or holds, blockers, evidence pointers, and the next action. A source-path configuration
 change activates only after start/continue; edits at the already-prepared path activate at the next
 matching lifecycle event.
+
+### Declared Codex MCP is blocked, degraded, or stale
+
+Read `<session configDir>/codex-mcp-readiness.json`. It reports server/declaration names,
+transport, required/configured/enabled state, declared tool count, schema status, missing
+credential names, and bounded missing-prerequisite classes; it never contains credential values.
+A required missing command, directory, or named credential rejects start/continue after writing the
+artifact. An optional missing prerequisite remains visible as degraded and the server is emitted
+disabled.
+
+The file deliberately says `schemaCacheDisposition: fresh-process-on-launch` and
+`callableParity: not-asserted`. Preparation proves configured state, not callable tools. After a
+manifest or composition change, start/continue the Codex session to create a fresh process and MCP
+connection; do not interpret edited config text as refreshed schema. OAuth may still require a
+Codex login, and a required server that cannot initialize will fail through Codex's required-server
+startup behavior. Full schema, isolation, and troubleshooting details are in
+[`guides/codex-declared-mcp.md`](../guides/codex-declared-mcp.md).
 
 ### The wrong fleet responds
 

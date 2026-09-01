@@ -68,6 +68,7 @@ describe('loadSupervisorConfig', () => {
     expect(config.runtimes.codex.availableModels).toEqual(DEFAULT_CODEX_MODELS);
     expect(config.runtimes.codex.availableEfforts).toEqual(DEFAULT_CODEX_EFFORTS);
     expect(config.runtimes.codex.defaultEffort).toBeUndefined();
+    expect(config.runtimes.codex.declaredMcp).toBeUndefined();
     expect(config.spawn.markerFile).toBe('.agent-marker');
     expect(config.spawn.templates).toEqual(DEFAULT_SPAWN_TEMPLATES);
     expect(config.spawn.templateCloneTimeoutSeconds).toBe(120);
@@ -144,6 +145,45 @@ describe('loadSupervisorConfig', () => {
   it('preserves an explicit opt-out from the Codex hook-trust default', () => {
     writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'runtimes:\n  codex:\n    bypassHookTrust: false\n');
     expect(loadSupervisorConfig(baseDir).runtimes.codex.bypassHookTrust).toBe(false);
+  });
+
+  it('loads strict declared MCP compositions and validates their default profile', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      [
+        'runtimes:',
+        '  codex:',
+        '    declaredMcp:',
+        '      defaultProfile: worker',
+        '      profiles:',
+        '        worker:',
+        '          sources:',
+        '            - scope: repo',
+        '              file: .conductor/mcp.yaml',
+        '              profile: worker',
+        '',
+      ].join('\n'),
+    );
+    expect(loadSupervisorConfig(baseDir).runtimes.codex.declaredMcp).toEqual({
+      defaultProfile: 'worker',
+      profiles: {
+        worker: {
+          sources: [{ scope: 'repo', file: '.conductor/mcp.yaml', profile: 'worker' }],
+        },
+      },
+    });
+
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'runtimes:\n  codex:\n    declaredMcp:\n      defaultProfile: missing\n      profiles:\n        worker:\n          sources:\n            - scope: repo\n              file: .conductor/mcp.yaml\n              profile: worker\n',
+    );
+    expect(() => loadSupervisorConfig(baseDir)).toThrow('must name an entry in profiles');
+
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'runtimes:\n  codex:\n    declaredMcp:\n      defaultProfile: worker\n      profiles:\n        worker:\n          sources:\n            - scope: repo\n              file: .conductor/mcp.yaml\n              profile: worker\n              secret: no\n',
+    );
+    expect(() => loadSupervisorConfig(baseDir)).toThrow('Unrecognized key');
   });
 
   it('resolves a strict root-level Shepherd config beside supervisor.yaml', () => {
@@ -432,6 +472,16 @@ describe('loadSessionConfigs', () => {
     expect(beta?.runtime).toBe('codex');
     expect(beta?.schedules[0]?.cron).toBe('0 9 * * *');
     expect(beta?.schedules[0]?.paused).toBe(false);
+  });
+
+  it('parses an explicit declared MCP tool profile identity', () => {
+    writeSession(
+      'manager',
+      'codename: manager\nrepo: /tmp/manager\nruntime: codex\ntoolProfile: engineering-manager\n',
+    );
+    expect(loadSessionConfigs(baseDir).get('manager')?.toolProfile).toBe('engineering-manager');
+    writeSession('invalid', 'codename: invalid\nrepo: /tmp/invalid\ntoolProfile: "../manager"\n');
+    expect(() => loadSessionConfigs(baseDir)).toThrow(/toolProfile/);
   });
 
   it('parses a per-session permission override without forcing one onto every session', () => {

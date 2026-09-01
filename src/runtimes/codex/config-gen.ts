@@ -50,6 +50,8 @@ export interface CodexOverrideOptions {
   effort?: string;
   /** Strip UI chrome and non-essential traffic (update check, analytics, tips, animations, title writes). */
   bareUi: boolean;
+  /** Project-local MCP IDs disabled so they cannot bypass a selected declared-MCP composition. */
+  disabledMcpServerNames?: readonly string[];
 }
 
 /** Escape a string for use as a TOML basic (double-quoted) string. */
@@ -87,6 +89,10 @@ export function buildConfigOverrides(opts: CodexOverrideOptions): string[] {
     // trust from the config FILE. prepareCodexHome() appends the trust entry
     // to the per-session config.toml copy instead.
   ];
+  for (const server of [...(opts.disabledMcpServerNames ?? [])].sort()) {
+    if (server === MCP_SERVER_NAME) continue;
+    overrides.push(`mcp_servers.${server}.enabled=false`);
+  }
   if (opts.effort !== undefined) overrides.push(`model_reasoning_effort=${tomlString(opts.effort)}`);
   if (opts.bypassPermissions) {
     overrides.push(
