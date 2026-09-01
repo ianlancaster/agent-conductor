@@ -100,6 +100,24 @@ export function bracketedPastePayload(text: string): string {
 }
 
 /**
+ * Operations for one text delivery: optional unchanged-contents guard, the
+ * temp-file content write, a settle delay, then the submit keystroke.
+ *
+ * The submit is exactly ONE carriage return — `newline false` is load-bearing.
+ * iTerm's `write text` appends a second CR by default, and that byte outlives
+ * the submit: a shell consumes only the first CR before launching the runtime,
+ * so the runtime inherits the second. Codex reads it inside its startup
+ * paste-burst window and turns it into a blank newline sitting in its
+ * composer on every start and resume.
+ */
+export function buildDeliveryOperations(contentPath: string, bracketed: boolean, guard = ''): string {
+  return `${guard}
+         write contents of file "${escapeAppleScript(contentPath)}" newline false
+         delay ${bracketed ? 0.1 : 0.2}
+         write text (ASCII character 13) newline false`;
+}
+
+/**
  * True when the LAST non-empty line of the capture looks like a shell prompt.
  * Scanning the whole capture is wrong: scrollback almost always contains an
  * old prompt, so a whole-capture check reports "ready" while the shell is

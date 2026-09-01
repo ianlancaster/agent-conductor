@@ -15,6 +15,7 @@ import {
   buildCreateTabScript,
   buildCreateWindowScript,
   buildInSessionScript,
+  buildDeliveryOperations,
   buildUnchangedContentsGuard,
   buildListSessionIdsScript,
   buildLivenessSnapshotScript,
@@ -110,6 +111,36 @@ describe('bracketedPastePayload', () => {
   it('adds exactly one inert trailing newline inside the paste markers', () => {
     expect(bracketedPastePayload('hello')).toBe(`${ESC}[200~hello\n${ESC}[201~`);
     expect(bracketedPastePayload('hello\n')).toBe(`${ESC}[200~hello\n${ESC}[201~`);
+  });
+});
+
+describe('buildDeliveryOperations', () => {
+  it('submits with exactly one carriage return and no auto-appended newline', () => {
+    const ops = buildDeliveryOperations('/tmp/msg.txt', true);
+    // Regression: without `newline false`, iTerm's `write text` appends a
+    // second CR that outlives the submit and lands in the launched runtime —
+    // Codex renders it as a blank newline in its composer on start/resume.
+    expect(ops).toContain('write text (ASCII character 13) newline false');
+    expect(ops.match(/ASCII character 13/g)).toHaveLength(1);
+    expect(ops).not.toMatch(/write text \(ASCII character 13\)(?! newline false)/);
+  });
+
+  it('writes the content file without appending a newline', () => {
+    expect(buildDeliveryOperations('/tmp/msg "x".txt', true)).toContain(
+      'write contents of file "/tmp/msg \\"x\\".txt" newline false',
+    );
+  });
+
+  it('settles briefly after a bracketed paste and longer after raw keystrokes', () => {
+    expect(buildDeliveryOperations('/tmp/msg.txt', true)).toContain('delay 0.1');
+    expect(buildDeliveryOperations('/tmp/msg.txt', false)).toContain('delay 0.2');
+  });
+
+  it('runs the unchanged-contents guard before writing anything', () => {
+    const guard = buildUnchangedContentsGuard('/tmp/snapshot', 'CHANGED');
+    const ops = buildDeliveryOperations('/tmp/msg.txt', true, guard);
+    expect(ops.indexOf(guard)).toBe(0);
+    expect(ops.indexOf(guard)).toBeLessThan(ops.indexOf('write contents of file'));
   });
 });
 

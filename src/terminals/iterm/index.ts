@@ -23,6 +23,7 @@ import {
   buildFindTtyWindowScript,
   buildNameTtySessionScript,
   buildInSessionScript,
+  buildDeliveryOperations,
   buildListSessionIdsScript,
   buildLivenessSnapshotScript,
   buildRediscoverScript,
@@ -606,13 +607,7 @@ export class ITermBackend implements TerminalBackend {
     const expectedPath = expectedContents !== undefined ? await this.writeTempContent(expectedContents) : undefined;
     try {
       const guard = expectedPath === undefined ? '' : buildUnchangedContentsGuard(expectedPath, PANE_CHANGED_RESULT);
-      const result = await this.inSession(
-        sessionId,
-        `${guard}
-         write contents of file "${escapeAppleScript(path)}" newline false
-         delay ${bracketed ? 0.1 : 0.2}
-         write text (ASCII character 13)`,
-      );
+      const result = await this.inSession(sessionId, buildDeliveryOperations(path, bracketed, guard));
       return result.trim() !== PANE_CHANGED_RESULT;
     } finally {
       await unlink(path).catch(() => undefined);
