@@ -380,6 +380,40 @@ describe('declared MCP manifest validation', () => {
 });
 
 describe('declared MCP preparation', () => {
+  it('forwards declared session env names into the launch allowlist without reading values', async () => {
+    await writeManifest(path.join(repoDir, '.conductor', 'mcp.yaml'), {
+      ...projectManifest,
+      sessionEnvNames: ['WORKFLOW_API_KEY', 'WORKFLOW_BASE_URL'],
+    });
+    await writeManifest(path.join(fleetDir, '.conductor', 'config', 'mcp-engineering-manager.yaml'), overlayManifest);
+    const prepared = await prepareDeclaredMcp({
+      settings: settings(),
+      session: session(),
+      fleetBase: fleetDir,
+      configDir,
+      env: {
+        PATH: process.env.PATH,
+        PROJECT_SERVICE_TOKEN: 'present',
+        OBSERVABILITY_AUTH: 'present',
+        OBSERVABILITY_WORKSPACE: 'present',
+        WORKFLOW_API_KEY: 'workflow-credential-value',
+      },
+    });
+    expect(prepared.launchEnvironmentWrapper).toBeDefined();
+    const wrapper = prepared.generatedFiles.find((file) => file.path === prepared.launchEnvironmentWrapper);
+    expect(wrapper?.content).toContain('"WORKFLOW_API_KEY"');
+    expect(wrapper?.content).toContain('"WORKFLOW_BASE_URL"');
+    expect(wrapper?.content).not.toContain('workflow-credential-value');
+    expect(prepared.configToml).not.toContain('WORKFLOW_API_KEY');
+  });
+
+  it('rejects malformed and duplicate session env names', () => {
+    expect(() => parseDeclaredMcpManifest({ ...projectManifest, sessionEnvNames: ['not a name'] })).toThrow();
+    expect(() => parseDeclaredMcpManifest({ ...projectManifest, sessionEnvNames: ['DUP_NAME', 'DUP_NAME'] })).toThrow(
+      'duplicate environment-variable name',
+    );
+  });
+
   it('translates HTTP and stdio servers deterministically without serializing credential values', async () => {
     await writeManifest(path.join(repoDir, '.conductor', 'mcp.yaml'), projectManifest);
     await writeManifest(path.join(fleetDir, '.conductor', 'config', 'mcp-engineering-manager.yaml'), overlayManifest);

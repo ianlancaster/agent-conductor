@@ -228,6 +228,8 @@ export const declaredMcpManifestSchema = z
     version: z.literal(1),
     id: idSchema,
     servers: z.array(z.union([stdioServerSchema, httpServerSchema])).max(MAX_SERVERS),
+    /** Name-only session-environment allowlist for declared non-MCP workflows (skills); values are never read here. */
+    sessionEnvNames: uniqueNames('environment-variable name').pipe(z.array(envNameSchema).max(32)).default([]),
     profiles: z.record(
       idSchema,
       z.object({ servers: uniqueNames('server reference').pipe(z.array(idSchema)) }).strict(),
@@ -663,12 +665,18 @@ async function selectServers(
   settings: DeclaredMcpSettings,
   session: SessionConfig,
   fleetBase: string,
-): Promise<{ toolProfile: string; servers: SelectedServer[]; preservedSharedServerIds: string[] }> {
+): Promise<{
+  toolProfile: string;
+  servers: SelectedServer[];
+  preservedSharedServerIds: string[];
+  sessionEnvNames: string[];
+}> {
   const toolProfile = session.toolProfile ?? settings.defaultProfile;
   const composition = settings.profiles[toolProfile];
   if (composition === undefined) throw new Error(`Unknown declared MCP tool profile '${toolProfile}'`);
   const preservedSharedServerIds = [...(composition.preserveSharedServers ?? [])].sort();
   const selected: SelectedServer[] = [];
+  const sessionEnvNames = new Set<string>();
   const ids = new Set<string>();
   for (const source of composition.sources) {
     const originBase = source.scope === 'repo' ? session.repo : fleetBase;
@@ -682,6 +690,7 @@ async function selectServers(
     if (profile === undefined) {
       throw new Error(`Declared MCP manifest '${manifest.id}' has no profile '${source.profile}'`);
     }
+    for (const name of manifest.sessionEnvNames) sessionEnvNames.add(name);
     const byId = new Map(manifest.servers.map((server) => [server.id, server]));
     for (const serverId of profile.servers) {
       if (ids.has(serverId)) throw new Error(`Duplicate declared MCP server ID '${serverId}' across selected sources`);
@@ -690,7 +699,7 @@ async function selectServers(
     }
   }
   selected.sort((left, right) => left.server.id.localeCompare(right.server.id));
-  return { toolProfile, servers: selected, preservedSharedServerIds };
+  return { toolProfile, servers: selected, preservedSharedServerIds, sessionEnvNames: [...sessionEnvNames].sort() };
 }
 
 export async function prepareDeclaredMcp(options: {
@@ -703,7 +712,7 @@ export async function prepareDeclaredMcp(options: {
   projectCodexConfig?: string | null;
 }): Promise<PreparedDeclaredMcp> {
   const env = options.env ?? process.env;
-  const { toolProfile, servers, preservedSharedServerIds } = await selectServers(
+  const { toolProfile, servers, preservedSharedServerIds, sessionEnvNames } = await selectServers(
     options.settings,
     options.session,
     options.fleetBase,
@@ -803,7 +812,7 @@ export async function prepareDeclaredMcp(options: {
 
   let launchEnvironmentWrapper: string | undefined;
   const allowlistedEnvironmentNames = [
-    ...new Set(servers.flatMap(({ server }) => requiredEnvironmentNames(server))),
+    ...new Set([...servers.flatMap(({ server }) => requiredEnvironmentNames(server)), ...sessionEnvNames]),
   ].sort();
   if (allowlistedEnvironmentNames.length > 0 || derivedEnvironment.length > 0) {
     launchEnvironmentWrapper = resolve(options.configDir, 'declared-mcp-env.mjs');
