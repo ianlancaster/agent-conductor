@@ -10,6 +10,7 @@ const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HTTP_HEADER_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const AUTH_PREFIX_PATTERN = /^[A-Za-z][A-Za-z0-9._~-]* $/;
 const SAFE_LITERAL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+const HEADER_LITERAL_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9 ,._:/-]*[A-Za-z0-9._:/-])?$/;
 const SENSITIVE_NAME_PATTERN = /(?:auth|bearer|cookie|credential|key|pass|secret|token)/iu;
 const INLINE_CREDENTIAL_PATTERN = /(?:authorization|bearer|password|passwd|secret|token|api[-_]?key)\s*(?:=|:)/iu;
 const CREDENTIAL_ARGUMENT_PATTERN =
@@ -129,10 +130,52 @@ const httpServerSchema = z
     auth: z.literal('oauth').optional(),
     bearerTokenEnvVar: envNameSchema.optional(),
     envHttpHeaders: z.record(z.string().max(128).regex(HTTP_HEADER_PATTERN), envHeaderValueSchema).default({}),
+    /** Bounded non-secret literal headers only; credential-like names and values are rejected below. */
+    httpHeaders: z.record(z.string().max(128).regex(HTTP_HEADER_PATTERN), z.string().max(256)).default({}),
   })
   .strict()
   .superRefine((value, context) => {
     rejectOversizedRecord(value.envHttpHeaders, context, 'envHttpHeaders');
+    rejectOversizedRecord(value.httpHeaders, context, 'httpHeaders');
+    const seenHeaderNames = new Set<string>();
+    for (const name of Object.keys(value.envHttpHeaders)) {
+      if (seenHeaderNames.has(name.toLowerCase())) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['envHttpHeaders', name],
+          message: 'case-colliding header name',
+        });
+      }
+      seenHeaderNames.add(name.toLowerCase());
+    }
+    for (const [name, literal] of Object.entries(value.httpHeaders)) {
+      if (seenHeaderNames.has(name.toLowerCase())) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['httpHeaders', name],
+          message: 'collides with another declared header name',
+        });
+      }
+      seenHeaderNames.add(name.toLowerCase());
+      if (SENSITIVE_NAME_PATTERN.test(name)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['httpHeaders', name],
+          message: 'credential-like header names must use a name-only environment reference',
+        });
+      }
+      if (
+        !HEADER_LITERAL_PATTERN.test(literal) ||
+        INLINE_CREDENTIAL_PATTERN.test(literal) ||
+        UNSUPPORTED_INTERPOLATION_PATTERN.test(literal)
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['httpHeaders', name],
+          message: 'must be a bounded non-secret literal without interpolation',
+        });
+      }
+    }
     let parsed: URL | undefined;
     try {
       parsed = new URL(value.url);
@@ -257,6 +300,8 @@ export interface DeclaredMcpReadiness {
   toolProfile: string;
   schemaCacheDisposition: 'fresh-process-on-launch';
   callableParity: 'not-asserted';
+  /** Fleet-approved shared connector IDs that survive isolation for this profile; names only. */
+  preservedSharedServerIds: string[];
   servers: DeclaredMcpReadinessServer[];
 }
 
@@ -272,6 +317,8 @@ export interface PreparedDeclaredMcp {
   generatedFiles: GeneratedDeclaredMcpFile[];
   launchEnvironmentWrapper?: string;
   disabledProjectServerIds: string[];
+  /** Fleet-approved shared connector IDs exempt from stripping and launch-disable overrides. */
+  preservedSharedServerIds: string[];
   fatalError?: string;
 }
 
@@ -468,6 +515,9 @@ function renderServerConfig(
     if (server.bearerTokenEnvVar !== undefined) {
       lines.push(`bearer_token_env_var = ${tomlString(server.bearerTokenEnvVar)}`);
     }
+    if (Object.keys(server.httpHeaders).length > 0) {
+      lines.push(`http_headers = ${renderInlineTable(server.httpHeaders)}`);
+    }
     const headers: Record<string, string> = {};
     for (const [headerIndex, [header, value]] of Object.entries(server.envHttpHeaders)
       .sort(([left], [right]) => left.localeCompare(right))
@@ -542,21 +592,40 @@ function tomlHeaderPath(line: string): string[] | null {
   return parseTomlKeyPath(trimmed.slice(open, end));
 }
 
-/** Remove only MCP-server tables from a private copy of shared Codex config. */
-export function stripMcpServerConfig(source: string): string {
+/**
+ * Remove MCP-server tables from a private copy of shared Codex config.
+ * Explicitly preserved server IDs keep their tables untouched; their contents
+ * are copied verbatim, never parsed for values.
+ */
+export function stripMcpServerConfig(source: string, preserveServerIds: readonly string[] = []): string {
+  const preserve = new Set(preserveServerIds);
   const output: string[] = [];
   let skip = false;
+  let inBareServersTable = false;
   let sawHeader = false;
   for (const line of source.split(/(?<=\n)/u)) {
     const header = tomlHeaderPath(line);
     if (header !== null) {
       sawHeader = true;
-      skip = header[0] === 'mcp_servers';
+      inBareServersTable = header[0] === 'mcp_servers' && header.length === 1;
+      if (inBareServersTable) {
+        // Dotted keys under a bare [mcp_servers] table are filtered per line below.
+        skip = true;
+        if (preserve.size > 0) output.push(line);
+        continue;
+      }
+      skip = header[0] === 'mcp_servers' && !(header[1] !== undefined && preserve.has(header[1]));
       if (!skip) output.push(line);
       continue;
     }
     if (!sawHeader && /^\s*mcp_servers(?:\s*=|\s*\.)/u.test(line)) {
       throw new Error('Shared Codex config uses unsupported root-level mcp_servers assignment syntax');
+    }
+    if (inBareServersTable) {
+      const assignment = /^\s*([^#=]+?)\s*=/u.exec(line);
+      const key = assignment === null ? null : parseTomlKeyPath(assignment[1] ?? '');
+      if (key?.[0] !== undefined && preserve.has(key[0])) output.push(line);
+      continue;
     }
     if (!skip) output.push(line);
   }
@@ -594,10 +663,11 @@ async function selectServers(
   settings: DeclaredMcpSettings,
   session: SessionConfig,
   fleetBase: string,
-): Promise<{ toolProfile: string; servers: SelectedServer[] }> {
+): Promise<{ toolProfile: string; servers: SelectedServer[]; preservedSharedServerIds: string[] }> {
   const toolProfile = session.toolProfile ?? settings.defaultProfile;
   const composition = settings.profiles[toolProfile];
   if (composition === undefined) throw new Error(`Unknown declared MCP tool profile '${toolProfile}'`);
+  const preservedSharedServerIds = [...(composition.preserveSharedServers ?? [])].sort();
   const selected: SelectedServer[] = [];
   const ids = new Set<string>();
   for (const source of composition.sources) {
@@ -620,7 +690,7 @@ async function selectServers(
     }
   }
   selected.sort((left, right) => left.server.id.localeCompare(right.server.id));
-  return { toolProfile, servers: selected };
+  return { toolProfile, servers: selected, preservedSharedServerIds };
 }
 
 export async function prepareDeclaredMcp(options: {
@@ -633,8 +703,23 @@ export async function prepareDeclaredMcp(options: {
   projectCodexConfig?: string | null;
 }): Promise<PreparedDeclaredMcp> {
   const env = options.env ?? process.env;
-  const { toolProfile, servers } = await selectServers(options.settings, options.session, options.fleetBase);
+  const { toolProfile, servers, preservedSharedServerIds } = await selectServers(
+    options.settings,
+    options.session,
+    options.fleetBase,
+  );
   const selectedIds = new Set(servers.map(({ server }) => server.id));
+  const reservedPreserved = preservedSharedServerIds.filter((id) => RESERVED_SERVER_IDS.has(id));
+  if (reservedPreserved.length > 0) {
+    throw new Error(`Preserved shared MCP server IDs are reserved by Agent Conductor: ${reservedPreserved.join(', ')}`);
+  }
+  const preservedConflicts = preservedSharedServerIds.filter((id) => selectedIds.has(id));
+  if (preservedConflicts.length > 0) {
+    throw new Error(
+      `Preserved shared MCP server IDs conflict with declared MCP server IDs: ${preservedConflicts.join(', ')}`,
+    );
+  }
+  const preservedSet = new Set(preservedSharedServerIds);
   const projectServerIds = discoverMcpServerIds(options.projectCodexConfig ?? '');
   const conflicts = projectServerIds.filter((id) => selectedIds.has(id));
   if (conflicts.length > 0) {
@@ -767,6 +852,7 @@ child.once('exit', (code, signal) => {
     toolProfile,
     schemaCacheDisposition: 'fresh-process-on-launch',
     callableParity: 'not-asserted',
+    preservedSharedServerIds,
     servers: readinessServers,
   };
   return {
@@ -777,7 +863,8 @@ child.once('exit', (code, signal) => {
     readiness,
     generatedFiles,
     launchEnvironmentWrapper,
-    disabledProjectServerIds: projectServerIds,
+    disabledProjectServerIds: projectServerIds.filter((id) => !preservedSet.has(id)),
+    preservedSharedServerIds,
     ...(fatal.length === 0
       ? {}
       : {

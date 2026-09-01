@@ -517,8 +517,9 @@ Worktree practices:
 - When `runtimes.codex.declaredMcp` is enabled, each prepare translates only the selected complete
   profile into the private session config. Shared MCP tables are removed from that private copy,
   unselected project-local MCP IDs are disabled at launch, and the reserved Conductor MCP entry is
-  preserved. Project and shared configuration are not mutated. Plain `.mcp.json` is not a Codex
-  configuration source.
+  preserved. Shared connector IDs the fleet names in the profile's `preserveSharedServers` list
+  keep their operator-owned configuration; everything else stays isolated. Project and shared
+  configuration are not mutated. Plain `.mcp.json` is not a Codex configuration source.
 - Claude Code receives the prepared protocol and optional session layer through its supported
   launch system-prompt files. Claude Code's compaction contract retains those system-prompt layers;
   Conductor does not add a second static reinjection hook that would duplicate them. A configured

@@ -93,6 +93,12 @@ const declaredMcpSourceSchema = z
 const declaredMcpCompositionSchema = z
   .object({
     sources: z.array(declaredMcpSourceSchema).min(1),
+    /**
+     * Shared-connector MCP IDs explicitly approved to survive this profile's isolation.
+     * Matching entries in the operator's shared or project Codex config keep their existing
+     * configuration and credentials; Conductor never reads or copies their values.
+     */
+    preserveSharedServers: z.array(z.string().regex(DECLARED_MCP_ID_PATTERN)).max(32).default([]),
   })
   .strict()
   .superRefine((value, context) => {
@@ -107,6 +113,17 @@ const declaredMcpCompositionSchema = z
         });
       }
       seen.add(identity);
+    }
+    const preserved = new Set<string>();
+    for (const [index, serverId] of value.preserveSharedServers.entries()) {
+      if (preserved.has(serverId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['preserveSharedServers', index],
+          message: 'duplicate preserved shared server ID',
+        });
+      }
+      preserved.add(serverId);
     }
   });
 

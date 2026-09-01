@@ -8,7 +8,8 @@ import { assertHookContextFits } from '../instructions.js';
  * auth stays wherever the operator set it up.
  *
  * Verified against the Codex CLI docs (mid-2026):
- * - MCP streamable HTTP servers: `mcp_servers.<id>.url` / `tool_timeout_sec`
+ * - MCP streamable HTTP servers: `mcp_servers.<id>.url` / `tool_timeout_sec`,
+ *   plus literal `http_headers` and name-only `env_http_headers` maps
  *   (https://developers.openai.com/codex/config-reference, /codex/mcp)
  * - notify: array<string> command; Codex appends the event JSON as the final
  *   argv argument (https://developers.openai.com/codex/config-reference)

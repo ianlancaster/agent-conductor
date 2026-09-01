@@ -169,9 +169,22 @@ describe('loadSupervisorConfig', () => {
       profiles: {
         worker: {
           sources: [{ scope: 'repo', file: '.conductor/mcp.yaml', profile: 'worker' }],
+          preserveSharedServers: [],
         },
       },
     });
+
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'runtimes:\n  codex:\n    declaredMcp:\n      defaultProfile: worker\n      profiles:\n        worker:\n          sources:\n            - scope: repo\n              file: .conductor/mcp.yaml\n              profile: worker\n          preserveSharedServers: [linear, linear]\n',
+    );
+    expect(() => loadSupervisorConfig(baseDir)).toThrow('duplicate preserved shared server ID');
+
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'runtimes:\n  codex:\n    declaredMcp:\n      defaultProfile: worker\n      profiles:\n        worker:\n          sources:\n            - scope: repo\n              file: .conductor/mcp.yaml\n              profile: worker\n          preserveSharedServers: [Bad Name]\n',
+    );
+    expect(() => loadSupervisorConfig(baseDir)).toThrow();
 
     writeFileSync(
       join(baseDir, 'config', 'supervisor.yaml'),

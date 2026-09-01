@@ -438,6 +438,7 @@ export class CodexRuntime implements SessionRuntime {
       minimumDocBytes,
       declaredMcp?.configToml ?? '',
       declaredMcp !== undefined,
+      declaredMcp?.preservedSharedServerIds ?? [],
     );
     await writeAtomicFile(this.notifyScriptPath(identity), renderNotifyScript(identity.eventsUrl), 0o700);
     const homeOverridePath = path.join(this.codexHomePath(identity), AGENTS_OVERRIDE_NAME);
@@ -761,6 +762,7 @@ export class CodexRuntime implements SessionRuntime {
     minimumDocBytes: number,
     declaredMcpConfig: string,
     isolateMcpServers: boolean,
+    preservedSharedServerIds: readonly string[],
   ): Promise<void> {
     const home = this.codexHomePath(identity);
     await mkdir(home, { recursive: true });
@@ -782,7 +784,9 @@ export class CodexRuntime implements SessionRuntime {
     // symlink would mutate the operator's real config. Regenerated on every
     // launch, so shared-config edits are picked up on the next (re)start.
     const sharedConfig = (await this.readIfExists(path.join(sharedHome, 'config.toml'))) ?? '';
-    const inheritedConfig = isolateMcpServers ? stripMcpServerConfig(sharedConfig) : sharedConfig;
+    const inheritedConfig = isolateMcpServers
+      ? stripMcpServerConfig(sharedConfig, preservedSharedServerIds)
+      : sharedConfig;
     const protectedConfig = ensureProjectDocMaxBytes(inheritedConfig, minimumDocBytes);
     const trustHeader = `[projects.${tomlString(repo)}]`;
     const trustEntry = protectedConfig.includes(trustHeader)

@@ -469,6 +469,97 @@ describe('prepare', () => {
     expect(refreshed).not.toContain('read_one');
   });
 
+  it('preserves fleet-approved shared connectors across prepare and continue while isolating everything else', async () => {
+    const declarationDir = path.join(repoDir, '.conductor');
+    const projectCodexDir = path.join(repoDir, '.codex');
+    await mkdir(declarationDir, { recursive: true });
+    await mkdir(projectCodexDir, { recursive: true });
+    await writeFile(
+      path.join(declarationDir, 'mcp.yaml'),
+      [
+        'version: 1',
+        'id: catalog',
+        'servers:',
+        '  - id: datadog-mcp',
+        '    transport: streamable-http',
+        '    url: https://mcp.us5.datadoghq.com/api/unstable/mcp-server/mcp',
+        '    auth: oauth',
+        '    httpHeaders:',
+        "      X-Datadog-MCP-Toolsets: 'core,apm'",
+        '    required: false',
+        'profiles:',
+        '  worker:',
+        '    servers: [datadog-mcp]',
+        '',
+      ].join('\n'),
+    );
+    await writeFile(
+      path.join(sharedHome, 'config.toml'),
+      [
+        'model = "gpt-test"',
+        '[mcp_servers.linear]',
+        'url = "https://mcp.linear.app/mcp"',
+        '[mcp_servers.slack]',
+        'url = "https://slack.example.test/mcp"',
+        '',
+      ].join('\n'),
+    );
+    await writeFile(
+      path.join(projectCodexDir, 'config.toml'),
+      [
+        '[mcp_servers.linear]',
+        'url = "https://mcp.linear.app/mcp"',
+        '[mcp_servers.project_slack]',
+        'url = "https://project-slack.example.test/mcp"',
+        '',
+      ].join('\n'),
+    );
+    const runtime = new CodexRuntime({
+      config: {
+        ...SETTINGS,
+        declaredMcp: {
+          defaultProfile: 'worker',
+          profiles: {
+            worker: {
+              sources: [{ scope: 'repo', file: '.conductor/mcp.yaml', profile: 'worker' }],
+              preserveSharedServers: ['linear'],
+            },
+          },
+        },
+      },
+      baseDir: workDir,
+      env: { PATH: process.env.PATH },
+    });
+    const declaredSession = makeSession({ repo: repoDir });
+    const identity = makeIdentity(configDir);
+    await runtime.prepare(declaredSession, identity);
+
+    const privateConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
+    expect(privateConfig).toContain('[mcp_servers.linear]');
+    expect(privateConfig).not.toContain('[mcp_servers.slack]');
+    expect(privateConfig).toContain('[mcp_servers.datadog-mcp]');
+    expect(privateConfig).toContain('http_headers = { "X-Datadog-MCP-Toolsets" = "core,apm" }');
+
+    const launch = runtime.buildLaunchCommand(declaredSession, identity, {});
+    expect(launch).toContain('mcp_servers.project_slack.enabled=false');
+    expect(launch).not.toContain('mcp_servers.linear.enabled=false');
+    expect(launch).toContain('mcp_servers.conductor.url');
+
+    const continued = runtime.buildLaunchCommand(declaredSession, identity, { continueSession: true });
+    expect(continued).toContain('resume');
+    expect(continued).toContain('mcp_servers.project_slack.enabled=false');
+    expect(continued).not.toContain('mcp_servers.linear.enabled=false');
+
+    const readiness = JSON.parse(await readFile(path.join(configDir, 'codex-mcp-readiness.json'), 'utf8')) as {
+      preservedSharedServerIds: string[];
+      servers: { id: string; configured: boolean; enabled: boolean }[];
+    };
+    expect(readiness.preservedSharedServerIds).toEqual(['linear']);
+    expect(readiness.servers).toEqual([
+      expect.objectContaining({ id: 'datadog-mcp', configured: true, enabled: true }),
+    ]);
+  });
+
   it('writes name-only readiness before failing a required declared server prepare', async () => {
     await mkdir(path.join(repoDir, '.conductor'), { recursive: true });
     await writeFile(

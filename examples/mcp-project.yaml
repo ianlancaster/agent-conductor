@@ -11,6 +11,10 @@ servers:
     tools: [search]
     startupTimeoutSec: 10
     toolTimeoutSec: 120
+    # Literal headers carry bounded non-secret request selectors only. Credential-like
+    # header names are rejected; forward credentials by name via envHttpHeaders instead.
+    httpHeaders:
+      X-Example-Toolsets: 'core,search'
 
   - id: project-local
     transport: stdio

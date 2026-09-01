@@ -43,11 +43,23 @@ runtimes:
             - scope: fleet
               file: .conductor/config/mcp-engineering-manager.yaml
               profile: engineering-manager
+          preserveSharedServers: [linear]
 ```
 
 `scope: repo` resolves inside the session repository. `scope: fleet` resolves inside the fleet
 root. `file` must be relative and cannot escape that scope lexically or through a symlink. Duplicate
 sources, unknown profiles, and duplicate selected server IDs fail validation or preparation.
+
+`preserveSharedServers` is an optional per-profile allowlist of shared-connector MCP IDs — servers
+the operator already configured in shared or project Codex config, typically with their own stored
+OAuth credentials — that survive this profile's isolation. A preserved ID keeps its existing
+`mcp_servers` table in the session's private copy of shared config and is exempted from the
+project-server disable overrides; Conductor copies the table verbatim and never reads, parses, or
+forwards its credential values. Every other shared or project server remains removed or disabled.
+Only fleet configuration can grant preservation — a declaration or project cannot approve its own
+IDs — and it is per profile, so a connector approved for a management profile does not leak into
+ordinary workers. `conductor` is reserved (always preserved through its own launch overrides), and
+a preserved ID may not collide with a selected declared server ID.
 
 The default must be the least-privileged ordinary profile. A project may define only `worker` and
 contain no privileged server at all. The fleet can then compose an explicit management profile
@@ -120,6 +132,20 @@ For `transport: streamable-http`, use an HTTP(S) `url` and at most one authoriza
 - `envHttpHeaders` maps a header to an environment name. A value may also be
   `{ env: NAME, prefix: 'Basic ' }`; Conductor derives that header in the private launch process.
 
+Non-secret literal headers may be declared separately:
+
+- `httpHeaders` maps a header name to a bounded literal value, such as
+  `X-Datadog-MCP-Toolsets: 'core,apm'`, translated to Codex `http_headers`. It is for
+  explicitly non-secret request selectors only and fails closed on anything credential-like:
+  header names containing `auth`, `bearer`, `cookie`, `credential`, `key`, `pass`, `secret`, or
+  `token` in any case (covering `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`,
+  `X-Api-Key`, and equivalents) are rejected — use a name-only `envHttpHeaders` reference instead.
+  Values are limited to 256 characters of a printable selector charset, rejecting control
+  characters, quotes, interpolation, `name=value` credential shapes, and leading/trailing spaces.
+  Header names may not duplicate or case-collide with each other or with `envHttpHeaders` names.
+  Literal header values appear only in the session's private Codex config, never in readiness
+  output.
+
 URLs with embedded credentials or credential-like query parameters are rejected. Arguments,
 paths, URLs, and literals reject shell/template interpolation. Declarations contain environment
 variable names only, never credential values. The selected names may come from the inherited
@@ -158,9 +184,10 @@ not defined in the fleet composition fails preparation.
 
 When this feature is enabled, Conductor builds the selected MCP surface deterministically. It
 removes shared `mcp_servers` tables only from the session's private copy of shared Codex config and
-disables unselected project-local MCP IDs with launch overrides. A selected declaration ID that
-conflicts with a project-local ID fails preparation. The Conductor MCP server remains enabled and
-is never selectable from a declaration.
+disables unselected project-local MCP IDs with launch overrides, except IDs the selected profile
+names in `preserveSharedServers`. A selected declaration ID that conflicts with a project-local ID
+fails preparation. The Conductor MCP server remains enabled and is never selectable from a
+declaration.
 
 ## Read readiness truthfully
 
@@ -178,6 +205,7 @@ Its v1 shape is:
   "toolProfile": "worker",
   "schemaCacheDisposition": "fresh-process-on-launch",
   "callableParity": "not-asserted",
+  "preservedSharedServerIds": [],
   "servers": [
     {
       "id": "project-api",
@@ -205,6 +233,8 @@ fresh Codex process must initialize the server schema. It is never proof that a 
 so `callableParity` remains `not-asserted`. A runtime-aware readiness consumer must compare it with
 a separate live, freshly initialized callable-name snapshot.
 
+`preservedSharedServerIds` lists the profile's approved shared connectors by name only; their
+configuration and credentials stay wherever the operator set them up and are never inspected.
 `missingCredentialNames` contains names only. `missingPrerequisites` contains bounded classes such
 as `command` or `cwd`. No credential value, preview, or hash is written or logged. Required failures
 still write this readiness artifact before start is rejected; optional failures remain visible with
@@ -241,3 +271,6 @@ text alone cannot establish callable parity. OAuth may still require an interact
 If unrelated shared or project MCP tools disappear, confirm that `declaredMcp` is intentionally
 enabled. Deterministic isolation replaces the inherited MCP surface for that managed session; add
 the required server to a selected declaration profile instead of relying on ambient configuration.
+For a shared connector whose configuration and credentials should stay operator-owned (such as a
+stored-OAuth service), add its ID to the selected profile's `preserveSharedServers` list instead of
+redeclaring it.
