@@ -158,6 +158,29 @@ describe('session claim admission', () => {
     expect(() => loadSessionConfigs(fleets, { admission: gate() })).toThrow(/YAML hash/);
   });
 
+  it('permits staged YAML claims while enforcement is disabled but still refuses spawn claims', () => {
+    const config = writeSession('worker-1', 'claim-one');
+    writeClaim('claim-one', 'worker-1', config);
+    const disabled = new SessionClaimAdmission(
+      { enabled: false, claimDirectory: null, owner: null },
+      fleets,
+      'fleet-one-id',
+    );
+
+    // Staged claims are inert metadata while enforcement is off: registration must
+    // not be blocked before a fleet activates admission.
+    expect([...loadSessionConfigs(fleets, { admission: disabled }).keys()]).toEqual(['worker-1']);
+
+    // Spawn is the admission moment for a new seat, so supplying a claim to a
+    // disabled gate must still fail closed rather than silently granting a seat.
+    expect(() => disabled.assertSpawn('worker-1', 'claim-one', config)).toThrow(/is disabled/);
+    expect(disabled.assertSpawn('worker-1', undefined, config)).toBeUndefined();
+
+    // Enabling enforcement applies full validation to the same staged YAML.
+    expect([...loadSessionConfigs(fleets, { admission: gate() }).keys()]).toEqual(['worker-1']);
+    expect(() => loadSessionConfigs(fleets, { admission: gate('fleet-two') })).toThrow(/another owner/);
+  });
+
   it('refuses spawn without a leased token-bound claim or with a reservation claim', () => {
     const config = join(fleets, 'config', 'sessions', 'worker-1.yaml');
     expect(() => gate().assertSpawn('worker-1', undefined, config)).toThrow(/required/);

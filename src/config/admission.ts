@@ -128,9 +128,10 @@ export class SessionClaimAdmission implements SessionAdmissionGate {
 
   assertConfiguredSession(configFile: string, session: SessionConfig): void {
     if (!this.enabled) {
-      if (session.admissionClaim !== undefined || session.admissionResource !== undefined) {
-        throw new Error('Session admission claim is configured, but supervisor admission.sessionClaims is disabled.');
-      }
+      // Staged claims are inert while enforcement is disabled: a disabled gate grants
+      // nothing, so accepting the fields cannot widen access. This lets a coordinator
+      // allocate a seat and register its YAML before the fleet activates admission;
+      // enabling enforcement applies the full validation below to the same YAML.
       return;
     }
     const configStat = lstatSync(configFile);
