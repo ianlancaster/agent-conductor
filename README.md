@@ -102,18 +102,18 @@ For the full walkthrough, including what the generated files mean, continue with
 The operator console uses a small command language. Run `/help` for the complete,
 version-matched reference; these are the commands used most often:
 
-| Task                                      | Command                                                                  |
-| ----------------------------------------- | ------------------------------------------------------------------------ |
-| Inspect the fleet or one session          | `/status` · `/status <session>`                                          |
-| Create or restore a session               | `/spawn <name> [-r claude-code\|codex] [-s <id>] [--path <dir>]`         |
-| Start, resume, or stop it                 | `/start <session>` · `/continue <session> [-s <id>]` · `/stop <session>` |
-| Send a message                            | `/tell <session> <message>` · `/broadcast <message>`                     |
-| Make free text target one session         | `/talk <session>`                                                        |
-| Inspect recent terminal output            | `/tail <session> [lines]`                                                |
-| Set or clear a concise status tag         | `/tag <session> [text]`                                                  |
-| Temporarily suspend or restore automation | `/pause <session>` · `/resume <session>`                                 |
-| Record an approved runbook condition      | `/runbook adopt <id> --version <v> --topic <topic>`                      |
-| Remove a spawned session                  | `/teardown <session> [--delete]`                                         |
+| Task                                         | Command                                                                    |
+| -------------------------------------------- | -------------------------------------------------------------------------- |
+| Inspect the fleet or one session             | `/status` · `/status <session>`                                            |
+| Create or restore a session                  | `/spawn <name> [-r claude-code\|codex] [-s <id>] [--path <dir>]`           |
+| Start, resume, or stop it                    | `/start <session>` · `/continue <session> [-s <id>]` · `/stop <session>`   |
+| Send a message                               | `/tell <session> <message>` · `/broadcast <message>`                       |
+| Make free text target one session            | `/talk <session>`                                                          |
+| Inspect recent terminal output               | `/tail <session> [lines]`                                                  |
+| Set or clear a concise status tag            | `/tag <session> [text]`                                                    |
+| Pause or resume peer delivery and automation | `/pause <session\|all\|federation>` · `/resume <session\|all\|federation>` |
+| Record an approved runbook condition         | `/runbook adopt <id> --version <v> --topic <topic>`                        |
+| Remove a spawned session                     | `/teardown <session> [--delete]`                                           |
 
 A typical hand-driven session looks like this:
 
@@ -226,9 +226,7 @@ Auto and fleet watch are independent. Auto routes an individual session's stalls
 watch alerts when no registered non-sentinel session is working for the configured
 confirmation interval—15 seconds by default. A one-session fleet is valid; an empty fleet
 does not alert.
-Both settings survive Conductor restarts. `/pause` suppresses automated messages to the target
-from schedules, stall routing, background integrations, and PR Shepherd without changing its
-saved auto setting or blocking human messages; `/resume` restores that automation.
+Both settings survive Conductor restarts. `/pause` holds peer messages and suppresses automation to the target from schedules, stall routing, background integrations, and PR Shepherd without changing its saved auto setting or blocking operator messages; `/resume` restores automation and drains durable peer traffic in order. `all` applies the same individual operation to the fleet's current registered sessions, while `federation` applies `all` once to the local fleet and every currently registered compatible peer. These are snapshot shortcuts, not sticky fleet modes; repeat a partially successful federation command to reconcile current membership.
 
 ### What the stall sentinel does
 
@@ -399,6 +397,8 @@ Direct operator conversation remains available while a target is paused, but Con
 injects a high-visibility pause notice with the pause start, suspended automation, and recovery
 action. A paused session may explicitly resume itself; it still cannot pause, stop, or restart
 itself.
+
+Session-originated direct messages and broadcasts are persisted per recipient before delivery. A paused recipient acknowledges them as queued, remains undisturbed, and receives them in durable order after resume or its next start. Operator messages intentionally bypass that pause while retaining composer protection. Raw terminal input remains an explicit escape hatch outside these guarantees.
 
 The stock CLI can load an explicit trusted local ESM file during foreground startup:
 

@@ -86,6 +86,32 @@ describe('messages', () => {
     expect(otherSender.row.id).not.toBe(first.row.id);
   });
 
+  it('persists replay policy and exact protected presentation', () => {
+    const inserted = store.insertDirectMessage('alpha', 'beta', 'hello', 'stable', {
+      policy: 'bypass',
+      envelope: '[Message from operator] hello',
+    });
+
+    expect(inserted.row).toMatchObject({
+      delivery_policy: 'bypass',
+      delivery_envelope: '[Message from operator] hello',
+    });
+  });
+
+  it('creates recipient-specific broadcast deliveries atomically in recipient order', () => {
+    const rows = store.insertBroadcastDeliveries('alpha', ['beta', 'gamma'], 'notice', {
+      policy: 'hold',
+      envelope: '[Broadcast from alpha] notice',
+    });
+
+    expect(rows.map((row) => [row.recipient, row.type, row.delivery_policy])).toEqual([
+      ['beta', 'broadcast', 'hold'],
+      ['gamma', 'broadcast', 'hold'],
+    ]);
+    expect(store.getPendingDeliveries().map((row) => row.id)).toEqual(rows.map((row) => row.id));
+    expect(store.getPendingMessages()).toEqual([]);
+  });
+
   it('lists recent direct-message metadata without content or broadcasts', () => {
     const first = store.insertMessage('alpha', 'beta', 'message', 'private first body');
     store.markMessageDelivered(first);
@@ -174,6 +200,20 @@ describe('event journal', () => {
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         active_runtime TEXT,
         active_effort TEXT
+      );
+      CREATE TABLE messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'message',
+        content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        idempotency_key TEXT,
+        delivered_at TEXT,
+        last_flush_attempt_at TEXT,
+        flush_skip_reason TEXT,
+        cancelled_at TEXT
       );
       PRAGMA user_version = 8;
     `);
@@ -387,7 +427,9 @@ describe('session state', () => {
     const currentVersion = versionRow.user_version;
     legacy.exec("UPDATE session_state SET activity = 'stalled' WHERE session = 'alpha'");
     legacy.exec('ALTER TABLE session_state DROP COLUMN paused_at');
-    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 3)}`);
+    legacy.exec('ALTER TABLE messages DROP COLUMN delivery_envelope');
+    legacy.exec('ALTER TABLE messages DROP COLUMN delivery_policy');
+    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 4)}`);
     legacy.close();
 
     const migrated = new Store(dbPath);
@@ -408,7 +450,9 @@ describe('session state', () => {
       CREATE TABLE federation_outbox (message_id TEXT PRIMARY KEY);
       CREATE TABLE federation_inbox (message_id TEXT PRIMARY KEY);
       ALTER TABLE session_state DROP COLUMN paused_at;
-      PRAGMA user_version = ${String(versionRow.user_version - 2)};
+      ALTER TABLE messages DROP COLUMN delivery_envelope;
+      ALTER TABLE messages DROP COLUMN delivery_policy;
+      PRAGMA user_version = ${String(versionRow.user_version - 3)};
     `);
     legacy.close();
 

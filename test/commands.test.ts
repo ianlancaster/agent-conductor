@@ -34,6 +34,7 @@ let sessions: Map<string, SessionConfig>;
 let events: FakeEventPublisher;
 let runbookCalls: { action: string; input: unknown }[];
 let shepherdPauseChanges: { session: string; paused: boolean }[];
+let shepherdFailureSession: string | undefined;
 
 function writeSessionConfig(codename: string): void {
   const repo = join(baseDir, 'repos', codename);
@@ -66,6 +67,7 @@ beforeEach(() => {
   events = new FakeEventPublisher();
   runbookCalls = [];
   shepherdPauseChanges = [];
+  shepherdFailureSession = undefined;
 
   delivery = new DeliveryQueue({
     backend,
@@ -175,6 +177,7 @@ beforeEach(() => {
     },
     setShepherdPausedForSession: (session, paused) => {
       shepherdPauseChanges.push({ session, paused });
+      if (session === shepherdFailureSession) return Promise.reject(new Error('companion unavailable'));
       return Promise.resolve(undefined);
     },
     getDocumentation: async (topic) => `docs:${topic ?? 'index'}`,
@@ -483,6 +486,17 @@ describe('mode commands', () => {
       { session: 'alpha', paused: false },
       { session: 'beta', paused: false },
     ]);
+  });
+
+  it('reports one all-target companion failure without rolling back other pause state', async () => {
+    shepherdFailureSession = 'alpha';
+
+    const result = await router.route('/pause all');
+
+    expect(result).toContain('alpha: failed — companion unavailable');
+    expect(result).toContain('beta: paused');
+    expect(states.isPaused('alpha')).toBe(true);
+    expect(states.isPaused('beta')).toBe(true);
   });
 
   it('sets and clears tags', async () => {

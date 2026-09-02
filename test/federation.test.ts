@@ -238,7 +238,7 @@ describe('local Conductor federation', () => {
     betaStatus = await call(backendPort, 'secret', 'get_session_status', { codename: 'beta' });
     secretStatus = await call(backendPort, 'beta', 'get_session_status', { codename: 'secret' });
     expect(betaStatus.result?.content?.[0]?.text).toContain('"paused": true');
-    expect(secretStatus.result?.content?.[0]?.text).toContain('"paused": false');
+    expect(secretStatus.result?.content?.[0]?.text).toContain('"paused": true');
 
     await call(frontendPort, 'alpha', 'resume_session', { fleet: 'backend', codename: 'all' });
     await call(frontendPort, 'alpha', 'toggle_auto', { fleet: 'backend', codename: 'all' });
@@ -248,6 +248,28 @@ describe('local Conductor federation', () => {
     expect(betaStatus.result?.content?.[0]?.text).toContain('"auto": true');
     expect(secretStatus.result?.content?.[0]?.text).toContain('"paused": false');
     expect(secretStatus.result?.content?.[0]?.text).toContain('"auto": false');
+
+    const federationPause = await call(frontendPort, 'alpha', 'pause_session', { codename: 'federation' });
+    expect(federationPause.result?.content?.[0]?.text).toContain('frontend: confirmed.');
+    expect(federationPause.result?.content?.[0]?.text).toContain('backend: confirmed.');
+    const alphaPaused = await call(frontendPort, 'local', 'get_session_status', { codename: 'alpha' });
+    secretStatus = await call(backendPort, 'beta', 'get_session_status', { codename: 'secret' });
+    expect(alphaPaused.result?.content?.[0]?.text).toContain('"paused": true');
+    expect(secretStatus.result?.content?.[0]?.text).toContain('"paused": true');
+
+    const federationResume = await call(frontendPort, 'alpha', 'resume_session', { codename: 'federation' });
+    expect(federationResume.result?.content?.[0]?.text).toContain('frontend: confirmed.');
+    expect(federationResume.result?.content?.[0]?.text).toContain('backend: confirmed.');
+    const alphaResumed = await call(frontendPort, 'local', 'get_session_status', { codename: 'alpha' });
+    secretStatus = await call(backendPort, 'beta', 'get_session_status', { codename: 'secret' });
+    expect(alphaResumed.result?.content?.[0]?.text).toContain('"paused": false');
+    expect(secretStatus.result?.content?.[0]?.text).toContain('"paused": false');
+
+    const qualifiedFederation = await call(frontendPort, 'alpha', 'pause_session', {
+      fleet: 'backend',
+      codename: 'federation',
+    });
+    expect(qualifiedFederation.error?.message).toContain("'fleet' cannot be combined with codename 'federation'");
 
     await call(backendPort, 'beta', 'start_session', { codename: 'secret' });
     const secretReceivedBefore = backendTerminal.paneFor('secret')?.received.length ?? 0;
@@ -307,6 +329,16 @@ describe('local Conductor federation', () => {
         body: { ok: false, invalid: true },
       });
     }
+    await expect(
+      federationPost(backendPort, {
+        ...baseRequest,
+        operation: 'pause_session',
+        arguments: { codename: 'federation' },
+      }),
+    ).resolves.toMatchObject({
+      status: 400,
+      body: { ok: false, invalid: true, error: "The 'federation' target must originate in the caller's local fleet." },
+    });
 
     const ordinary = await fetch(`http://127.0.0.1:${String(frontendPort)}/mcp/alpha`, {
       method: 'POST',

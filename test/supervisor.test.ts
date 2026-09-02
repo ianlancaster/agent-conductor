@@ -508,7 +508,7 @@ describe('Supervisor construction', () => {
     }
   });
 
-  it('journals restart cancellation as a distinct mechanical message reason', async () => {
+  it('retains pending protected delivery across startup without emitting restart cancellation', async () => {
     const port = await freePort();
     writeConfig(`mcp:\n  port: ${String(port)}\n`, {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
@@ -526,16 +526,100 @@ describe('Supervisor construction', () => {
     });
 
     await supervisor.start();
-    await until(() => subscriber.events.some((event) => event.type === 'message.cancelled'));
-    const cancelled = subscriber.events.find((event) => event.type === 'message.cancelled');
-    expect(cancelled).toMatchObject({
-      type: 'message.cancelled',
-      receiptId: 1,
-      sender: 'alpha',
-      recipient: 'beta',
-      reason: 'conductor-restarted',
+    expect(subscriber.events.some((event) => event.type === 'message.cancelled')).toBe(false);
+    await supervisor.stop();
+    supervisor = undefined;
+    const persisted = new Store(join(baseDir, 'data', 'conductor.db'));
+    expect(persisted.getMessage(1)).toMatchObject({ status: 'pending', flush_skip_reason: null });
+    persisted.close();
+  });
+
+  it('recovers paused direct and broadcast rows into a surviving pane exactly once after resume', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\nmessaging:\n  queueDrainMs: 5\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+      beta: `codename: beta\nrepo: ${baseDir}\nruntime: claude-code\n`,
     });
-    expect(JSON.stringify(cancelled)).not.toContain('stale secret');
+    const seed = new Store(join(baseDir, 'data', 'conductor.db'));
+    seed.upsertSessionState({
+      session: 'beta',
+      auto: false,
+      tag: null,
+      paused: true,
+      pausedAt: '2026-09-02T20:00:00.000Z',
+      activeRuntime: 'claude-code',
+      activeEffort: null,
+      activity: 'working',
+    });
+    seed.insertDirectMessage('alpha', 'beta', 'first', undefined, {
+      policy: 'hold',
+      envelope: '[Message from alpha] first',
+    });
+    seed.insertBroadcastDeliveries('alpha', ['beta'], 'second', {
+      policy: 'hold',
+      envelope: '[Broadcast from alpha] second',
+    });
+    seed.close();
+    const terminal = new FakeTerminalBackend();
+    const survivingPane = await terminal.createPane('beta', 'pane', baseDir);
+    terminal.panes.get(survivingPane.id)!.sessionActive = true;
+    terminal.survivors.set('beta', survivingPane);
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      runtimes: [new FakeRuntime('claude-code')],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start();
+    expect(terminal.paneFor('beta')?.received).toEqual([]);
+    await expect(supervisor.command('/resume beta')).resolves.toBe('beta: resumed');
+    await until(() => terminal.paneFor('beta')?.received.length === 2);
+    expect(terminal.paneFor('beta')?.received).toEqual(['[Message from alpha] first', '[Broadcast from alpha] second']);
+
+    const persisted = new Store(join(baseDir, 'data', 'conductor.db'));
+    expect(persisted.getMessage(1)?.status).toBe('delivered');
+    expect(persisted.getMessage(2)?.status).toBe('delivered');
+    persisted.close();
+  });
+
+  it('fails startup recovery closed and clears staged writes when a later recipient query fails', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\nmessaging:\n  queueDrainMs: 5\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\nruntime: claude-code\n`,
+      beta: `codename: beta\nrepo: ${baseDir}\nruntime: claude-code\n`,
+    });
+    const seed = new Store(join(baseDir, 'data', 'conductor.db'));
+    seed.insertDirectMessage('source', 'alpha', 'first');
+    seed.insertDirectMessage('source', 'beta', 'second');
+    seed.close();
+    const terminal = new FakeTerminalBackend();
+    for (const codename of ['alpha', 'beta']) {
+      const pane = await terminal.createPane(codename, 'pane', baseDir);
+      terminal.panes.get(pane.id)!.sessionActive = true;
+      terminal.survivors.set(codename, pane);
+    }
+    const originalPending = Store.prototype.getPendingDeliveries;
+    const pending = vi.spyOn(Store.prototype, 'getPendingDeliveries').mockImplementation(function (recipient) {
+      if (recipient === 'beta') throw new Error('simulated recovery query failure');
+      return originalPending.call(this, recipient);
+    });
+    try {
+      supervisor = new Supervisor(baseDir, {
+        terminalBackend: terminal,
+        runtimes: [new FakeRuntime('claude-code')],
+        includeConfiguredChannels: false,
+        env: {},
+      });
+
+      await expect(supervisor.start()).rejects.toThrow('simulated recovery query failure');
+      expect(terminal.paneFor('alpha')?.received).toEqual([]);
+      expect(terminal.paneFor('beta')?.received).toEqual([]);
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      expect(terminal.paneFor('alpha')?.received).toEqual([]);
+    } finally {
+      pending.mockRestore();
+    }
   });
 
   it('routes operator-only runbook adoption identically through an injected channel', async () => {

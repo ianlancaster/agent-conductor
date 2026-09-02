@@ -91,6 +91,68 @@ describe('Messaging delivery receipts', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] once']);
   });
 
+  it('holds peer messages while paused and drains them after ordinary resume', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const queue = makeQueue(new FakeRuntime(), pane.id);
+    const messaging = makeMessaging(queue);
+    states.pause('beta');
+
+    await expect(messaging.sendToSession('alpha', 'beta', 'wait here')).resolves.toMatchObject({ status: 'queued' });
+    expect(store.getMessage(1)).toMatchObject({ delivery_policy: 'hold', status: 'pending' });
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+
+    states.resume('beta');
+    await messaging.recoverPendingMessages('beta');
+    expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] wait here']);
+    expect(store.getMessage(1)?.status).toBe('delivered');
+  });
+
+  it('reconstructs the exact persisted envelope after a messaging restart', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    states.pause('beta');
+    const firstQueue = makeQueue(new FakeRuntime(), pane.id);
+    const first = makeMessaging(firstQueue);
+
+    await first.sendToSession('alpha', 'beta', 'survive restart');
+    firstQueue.stop();
+    states.resume('beta');
+
+    const restartedQueue = makeQueue(new FakeRuntime(), pane.id);
+    const restarted = makeMessaging(restartedQueue);
+    await restarted.recoverPendingMessages('beta');
+
+    expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] survive restart']);
+    expect(store.getMessage(1)).toMatchObject({ status: 'delivered' });
+  });
+
+  it('persists broadcast recipients and preserves direct-broadcast FIFO', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    states.pause('beta');
+    const queue = makeQueue(new FakeRuntime(), pane.id);
+    const messaging = makeMessaging(queue);
+
+    await messaging.sendToSession('alpha', 'beta', 'first');
+    await expect(messaging.broadcast('alpha', 'second')).resolves.toContain('1 queued');
+    await messaging.sendToSession('alpha', 'beta', 'third');
+    expect(store.getPendingDeliveries('beta').map((row) => row.type)).toEqual(['message', 'broadcast', 'message']);
+
+    states.resume('beta');
+    await messaging.recoverPendingMessages('beta');
+    await queue.drainNow();
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([
+      '[Message from alpha] first',
+      '[Broadcast from alpha] second',
+      '[Message from alpha] third',
+    ]);
+  });
+
   it('mints integration identity on the narrow path without trusting a normal sender prefix', async () => {
     const pane = await backend.createPane('beta', 'pane');
     states.setSession('beta', pane.id);
@@ -117,7 +179,7 @@ describe('Messaging delivery receipts', () => {
     });
   });
 
-  it('refuses new integration delivery while the recipient is paused without suppressing human messages', async () => {
+  it('refuses new integration delivery while holding peer messages for resume', async () => {
     const pane = await backend.createPane('beta', 'pane');
     states.setSession('beta', pane.id);
     states.setReady('beta');
@@ -127,19 +189,20 @@ describe('Messaging delivery receipts', () => {
     await expect(
       messaging.sendIntegrationToSession('water-cooler', 'beta', 'scheduled bulletin', 'bulletin:paused'),
     ).rejects.toThrow('beta is paused');
-    await expect(messaging.sendToSession('alpha', 'beta', 'human follow-up')).resolves.toMatchObject({
-      status: 'delivered',
+    await expect(messaging.sendToSession('alpha', 'beta', 'peer follow-up')).resolves.toMatchObject({
+      status: 'queued',
     });
     expect(store.getMessage(1)?.sender).toBe('alpha');
     expect(store.getMessage(2)).toBeUndefined();
-    expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] human follow-up']);
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
 
     states.resume('beta');
+    await messaging.recoverPendingMessages('beta');
     await expect(
       messaging.sendIntegrationToSession('water-cooler', 'beta', 'scheduled bulletin', 'bulletin:paused'),
     ).resolves.toMatchObject({ status: 'delivered' });
     expect(backend.panes.get(pane.id)?.received).toEqual([
-      '[Message from alpha] human follow-up',
+      '[Message from alpha] peer follow-up',
       '[Integration: water-cooler] scheduled bulletin',
     ]);
   });
@@ -154,11 +217,59 @@ describe('Messaging delivery receipts', () => {
       'Call resume_session with {"codename":"beta"}.';
     const messaging = makeMessaging(makeQueue(new FakeRuntime(), pane.id), undefined, () => notice);
 
-    const receipt = await messaging.sendToSession('operator', 'beta', 'Did CI arrive?');
+    const receipt = await messaging.sendToSession('operator', 'beta', 'Did CI arrive?', undefined, 'bypass');
 
     expect(receipt).toMatchObject({ status: 'delivered', notice });
     expect(backend.panes.get(pane.id)?.received).toEqual([`${notice}\n\n[Message from operator] Did CI arrive?`]);
     expect(store.getMessage(receipt.messageId)?.content).toBe('Did CI arrive?');
+  });
+
+  it('lets an operator broadcast bypass a paused peer queue with the pause notice', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    states.pause('beta', '2026-08-26T21:16:20.638Z');
+    const notice = '[Conductor pause notice] Peer traffic is held.';
+    const queue = makeQueue(new FakeRuntime(), pane.id);
+    const messaging = makeMessaging(queue, undefined, () => notice);
+
+    await messaging.sendToSession('alpha', 'beta', 'held first');
+    await expect(messaging.broadcast('operator', 'urgent update', () => true, 'bypass')).resolves.toBe(
+      'Broadcast delivered to 1 session(s).',
+    );
+
+    expect(backend.panes.get(pane.id)?.received).toEqual([`${notice}\n\n[Broadcast from operator] urgent update`]);
+    expect(store.getPendingDeliveries('beta').map((row) => row.content)).toEqual(['held first']);
+  });
+
+  it('keeps a stopped paused recipient asleep for peers but lets later operator input start it', async () => {
+    states.pause('beta');
+    const pane = await backend.createPane('beta', 'pane');
+    const starts: string[] = [];
+    const queue = makeQueue(new FakeRuntime(), pane.id);
+    const messaging = new Messaging({
+      store,
+      delivery: queue,
+      states,
+      sessions: () => sessions,
+      startSession: async (_codename, options) => {
+        starts.push(options.prompt ?? '');
+        states.setSession('beta', pane.id);
+        states.setReady('beta');
+        return 'beta started.';
+      },
+    });
+
+    await expect(messaging.sendToSession('alpha', 'beta', 'hold me')).resolves.toMatchObject({ status: 'queued' });
+    expect(starts).toEqual([]);
+    await expect(messaging.sendToSession('operator', 'beta', 'wake now', undefined, 'bypass')).resolves.toMatchObject({
+      status: 'delivered',
+    });
+
+    expect(starts).toEqual(['[Message from operator] wake now']);
+    expect(store.getMessage(1)).toMatchObject({ status: 'pending', delivery_policy: 'hold' });
+    expect(store.getMessage(2)).toMatchObject({ status: 'delivered', delivery_policy: 'bypass' });
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
   });
 
   it('revives a restart-cancelled integration delivery with the same identity and envelope', async () => {
@@ -214,6 +325,33 @@ describe('Messaging delivery receipts', () => {
     expect(store.getMessage(1)).toMatchObject({ content: 'original', status: 'delivered' });
   });
 
+  it('coalesces repeated post-commit admission failures until the durable row is delivered', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    let attempts = 0;
+    const delivery = {
+      enqueueOnly: (_recipient: string, _text: string, options: { onDelivered?: () => void }) => {
+        attempts += 1;
+        if (attempts < 3) throw new Error(`admission failure ${String(attempts)}`);
+        options.onDelivered?.();
+      },
+      drainNow: async () => undefined,
+      queueDrainMs: () => 1,
+      pendingCount: () => 0,
+      cancel: () => 'not-found' as const,
+      acquireSubmissionLease: () => () => undefined,
+    } as unknown as DeliveryQueue;
+    const messaging = makeMessaging(delivery);
+
+    await expect(messaging.sendToSession('alpha', 'beta', 'retry admission')).resolves.toMatchObject({
+      status: 'queued',
+    });
+    await expect.poll(() => store.getMessage(1)?.status).toBe('delivered');
+    expect(attempts).toBe(3);
+    messaging.stop();
+  });
+
   it('emits content-free direct-message lifecycle facts and excludes broadcasts', async () => {
     const pane = await backend.createPane('beta', 'pane');
     states.setSession('beta', pane.id);
@@ -244,7 +382,7 @@ describe('Messaging delivery receipts', () => {
     const messaging = makeMessaging(queue, events);
 
     await messaging.sendToSession('alpha', 'beta', 'cancel me');
-    expect(messaging.cancelMessage(1, 'alpha')).toBe('Message #1 cancelled.');
+    expect(await messaging.cancelMessage(1, 'alpha')).toBe('Message #1 cancelled.');
     expect(events.events.at(-1)).toEqual({
       type: 'message.cancelled',
       receiptId: 1,
@@ -272,7 +410,7 @@ describe('Messaging delivery receipts', () => {
       deliveredAt: null,
       flushSkipReason: 'input-occupied',
     });
-    expect(messaging.cancelMessage(1, 'alpha')).toBe('Message #1 cancelled.');
+    expect(await messaging.cancelMessage(1, 'alpha')).toBe('Message #1 cancelled.');
     const cancelledStatus = JSON.parse(messaging.messageStatus(1, 'alpha')) as { cancelledAt: unknown };
     expect(cancelledStatus).toMatchObject({
       status: 'cancelled',
@@ -317,7 +455,7 @@ describe('Messaging delivery receipts', () => {
     const messaging = makeMessaging(queue);
 
     await messaging.sendToSession('alpha', 'beta', 'sender owns cancellation');
-    expect(messaging.cancelMessage(1, 'beta')).toBe('Message #1 was not found.');
+    expect(await messaging.cancelMessage(1, 'beta')).toBe('Message #1 was not found.');
     expect(store.getMessage(1)?.status).toBe('pending');
   });
 
@@ -342,6 +480,7 @@ describe('Messaging delivery receipts', () => {
       backend,
       runtimeFor: () => runtime,
       getPane: (session) => (session === 'beta' ? { backend: 'fake', id: paneId } : undefined),
+      isPaused: (session) => states.isPaused(session),
       config: CONFIG,
     });
     queues.push(queue);

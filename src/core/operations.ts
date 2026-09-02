@@ -77,6 +77,11 @@ export interface ConductorOperationDeps {
   setSentinel(codename: string | undefined): void;
   /** Pause or resume managed PR Shepherd when codename is its configured coordinator session. */
   setShepherdPausedForSession(codename: string, paused: boolean): Promise<string | undefined>;
+  /** Optional protected-delivery transition seams; direct state changes remain the test/embed fallback. */
+  pauseSession?(codename: string): Promise<boolean>;
+  resumeSession?(codename: string): Promise<boolean>;
+  /** Source-side federation fan-out for the reserved pause/resume target. */
+  controlFederation?(operation: 'pause_session' | 'resume_session', actor: OperationActor): Promise<string>;
   getDocumentation(topic?: string): Promise<string>;
   /** Present only when federation is enabled; keeps discovery absent otherwise. */
   listFederation?(): Promise<FederationListing>;
@@ -256,6 +261,7 @@ export class ConductorOperations {
             codename,
             requireString(args, 'message'),
             optionalString(args, 'idempotencyKey'),
+            actor.audience === 'operator' ? 'bypass' : 'hold',
           );
         },
       },
@@ -268,8 +274,11 @@ export class ConductorOperations {
         signedIdentity: true,
         inputSchema: schema({ message: stringProperty('Message text') }, ['message']),
         handler: (args, actor) =>
-          this.deps.messaging.broadcast(actorName(actor), requireString(args, 'message'), (codename) =>
-            this.isVisible(actor, codename),
+          this.deps.messaging.broadcast(
+            actorName(actor),
+            requireString(args, 'message'),
+            (codename) => this.isVisible(actor, codename),
+            actor.audience === 'operator' ? 'bypass' : 'hold',
           ),
       },
       {
@@ -529,42 +538,22 @@ export class ConductorOperations {
       {
         name: 'pause_session',
         description:
-          'Pause one session, or all sessions: suppress automated delivery from schedules, stalls, background integrations, and PR Shepherd without blocking human messages.',
+          "Pause one session, every session with 'all', or every connected fleet with 'federation'. Peer messages queue durably while operator messages continue.",
         resultDescription: 'Returns the resulting pause state for each targeted session.',
         audiences: BOTH,
         federation: 'routable',
-        inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
-        handler: (args, actor) =>
-          this.forTargets(args, actor, 'pause', async (codename) => {
-            const paused = this.deps.states.pause(codename);
-            if (paused) this.deps.sentinel.resetRouting(codename);
-            const companion = await this.deps.setShepherdPausedForSession(codename, true);
-            const result = paused ? `${codename}: paused` : `${codename}: already paused`;
-            return companion === undefined ? result : `${result}. ${companion}`;
-          }),
+        inputSchema: schema({ codename: stringProperty("Session codename, 'all', or 'federation'") }, ['codename']),
+        handler: (args, actor) => this.forPauseTargets(args, actor, 'pause_session'),
       },
       {
         name: 'resume_session',
         description:
-          'Resume one paused session, or all paused sessions, restoring automated delivery and managed PR Shepherd when its coordinator is targeted; a paused session may explicitly resume itself.',
+          "Resume one session, every session with 'all', or every connected fleet with 'federation', then drain durable peer messages in order.",
         resultDescription: 'Returns the resulting pause state for each targeted session.',
         audiences: BOTH,
         federation: 'routable',
-        inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
-        handler: (args, actor) =>
-          this.forTargets(
-            args,
-            actor,
-            'resume',
-            async (codename) => {
-              const resumed = this.deps.states.resume(codename);
-              if (resumed) this.deps.sentinel.resetRouting(codename);
-              const companion = await this.deps.setShepherdPausedForSession(codename, false);
-              const result = resumed ? `${codename}: resumed` : `${codename}: not paused`;
-              return companion === undefined ? result : `${result}. ${companion}`;
-            },
-            { allowExplicitSelf: true },
-          ),
+        inputSchema: schema({ codename: stringProperty("Session codename, 'all', or 'federation'") }, ['codename']),
+        handler: (args, actor) => this.forPauseTargets(args, actor, 'resume_session'),
       },
       {
         name: 'set_sentinel',
@@ -866,6 +855,61 @@ export class ConductorOperations {
       results.push(await action(codename));
     }
     return results.join('\n');
+  }
+
+  private async forPauseTargets(
+    args: Record<string, unknown>,
+    actor: OperationActor,
+    operation: 'pause_session' | 'resume_session',
+  ): Promise<string> {
+    const target = requireString(args, 'codename');
+    if (target === 'federation') {
+      if (this.deps.controlFederation === undefined) {
+        throw new InvalidRequestError('Federation is not enabled.');
+      }
+      return this.deps.controlFederation(operation, actor);
+    }
+
+    const action = (codename: string) =>
+      operation === 'pause_session' ? this.pauseOne(codename) : this.resumeOne(codename);
+    if (target !== 'all') {
+      if (operation === 'pause_session') this.noSelf(actor, target, 'pause');
+      if (!this.isVisible(actor, target) || !this.deps.states.has(target)) return `Unknown session: ${target}`;
+      return action(target);
+    }
+
+    // `all` is deliberately only a snapshot shortcut over ordinary individual
+    // state. Invoke every transition before awaiting companion work so one slow
+    // Shepherd operation cannot delay pausing the next session.
+    const targets = [...this.deps.sessions().keys()];
+    const settled = await Promise.allSettled(targets.map((codename) => action(codename)));
+    return settled
+      .map((result, index) => {
+        if (result.status === 'fulfilled') return result.value;
+        const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        return `${targets[index] ?? 'unknown'}: failed — ${reason}`;
+      })
+      .join('\n');
+  }
+
+  private async pauseOne(codename: string): Promise<string> {
+    const paused =
+      this.deps.pauseSession === undefined ? this.deps.states.pause(codename) : await this.deps.pauseSession(codename);
+    if (paused) this.deps.sentinel.resetRouting(codename);
+    const companion = await this.deps.setShepherdPausedForSession(codename, true);
+    const result = paused ? `${codename}: paused` : `${codename}: already paused`;
+    return companion === undefined ? result : `${result}. ${companion}`;
+  }
+
+  private async resumeOne(codename: string): Promise<string> {
+    const resumed =
+      this.deps.resumeSession === undefined
+        ? this.deps.states.resume(codename)
+        : await this.deps.resumeSession(codename);
+    if (resumed) this.deps.sentinel.resetRouting(codename);
+    const companion = await this.deps.setShepherdPausedForSession(codename, false);
+    const result = resumed ? `${codename}: resumed` : `${codename}: not paused`;
+    return companion === undefined ? result : `${result}. ${companion}`;
   }
 
   private visibleSessions(actor: OperationActor): ReadonlySet<string> | undefined {

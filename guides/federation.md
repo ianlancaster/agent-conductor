@@ -119,6 +119,10 @@ applied before direct lookup, `all` expansion, broadcasts, aggregate status reco
 inspection, pane capture, raw terminal input, teardown, or sentinel assignment. A peer therefore
 cannot infer or directly control an unexposed existing session.
 
+Pause and resume provide one narrow whole-federation shortcut. Pass `codename: "federation"` without a `fleet` argument, or use `/pause federation` and `/resume federation` from an operator console. The originating Conductor snapshots the local fleet and every registered compatible peer, runs its own `all`, and sends one non-recursive `all` request to each peer concurrently. For pause/resume only, remote `all` reaches the destination's complete registered roster, including unexposed sessions; single-session calls still honor exposure. Any managed session already inside this same-user federation boundary may invoke the shortcut.
+
+`all` and `federation` are not persistent modes. They repeat the ordinary individual transition over the current snapshot, so `resume all` clears pre-existing individual pauses and later registrations are unaffected until another command. Results identify each fleet as confirmed, failed, unconfirmed, or protocol-incompatible. Each peer has a 15-second response deadline; timeout or response loss is unconfirmed because the peer may already have applied the operation. Successful fleets are never rolled back. Repeat the idempotent command after a partial result or membership change.
+
 `spawn_session` is the exception because its target does not exist yet. Any known federation peer
 may ask the destination to spawn a valid new codename under the destination's ordinary workspace,
 template, runtime, and filesystem rules. Relative paths, worktree repositories, system-prompt
@@ -206,10 +210,7 @@ same-directory instances may stay isolated.
 
 ## Limitations and troubleshooting
 
-If discovery omits a running peer, confirm that the names are unique, both MCP hosts remain on
-loopback, both processes run as the same operating-system user, and both builds use a compatible
-federation protocol. Discovery filters incompatible records rather than breaking the whole list;
-an incompatible ingress call fails with an explicit error.
+If discovery omits a running peer, confirm that the names are unique, both MCP hosts remain on loopback, both processes run as the same operating-system user, and both builds use a compatible federation protocol. Ordinary discovery filters incompatible records rather than breaking the whole list; federation-wide pause/resume instead reports incompatible records and fails closed on an unreadable or malformed registry snapshot rather than claiming an incomplete fleet was fully controlled. An incompatible ingress call fails with an explicit error.
 
 ## Local trust boundary
 

@@ -192,7 +192,7 @@ describe('DeliveryQueue', () => {
 
   it('holds queued automated delivery for the full pause interval and drains after resume', async () => {
     runtime.inputState = 'draft';
-    expect(await queue.deliverOrQueue('alpha', 'scheduled', { automated: true })).toBe('queued');
+    expect(await queue.deliverOrQueue('alpha', 'scheduled', { pausePolicy: 'hold' })).toBe('queued');
 
     paused = true;
     runtime.inputState = 'clear';
@@ -205,6 +205,64 @@ describe('DeliveryQueue', () => {
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['human follow-up', 'scheduled']);
     expect(queue.pendingCount('alpha')).toBe(0);
+  });
+
+  it('closes held admission and waits for a write that crossed the pause boundary', async () => {
+    let releaseWrite: (() => void) | undefined;
+    let writeStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      writeStarted = resolve;
+    });
+    const originalSubmit = backend.submitIfUnchanged.bind(backend);
+    backend.submitIfUnchanged = async (...args) => {
+      writeStarted?.();
+      await new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      return originalSubmit(...args);
+    };
+
+    const delivery = queue.deliverOrQueue('alpha', 'already in flight', { pausePolicy: 'hold' });
+    await started;
+    let pauseFinished = false;
+    const pausing = queue.pauseRecipient('alpha', () => {
+      paused = true;
+      return true;
+    });
+    void pausing.then(() => {
+      pauseFinished = true;
+    });
+    await Promise.resolve();
+    expect(pauseFinished).toBe(false);
+
+    releaseWrite?.();
+    await expect(delivery).resolves.toBe('delivered');
+    await expect(pausing).resolves.toBe(true);
+    expect(pauseFinished).toBe(true);
+    await expect(queue.deliverOrQueue('alpha', 'after boundary', { pausePolicy: 'hold' })).resolves.toBe('queued');
+  });
+
+  it('lets trusted bypass delivery cross an ordinary pause', async () => {
+    await queue.pauseRecipient('alpha', () => {
+      paused = true;
+      return true;
+    });
+
+    await expect(queue.deliverOrQueue('alpha', 'operator', { pausePolicy: 'bypass' })).resolves.toBe('delivered');
+    expect(backend.panes.get(pane.id)?.received).toEqual(['operator']);
+  });
+
+  it('stages recovery while suspended and writes only after activation', async () => {
+    queue.suspend();
+    queue.enqueueOnly('alpha', 'first', { pausePolicy: 'hold', deliveryId: 1 });
+    queue.enqueueOnly('alpha', 'second', { pausePolicy: 'hold', deliveryId: 2 });
+
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    await queue.activate();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['first']);
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['first', 'second']);
   });
 
   it('does not clobber text typed after the clear-composer capture', async () => {

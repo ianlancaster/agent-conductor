@@ -110,6 +110,28 @@ describe('FederationRegistry', () => {
     await active.release();
   });
 
+  it('returns incompatible live peers in a strict control snapshot', async () => {
+    const active = registry('frontend');
+    await active.claim();
+    writeFileSync(join(registryDir, 'backend.json'), `${JSON.stringify(record({ protocol: 1 }))}\n`);
+
+    await expect(active.controlSnapshot()).resolves.toEqual({
+      peers: [expect.objectContaining({ name: 'frontend', protocol: FEDERATION_PROTOCOL_VERSION })],
+      incompatible: [{ name: 'backend', protocol: 1 }],
+    });
+    await active.release();
+  });
+
+  it('fails strict control discovery instead of silently pruning an uncertain record', async () => {
+    const active = registry('frontend');
+    await active.claim();
+    writeFileSync(join(registryDir, 'broken.json'), '{');
+
+    await expect(active.controlSnapshot()).rejects.toThrow("Federation registry record 'broken.json' is malformed.");
+    expect(existsSync(join(registryDir, 'broken.json'))).toBe(true);
+    await active.release();
+  });
+
   it('uses XDG when writable and a stable home fallback otherwise', async () => {
     const xdg = join(root, 'xdg');
     const home = join(root, 'home');

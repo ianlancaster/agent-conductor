@@ -134,7 +134,7 @@ paths, or arbitrary runtime reason strings.
 | `runbook.adoption.ended`    | `adoptionId`; `approvedBy: operator`                                                                                              |
 | `message.created`           | direct receipt ID, sender, recipient, UTF-8 `byteCount`                                                                           |
 | `message.delivered`         | direct receipt ID, sender, recipient                                                                                              |
-| `message.cancelled`         | direct receipt metadata; `reason: requested \| conductor-restarted`                                                               |
+| `message.cancelled`         | direct receipt metadata; `reason: requested \| conductor-restarted` (`conductor-restarted` is retained for historical journals)   |
 | `workspace.provisioned`     | `session`; `kind: empty \| template \| worktree`                                                                                  |
 | `workspace.removed`         | `session`; `kind: directory \| worktree`                                                                                          |
 
@@ -157,8 +157,7 @@ idempotent. Lifecycle causes reflect the mechanical detection path, so equivalen
 failures found by different health or lifecycle checks can carry different causes. Events
 describe observed outcomes, not requested commands.
 
-Message events cover direct messages only. Broadcasts have neither per-recipient receipt rows nor
-delivery confirmation and therefore emit no message event. `launchModel` and `launchEffort` are
+Message events cover public direct-message receipts only. Broadcasts now use internal per-recipient durable delivery rows but expose no receipt or message event. `launchModel` and `launchEffort` are
 the settings Conductor selected for process launch, not proof of the provider's currently served
 model or retained effort. Workspace events never include local paths. Runbook adoption events are
 emitted only by the operator-authorized provenance operations described in the runbook guide.

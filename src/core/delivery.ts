@@ -3,6 +3,7 @@ import type { InputState, SessionRuntime } from '../runtimes/types.js';
 import type { TerminalBackend } from '../terminals/types.js';
 import { observeLiveness } from '../terminals/liveness.js';
 import type { PaneRef } from './types.js';
+import type { DeliveryPausePolicy } from '../store/index.js';
 
 export type DeliveryResult = 'delivered' | 'queued' | 'cancelled' | 'no-pane';
 
@@ -39,15 +40,15 @@ interface TypingObservation {
 
 interface QueuedMessage {
   text: string;
-  automated: boolean;
+  pausePolicy: DeliveryPausePolicy;
   deliveryId?: number;
   onAttempt?: (skipReason: DeliverySkipReason | null) => void;
   onDelivered?: () => void;
 }
 
 export interface DeliveryOptions {
-  /** Automated work is held while the recipient's temporary pause flag is set. */
-  automated?: boolean;
+  /** Held deliveries wait while the recipient is paused; bypass is reserved for trusted operator input. */
+  pausePolicy?: DeliveryPausePolicy;
   /** Durable receipt id, used to cancel a queued delivery without matching text. */
   deliveryId?: number;
   /** Receipt callback invoked for every classification/write attempt. */
@@ -108,12 +109,15 @@ export class DeliveryQueue {
   private readonly assessing = new Set<number>();
   private readonly cancellationRequested = new Set<number>();
   private readonly delivering = new Set<number>();
+  private readonly pauseClosed = new Set<string>();
+  private readonly submissionLeases = new Map<string, Set<{ done: Promise<void>; release(): void }>>();
+  private suspended = false;
 
   constructor(private readonly deps: DeliveryDeps) {}
 
   async deliverOrQueue(session: string, text: string, options: DeliveryOptions = {}): Promise<DeliveryResult> {
     if (options.deliveryId !== undefined) this.assessing.add(options.deliveryId);
-    if (this.automationPaused(session, options.automated === true)) {
+    if (this.deliveryPaused(session, options.pausePolicy ?? 'bypass')) {
       this.assessing.delete(options.deliveryId ?? -1);
       this.recordAttempt(session, options.onAttempt, 'recipient-paused');
       return this.enqueue(session, text, options);
@@ -147,7 +151,7 @@ export class DeliveryQueue {
           pane,
           text,
           classification,
-          options.automated === true,
+          options.pausePolicy ?? 'bypass',
         );
         if (writeSkipReason !== null) {
           this.recordAttempt(session, options.onAttempt, writeSkipReason);
@@ -183,6 +187,83 @@ export class DeliveryQueue {
     return this.queues.get(session)?.length ?? 0;
   }
 
+  queueDrainMs(): number {
+    return this.deps.config.queueDrainMs;
+  }
+
+  /** Queue an already-persisted delivery without starting a drain mid-batch. */
+  enqueueOnly(session: string, text: string, options: DeliveryOptions = {}): void {
+    this.enqueue(session, text, options);
+  }
+
+  /** Close held admission before changing persisted pause state, then wait for pre-boundary writes. */
+  async pauseRecipient(session: string, transition: () => boolean): Promise<boolean> {
+    this.pauseClosed.add(session);
+    let changed: boolean;
+    try {
+      changed = transition();
+    } catch (error) {
+      this.pauseClosed.delete(session);
+      throw error;
+    }
+    const leases = [...(this.submissionLeases.get(session) ?? [])].map((lease) => lease.done);
+    await Promise.all(leases);
+    return changed;
+  }
+
+  /** Apply ordinary resume state and reopen held admission for this recipient. */
+  resumeRecipient(session: string, transition: () => boolean): boolean {
+    const changed = transition();
+    this.pauseClosed.delete(session);
+    return changed;
+  }
+
+  /** Shared boundary for DeliveryQueue writes and stopped-session initial prompts. */
+  acquireSubmissionLease(session: string, policy: DeliveryPausePolicy): (() => void) | undefined {
+    if (policy === 'bypass') return () => undefined;
+    if (this.deliveryPaused(session, policy)) return undefined;
+    let settle: (() => void) | undefined;
+    const done = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const leases = this.submissionLeases.get(session) ?? new Set();
+    let released = false;
+    const lease = {
+      done,
+      release: () => {
+        if (released) return;
+        released = true;
+        leases.delete(lease);
+        if (leases.size === 0) this.submissionLeases.delete(session);
+        settle?.();
+      },
+    };
+    leases.add(lease);
+    this.submissionLeases.set(session, leases);
+    return lease.release;
+  }
+
+  /** Hold every drain while Supervisor stages durable startup recovery. */
+  suspend(): void {
+    this.suspended = true;
+    this.clearTimer();
+  }
+
+  async activate(): Promise<void> {
+    this.suspended = false;
+    if (this.queues.size === 0) return;
+    this.ensureTimer();
+    await this.drainNow();
+  }
+
+  /** Startup rollback only: durable rows remain authoritative in SQLite. */
+  clearPending(): void {
+    this.stop();
+    this.queues.clear();
+    this.assessing.clear();
+    this.cancellationRequested.clear();
+  }
+
   /** Cancel a durable message while it is assessing or waiting in memory. */
   cancel(session: string, deliveryId: number): CancellationResult {
     if (this.delivering.has(deliveryId)) return 'in-flight';
@@ -209,6 +290,7 @@ export class DeliveryQueue {
    * slow capture) join the in-flight pass instead of double-delivering.
    */
   drainNow(): Promise<void> {
+    if (this.suspended) return Promise.resolve();
     this.inFlight ??= this.drainPass().finally(() => {
       this.inFlight = undefined;
     });
@@ -230,6 +312,12 @@ export class DeliveryQueue {
         this.queues.delete(session);
         continue;
       }
+      const oldestIndex = queue.findIndex((message) => !this.deliveryPaused(session, message.pausePolicy));
+      const oldest = oldestIndex < 0 ? undefined : queue[oldestIndex];
+      if (oldest === undefined) {
+        for (const message of queue) this.recordAttempt(session, message.onAttempt, 'recipient-paused');
+        continue;
+      }
       const pane = this.deps.getPane(session);
       const paneAlive =
         pane === undefined
@@ -246,12 +334,6 @@ export class DeliveryQueue {
         log().debug('delivery', `${session}: no live pane — holding ${queue.length} queued message(s)`);
         const reason = pane === undefined ? 'no-pane' : 'pane-not-alive';
         for (const message of queue) this.recordAttempt(session, message.onAttempt, reason);
-        continue;
-      }
-      const oldestIndex = queue.findIndex((message) => !this.automationPaused(session, message.automated));
-      const oldest = oldestIndex < 0 ? undefined : queue[oldestIndex];
-      if (oldest === undefined) {
-        for (const message of queue) this.recordAttempt(session, message.onAttempt, 'recipient-paused');
         continue;
       }
       // Paused automated work may be bypassed by a later human message. Every
@@ -279,7 +361,7 @@ export class DeliveryQueue {
             pane,
             oldest.text,
             classification,
-            oldest.automated,
+            oldest.pausePolicy,
           );
           if (writeSkipReason !== null) {
             this.recordAttempt(session, oldest.onAttempt, writeSkipReason);
@@ -310,11 +392,16 @@ export class DeliveryQueue {
   }
 
   private ensureTimer(): void {
-    if (this.timer !== undefined) return;
+    if (this.suspended || this.timer !== undefined) return;
     this.timer = setInterval(() => {
       void this.drainNow();
     }, this.deps.config.queueDrainMs);
     this.timer.unref();
+  }
+
+  private clearTimer(): void {
+    if (this.timer !== undefined) clearInterval(this.timer);
+    this.timer = undefined;
   }
 
   private enqueue(
@@ -324,9 +411,13 @@ export class DeliveryQueue {
     existing = this.queues.get(session),
   ): 'queued' {
     const queue = existing ?? [];
+    if (options.deliveryId !== undefined && queue.some((message) => message.deliveryId === options.deliveryId)) {
+      this.assessing.delete(options.deliveryId);
+      return 'queued';
+    }
     queue.push({
       text,
-      automated: options.automated === true,
+      pausePolicy: options.pausePolicy ?? 'bypass',
       ...(options.deliveryId !== undefined ? { deliveryId: options.deliveryId } : {}),
       ...(options.onAttempt !== undefined ? { onAttempt: options.onAttempt } : {}),
       ...(options.onDelivered !== undefined ? { onDelivered: options.onDelivered } : {}),
@@ -402,27 +493,38 @@ export class DeliveryQueue {
     pane: PaneRef,
     text: string,
     observation: TypingObservation,
-    automated: boolean,
+    pausePolicy: DeliveryPausePolicy,
   ): Promise<DeliverySkipReason | null> {
-    if (this.automationPaused(session, automated)) return 'recipient-paused';
+    if (this.deliveryPaused(session, pausePolicy)) return 'recipient-paused';
     if (observation.token !== undefined && this.deps.backend.submitIfUnchanged !== undefined) {
+      const release = this.acquireSubmissionLease(session, pausePolicy);
+      if (release === undefined) return 'recipient-paused';
       const confirmSubmission = this.prepareSubmission(session);
-      if (!(await this.deps.backend.submitIfUnchanged(pane, text, observation.token))) return 'pane-changed';
-      this.confirmSubmission(session, confirmSubmission);
-      return null;
+      try {
+        if (!(await this.deps.backend.submitIfUnchanged(pane, text, observation.token))) return 'pane-changed';
+        this.confirmSubmission(session, confirmSubmission);
+        return null;
+      } finally {
+        release();
+      }
     }
 
     const confirmation = await this.typingState(session, pane);
     if (confirmation.state !== 'clear') return confirmation.skipReason ?? 'pane-changed';
-    if (this.automationPaused(session, automated)) return 'recipient-paused';
+    const release = this.acquireSubmissionLease(session, pausePolicy);
+    if (release === undefined) return 'recipient-paused';
     const confirmSubmission = this.prepareSubmission(session);
-    await this.deps.backend.run(pane, text);
-    this.confirmSubmission(session, confirmSubmission);
-    return null;
+    try {
+      await this.deps.backend.run(pane, text);
+      this.confirmSubmission(session, confirmSubmission);
+      return null;
+    } finally {
+      release();
+    }
   }
 
-  private automationPaused(session: string, automated: boolean): boolean {
-    return automated && this.deps.isPaused?.(session) === true;
+  private deliveryPaused(session: string, policy: DeliveryPausePolicy): boolean {
+    return policy === 'hold' && (this.pauseClosed.has(session) || this.deps.isPaused?.(session) === true);
   }
 
   private prepareSubmission(session: string): (() => void) | undefined {

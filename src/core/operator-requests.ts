@@ -70,7 +70,13 @@ export class OperatorRequests {
     }
     const response = `Response to request #${String(requestId)} (${JSON.stringify(request.message)}): ${selected}`;
     try {
-      const delivery = await this.deps.messaging.sendToSession('operator', request.session, response);
+      const delivery = await this.deps.messaging.sendToSession(
+        'operator',
+        request.session,
+        response,
+        undefined,
+        'bypass',
+      );
       if (!this.deps.store.finalizeOperatorRequest(requestId, selectedIndex)) {
         throw new Error(`Operator request #${String(requestId)} could not be finalized.`);
       }

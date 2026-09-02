@@ -22,6 +22,10 @@ interface FederationResponse {
   invalid?: boolean;
 }
 
+export const FEDERATION_CONTROL_TIMEOUT_MS = 15_000;
+
+class FederationUnconfirmedError extends Error {}
+
 export class FederationRouter {
   constructor(
     readonly localFleet: string,
@@ -58,6 +62,9 @@ export class FederationRouter {
     if (fleet !== undefined && !FEDERATION_NAME_PATTERN.test(fleet)) {
       throw new InvalidRequestError("'fleet' must be a valid federation name");
     }
+    if (target === 'federation' && fleet !== undefined) {
+      throw new InvalidRequestError("'fleet' cannot be combined with codename 'federation'.");
+    }
     if (fleet === undefined || fleet === this.localFleet) {
       return this.operations.invoke(operationName, routedArgs, { audience: 'session', codename: caller });
     }
@@ -74,6 +81,44 @@ export class FederationRouter {
       originSession: caller,
     });
     return isMessageReceipt(result) ? { ...result, fleet } : result;
+  }
+
+  async invokeFederationWide(
+    operationName: 'pause_session' | 'resume_session',
+    actor: OperationActor,
+  ): Promise<string> {
+    if (actor.audience === 'session' && actor.origin !== undefined) {
+      throw new InvalidRequestError("The 'federation' target can only originate in the caller's local fleet.");
+    }
+    const snapshot = await this.registry.controlSnapshot();
+    const caller = actor.audience === 'session' ? actor.codename : 'operator';
+    const peers = snapshot.peers.filter((peer) => peer.name !== this.localFleet);
+    const local = this.operations.invoke(operationName, { codename: 'all' }, actor);
+    const remote = peers.map((peer) =>
+      this.callPeer(
+        peer,
+        {
+          protocol: FEDERATION_PROTOCOL_VERSION,
+          operation: operationName,
+          arguments: { codename: 'all' },
+          originFleet: this.localFleet,
+          originSession: caller,
+        },
+        FEDERATION_CONTROL_TIMEOUT_MS,
+      ),
+    );
+    const results = await Promise.allSettled([local, ...remote]);
+    const lines = [this.renderControlResult(this.localFleet, results[0])];
+    for (const [index, peer] of peers.entries()) {
+      lines.push(this.renderControlResult(peer.name, results[index + 1]));
+    }
+    for (const peer of snapshot.incompatible) {
+      if (peer.name === this.localFleet) continue;
+      lines.push(
+        `${peer.name}: failed — incompatible federation protocol ${String(peer.protocol)}; expected ${String(FEDERATION_PROTOCOL_VERSION)}.`,
+      );
+    }
+    return lines.join('\n');
   }
 
   async invokeFromPeer(body: unknown): Promise<unknown> {
@@ -99,6 +144,12 @@ export class FederationRouter {
     const definition = this.operations.definition(request.operation);
     if (definition === undefined || !definition.audiences.includes('session') || definition.federation !== 'routable') {
       throw new InvalidRequestError(`Operation '${request.operation}' is not routable through federation.`);
+    }
+    if (
+      (request.operation === 'pause_session' || request.operation === 'resume_session') &&
+      request.arguments.codename === 'federation'
+    ) {
+      throw new InvalidRequestError("The 'federation' target must originate in the caller's local fleet.");
     }
     const actor: OperationActor = {
       audience: 'session',
@@ -128,8 +179,9 @@ export class FederationRouter {
     return candidate as FederationRequest;
   }
 
-  private async callPeer(peer: FederationPeerRecord, request: FederationRequest): Promise<unknown> {
+  private async callPeer(peer: FederationPeerRecord, request: FederationRequest, timeoutMs?: number): Promise<unknown> {
     let response: Response;
+    const signal = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs);
     try {
       const host = peer.host.includes(':') ? `[${peer.host}]` : peer.host;
       // Routed lifecycle operations can legitimately wait for a runtime to
@@ -138,14 +190,26 @@ export class FederationRouter {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
+        ...(signal === undefined ? {} : { signal }),
       });
-    } catch {
+    } catch (error) {
+      if (signal?.aborted === true) {
+        throw new FederationUnconfirmedError(
+          `unconfirmed after ${String(timeoutMs)}ms; the fleet may have applied the operation`,
+        );
+      }
+      if (timeoutMs !== undefined && !this.connectionRefused(error)) {
+        throw new FederationUnconfirmedError('unconfirmed after the peer connection closed without a response');
+      }
       throw new InvalidRequestError(`Federation fleet '${peer.name}' is unavailable.`);
     }
     let payload: FederationResponse;
     try {
       payload = (await response.json()) as FederationResponse;
     } catch {
+      if (timeoutMs !== undefined) {
+        throw new FederationUnconfirmedError('unconfirmed after the peer returned no readable acknowledgement');
+      }
       throw new Error(`Federation fleet '${peer.name}' returned an invalid response.`);
     }
     if (!response.ok || payload.ok !== true) {
@@ -154,5 +218,21 @@ export class FederationRouter {
       throw new Error(message);
     }
     return payload.result;
+  }
+
+  private renderControlResult(fleet: string, result: PromiseSettledResult<unknown> | undefined): string {
+    if (result === undefined) return `${fleet}: failed — missing result.`;
+    if (result.status === 'fulfilled') {
+      const detail = typeof result.value === 'string' && result.value.length > 0 ? `\n${result.value}` : '';
+      return `${fleet}: confirmed.${detail}`;
+    }
+    if (result.reason instanceof FederationUnconfirmedError) return `${fleet}: ${result.reason.message}.`;
+    return `${fleet}: failed — ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`;
+  }
+
+  private connectionRefused(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null || !('cause' in error)) return false;
+    const cause = (error as { cause?: unknown }).cause;
+    return typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'ECONNREFUSED';
   }
 }

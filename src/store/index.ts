@@ -29,6 +29,15 @@ export interface MessageRow {
   last_flush_attempt_at: string | null;
   flush_skip_reason: string | null;
   cancelled_at: string | null;
+  delivery_policy: DeliveryPausePolicy;
+  delivery_envelope: string | null;
+}
+
+export type DeliveryPausePolicy = 'hold' | 'bypass';
+
+export interface ProtectedDelivery {
+  policy: DeliveryPausePolicy;
+  envelope: string;
 }
 
 export interface MessageInsertResult {
@@ -287,6 +296,11 @@ const MIGRATIONS: string[] = [
   SET paused_at = strftime('%Y-%m-%dT%H:%M:%fZ', updated_at)
   WHERE is_paused = 1 AND paused_at IS NULL;
   `,
+  `
+  ALTER TABLE messages ADD COLUMN delivery_policy TEXT NOT NULL DEFAULT 'hold'
+    CHECK (delivery_policy IN ('hold', 'bypass'));
+  ALTER TABLE messages ADD COLUMN delivery_envelope TEXT;
+  `,
 ];
 
 export class Store {
@@ -346,10 +360,23 @@ export class Store {
     type: MessageRow['type'],
     content: string,
     idempotencyKey?: string,
+    delivery?: ProtectedDelivery,
   ): number {
     const result = this.db
-      .prepare('INSERT INTO messages (sender, recipient, type, content, idempotency_key) VALUES (?, ?, ?, ?, ?)')
-      .run(sender, recipient, type, content, idempotencyKey ?? null);
+      .prepare(
+        'INSERT INTO messages ' +
+          '(sender, recipient, type, content, idempotency_key, delivery_policy, delivery_envelope) ' +
+          'VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        sender,
+        recipient,
+        type,
+        content,
+        idempotencyKey ?? null,
+        delivery?.policy ?? 'hold',
+        delivery?.envelope ?? null,
+      );
     return Number(result.lastInsertRowid);
   }
 
@@ -358,10 +385,11 @@ export class Store {
     recipient: string,
     content: string,
     idempotencyKey?: string,
+    delivery?: ProtectedDelivery,
   ): MessageInsertResult {
     return withTransaction(this.db, () => {
       if (idempotencyKey === undefined) {
-        const id = this.insertMessage(sender, recipient, 'message', content);
+        const id = this.insertMessage(sender, recipient, 'message', content, undefined, delivery);
         const row = this.getMessage(id);
         if (row === undefined) throw new Error(`Message #${String(id)} was not persisted.`);
         return { row, deduplicated: false };
@@ -371,11 +399,11 @@ export class Store {
       if (existing?.status === 'cancelled' && existing.flush_skip_reason === 'conductor-restarted') {
         this.db
           .prepare(
-            "UPDATE messages SET content = ?, status = 'pending', created_at = datetime('now'), " +
+            "UPDATE messages SET content = ?, delivery_policy = ?, delivery_envelope = ?, status = 'pending', created_at = datetime('now'), " +
               'delivered_at = NULL, last_flush_attempt_at = NULL, flush_skip_reason = NULL, cancelled_at = NULL ' +
               "WHERE id = ? AND status = 'cancelled'",
           )
-          .run(content, existing.id);
+          .run(content, delivery?.policy ?? 'hold', delivery?.envelope ?? null, existing.id);
         const revived = this.getMessage(existing.id);
         if (revived === undefined) throw new Error(`Message #${String(existing.id)} was not revived.`);
         return { row: revived, deduplicated: false };
@@ -383,14 +411,32 @@ export class Store {
 
       const inserted = this.db
         .prepare(
-          `INSERT OR IGNORE INTO messages (sender, recipient, type, content, idempotency_key)
-           VALUES (?, ?, 'message', ?, ?)`,
+          `INSERT OR IGNORE INTO messages
+           (sender, recipient, type, content, idempotency_key, delivery_policy, delivery_envelope)
+           VALUES (?, ?, 'message', ?, ?, ?, ?)`,
         )
-        .run(sender, recipient, content, idempotencyKey);
+        .run(sender, recipient, content, idempotencyKey, delivery?.policy ?? 'hold', delivery?.envelope ?? null);
       const row = this.getDirectMessageByIdempotencyKey(sender, idempotencyKey);
       if (row === undefined) throw new Error('Idempotent message was not persisted.');
       return { row, deduplicated: inserted.changes === 0 };
     });
+  }
+
+  insertBroadcastDeliveries(
+    sender: string,
+    recipients: readonly string[],
+    content: string,
+    deliveryFor: ProtectedDelivery | ((recipient: string) => ProtectedDelivery),
+  ): MessageRow[] {
+    return withTransaction(this.db, () =>
+      recipients.map((recipient) => {
+        const delivery = typeof deliveryFor === 'function' ? deliveryFor(recipient) : deliveryFor;
+        const id = this.insertMessage(sender, recipient, 'broadcast', content, undefined, delivery);
+        const row = this.getMessage(id);
+        if (row === undefined) throw new Error(`Broadcast delivery #${String(id)} was not persisted.`);
+        return row;
+      }),
+    );
   }
 
   getDirectMessageByIdempotencyKey(sender: string, idempotencyKey: string): MessageRow | undefined {
@@ -567,6 +613,17 @@ export class Store {
     }
     return this.db
       .prepare("SELECT * FROM messages WHERE type = 'message' AND status = 'pending' ORDER BY id")
+      .all() as unknown as MessageRow[];
+  }
+
+  getPendingDeliveries(recipient?: string): MessageRow[] {
+    if (recipient !== undefined) {
+      return this.db
+        .prepare("SELECT * FROM messages WHERE recipient = ? AND status = 'pending' ORDER BY id")
+        .all(recipient) as unknown as MessageRow[];
+    }
+    return this.db
+      .prepare("SELECT * FROM messages WHERE recipient != '*' AND status = 'pending' ORDER BY recipient, id")
       .all() as unknown as MessageRow[];
   }
 

@@ -294,14 +294,7 @@ sees the mechanically qualified sender, such as `[Message from coordinator@front
 by splitting that identity into `codename: "coordinator"` and `fleet: "frontend"`. Do not put
 `@fleet` in a codename; the routing argument is separate.
 
-Federation reuses the existing routable operations: direct messages, broadcasts, receipt status
-and cancellation, session listing/status/tail, start/continue/stop, pause/resume, tags, and auto
-mode. It also routes spawn/teardown, raw terminal input, sentinel assignment, and fleet-watch
-control. Exposure is enforced for operations targeting existing sessions, so `all`, broadcasts,
-listings, status, raw input, teardown, and sentinel assignment cannot reveal or affect hidden
-sessions. Any known peer may spawn on the destination; destination-relative paths and configuration
-apply, and the new session is addressable afterward only if `"*"` or an explicit reservation covers
-its name. Remote callers may clear the destination sentinel and toggle destination-wide fleet watch.
+Federation reuses the existing routable operations: direct messages, broadcasts, receipt status and cancellation, session listing/status/tail, start/continue/stop, pause/resume, tags, and auto mode. It also routes spawn/teardown, raw terminal input, sentinel assignment, and fleet-watch control. Exposure is enforced for operations targeting existing sessions, so ordinary `all`, broadcasts, listings, status, raw input, teardown, and sentinel assignment cannot reveal or affect hidden sessions. Pause/resume `all` is the deliberate exception: it applies the individual pause state to the destination's complete registered roster. Any known peer may spawn on the destination; destination-relative paths and configuration apply, and the new session is addressable afterward only if `"*"` or an explicit reservation covers its name. Remote callers may clear the destination sentinel and toggle destination-wide fleet watch.
 Operator escalation, identity, documentation, and federation discovery remain local-only.
 Unknown or unavailable fleets fail explicitly; they never fall back to a same-named local session.
 
@@ -312,9 +305,9 @@ unanswered and diagnosis is necessary.
 
 Direct-message receipts are observable:
 
-- `queued` means the current Conductor process owns delivery while it remains running.
+- `queued` means Conductor durably retained the recipient delivery for a later safe submission.
 - `delivered` means protected pane submission completed.
-- A Conductor restart cancels queued local messages rather than replaying stale conversation.
+- Conductor reconstructs pending direct messages and per-recipient broadcast deliveries after restart. A crash after terminal submission but before the durable completion update can replay that one message, so this boundary is at-least-once rather than transactionally exactly once.
 - `get_message_status` reports `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`, so a
   sender can distinguish occupied input, missing runtime chrome, and
   `waiting-behind-earlier-message`. Every current-run queued receipt receives an attempt timestamp;
@@ -634,17 +627,13 @@ unavailable. If fleet policy explicitly authorizes one safe response and pane in
 the prompt, the Sentinel may use `type_in_pane`; otherwise it escalates to the operator. Raw input
 can overwrite an operator draft and must never be used as a routine nudge.
 
-`pause_session` is separate from auto. Pause temporarily suppresses automated messages to the
-target from schedules, stall routing, background integrations, and PR Shepherd without changing
-the configured auto state or blocking human messages. Pausing `all` or the configured PR Shepherd
-coordinator also stops the managed Shepherd process; resuming that target starts Shepherd again.
+`pause_session` is separate from auto. Pause temporarily holds peer direct messages and broadcasts and suppresses automated messages to the target from schedules, stall routing, background integrations, and PR Shepherd without changing the configured auto state or blocking operator messages. Pausing `all` or the configured PR Shepherd coordinator also stops the managed Shepherd process; resuming that target starts Shepherd again and drains durable peer traffic in recipient order.
 The coordinator's persisted pause state suppresses Shepherd startup after a Conductor restart.
 Direct operator input still starts turns, but Conductor prepends and returns a pause notice that
 names the durable pause start, suspended automation, and recovery action. The notice explicitly
 calls out delayed GitHub ingestion when the target is the paused Shepherd coordinator. A paused
 session may call `resume_session` for its own codename, providing a narrow self-recovery path; other
-self-lifecycle and self-pause operations remain forbidden. Use pause for maintenance, intentional
-waiting, or operator review; `resume_session` restores the prior behavior.
+self-lifecycle and individual self-pause operations remain forbidden. `all` includes every currently registered session, including its caller, and `resume all` resumes even sessions paused before that shortcut. `federation` runs the same `all` operation once in the local fleet and every currently registered compatible peer. Both are snapshot shortcuts rather than durable fleet modes, so sessions or fleets joining later are unaffected until the command is repeated. Federation results are per fleet; retry after a failed or unconfirmed destination to reconcile without rollback. Use pause for maintenance, intentional waiting, or operator review; `resume_session` restores the prior behavior.
 
 Fleet watch detects campaign-level darkness when individual idle states are normal but no worker is
 making progress. `toggle_fleet_watch` is a single fleet-level boolean. When enabled, it watches every
@@ -1242,6 +1231,8 @@ raw terminal control is explicitly intended. `waiting-behind-earlier-message` me
 scheduled but FIFO safety is holding it behind an older receipt; inspect that older known receipt
 instead of treating the later one as a dead queue. Raw recipient activation and runtime turn events
 both trigger a fresh protected-delivery pass.
+
+`recipient-paused` means a peer delivery is durably held until ordinary resume. Operator messages intentionally bypass the pause and may pass older held peer traffic; held traffic retains its own FIFO order. A stopped paused recipient is not started merely to drain the queue.
 
 Receipt IDs share one fleet-wide sequence. A managed session sees only receipts it sent or
 received; unrelated IDs return the same not-found/not-visible result as absent IDs. Do not infer

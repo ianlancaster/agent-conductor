@@ -5,7 +5,7 @@ import { basename, join } from 'node:path';
 import { log } from '../logger.js';
 import { CODENAME_PATTERN, FEDERATION_NAME_PATTERN } from '../config/schema.js';
 
-export const FEDERATION_PROTOCOL_VERSION = 1;
+export const FEDERATION_PROTOCOL_VERSION = 2;
 
 export interface FederationPeerRecord {
   name: string;
@@ -26,6 +26,11 @@ export interface FederationRegistryOptions {
   env?: NodeJS.ProcessEnv;
   homeDirectory?: string;
   pid?: number;
+}
+
+export interface FederationControlSnapshot {
+  peers: FederationPeerRecord[];
+  incompatible: { name: string; protocol: number }[];
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -171,6 +176,40 @@ export class FederationRegistry {
 
   snapshot(): FederationPeerRecord[] {
     return this.snapshotRecords.map((record) => ({ ...record, sessions: [...record.sessions] }));
+  }
+
+  /** Strict discovery for federation-wide control; never turns registry uncertainty into an empty federation. */
+  async controlSnapshot(): Promise<FederationControlSnapshot> {
+    const directory = await this.resolveDirectory();
+    const entries = await readdir(directory);
+    const peers: FederationPeerRecord[] = [];
+    const incompatible: { name: string; protocol: number }[] = [];
+    for (const entry of entries.sort()) {
+      if (!entry.endsWith('.json')) continue;
+      const path = join(directory, entry);
+      let raw: string;
+      try {
+        raw = await readFile(path, 'utf8');
+      } catch (error) {
+        throw new Error(
+          `Could not read federation registry record '${entry}': ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      const record = parseRecord(raw);
+      if (record?.name !== basename(entry, '.json')) {
+        throw new Error(`Federation registry record '${entry}' is malformed.`);
+      }
+      if (!isProcessAlive(record.pid)) continue;
+      if (record.protocol !== FEDERATION_PROTOCOL_VERSION) {
+        incompatible.push({ name: record.name, protocol: record.protocol });
+      } else {
+        peers.push(record);
+      }
+    }
+    return {
+      peers: peers.sort((left, right) => left.name.localeCompare(right.name)),
+      incompatible: incompatible.sort((left, right) => left.name.localeCompare(right.name)),
+    };
   }
 
   async peer(name: string): Promise<FederationPeerRecord | undefined> {

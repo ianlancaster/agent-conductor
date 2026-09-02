@@ -492,6 +492,24 @@ describe('surface contract', () => {
     );
   });
 
+  it("treats 'all' as ordinary per-session pause and resume, including the caller", async () => {
+    states.pause('beta');
+
+    const paused = await tool('pause_session').handler({ codename: 'all' }, 'alpha');
+    expect(paused).toContain('alpha: paused');
+    expect(paused).toContain('beta: already paused');
+    expect(states.isPaused('alpha')).toBe(true);
+    expect(states.isPaused('beta')).toBe(true);
+    expect(states.isPaused('watch')).toBe(true);
+
+    const resumed = await tool('resume_session').handler({ codename: 'all' }, 'alpha');
+    expect(resumed).toContain('alpha: resumed');
+    expect(resumed).toContain('beta: resumed');
+    expect(states.isPaused('alpha')).toBe(false);
+    expect(states.isPaused('beta')).toBe(false);
+    expect(states.isPaused('watch')).toBe(false);
+  });
+
   it('routes a targeted native conversation through spawn_session', async () => {
     const spawn = vi.spyOn(Lifecycle.prototype, 'spawn').mockResolvedValue('spawned and resumed');
 

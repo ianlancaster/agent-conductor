@@ -127,6 +127,8 @@ export class Supervisor {
   private readonly admission: SessionClaimAdmission;
   private readonly attestor: SessionStatusAttestor;
   private heartbeatTimer: NodeJS.Timeout | undefined;
+  private startupRecoveryActive = false;
+  private readonly startupRunnable = new Set<string>();
 
   constructor(baseDir: string, options: SupervisorOptions = {}) {
     this.resolvedInstance = resolveConductorInstance(baseDir, options.instance);
@@ -346,7 +348,8 @@ export class Supervisor {
         observePaneActivity(this.backend, this.runtimeFor(session), session, pane, this.config.health.captureLines),
       reconcileActivity: (session, pane) => this.health.reconcileActivity(session, pane),
       onRunning: (session) => {
-        void this.recoverPendingMessages(session);
+        if (this.startupRecoveryActive) this.startupRunnable.add(session);
+        else void this.recoverPendingMessages(session);
       },
       events: this.eventBus,
     });
@@ -396,7 +399,7 @@ export class Supervisor {
         await this.lifecycle.reconcile(session);
         return this.states.get(session)?.running === true;
       },
-      deliver: (session, text) => this.delivery.deliverOrQueue(session, text, { automated: true }),
+      deliver: (session, text) => this.delivery.deliverOrQueue(session, text, { pausePolicy: 'hold' }),
       notifyOperator: (text) => this.channelSend({ text }),
       logEvent: (session, event, detail) => {
         this.store.logHealthEvent(session, event, detail);
@@ -491,6 +494,20 @@ export class Supervisor {
         this.store.logHealthEvent(session, 'shepherd_recovered', detail);
         return detail;
       },
+      pauseSession: (session) => this.delivery.pauseRecipient(session, () => this.states.pause(session)),
+      resumeSession: async (session) => {
+        const changed = this.delivery.resumeRecipient(session, () => this.states.resume(session));
+        await this.messaging.recoverPendingMessages(session);
+        return changed;
+      },
+      ...(this.federationRegistry === undefined
+        ? {}
+        : {
+            controlFederation: (operation: 'pause_session' | 'resume_session', actor: OperationActor) => {
+              if (this.federationRouter === undefined) throw new Error('Federation router is unavailable.');
+              return this.federationRouter.invokeFederationWide(operation, actor);
+            },
+          }),
       getDocumentation: (topic) => this.documentation.read(topic),
       ...(this.federationRegistry === undefined
         ? {}
@@ -525,7 +542,7 @@ export class Supervisor {
       isPaused: (session) => this.states.isPaused(session),
       startSession: (session, opts) => this.lifecycle.start(session, opts),
       stopSession: (session) => this.lifecycle.stop(session),
-      deliver: (session, text) => this.delivery.deliverOrQueue(session, text, { automated: true }),
+      deliver: (session, text) => this.delivery.deliverOrQueue(session, text, { pausePolicy: 'hold' }),
       events: this.eventBus,
     });
 
@@ -593,22 +610,9 @@ export class Supervisor {
       this.eventBus.emit({ type: 'session.registered', session: codename, cause: 'startup' });
     }
     this.operatorRequests.recoverStaleClaims();
-    const discardedMessages = this.store.cancelPendingLocalMessagesOnRestart();
-    for (const message of discardedMessages) {
-      this.eventBus.emit({
-        type: 'message.cancelled',
-        receiptId: message.id,
-        sender: message.sender,
-        recipient: message.recipient,
-        reason: 'conductor-restarted',
-      });
-    }
-    if (discardedMessages.length > 0) {
-      log().info(
-        'delivery',
-        `Cancelled ${String(discardedMessages.length)} queued local message(s) from the previous conductor run.`,
-      );
-    }
+    this.startupRecoveryActive = true;
+    this.startupRunnable.clear();
+    this.delivery.suspend();
     log().info('supervisor', `Starting agent-conductor (backend: ${this.backend.name})`);
     await this.backend.init();
 
@@ -637,6 +641,16 @@ export class Supervisor {
       // Rediscovery itself failed — pane liveness is UNKNOWN, so leave the
       // persisted state alone rather than declaring live sessions dead.
       log().warn('supervisor', `Pane rediscovery failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      await this.messaging.recoverPendingMessages();
+      await this.delivery.activate();
+    } catch (error) {
+      this.startupRecoveryActive = false;
+      this.startupRunnable.clear();
+      this.messaging.resetRecovery();
+      this.delivery.clearPending();
+      throw error;
     }
     try {
       await this.connectChannels();
@@ -686,6 +700,14 @@ export class Supervisor {
       }
     }
 
+    // Lifecycle callbacks are intentionally suppressed during startup so they
+    // cannot race an empty drain pass with the first post-start delivery.
+    // Re-admit once all requested launches have settled, then reopen normal
+    // lifecycle-driven recovery before integrations can publish messages.
+    for (const codename of this.startupRunnable) await this.messaging.recoverPendingMessages(codename);
+    this.startupRecoveryActive = false;
+    this.startupRunnable.clear();
+
     await this.integrations.start();
 
     // Initial registered sessions begin as stopped until surviving panes have
@@ -710,6 +732,7 @@ export class Supervisor {
     this.sentinel.stop();
     await this.integrations.stop();
     await this.shepherd.stop();
+    this.messaging.stop();
     this.delivery.stop();
     const stoppedChannels = this.channels.splice(0);
     const stopResults = await Promise.allSettled(stoppedChannels.map((channel) => channel.stop()));
