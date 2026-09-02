@@ -562,6 +562,8 @@ describe('help', () => {
     expect(help).toContain('Sessions:\n  /status [session] —');
     expect(help).toContain('/start <session|all> [-r|--runtime cc|claude-code|codex]');
     expect(help).toContain('/continue <session|all> [-s|--session-id id] [-r|--runtime cc|claude-code|codex]');
+    expect(help).toContain('/pause <session|all|federation>');
+    expect(help).toContain('/resume <session|all|federation>');
     expect(help.match(/-e\|--effort level/gu)).toHaveLength(2);
     expect(help).toContain('Conversation:\n  /tell <session> <message> —');
     expect(help).toContain('  -P/--pane · -T/--tab · -W/--window\n  -H/--headless — detached tmux pane');

@@ -93,8 +93,8 @@ function parsePlacement(args: string[]): ParsedPlacement {
   return { placement, ...(headless ? { headless: true } : {}), rest };
 }
 
-function oneTarget(args: string[], command: string): string {
-  if (args.length !== 1 || args[0] === undefined) usage(`/${command} <session|all>`);
+function oneTarget(args: string[], command: string, targets = 'session|all'): string {
+  if (args.length !== 1 || args[0] === undefined) usage(`/${command} <${targets}>`);
   return args[0];
 }
 
@@ -121,14 +121,15 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
     command: string,
     operation: string,
     group: CommandGroup,
+    targets = 'session|all',
     description = operationDescription(operations, operation),
   ): OperatorCommandDefinition => ({
     command,
     operations: [operation],
     group,
-    usage: `/${command} <session|all>`,
+    usage: `/${command} <${targets}>`,
     description,
-    invoke: (args, actor) => invoke(operation, { codename: oneTarget(args, command) }, actor),
+    invoke: (args, actor) => invoke(operation, { codename: oneTarget(args, command, targets) }, actor),
   });
 
   return [
@@ -316,8 +317,8 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       description: operationDescription(operations, 'toggle_auto'),
       invoke: (args, actor) => invoke('toggle_auto', { codename: oneTarget(args, 'auto') }, actor),
     },
-    targetCommand('pause', 'pause_session', 'Modes'),
-    targetCommand('resume', 'resume_session', 'Modes'),
+    targetCommand('pause', 'pause_session', 'Modes', 'session|all|federation'),
+    targetCommand('resume', 'resume_session', 'Modes', 'session|all|federation'),
     {
       command: 'sentinel',
       operations: ['set_sentinel'],

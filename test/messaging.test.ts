@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionConfig } from '../src/config/schema.js';
 import { DeliveryQueue } from '../src/core/delivery.js';
 import { Messaging } from '../src/core/messaging.js';
@@ -350,6 +350,208 @@ describe('Messaging delivery receipts', () => {
     await expect.poll(() => store.getMessage(1)?.status).toBe('delivered');
     expect(attempts).toBe(3);
     messaging.stop();
+  });
+
+  it('retries start-if-needed after the first stopped-recipient launch fails', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    let starts = 0;
+    const delivery = {
+      enqueueOnly: () => undefined,
+      drainNow: async () => undefined,
+      queueDrainMs: () => 1,
+      pendingCount: () => 0,
+      cancel: () => 'not-found' as const,
+      acquireSubmissionLease: () => () => undefined,
+    } as unknown as DeliveryQueue;
+    const messaging = new Messaging({
+      store,
+      delivery,
+      states,
+      sessions: () => sessions,
+      startSession: async () => {
+        starts += 1;
+        if (starts === 1) throw new Error('launch failed');
+        states.setSession('beta', pane.id);
+        states.setReady('beta');
+        return 'beta started.';
+      },
+    });
+
+    await expect(messaging.sendToSession('alpha', 'beta', 'retry launch')).resolves.toMatchObject({
+      status: 'queued',
+    });
+    await expect.poll(() => store.getMessage(1)?.status).toBe('delivered');
+    expect(starts).toBe(2);
+    messaging.stop();
+  });
+
+  it('does not let a cancelled start trigger launch a stopped recipient for older pending traffic', async () => {
+    store.insertDirectMessage('source', 'beta', 'older pending');
+    let starts = 0;
+    const delivery = {
+      enqueueOnly: () => undefined,
+      drainNow: async () => undefined,
+      queueDrainMs: () => 1,
+      pendingCount: () => 0,
+      cancel: () => 'not-found' as const,
+      acquireSubmissionLease: () => () => undefined,
+    } as unknown as DeliveryQueue;
+    const messaging = new Messaging({
+      store,
+      delivery,
+      states,
+      sessions: () => sessions,
+      startSession: async () => {
+        starts += 1;
+        if (starts === 1) throw new Error('launch failed');
+        return 'beta started.';
+      },
+    });
+
+    const trigger = await messaging.sendToSession('alpha', 'beta', 'start trigger');
+    expect(trigger).toMatchObject({ messageId: 2, status: 'queued' });
+    expect(await messaging.cancelMessage(trigger.messageId, 'alpha')).toBe('Message #2 cancelled.');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(starts).toBe(1);
+    expect(store.getMessage(1)?.status).toBe('pending');
+    expect(store.getMessage(2)?.status).toBe('cancelled');
+    messaging.stop();
+  });
+
+  it('revalidates a queued start retry after cancellation wins the recipient serializer', async () => {
+    store.insertDirectMessage('source', 'beta', 'older pending');
+    let starts = 0;
+    let rejectSecond: ((reason: Error) => void) | undefined;
+    let markSecondStarted: (() => void) | undefined;
+    const secondStarted = new Promise<void>((resolve) => {
+      markSecondStarted = resolve;
+    });
+    const secondLaunch = new Promise<string>((_resolve, reject) => {
+      rejectSecond = reject;
+    });
+    const delivery = {
+      enqueueOnly: () => undefined,
+      drainNow: async () => undefined,
+      queueDrainMs: () => 50,
+      pendingCount: () => 0,
+      cancel: () => 'not-found' as const,
+      acquireSubmissionLease: () => () => undefined,
+    } as unknown as DeliveryQueue;
+    const messaging = new Messaging({
+      store,
+      delivery,
+      states,
+      sessions: () => sessions,
+      startSession: async () => {
+        starts += 1;
+        if (starts === 1) throw new Error('first launch failed');
+        if (starts === 2) {
+          markSecondStarted?.();
+          return secondLaunch;
+        }
+        return 'beta started.';
+      },
+    });
+
+    const trigger = await messaging.sendToSession('alpha', 'beta', 'start trigger', 'trigger-key');
+    const duplicate = messaging.sendToSession('alpha', 'beta', 'duplicate', 'trigger-key');
+    await secondStarted;
+    const cancellation = messaging.cancelMessage(trigger.messageId, 'alpha');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    rejectSecond?.(new Error('second launch failed'));
+
+    await expect(duplicate).resolves.toMatchObject({ messageId: trigger.messageId, status: 'queued' });
+    await expect(cancellation).resolves.toBe(`Message #${String(trigger.messageId)} cancelled.`);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(starts).toBe(2);
+    expect(store.getMessage(1)?.status).toBe('pending');
+    expect(store.getMessage(trigger.messageId)?.status).toBe('cancelled');
+    messaging.stop();
+  });
+
+  it('revalidates an idempotent duplicate start after queued cancellation completes', async () => {
+    store.insertDirectMessage('source', 'beta', 'older pending');
+    let starts = 0;
+    let rejectSecond: ((reason: Error) => void) | undefined;
+    let markSecondStarted: (() => void) | undefined;
+    const secondStarted = new Promise<void>((resolve) => {
+      markSecondStarted = resolve;
+    });
+    const secondLaunch = new Promise<string>((_resolve, reject) => {
+      rejectSecond = reject;
+    });
+    const delivery = {
+      enqueueOnly: () => undefined,
+      drainNow: async () => undefined,
+      queueDrainMs: () => 1_000,
+      pendingCount: () => 0,
+      cancel: () => 'not-found' as const,
+      acquireSubmissionLease: () => () => undefined,
+    } as unknown as DeliveryQueue;
+    const messaging = new Messaging({
+      store,
+      delivery,
+      states,
+      sessions: () => sessions,
+      startSession: async () => {
+        starts += 1;
+        if (starts === 1) throw new Error('first launch failed');
+        if (starts === 2) {
+          markSecondStarted?.();
+          return secondLaunch;
+        }
+        return 'beta started.';
+      },
+    });
+
+    const trigger = await messaging.sendToSession('alpha', 'beta', 'start trigger', 'trigger-key');
+    const firstDuplicate = messaging.sendToSession('alpha', 'beta', 'first duplicate', 'trigger-key');
+    await secondStarted;
+    const cancellation = messaging.cancelMessage(trigger.messageId, 'alpha');
+    const queuedDuplicate = messaging.sendToSession('alpha', 'beta', 'queued duplicate', 'trigger-key');
+    rejectSecond?.(new Error('second launch failed'));
+
+    await firstDuplicate;
+    await expect(cancellation).resolves.toBe(`Message #${String(trigger.messageId)} cancelled.`);
+    await expect(queuedDuplicate).resolves.toMatchObject({ messageId: trigger.messageId, status: 'cancelled' });
+    expect(starts).toBe(2);
+    expect(store.getMessage(1)?.status).toBe('pending');
+    expect(store.getMessage(trigger.messageId)?.status).toBe('cancelled');
+    messaging.stop();
+  });
+
+  it('contains repeated recovery-query failures and keeps retrying the durable row', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const queue = new DeliveryQueue({
+      backend,
+      runtimeFor: () => new FakeRuntime(),
+      getPane: (session) => (session === 'beta' ? { backend: 'fake', id: pane.id } : undefined),
+      isPaused: (session) => states.isPaused(session),
+      config: { ...CONFIG, queueDrainMs: 1 },
+    });
+    queues.push(queue);
+    const messaging = makeMessaging(queue);
+    const originalPending = store.getPendingDeliveries.bind(store);
+    let queries = 0;
+    const pending = vi.spyOn(store, 'getPendingDeliveries').mockImplementation((recipient) => {
+      queries += 1;
+      if (queries <= 3) throw new Error(`query failure ${String(queries)}`);
+      return originalPending(recipient);
+    });
+
+    try {
+      await expect(messaging.sendToSession('alpha', 'beta', 'retry query')).resolves.toMatchObject({
+        status: 'queued',
+      });
+      await expect.poll(() => store.getMessage(1)?.status).toBe('delivered');
+      expect(queries).toBeGreaterThan(3);
+    } finally {
+      pending.mockRestore();
+      messaging.stop();
+    }
   });
 
   it('emits content-free direct-message lifecycle facts and excludes broadcasts', async () => {

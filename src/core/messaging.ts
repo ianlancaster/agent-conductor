@@ -55,6 +55,8 @@ export class Messaging {
   private readonly scheduled = new Set<number>();
   /** Initial-prompt launches have crossed the cancellation boundary. */
   private readonly startingDelivery = new Set<number>();
+  /** Committed direct receipts whose failed admission still authorizes starting their recipient on retry. */
+  private readonly retryStartDeliveries = new Map<string, Set<number>>();
   /** Serializes database admission, initial prompt selection, and cancellation for each recipient. */
   private readonly recipientAdmissions = new Map<string, Promise<void>>();
   private recoveryTimer: NodeJS.Timeout | undefined;
@@ -120,7 +122,7 @@ export class Messaging {
         existing !== undefined &&
         !(existing.status === 'cancelled' && existing.flush_skip_reason === 'conductor-restarted')
       ) {
-        if (existing.status === 'pending') await this.admitOrRetain(existing.recipient, true);
+        if (existing.status === 'pending') await this.admitOrRetain(existing.recipient, existing.id);
         return this.receipt(this.deps.store.getMessage(existing.id) ?? existing, true, notice);
       }
     }
@@ -146,7 +148,7 @@ export class Messaging {
       });
     }
 
-    await this.admitOrRetain(target, true);
+    await this.admitOrRetain(target, id);
     return this.receipt(this.deps.store.getMessage(id) ?? inserted.row, inserted.deduplicated, notice);
   }
 
@@ -157,7 +159,7 @@ export class Messaging {
         ? [...new Set(this.deps.store.getPendingDeliveries().map((row) => row.recipient))]
         : [recipient];
     for (const target of recipients) {
-      await this.admitRecipient(target, false);
+      await this.admitRecipient(target);
     }
     await this.deps.delivery.drainNow();
   }
@@ -166,6 +168,7 @@ export class Messaging {
   resetRecovery(): void {
     this.scheduled.clear();
     this.startingDelivery.clear();
+    this.retryStartDeliveries.clear();
     this.recipientAdmissions.clear();
     if (this.recoveryTimer !== undefined) clearTimeout(this.recoveryTimer);
     this.recoveryTimer = undefined;
@@ -173,6 +176,7 @@ export class Messaging {
 
   stop(): void {
     this.stopped = true;
+    this.retryStartDeliveries.clear();
     if (this.recoveryTimer !== undefined) clearTimeout(this.recoveryTimer);
     this.recoveryTimer = undefined;
   }
@@ -227,6 +231,7 @@ export class Messaging {
           : `Message #${String(id)} could not be cancelled.`;
       }
       this.scheduled.delete(id);
+      this.deleteStartRetry(row.recipient, id);
       this.deps.events?.emit({
         type: 'message.cancelled',
         receiptId: id,
@@ -252,7 +257,7 @@ export class Messaging {
     });
 
     let retainedForRecovery = 0;
-    const results = await Promise.allSettled(recipients.map((recipient) => this.admitRecipient(recipient, false)));
+    const results = await Promise.allSettled(recipients.map((recipient) => this.admitRecipient(recipient)));
     for (const [index, result] of results.entries()) {
       if (result.status === 'fulfilled') continue;
       retainedForRecovery += rows.filter((row) => row.recipient === recipients[index]).length;
@@ -272,10 +277,14 @@ export class Messaging {
     );
   }
 
-  private async admitOrRetain(recipient: string, startIfNeeded: boolean): Promise<void> {
+  private async admitOrRetain(recipient: string, startDeliveryId: number): Promise<void> {
     try {
-      await this.admitRecipient(recipient, startIfNeeded);
+      await this.admitRecipient(recipient, startDeliveryId);
+      this.deleteStartRetry(recipient, startDeliveryId);
     } catch (error) {
+      const deliveryIds = this.retryStartDeliveries.get(recipient) ?? new Set<number>();
+      deliveryIds.add(startDeliveryId);
+      this.retryStartDeliveries.set(recipient, deliveryIds);
       log().warn(
         'messaging',
         `${recipient}: durable delivery admission failed; retaining for retry: ${error instanceof Error ? error.message : String(error)}`,
@@ -284,7 +293,7 @@ export class Messaging {
     }
   }
 
-  private admitRecipient(recipient: string, startIfNeeded: boolean): Promise<void> {
+  private admitRecipient(recipient: string, startDeliveryId?: number, requirePendingStartRetry = false): Promise<void> {
     return this.withRecipient(recipient, async () => {
       if (!this.deps.sessions().has(recipient)) return;
       const allPending = this.deps.store.getPendingDeliveries(recipient);
@@ -293,8 +302,11 @@ export class Messaging {
 
       const running = this.deps.states.get(recipient)?.running === true;
       const olderAlreadyScheduled = allPending.some((row) => this.scheduled.has(row.id));
-      if (!running && !startIfNeeded) return;
-      if (!running && startIfNeeded && !olderAlreadyScheduled) {
+      const mayStart = requirePendingStartRetry
+        ? this.hasPendingStartRetry(recipient)
+        : startDeliveryId !== undefined && this.deps.store.getMessage(startDeliveryId)?.status === 'pending';
+      if (!running && !mayStart) return;
+      if (!running && mayStart && !olderAlreadyScheduled) {
         const paused = this.deps.states.isPaused(recipient);
         const first = pending.find((row) => row.delivery_policy === 'bypass' || !paused);
         if (first === undefined) return;
@@ -397,19 +409,47 @@ export class Messaging {
 
   private async retryUnscheduled(): Promise<void> {
     try {
-      await this.recoverPendingMessages();
+      const recipients = [...new Set(this.deps.store.getPendingDeliveries().map((row) => row.recipient))];
+      for (const recipient of recipients) {
+        await this.admitRecipient(recipient, undefined, true);
+        this.retryStartDeliveries.delete(recipient);
+      }
+      await this.deps.delivery.drainNow();
+      const pending = this.deps.store.getPendingDeliveries();
+      if (
+        pending.some(
+          (row) =>
+            this.deps.sessions().has(row.recipient) &&
+            !this.scheduled.has(row.id) &&
+            (this.deps.states.get(row.recipient)?.running === true || this.hasPendingStartRetry(row.recipient)),
+        )
+      ) {
+        this.ensureRecoveryTimer();
+      }
     } catch (error) {
       log().warn(
         'messaging',
         `durable delivery recovery retry failed: ${error instanceof Error ? error.message : String(error)}`,
       );
-    }
-    if (
-      this.deps.store
-        .getPendingDeliveries()
-        .some((row) => this.deps.sessions().has(row.recipient) && !this.scheduled.has(row.id))
-    ) {
       this.ensureRecoveryTimer();
     }
+  }
+
+  private hasPendingStartRetry(recipient: string): boolean {
+    const deliveryIds = this.retryStartDeliveries.get(recipient);
+    if (deliveryIds === undefined) return false;
+    for (const id of deliveryIds) {
+      if (this.deps.store.getMessage(id)?.status !== 'pending') deliveryIds.delete(id);
+    }
+    if (deliveryIds.size > 0) return true;
+    this.retryStartDeliveries.delete(recipient);
+    return false;
+  }
+
+  private deleteStartRetry(recipient: string, deliveryId: number): void {
+    const deliveryIds = this.retryStartDeliveries.get(recipient);
+    if (deliveryIds === undefined) return;
+    deliveryIds.delete(deliveryId);
+    if (deliveryIds.size === 0) this.retryStartDeliveries.delete(recipient);
   }
 }
