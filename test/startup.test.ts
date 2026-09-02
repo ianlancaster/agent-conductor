@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CONDUCTOR_START_TIMEOUT_MS, waitForConductorStart } from '../src/cli/startup.js';
 
 describe('detached Conductor startup wait', () => {
-  it('allows a slow healthy startup within the 30-second deadline', async () => {
+  it('allows a slow healthy startup within the 60-second deadline', async () => {
     let now = 0;
 
     const started = await waitForConductorStart({
@@ -14,7 +14,7 @@ describe('detached Conductor startup wait', () => {
       now: () => now,
     });
 
-    expect(CONDUCTOR_START_TIMEOUT_MS).toBe(30_000);
+    expect(CONDUCTOR_START_TIMEOUT_MS).toBe(60_000);
     expect(started).toBe(true);
     expect(now).toBe(20_000);
   });
@@ -32,7 +32,7 @@ describe('detached Conductor startup wait', () => {
     });
 
     expect(started).toBe(false);
-    expect(now).toBe(30_000);
+    expect(now).toBe(60_000);
   });
 
   it('stops polling when the child exits before readiness', async () => {

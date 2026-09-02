@@ -1,4 +1,8 @@
-export const CONDUCTOR_START_TIMEOUT_MS = 30_000;
+// The supervisor does not expose /health until configured operator channels are
+// ready. Slack alone has a 45-second startup deadline, so the launcher must
+// wait longer than any individual channel instead of reporting a false failure
+// while the supervisor is still starting successfully.
+export const CONDUCTOR_START_TIMEOUT_MS = 60_000;
 const CONDUCTOR_START_POLL_MS = 250;
 
 export interface StartupWaitDeps {
