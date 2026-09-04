@@ -29,7 +29,7 @@ features:
   reviewFollowUp: { enabled: false }
   reviewerNudge: { enabled: false, escalateAfterHours: 24, businessDaysOnly: true, timezone: UTC, maxEscalations: 1 }
   staleThresholdHours: 4
-automation: { autoMerge: notify, branchUpdate: notify, reviewerComment: notify }
+automation: { autoMerge: notify, syncAfterReject: false, branchUpdate: notify, reviewerComment: notify }
 delivery: { type: stdout }
 guidance: {}
 # Resolved relative to this profile: .conductor/config/../data on new fleets, config/../data on legacy fleets.

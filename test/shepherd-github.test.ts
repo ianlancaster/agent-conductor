@@ -881,6 +881,71 @@ describe('async gh provider', () => {
     expect(mutations[1]?.find((arg) => arg.startsWith('query='))).toContain('enqueuePullRequest');
   });
 
+  it('uses GitHub native branch sync with an exact-head precondition', async () => {
+    const calls: string[][] = [];
+    const headSha = 'a'.repeat(40);
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query PullRequestMutationState')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: { id: 'PR_node', headRefOid: headSha, autoMergeRequest: null, mergeQueueEntry: null },
+              },
+            },
+          });
+        }
+        return JSON.stringify({ data: {} });
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+
+    await provider.mutate({ type: 'sync-branch-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha });
+
+    const mutation = calls.find((args) => (args.find((arg) => arg.startsWith('query=')) ?? '').includes('mutation'));
+    expect(mutation).toEqual(expect.arrayContaining([`expectedHeadOid=${headSha}`]));
+    expect(mutation?.find((arg) => arg.startsWith('query='))).toContain('updatePullRequestBranch');
+  });
+
+  it('refuses an exact-head branch sync after the provider head changes', async () => {
+    const calls: string[][] = [];
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        return JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                id: 'PR_node',
+                headRefOid: 'b'.repeat(40),
+                autoMergeRequest: null,
+                mergeQueueEntry: null,
+              },
+            },
+          },
+        });
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+
+    await expect(
+      provider.mutate({
+        type: 'sync-branch-exact-head',
+        pr: { repo: 'acme/api', number: 7 },
+        headSha: 'a'.repeat(40),
+      }),
+    ).rejects.toThrow(/head changed/);
+    expect(calls.some((args) => (args.find((arg) => arg.startsWith('query=')) ?? '').includes('mutation'))).toBe(false);
+  });
+
   it('uses provider queue availability without adding an expected-head precondition', async () => {
     const calls: string[][] = [];
     const executor: ProcessExecutor = {

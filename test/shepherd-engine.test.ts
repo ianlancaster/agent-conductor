@@ -166,6 +166,24 @@ function failedMergeGroupRemoval(overrides: Partial<MergeQueueRemoval> = {}): Me
   };
 }
 
+function syncableFailedMergeGroupRemoval(overrides: Partial<MergeQueueRemoval> = {}): MergeQueueRemoval {
+  const removal = failedMergeGroupRemoval();
+  if (removal.evidence === undefined) throw new Error('fixture requires merge-group evidence');
+  return {
+    ...removal,
+    evidence: {
+      ...removal.evidence,
+      status: 'complete',
+      queueStack: {
+        status: 'complete',
+        attribution: 'branch-local',
+        currentPrNumber: 7,
+      },
+    },
+    ...overrides,
+  };
+}
+
 function config(input: Record<string, unknown> = {}): ShepherdConfig {
   return parseShepherdConfig({
     version: 2,
@@ -852,6 +870,53 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
+  it('cancels a pending sync when the head changes during the pre-mutation recheck', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    const github = new FakeGitHub();
+    const headA = approvedPr();
+    const headB = approvedPr({
+      headSha: 'head-b',
+      reviews: [{ ...approvedPr().reviews[0]!, commitSha: 'head-b' }],
+      commits: [
+        { sha: 'head-a', committedAt: '2026-07-20T09:00:00Z', message: 'initial' },
+        { sha: 'head-b', committedAt: '2026-07-20T10:05:00Z', message: 'author change' },
+      ],
+    });
+    setDiscovery(github, 'authored', headA);
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-exact-head') github.queued = true;
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute', syncAfterReject: true } }),
+      github,
+      store,
+      () => now,
+    );
+    await engine.pollOnce();
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = syncableFailedMergeGroupRemoval({ createdAt: '2026-07-20T10:05:00Z' });
+    let detailReads = 0;
+    github.getHandler = async () => {
+      detailReads += 1;
+      if (detailReads === 1) return structuredClone(headA);
+      github.details.set('acme/api#7', headB);
+      return structuredClone(headB);
+    };
+    now = new Date('2026-07-20T10:05:00Z');
+    await engine.pollOnce();
+
+    expect(github.mutations.some((mutation) => mutation.type === 'sync-branch-exact-head')).toBe(false);
+    expect(
+      store
+        .listEntities<{ status: string; mutation: GitHubMutation }>('action')
+        .find((entity) => entity.value.mutation.type === 'sync-branch-exact-head')?.value.status,
+    ).toBe('cancelled');
+    store.close();
+  });
+
   it('submits provider-ready tracked PRs solely from provider action availability', async () => {
     const github = new FakeGitHub();
     github.details.set(
@@ -955,6 +1020,78 @@ describe('Shepherd engine', () => {
     });
     expect(store.getTrackedPullRequest({ repo: 'acme/api', number: 7 })?.generation).toBe(2);
     expect(store.listEntities<{ trackedGeneration?: number }>('merge-queue-fence')[0]?.value.trackedGeneration).toBe(1);
+    store.close();
+  });
+
+  it('shares sync-after-reject recovery with provider-ready tracked PRs', async () => {
+    let now = new Date('2026-08-17T10:00:00Z');
+    const github = new FakeGitHub();
+    github.details.set('acme/api#7', pr());
+    github.enqueueAvailable = true;
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-provider-ready' || mutation.type === 'enqueue-exact-head') github.queued = true;
+      if (mutation.type === 'sync-branch-exact-head') {
+        github.queued = false;
+        github.details.set(
+          'acme/api#7',
+          pr({
+            headSha: 'head-b',
+            checks: [{ id: 'pending-b', name: 'test', state: 'PENDING', bucket: 'pending', workflow: 'CI' }],
+            reviews: [],
+          }),
+        );
+      }
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const resolved = config({
+      github: { mode: 'merge-queue' },
+      checks: { required: ['test'] },
+      features: {
+        authoredPRs: { enabled: false },
+        trackedPRs: { enabled: true, releaseGate: 'provider-action-ready' },
+        staleThresholdHours: 24,
+      },
+      automation: { autoMerge: 'execute', syncAfterReject: true },
+    });
+    await new TrackedPullRequestControl(resolved, github, store).claim({
+      repo: 'acme/api',
+      number: 7,
+      actor: 'operator',
+      evidence: {},
+      idempotencyKey: 'claim-provider-sync',
+    });
+    const engine = new ShepherdEngine(resolved, github, store, () => now);
+
+    await engine.pollOnce();
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = syncableFailedMergeGroupRemoval({ createdAt: '2026-08-17T10:05:00Z' });
+    now = new Date('2026-08-17T10:05:00Z');
+    await engine.pollOnce();
+    expect(github.mutations.map((mutation) => mutation.type)).toEqual([
+      'enqueue-provider-ready',
+      'sync-branch-exact-head',
+    ]);
+
+    now = new Date('2026-08-17T10:08:00Z');
+    await engine.pollOnce();
+    expect(github.mutations).toHaveLength(2);
+    github.details.set(
+      'acme/api#7',
+      approvedPr({
+        headSha: 'head-b',
+        checks: [{ id: 'passed-b', name: 'test', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+        reviews: [{ ...approvedPr().reviews[0]!, commitSha: 'head-b' }],
+      }),
+    );
+    now = new Date('2026-08-17T10:10:00Z');
+    await engine.pollOnce();
+    expect(github.mutations.at(-1)).toEqual({
+      type: 'enqueue-exact-head',
+      pr: { repo: 'acme/api', number: 7 },
+      headSha: 'head-b',
+    });
     store.close();
   });
 
@@ -2911,6 +3048,244 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
+  it('syncs one exact rejected head and waits for current-head CI and approval before enqueue', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    const github = new FakeGitHub();
+    const oldApproval = {
+      id: 'approval-a',
+      author: 'reviewer',
+      state: 'APPROVED' as const,
+      body: '',
+      submittedAt: '2026-07-20T09:00:00Z',
+      commitSha: 'head-a',
+    };
+    setDiscovery(github, 'authored', approvedPr({ reviews: [oldApproval] }));
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-exact-head') github.queued = true;
+      if (mutation.type === 'sync-branch-exact-head') {
+        github.queued = false;
+        setDiscovery(
+          github,
+          'authored',
+          approvedPr({
+            headSha: 'head-b',
+            checks: [{ id: 'pending-b', name: 'test', state: 'PENDING', bucket: 'pending', workflow: 'CI' }],
+            reviews: [oldApproval],
+            commits: [
+              { sha: 'head-a', committedAt: '2026-07-20T09:00:00Z', message: 'initial' },
+              { sha: 'head-b', committedAt: '2026-07-20T10:05:00Z', message: 'Merge branch main' },
+            ],
+          }),
+        );
+      }
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({
+        github: { mode: 'merge-queue' },
+        checks: { required: ['test'] },
+        automation: { autoMerge: 'execute', syncAfterReject: true },
+      }),
+      github,
+      store,
+      () => now,
+    );
+
+    await engine.pollOnce();
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = syncableFailedMergeGroupRemoval({ createdAt: '2026-07-20T10:05:00Z' });
+    now = new Date('2026-07-20T10:05:00Z');
+    await engine.pollOnce();
+
+    expect(github.mutations.map((mutation) => mutation.type)).toEqual(['enqueue-exact-head', 'sync-branch-exact-head']);
+    now = new Date('2026-07-20T10:08:00Z');
+    await engine.pollOnce();
+    expect(github.mutations).toHaveLength(2);
+
+    setDiscovery(
+      github,
+      'authored',
+      approvedPr({
+        headSha: 'head-b',
+        checks: [{ id: 'passed-b', name: 'test', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+        reviews: [
+          {
+            id: 'approval-b',
+            author: 'reviewer',
+            state: 'APPROVED',
+            body: '',
+            submittedAt: '2026-07-20T10:09:00Z',
+            commitSha: 'head-b',
+          },
+        ],
+      }),
+    );
+    now = new Date('2026-07-20T10:10:00Z');
+    await engine.pollOnce();
+    expect(github.mutations.at(-1)).toEqual({
+      type: 'enqueue-exact-head',
+      pr: { repo: 'acme/api', number: 7 },
+      headSha: 'head-b',
+    });
+    store.close();
+  });
+
+  it('records a successful no-op sync once and returns the unchanged head to ordinary readiness', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    const github = new FakeGitHub();
+    setDiscovery(
+      github,
+      'authored',
+      approvedPr({
+        checks: [{ id: 'pre-sync-check', name: 'test', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+        reviews: [{ ...approvedPr().reviews[0]!, commitSha: 'head-a' }],
+      }),
+    );
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-exact-head') github.queued = true;
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute', syncAfterReject: true } }),
+      github,
+      store,
+      () => now,
+    );
+
+    await engine.pollOnce();
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = syncableFailedMergeGroupRemoval({
+      id: 'removed-no-op',
+      createdAt: '2026-07-20T10:05:00Z',
+    });
+    now = new Date('2026-07-20T10:05:00Z');
+    await engine.pollOnce();
+    expect(github.mutations.at(-1)?.type).toBe('sync-branch-exact-head');
+
+    now = new Date('2026-07-20T10:08:00Z');
+    await engine.pollOnce();
+    expect(github.mutations.filter((mutation) => mutation.type === 'sync-branch-exact-head')).toHaveLength(1);
+    expect(github.mutations).toHaveLength(2);
+
+    setDiscovery(
+      github,
+      'authored',
+      approvedPr({
+        checks: [{ id: 'post-sync-check', name: 'test', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+        reviews: [
+          {
+            id: 'post-sync-approval',
+            author: 'reviewer',
+            state: 'APPROVED',
+            body: '',
+            submittedAt: '2026-07-20T10:09:00Z',
+            commitSha: 'head-a',
+          },
+        ],
+      }),
+    );
+    now = new Date('2026-07-20T10:09:00Z');
+    await engine.pollOnce();
+    expect(github.mutations.at(-1)?.type).toBe('enqueue-exact-head');
+    const mutationsAfterRecoveryEnqueue = github.mutations.length;
+
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = syncableFailedMergeGroupRemoval({
+      id: 'removed-again',
+      createdAt: '2026-07-20T10:10:00Z',
+    });
+    now = new Date('2026-07-20T10:10:00Z');
+    await engine.pollOnce();
+    expect(github.mutations.filter((mutation) => mutation.type === 'sync-branch-exact-head')).toHaveLength(1);
+    expect(github.mutations).toHaveLength(mutationsAfterRecoveryEnqueue);
+    expect(store.listEvents().find((event) => event.source.removalId === 'removed-again')?.source.syncAfterReject).toBe(
+      'already-attempted-for-head',
+    );
+    store.close();
+  });
+
+  it.each([
+    ['author commit', 'author change'],
+    ['successful current-main sync', 'Merge branch main'],
+  ])('lets a rejected head followed by %s use ordinary new-head readiness', async (_label, message) => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    const github = new FakeGitHub();
+    setDiscovery(github, 'authored', approvedPr());
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-exact-head') github.queued = true;
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute', syncAfterReject: true } }),
+      github,
+      store,
+      () => now,
+    );
+
+    await engine.pollOnce();
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = syncableFailedMergeGroupRemoval({ createdAt: '2026-07-20T10:05:00Z' });
+    setDiscovery(
+      github,
+      'authored',
+      approvedPr({
+        headSha: 'head-b',
+        reviews: [{ ...approvedPr().reviews[0]!, commitSha: 'head-b' }],
+        commits: [
+          { sha: 'head-a', committedAt: '2026-07-20T09:00:00Z', message: 'initial' },
+          { sha: 'head-b', committedAt: '2026-07-20T10:04:00Z', message },
+        ],
+      }),
+    );
+    now = new Date('2026-07-20T10:05:00Z');
+    await engine.pollOnce();
+
+    expect(github.mutations.some((mutation) => mutation.type === 'sync-branch-exact-head')).toBe(false);
+    expect(github.mutations.at(-1)).toEqual({
+      type: 'enqueue-exact-head',
+      pr: { repo: 'acme/api', number: 7 },
+      headSha: 'head-b',
+    });
+    store.close();
+  });
+
+  it.each([
+    ['ambiguous', failedMergeGroupRemoval({ createdAt: '2026-07-20T10:05:00Z' })],
+    ['stale', syncableFailedMergeGroupRemoval({ createdAt: '2026-07-19T09:00:00Z' })],
+  ])('fails %s rejection evidence closed to notification', async (_label, removal) => {
+    let now = new Date('2026-07-19T08:55:00Z');
+    const github = new FakeGitHub();
+    setDiscovery(github, 'authored', approvedPr());
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-exact-head') github.queued = true;
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute', syncAfterReject: true } }),
+      github,
+      store,
+      () => now,
+    );
+    await engine.pollOnce();
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = removal;
+    now = new Date('2026-07-20T10:05:00Z');
+    await engine.pollOnce();
+
+    expect(github.mutations.some((mutation) => mutation.type === 'sync-branch-exact-head')).toBe(false);
+    expect(store.listEvents().some((event) => event.type === 'merge-queue-evicted')).toBe(true);
+    store.close();
+  });
+
   it('bounds repeated provider-confirmed transient same-head removal with increasing retry delays', async () => {
     let now = new Date('2026-07-20T10:00:00Z');
     const github = new FakeGitHub();
@@ -3063,6 +3438,121 @@ describe('Shepherd engine', () => {
       const persistedEvidence = persistedEviction?.source.providerEvidence as MergeQueueRemovalEvidence | undefined;
       expect(persistedEvidence?.workflowRuns[0]?.id).toBe('33448057090');
       expect(persistedEvidence?.workflowRuns[0]?.failedJobs.map((job) => job.name)).toContain('lint');
+      reopened.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reconciles a recent pre-option fence after the option is enabled', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    const github = new FakeGitHub();
+    setDiscovery(github, 'authored', approvedPr());
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-exact-head') github.queued = true;
+    };
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-sync-after-reject-migration-'));
+    const path = join(dir, 'shepherd.db');
+    try {
+      const firstStore = new SqliteShepherdStore(path);
+      const beforeEnablement = new ShepherdEngine(
+        config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute' } }),
+        github,
+        firstStore,
+        () => now,
+      );
+      await beforeEnablement.pollOnce();
+      await beforeEnablement.pollOnce();
+      github.queued = false;
+      github.latestQueueRemoval = syncableFailedMergeGroupRemoval({
+        id: 'removed-before-enablement',
+        createdAt: '2026-07-20T10:05:00Z',
+      });
+      now = new Date('2026-07-20T10:05:00Z');
+      await beforeEnablement.pollOnce();
+      expect(github.mutations.map((mutation) => mutation.type)).toEqual(['enqueue-exact-head']);
+      firstStore.close();
+
+      const reopened = new SqliteShepherdStore(path);
+      const afterEnablement = new ShepherdEngine(
+        config({
+          github: { mode: 'merge-queue' },
+          automation: { autoMerge: 'execute', syncAfterReject: true },
+        }),
+        github,
+        reopened,
+        () => now,
+      );
+      now = new Date('2026-07-20T10:05:30Z');
+      await afterEnablement.pollOnce();
+
+      expect(github.mutations.map((mutation) => mutation.type)).toEqual([
+        'enqueue-exact-head',
+        'sync-branch-exact-head',
+      ]);
+      expect(
+        reopened
+          .listEntities<{ mutation: GitHubMutation }>('action')
+          .filter((entity) => entity.value.mutation.type === 'sync-branch-exact-head'),
+      ).toHaveLength(1);
+      expect(
+        reopened.getEntity<{ mergeQueueRetry?: { fence?: { syncActionKey?: string } } }>('authored:acme/api#7')?.value
+          .mergeQueueRetry?.fence?.syncActionKey,
+      ).toContain('action:sync-after-reject');
+      reopened.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reconciles a pending sync-after-reject retry after restart without creating a second action', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    let syncCalls = 0;
+    const github = new FakeGitHub();
+    setDiscovery(github, 'authored', approvedPr());
+    github.mutationHandler = async (mutation) => {
+      if (mutation.type === 'enqueue-exact-head') {
+        github.mutations.push(mutation);
+        github.queued = true;
+        return;
+      }
+      if (mutation.type === 'sync-branch-exact-head') {
+        syncCalls += 1;
+        if (syncCalls === 1) throw new Error('temporary provider failure');
+        github.mutations.push(mutation);
+      }
+    };
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-sync-after-reject-'));
+    const path = join(dir, 'shepherd.db');
+    const resolved = config({
+      github: { mode: 'merge-queue' },
+      automation: { autoMerge: 'execute', syncAfterReject: true },
+    });
+    try {
+      const firstStore = new SqliteShepherdStore(path);
+      const first = new ShepherdEngine(resolved, github, firstStore, () => now);
+      await first.pollOnce();
+      await first.pollOnce();
+      github.queued = false;
+      github.latestQueueRemoval = syncableFailedMergeGroupRemoval({ createdAt: '2026-07-20T10:05:00Z' });
+      now = new Date('2026-07-20T10:05:00Z');
+      await first.pollOnce();
+      expect(syncCalls).toBe(1);
+      firstStore.close();
+
+      const reopened = new SqliteShepherdStore(path);
+      const restarted = new ShepherdEngine(resolved, github, reopened, () => now);
+      now = new Date('2026-07-20T10:05:02Z');
+      await restarted.pollOnce();
+
+      expect(syncCalls).toBe(2);
+      expect(github.mutations.filter((mutation) => mutation.type === 'sync-branch-exact-head')).toHaveLength(1);
+      expect(
+        reopened
+          .listEntities<{ mutation: GitHubMutation }>('action')
+          .filter((entity) => entity.value.mutation.type === 'sync-branch-exact-head'),
+      ).toHaveLength(1);
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -3270,6 +3760,51 @@ describe('Shepherd engine', () => {
     }
     expect(store.listEvents().filter((event) => event.type === 'branch-update-failed')).toHaveLength(1);
     expect(store.listEntities<{ status: string }>('action')[0]?.value.status).toBe('failed');
+    store.close();
+  });
+
+  it('parks a repeatedly failing sync-after-reject action and retains its exact-head fence', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    let syncCalls = 0;
+    const github = new FakeGitHub();
+    setDiscovery(github, 'authored', approvedPr());
+    github.mutationHandler = async (mutation) => {
+      if (mutation.type === 'enqueue-exact-head') {
+        github.mutations.push(mutation);
+        github.queued = true;
+        return;
+      }
+      if (mutation.type === 'sync-branch-exact-head') {
+        syncCalls += 1;
+        throw new Error('conditional sync rejected');
+      }
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute', syncAfterReject: true } }),
+      github,
+      store,
+      () => now,
+    );
+    await engine.pollOnce();
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = syncableFailedMergeGroupRemoval({ createdAt: '2026-07-20T10:05:00Z' });
+    now = new Date('2026-07-20T10:05:00Z');
+    await engine.pollOnce();
+    for (let attempt = 2; attempt <= 5; attempt += 1) {
+      now = new Date(now.getTime() + 10 * 60_000);
+      await engine.drainActions();
+    }
+
+    expect(syncCalls).toBe(5);
+    expect(store.listEvents().filter((event) => event.type === 'branch-update-failed')).toHaveLength(1);
+    expect(
+      store
+        .listEntities<{ status: string; mutation: GitHubMutation }>('action')
+        .find((entity) => entity.value.mutation.type === 'sync-branch-exact-head')?.value.status,
+    ).toBe('failed');
+    expect(store.listEntities('merge-queue-fence')).toHaveLength(1);
     store.close();
   });
 

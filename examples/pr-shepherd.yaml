@@ -45,6 +45,7 @@ features:
   staleThresholdHours: 4
 automation:
   autoMerge: notify
+  syncAfterReject: false
   branchUpdate: notify
   reviewerComment: notify
 delivery:

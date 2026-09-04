@@ -17,7 +17,12 @@ describe('PR Shepherd V2 configuration', () => {
     expect(config.features.trackedPRs.selectors).toEqual([]);
     expect(config.features.reviewInbox.enabled).toBe(false);
     expect(config.features.reviewInbox.ignoredHeadPatterns).toEqual([]);
-    expect(config.automation).toEqual({ autoMerge: 'notify', branchUpdate: 'notify', reviewerComment: 'notify' });
+    expect(config.automation).toEqual({
+      autoMerge: 'notify',
+      syncAfterReject: false,
+      branchUpdate: 'notify',
+      reviewerComment: 'notify',
+    });
     expect(config.delivery).toEqual({ type: 'stdout' });
     expect(config.github.mergeMethod).toBe('squash');
   });

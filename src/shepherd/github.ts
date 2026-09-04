@@ -384,6 +384,13 @@ mutation DisableAutoMerge($pullRequestId: ID!) {
   disablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId }) { pullRequest { id } }
 }`;
 
+const SYNC_BRANCH_EXACT_HEAD_MUTATION = `
+mutation SyncBranchExactHead($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
+  updatePullRequestBranch(input: { pullRequestId: $pullRequestId, expectedHeadOid: $expectedHeadOid }) {
+    pullRequest { id headRefOid }
+  }
+}`;
+
 const PULL_REQUEST_MUTATION_STATE_QUERY = `
 query PullRequestMutationState($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
@@ -947,6 +954,22 @@ export class GhGitHubProvider implements GitHubProvider {
     }
     if (mutation.type === 'update-branch') {
       await this.gh(['pr', 'update-branch', String(mutation.pr.number), '-R', mutation.pr.repo]);
+      return;
+    }
+    if (mutation.type === 'sync-branch-exact-head') {
+      const state = await this.pullRequestMutationState(mutation.pr);
+      if (state.headRefOid.toLowerCase() !== mutation.headSha.toLowerCase()) {
+        throw new Error(
+          `GitHub head changed before the conditional branch sync for ${mutation.pr.repo}#${String(mutation.pr.number)}.`,
+        );
+      }
+      if (state.mergeQueueEntry !== null) {
+        throw new Error(`GitHub pull request ${mutation.pr.repo}#${String(mutation.pr.number)} is already queued.`);
+      }
+      await this.graphql(SYNC_BRANCH_EXACT_HEAD_MUTATION, {
+        pullRequestId: state.id,
+        expectedHeadOid: mutation.headSha,
+      });
       return;
     }
     const commentsRaw = await this.gh([

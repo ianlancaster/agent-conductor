@@ -209,6 +209,7 @@ export type GitHubMutation =
   | { type: 'dequeue'; pr: PullRequestRef }
   | { type: 'disable-auto-merge'; pr: PullRequestRef }
   | { type: 'update-branch'; pr: PullRequestRef }
+  | { type: 'sync-branch-exact-head'; pr: PullRequestRef; headSha: string }
   | { type: 'post-reviewer-comment'; pr: PullRequestRef; reviewer: string; body: string };
 
 export interface GitHubProvider {

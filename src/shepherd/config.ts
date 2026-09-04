@@ -109,6 +109,7 @@ const configSchema = strictObject({
   }).default({}),
   automation: strictObject({
     autoMerge: automationMode.default('notify'),
+    syncAfterReject: z.boolean().default(false),
     branchUpdate: automationMode.default('notify'),
     reviewerComment: automationMode.default('notify'),
   }).default({}),
