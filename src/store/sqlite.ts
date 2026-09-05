@@ -92,8 +92,10 @@ export function withTransaction<T>(db: DatabaseSync, operation: () => T): T {
   }
 }
 
+export type SqliteMigration = string | ((db: DatabaseSync) => void);
+
 /** Apply append-only migrations and advance user_version in the same transaction. */
-export function applyMigrations(db: DatabaseSync, migrations: readonly string[]): void {
+export function applyMigrations(db: DatabaseSync, migrations: readonly SqliteMigration[]): void {
   const row = db.prepare('PRAGMA user_version').get() as { user_version?: unknown } | undefined;
   const current = row?.user_version;
   if (typeof current !== 'number' || !Number.isInteger(current) || current < 0) {
@@ -109,7 +111,8 @@ export function applyMigrations(db: DatabaseSync, migrations: readonly string[])
     const migration = migrations[version];
     if (migration === undefined) continue;
     withTransaction(db, () => {
-      db.exec(migration);
+      if (typeof migration === 'string') db.exec(migration);
+      else migration(db);
       db.exec(`PRAGMA user_version = ${String(version + 1)}`);
     });
   }

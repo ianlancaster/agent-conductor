@@ -4,6 +4,7 @@ import type { Activity } from '../core/types.js';
 import type { ConductorEvent } from '../events/types.js';
 import type { RunbookSource } from '../runbooks/types.js';
 import { applyMigrations, openSqliteDatabase, openSqliteDatabaseReadOnly, withTransaction } from './sqlite.js';
+import type { SqliteMigration } from './sqlite.js';
 
 /** One launch of a session's CLI (start → stop). A session has many runs over time. */
 export interface RunRow {
@@ -117,7 +118,7 @@ function normalizedActivity(value: string): Activity {
 }
 
 /** Versioned migrations. Append only — never edit an existing entry (post first release). */
-const MIGRATIONS: string[] = [
+const MIGRATIONS: SqliteMigration[] = [
   `
   CREATE TABLE runs (
     id TEXT PRIMARY KEY,
@@ -301,6 +302,28 @@ const MIGRATIONS: string[] = [
     CHECK (delivery_policy IN ('hold', 'bypass'));
   ALTER TABLE messages ADD COLUMN delivery_envelope TEXT;
   `,
+  (db) => {
+    // A retired beta rooms build used versions 13/14 for different migrations.
+    // Its version counter can skip pause/delivery columns on the main lineage.
+    // Repair by column presence, preserving both existing policy and beta data.
+    const sessionColumns = db.prepare('PRAGMA table_info(session_state)').all() as { name: string }[];
+    if (!sessionColumns.some((column) => column.name === 'paused_at')) {
+      db.exec(`
+        ALTER TABLE session_state ADD COLUMN paused_at TEXT;
+        UPDATE session_state
+        SET paused_at = strftime('%Y-%m-%dT%H:%M:%fZ', updated_at)
+        WHERE is_paused = 1 AND paused_at IS NULL;
+      `);
+    }
+    const messageColumns = db.prepare('PRAGMA table_info(messages)').all() as { name: string }[];
+    if (!messageColumns.some((column) => column.name === 'delivery_policy')) {
+      db.exec(`ALTER TABLE messages ADD COLUMN delivery_policy TEXT NOT NULL DEFAULT 'hold'
+        CHECK (delivery_policy IN ('hold', 'bypass'))`);
+    }
+    if (!messageColumns.some((column) => column.name === 'delivery_envelope')) {
+      db.exec('ALTER TABLE messages ADD COLUMN delivery_envelope TEXT');
+    }
+  },
 ];
 
 export class Store {

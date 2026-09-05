@@ -423,13 +423,11 @@ describe('session state', () => {
     seeded.close();
 
     const legacy = openSqliteDatabase(dbPath);
-    const versionRow = legacy.prepare('PRAGMA user_version').get() as { user_version: number };
-    const currentVersion = versionRow.user_version;
     legacy.exec("UPDATE session_state SET activity = 'stalled' WHERE session = 'alpha'");
     legacy.exec('ALTER TABLE session_state DROP COLUMN paused_at');
     legacy.exec('ALTER TABLE messages DROP COLUMN delivery_envelope');
     legacy.exec('ALTER TABLE messages DROP COLUMN delivery_policy');
-    legacy.exec(`PRAGMA user_version = ${String(currentVersion - 4)}`);
+    legacy.exec('PRAGMA user_version = 10');
     legacy.close();
 
     const migrated = new Store(dbPath);
@@ -445,14 +443,13 @@ describe('session state', () => {
     seeded.close();
 
     const legacy = openSqliteDatabase(dbPath);
-    const versionRow = legacy.prepare('PRAGMA user_version').get() as { user_version: number };
     legacy.exec(`
       CREATE TABLE federation_outbox (message_id TEXT PRIMARY KEY);
       CREATE TABLE federation_inbox (message_id TEXT PRIMARY KEY);
       ALTER TABLE session_state DROP COLUMN paused_at;
       ALTER TABLE messages DROP COLUMN delivery_envelope;
       ALTER TABLE messages DROP COLUMN delivery_policy;
-      PRAGMA user_version = ${String(versionRow.user_version - 3)};
+      PRAGMA user_version = 11;
     `);
     legacy.close();
 

@@ -97,4 +97,21 @@ describe('SQLite support', () => {
     });
     db.close();
   });
+
+  it('rolls back conditional migration DDL and version together on failure', () => {
+    const db = openSqliteDatabase(':memory:');
+    applyMigrations(db, ['CREATE TABLE durable (id INTEGER PRIMARY KEY);']);
+    expect(() =>
+      applyMigrations(db, [
+        'CREATE TABLE durable (id INTEGER PRIMARY KEY);',
+        (connection) => {
+          connection.exec('ALTER TABLE durable ADD COLUMN added TEXT');
+          throw new Error('migration failed');
+        },
+      ]),
+    ).toThrow('migration failed');
+    expect(db.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 1 });
+    expect(db.prepare('PRAGMA table_info(durable)').all()).toEqual([expect.objectContaining({ name: 'id' })]);
+    db.close();
+  });
 });

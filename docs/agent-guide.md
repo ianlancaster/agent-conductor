@@ -1225,6 +1225,15 @@ design; use `conductor daemon uninstall` when the fleet is service-managed.
 
 ### A message remains queued
 
+If a protected send fails with `table messages has no column named delivery_policy`, inspect
+the receiving fleet's database, including for federated sends. A retired beta rooms build
+reused migration versions: a database reporting version 14 can still lack protected-delivery
+columns. Updating and opening the store applies a compatibility migration that checks column
+presence, adds missing pause/delivery fields, and preserves messages and legacy tables. Back up
+the database using SQLite's backup API before repair, and arrange a deliberate restart of the
+affected fleet when deploying the update. Do not lower `user_version`, delete the database, or
+use raw pane input to bypass protected delivery.
+
 Inspect `get_message_status`. Any text in the target composer prevents protected delivery,
 regardless of age or length. Ask the operator to submit or clear it. Do not bypass the queue unless
 raw terminal control is explicitly intended. `waiting-behind-earlier-message` means the receipt is
