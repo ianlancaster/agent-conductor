@@ -92,7 +92,8 @@ export type ConductorEvent = ConductorEventEnvelope &
         readonly type: 'schedule';
         readonly session: string;
         readonly label: string;
-        readonly outcome: 'fired' | 'fired-fresh' | 'deferred-paused' | 'failed';
+        readonly outcome:
+          'fired' | 'fired-fresh' | 'deferred-paused' | 'skipped-stopped' | 'skipped-cancelled' | 'failed';
       }
     | {
         readonly type: 'operator.request.created';

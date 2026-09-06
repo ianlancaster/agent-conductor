@@ -44,6 +44,9 @@ return to direct messages.
 
 ## Safety and conventions
 
+- Cron schedules must leave stopped agents stopped by default. Never create or enable a
+  self-waking schedule (`wakeIfStopped: true`) unless the user explicitly authorizes waking
+  stopped agents; a request for recurring work alone is not that authorization.
 - Conductor signs outgoing messages automatically. Never add your own codename, bracketed
   envelope, or fabricated sender signature.
 - Finish the current safe step before acting on a non-urgent incoming message.

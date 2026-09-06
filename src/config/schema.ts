@@ -47,6 +47,8 @@ export const scheduleEntrySchema = z
     prompt: z.string(),
     paused: z.boolean().default(false),
     freshContext: z.boolean().default(false),
+    /** Start an inactive target only when the operator explicitly opts in. */
+    wakeIfStopped: z.boolean().default(false),
   })
   .strict();
 
@@ -389,7 +391,7 @@ export const supervisorConfigSchema = z
             /**
              * Strip Codex's optional UI chrome and non-essential traffic: startup
              * update check (an interactive prompt that would hang a spawned pane),
-             * analytics, startup tips, animations, and terminal-title writes
+             * low-budget model-switch reminders, analytics, startup tips, animations, and terminal-title writes
              * (which would clobber the conductor's pane titles).
              */
             bareUi: z.boolean().default(true),

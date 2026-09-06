@@ -487,7 +487,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       expect(git(repo, 'status', '--porcelain')).toBe('');
     }, 30_000);
 
-    it('runs cron prompts, restarts a Ctrl-C session, honors pause, and hot-reloads schedules', async () => {
+    it('requires cron wake opt-in, restarts an opted-in Ctrl-C session, honors pause, and hot-reloads', async () => {
       // Reconstruct with a one-second config poll just for this timing test.
       await supervisor.stop();
       const supervisorFile = join(baseDir, 'config', 'supervisor.yaml');
@@ -498,13 +498,19 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       const cronRepo = join(baseDir, 'cron-repo');
       mkdirSync(cronRepo);
       const cronFile = join(baseDir, 'config', 'sessions', 'cron.yaml');
-      const scheduleConfig = (prompt?: string): string =>
+      const scheduleConfig = (prompt?: string, wakeIfStopped = false): string =>
         [
           'codename: cron',
           `repo: ${cronRepo}`,
           ...(prompt === undefined
             ? []
-            : ['schedules:', '  - label: heartbeat', '    cron: "*/2 * * * * *"', `    prompt: ${prompt}`]),
+            : [
+                'schedules:',
+                '  - label: heartbeat',
+                '    cron: "*/2 * * * * *"',
+                `    prompt: ${prompt}`,
+                `    wakeIfStopped: ${String(wakeIfStopped)}`,
+              ]),
           '',
         ].join('\n');
       writeFileSync(cronFile, scheduleConfig('cron-tick'));
@@ -518,7 +524,13 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       const tail = async (): Promise<string> => supervisor.command('/tail cron 200');
       const count = (text: string, marker: string): number => text.split(marker).length - 1;
 
-      // Inactive target: cron starts it with the scheduled prompt. Later ticks
+      // Default schedules leave an inactive target stopped, even across real cron ticks.
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      expect(await tail()).not.toContain('FAKE SESSION START');
+      writeFileSync(cronFile, scheduleConfig('cron-tick', true));
+      supervisor.reloadSessionsForTest();
+
+      // Explicitly opted-in target: cron starts it with the scheduled prompt. Later ticks
       // go through the active-session delivery path.
       await until(async () => (await tail()).includes('PROMPT: cron-tick'));
       await until(async () => (await tail()).includes('GOT: cron-tick'));
@@ -544,7 +556,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       await until(async () => count(await tail(), 'cron-tick') > pausedCount);
 
       // Automatic watcher reload replaces the old job rather than double-arming.
-      writeFileSync(cronFile, scheduleConfig('cron-updated'));
+      writeFileSync(cronFile, scheduleConfig('cron-updated', true));
       await until(async () => (await tail()).includes('GOT: cron-updated'));
 
       // Removing the schedule and rebuilding prevents any later delivery.

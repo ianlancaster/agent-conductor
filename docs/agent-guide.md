@@ -98,7 +98,8 @@ files they approve, and validate each layer before adding the next:
 8. Offer Telegram and Slack separately. Keep credentials only in the authoritative environment file,
    never print their values, and enable a channel only after its required credentials exist.
 9. Offer schedules only for a session already exercised manually. Start with a harmless prompt and
-   explain pause/resume and `freshContext`.
+   explain pause/resume, `freshContext`, and the default `wakeIfStopped: false`. Only enable waking
+   stopped agents with explicit user authorization.
 10. Offer PR Shepherd last. Elicit GitHub identity, repository scope, checks/review policy, direct
     versus merge-queue flow, delivery target, and rollout preferences. Keep `shepherd.enabled: false`
     and all execution behavior out of `execute` while validating the profile in shadow/notify mode.
@@ -660,6 +661,7 @@ schedules:
     prompt: Review open pull requests and report important findings to the operator.
     paused: false
     freshContext: false
+    wakeIfStopped: false
 ```
 
 The cron expression uses the Conductor process's local timezone. Each entry has:
@@ -669,15 +671,34 @@ The cron expression uses the Conductor process's local timezone. Each entry has:
 - `prompt`: the task delivered to the session.
 - `paused`: disables only that schedule entry.
 - `freshContext`: stops an active process and starts a fresh conversation with the prompt.
+- `wakeIfStopped`: defaults to `false`; only explicit `true` allows starting an inactive target.
 
 Behavior:
 
 - An active session receives a normal protected message.
-- An inactive session starts with the scheduled prompt.
+- An inactive session is skipped unless `wakeIfStopped: true`. This includes targets whose runtime
+  exited or whose pane was closed; reconciliation checks process state before firing.
+- Skipped occurrences are discarded, not queued for catch-up when the session next starts.
+- `freshContext: true` does not imply wake permission. It can refresh a running session while
+  `wakeIfStopped` remains false.
 - Schedules targeting the same session are serialized.
 - Overlap protection prevents one cron entry from running over itself.
 - Pausing the session with `pause_session` suppresses all its schedules until resumed.
 - Schedule configuration hot-reloads with its session file.
+- An explicit stop cancels pending occurrences, including fresh-context restarts waiting in their
+  settle delay. Scheduler shutdown and reload cancel stale callbacks too. Future occurrences of an
+  explicitly self-waking schedule can still start the target; pause the session or schedule to
+  suppress those as well.
+
+Agents must not create or enable self-waking schedules unless the user explicitly authorizes
+waking stopped agents. A request for recurring work alone is not permission to set
+`wakeIfStopped: true`. Schedules are configured in session YAML; there is no separate cron-creation
+MCP tool or operator command.
+
+Upgrade note: existing schedule entries that omit `wakeIfStopped` now leave stopped agents stopped.
+To preserve intentional unattended wake-ups, the operator must explicitly opt those entries in.
+No database migration is needed. New scheduler behavior requires restarting the Conductor process;
+configuration hot-reload does not replace the code already running in an older daemon.
 
 Use schedules for genuinely time-driven work: periodic inbox triage, daily status synthesis, or a
 maintenance check. Do not use them to poll peers during conversation; direct replies already wake
@@ -937,7 +958,8 @@ These are patterns built from primitives, not special workflow features.
 1. Give a coordinator a recurring schedule with a precise, bounded prompt.
 2. Let it inspect status or an external inbox.
 3. Have it directly message relevant sessions or send a concise operator summary.
-4. Use `freshContext` only when each run must be independent.
+4. Keep `wakeIfStopped: false` unless the user explicitly authorizes wake-ups; use `freshContext`
+   only when each run must be independent.
 5. Avoid schedules for peer-response polling.
 
 ### Shared-worktree advisors

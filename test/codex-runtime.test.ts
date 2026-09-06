@@ -3,7 +3,7 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'n
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { sessionConfigSchema } from '../src/config/schema.js';
+import { sessionConfigSchema, supervisorConfigSchema } from '../src/config/schema.js';
 import type { SessionConfig } from '../src/config/schema.js';
 import { isolatedGitEnvironment } from '../src/core/git.js';
 import type { IdentityEndpoints } from '../src/runtimes/types.js';
@@ -42,6 +42,22 @@ function makeIdentity(configDir: string): IdentityEndpoints {
 }
 
 describe('config generation', () => {
+  it.each([false, true])('suppresses the model nudge on default launch/resume (continue=%s)', (continueSession) => {
+    const runtime = new CodexRuntime({ config: supervisorConfigSchema.parse({}).runtimes.codex, baseDir: '/base' });
+    const command = runtime.buildLaunchCommand(makeSession({ model: 'chosen-model' }), makeIdentity('/cfg'), {
+      continueSession,
+    });
+    expect(command).toContain("-c 'notice.hide_rate_limit_model_nudge=true'");
+    expect(command).toContain("--model 'chosen-model'");
+    const stock = new CodexRuntime({
+      config: { ...supervisorConfigSchema.parse({}).runtimes.codex, bareUi: false },
+      baseDir: '/base',
+    });
+    expect(stock.buildLaunchCommand(makeSession(), makeIdentity('/cfg'), { continueSession })).not.toContain(
+      'hide_rate_limit_model_nudge',
+    );
+  });
+
   it('builds MCP server overrides with URL identity and raised tool timeout', () => {
     const overrides = buildConfigOverrides({
       mcpUrl: 'http://127.0.0.1:3456/mcp/sample',
@@ -56,6 +72,7 @@ describe('config generation', () => {
     expect(overrides).toContain('approval_policy="never"');
     expect(overrides).toContain('sandbox_mode="danger-full-access"');
     expect(overrides.join(' ')).not.toContain('check_for_update_on_startup');
+    expect(overrides.join(' ')).not.toContain('hide_rate_limit_model_nudge');
   });
 
   it('bareUi strips update prompt, analytics, tips, animations, and title writes', () => {
@@ -67,6 +84,7 @@ describe('config generation', () => {
       bareUi: true,
     });
     expect(overrides).toContain('check_for_update_on_startup=false');
+    expect(overrides).toContain('notice.hide_rate_limit_model_nudge=true');
     expect(overrides).toContain('analytics.enabled=false');
     expect(overrides).toContain('tui.show_tooltips=false');
     expect(overrides).toContain('tui.animations=false');

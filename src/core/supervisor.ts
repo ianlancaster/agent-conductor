@@ -473,6 +473,7 @@ export class Supervisor {
         maxLines: this.config.messaging.tailMaxLines,
       },
       retitle: (session) => this.retitle(session),
+      cancelScheduledRuns: (session) => this.scheduler.cancelSession(session),
       summon: (session) => this.paneAction(session, 'summon'),
       banish: (session) => this.paneAction(session, 'banish'),
       setSentinel: (session) => this.setSentinel(session),
@@ -535,7 +536,7 @@ export class Supervisor {
       isActive: async (session) => {
         // Cron may fire after Ctrl-C but before the next heartbeat/status call.
         // Inspect the terminal process before deciding to type into an
-        // allegedly active session; an idle shell must be restarted instead.
+        // allegedly active session; an idle shell is stopped for wake policy.
         await this.lifecycle.reconcile(session);
         return this.states.get(session)?.running === true;
       },

@@ -432,6 +432,20 @@ describe('loadSessionConfigs', () => {
     expect(beta?.runtime).toBe('codex');
     expect(beta?.schedules[0]?.cron).toBe('0 9 * * *');
     expect(beta?.schedules[0]?.paused).toBe(false);
+    expect(beta?.schedules[0]?.wakeIfStopped).toBe(false);
+  });
+
+  it('requires a boolean opt-in to wake stopped schedule targets', () => {
+    writeSession(
+      'beta',
+      'codename: beta\nrepo: /tmp/beta\nschedules:\n  - cron: "0 9 * * *"\n    prompt: work\n    wakeIfStopped: true\n',
+    );
+    expect(loadSessionConfigs(baseDir).get('beta')?.schedules[0]?.wakeIfStopped).toBe(true);
+    writeSession(
+      'beta',
+      'codename: beta\nrepo: /tmp/beta\nschedules:\n  - cron: "0 9 * * *"\n    prompt: work\n    wakeIfStopped: "true"\n',
+    );
+    expect(() => loadSessionConfigs(baseDir)).toThrow(/wakeIfStopped/);
   });
 
   it('parses a per-session permission override without forcing one onto every session', () => {

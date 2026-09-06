@@ -21,6 +21,8 @@ export class Scheduler {
   private jobs: Cron[] = [];
   /** Serialize all schedules targeting one session, not merely each Cron job. */
   private readonly sessionRuns = new Map<string, Promise<void>>();
+  private generation = 0;
+  private readonly cancellations = new Map<string, number>();
 
   constructor(private readonly deps: SchedulerDeps) {}
 
@@ -50,10 +52,14 @@ export class Scheduler {
   }
 
   private enqueue(codename: string, entry: ScheduleEntry): Promise<void> {
+    const generation = this.generation;
+    const cancellation = this.cancellations.get(codename);
+    const isCurrent = (): boolean =>
+      generation === this.generation && cancellation === this.cancellations.get(codename);
     const previous = this.sessionRuns.get(codename) ?? Promise.resolve();
     const run = previous.then(
-      () => this.fire(codename, entry),
-      () => this.fire(codename, entry),
+      () => this.fire(codename, entry, isCurrent),
+      () => this.fire(codename, entry, isCurrent),
     );
     this.sessionRuns.set(codename, run);
     return run.finally(() => {
@@ -62,29 +68,47 @@ export class Scheduler {
   }
 
   stop(): void {
+    this.generation += 1;
     for (const job of this.jobs) job.stop();
     this.jobs = [];
   }
 
-  private async fire(codename: string, entry: ScheduleEntry): Promise<void> {
+  /** Cancel already queued/in-flight occurrences before an explicit session stop. */
+  cancelSession(codename: string): void {
+    this.cancellations.set(codename, (this.cancellations.get(codename) ?? 0) + 1);
+  }
+
+  private async fire(codename: string, entry: ScheduleEntry, isCurrent: () => boolean): Promise<void> {
     const label = entry.label ?? entry.cron;
+    const canRun = (): boolean => {
+      if (!isCurrent()) {
+        this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'skipped-cancelled' });
+        return false;
+      }
+      return !this.deferPaused(codename, label);
+    };
     try {
-      if (this.deferPaused(codename, label)) return;
+      if (!canRun()) return;
+      const active = await this.deps.isActive(codename);
+      if (!canRun()) return;
+      // Check before BOTH branches: freshContext alone never grants wake authority.
+      // Exact true also keeps older direct callers that omit the field fail-closed.
+      if (!active && entry.wakeIfStopped !== true) {
+        log().info('scheduler', `${codename}: '${label}' skipped (session is stopped)`);
+        this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'skipped-stopped' });
+        return;
+      }
       if (entry.freshContext) {
-        if (await this.deps.isActive(codename)) {
-          if (this.deferPaused(codename, label)) return;
+        if (active) {
           await this.deps.stopSession(codename);
           await sleep(FRESH_SESSION_SETTLE_MS);
-          if (this.deferPaused(codename, label)) return;
         }
-        if (this.deferPaused(codename, label)) return;
+        if (!canRun()) return;
         await this.deps.startSession(codename, { prompt: entry.prompt });
         log().info('scheduler', `${codename}: '${label}' fired (fresh session)`);
         this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'fired-fresh' });
         return;
       }
-      const active = await this.deps.isActive(codename);
-      if (this.deferPaused(codename, label)) return;
       if (active) {
         await this.deps.deliver(codename, entry.prompt);
       } else {

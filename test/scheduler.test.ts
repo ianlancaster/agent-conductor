@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { sessionConfigSchema } from '../src/config/schema.js';
+import type { z } from 'zod';
 import type { SessionConfig } from '../src/config/schema.js';
 import { Scheduler } from '../src/core/scheduler.js';
 import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
 
-function sessionWith(schedules: SessionConfig['schedules']): SessionConfig {
-  return { codename: 'alpha', repo: '/tmp/alpha', runtime: 'claude-code', additionalDirs: [], schedules };
+function sessionWith(schedules: z.input<typeof sessionConfigSchema>['schedules']): SessionConfig {
+  return sessionConfigSchema.parse({ codename: 'alpha', repo: '/tmp/alpha', schedules });
 }
 
 let scheduler: Scheduler;
@@ -62,6 +64,81 @@ afterEach(() => {
 const EVERY_SECOND = '* * * * * *';
 
 describe('Scheduler', () => {
+  it.each([false, true])('does not wake an inactive target by default (freshContext=%s)', async (freshContext) => {
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'do not wake', freshContext }]));
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(5100);
+    expect(started).toEqual([]);
+    expect(stopped).toEqual([]);
+    expect(delivered).toEqual([]);
+    expect(events.events).toContainEqual({
+      type: 'schedule',
+      session: 'alpha',
+      label: EVERY_SECOND,
+      outcome: 'skipped-stopped',
+    });
+    active = true;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(delivered).toEqual([]); // no catch-up queue
+  });
+
+  it('starts an inactive fresh-context target only with wake opt-in', async () => {
+    sessions.set(
+      'alpha',
+      sessionWith([{ cron: EVERY_SECOND, prompt: 'fresh', freshContext: true, wakeIfStopped: true }]),
+    );
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(started).toEqual([{ session: 'alpha', prompt: 'fresh' }]);
+    expect(stopped).toEqual([]);
+  });
+
+  it.each([false, true])('pause overrides wake opt-in (freshContext=%s)', async (freshContext) => {
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'held', wakeIfStopped: true, freshContext }]));
+    paused = true;
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(started).toEqual([]);
+    expect(delivered).toEqual([]);
+    expect(events.events[0]).toMatchObject({ outcome: 'deferred-paused' });
+  });
+
+  it('honors explicit false after reloading an opted-in schedule', async () => {
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', wakeIfStopped: true }]));
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(started).toHaveLength(1);
+    active = false;
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', wakeIfStopped: false }]));
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(started).toHaveLength(1);
+    expect(delivered).toEqual([]);
+  });
+
+  it.each(['session stop', 'scheduler stop', 'reload'])(
+    'cancels fresh-context restart during settle on %s',
+    async (action) => {
+      sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'nightly', freshContext: true }]));
+      active = true;
+      scheduler.rebuild();
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(stopped).toEqual(['alpha']);
+      if (action === 'session stop') scheduler.cancelSession('alpha');
+      else if (action === 'scheduler stop') scheduler.stop();
+      else scheduler.rebuild();
+      await vi.advanceTimersByTimeAsync(4100);
+      expect(started).toEqual([]);
+      expect(delivered).toEqual([]);
+      expect(events.events).toContainEqual({
+        type: 'schedule',
+        session: 'alpha',
+        label: EVERY_SECOND,
+        outcome: 'skipped-cancelled',
+      });
+    },
+  );
+
   it('delivers the prompt into an active session', async () => {
     sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: false, freshContext: false }]));
     active = true;
@@ -77,8 +154,11 @@ describe('Scheduler', () => {
     });
   });
 
-  it('starts an inactive session with the prompt', async () => {
-    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'wake up', paused: false, freshContext: false }]));
+  it('starts an inactive session with an explicit wake opt-in', async () => {
+    sessions.set(
+      'alpha',
+      sessionWith([{ cron: EVERY_SECOND, prompt: 'wake up', wakeIfStopped: true, paused: false, freshContext: false }]),
+    );
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
     expect(started[0]).toEqual({ session: 'alpha', prompt: 'wake up' });
@@ -185,7 +265,7 @@ describe('Scheduler', () => {
       'alpha',
       sessionWith([
         { cron: 'not a cron', prompt: 'never', paused: false, freshContext: false },
-        { cron: EVERY_SECOND, prompt: 'still works', paused: false, freshContext: false },
+        { cron: EVERY_SECOND, prompt: 'still works', wakeIfStopped: true, paused: false, freshContext: false },
       ]),
     );
     expect(() => {
@@ -196,7 +276,10 @@ describe('Scheduler', () => {
   });
 
   it('rebuild replaces jobs and stop() cancels them', async () => {
-    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: false, freshContext: false }]));
+    sessions.set(
+      'alpha',
+      sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', wakeIfStopped: true, paused: false, freshContext: false }]),
+    );
     scheduler.rebuild();
     scheduler.rebuild(); // must not double-arm
     await vi.advanceTimersByTimeAsync(1100);
@@ -211,8 +294,8 @@ describe('Scheduler', () => {
     sessions.set(
       'alpha',
       sessionWith([
-        { cron: EVERY_SECOND, prompt: 'first', paused: false, freshContext: false },
-        { cron: EVERY_SECOND, prompt: 'second', paused: false, freshContext: false },
+        { cron: EVERY_SECOND, prompt: 'first', wakeIfStopped: true, paused: false, freshContext: false },
+        { cron: EVERY_SECOND, prompt: 'second', wakeIfStopped: true, paused: false, freshContext: false },
       ]),
     );
     scheduler.rebuild();
@@ -241,7 +324,10 @@ describe('Scheduler', () => {
       },
       events,
     });
-    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'restart', paused: false, freshContext: false }]));
+    sessions.set(
+      'alpha',
+      sessionWith([{ cron: EVERY_SECOND, prompt: 'restart', wakeIfStopped: true, paused: false, freshContext: false }]),
+    );
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
     expect(inspected).toBe(1);
@@ -263,7 +349,16 @@ describe('Scheduler', () => {
     });
     sessions.set(
       'alpha',
-      sessionWith([{ cron: EVERY_SECOND, prompt: 'restart', label: 'safe label', paused: false, freshContext: false }]),
+      sessionWith([
+        {
+          cron: EVERY_SECOND,
+          prompt: 'restart',
+          wakeIfStopped: true,
+          label: 'safe label',
+          paused: false,
+          freshContext: false,
+        },
+      ]),
     );
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);

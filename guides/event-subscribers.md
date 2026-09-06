@@ -126,7 +126,7 @@ paths, or arbitrary runtime reason strings.
 | `session.activity.changed`  | `session`; `previous`; `activity`; transition-only                                                                                |
 | `stall`                     | `session`; `kind`; `detectedAt`; mechanical `disposition`                                                                         |
 | `fleet.stalled`             | `sessions`; `detectedAt`; routed/operator/sentinel-down `disposition`                                                             |
-| `schedule`                  | `session`; `label`; `outcome: fired \| fired-fresh \| deferred-paused \| failed`                                                  |
+| `schedule`                  | `session`; `label`; `outcome: fired \| fired-fresh \| deferred-paused \| skipped-stopped \| skipped-cancelled \| failed`          |
 | `operator.request.created`  | `session`; `requestId`; `optionCount`                                                                                             |
 | `operator.request.resolved` | `session`; `requestId`; one-based `selectedOption`                                                                                |
 | `runbook.adopted`           | adoption/runbook IDs, version, source, topic, operator approval, session roles                                                    |

@@ -102,6 +102,9 @@ export function buildConfigOverrides(opts: CodexOverrideOptions): string[] {
       // The update check renders a BLOCKING interactive prompt at startup
       // (verified against 0.144.3) — it would hang every spawned pane.
       'check_for_update_on_startup=false',
+      // Opt out of the blocking "Approaching rate limits" model-switch reminder.
+      // This keeps the selected model; it does not suppress quota enforcement.
+      'notice.hide_rate_limit_model_nudge=true',
       'analytics.enabled=false',
       // Startup tip banner ("Tip: Our most capable model yet…").
       'tui.show_tooltips=false',

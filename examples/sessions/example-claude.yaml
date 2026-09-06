@@ -14,7 +14,9 @@ schedules:
     cron: '0 9 * * 1-5'
     prompt: Review overnight CI results and summarize anything broken.
     paused: false # disable this one schedule without pausing the whole session
+    wakeIfStopped: false # only opt in with explicit user authorization to wake stopped agents
   - label: nightly-fresh
     cron: '0 2 * * *'
     prompt: Start the nightly maintenance checklist.
     freshContext: true # stop + restart with a clean context before delivering
+    wakeIfStopped: false # freshContext alone never starts a stopped session

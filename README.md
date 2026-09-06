@@ -326,9 +326,18 @@ removes only safe, Conductor-owned directories and refuses dirty worktrees. Tear
 codename's native conversation data; deleting that history is not implicit in workspace or
 registration cleanup. A later `/spawn <same-name> --session-id <id>` can therefore rebuild a
 disposable workspace and resume that conversation without an intervening fresh launch. Session YAML
-can also define Croner-compatible `schedules`; an inactive session starts with the prompt,
-while an active session receives it through the normal protected delivery path. Pausing the
+can also define Croner-compatible `schedules`; inactive sessions are skipped by default
+(`wakeIfStopped: false`), while active sessions receive prompts through protected delivery.
+Only explicit `wakeIfStopped: true` allows a cron to start a stopped target; agents need the
+user's explicit authorization to enable that behavior. This safe default also applies to existing
+schedules that omit the field and to fresh-context schedules. Pausing the
 session defers cron occurrences, including one that was reconciling activity when pause began.
+
+Managed Codex launches and resumes suppress the blocking low-budget model-switch reminder through
+`notice.hide_rate_limit_model_nudge=true` under the default `runtimes.codex.bareUi: true`.
+This preserves the selected model, not access after a hard usage limit. Setting `bareUi: false`
+leaves this preference to Codex's inherited configuration. Existing Codex processes need a new
+launch or resume to pick up launch overrides; rebuilding Conductor does not dismiss an open dialog.
 
 The tmux backend supports `--headless` sessions and unattended operation over SSH.
 `conductor daemon install` creates a user-level launchd or systemd service for a globally

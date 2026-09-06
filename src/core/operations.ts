@@ -80,6 +80,8 @@ export interface ConductorOperationDeps {
   /** Optional protected-delivery transition seams; direct state changes remain the test/embed fallback. */
   pauseSession?(codename: string): Promise<boolean>;
   resumeSession?(codename: string): Promise<boolean>;
+  /** Cancel pending cron work before an explicit stop, including a fresh-context settle delay. */
+  cancelScheduledRuns?(codename: string): void;
   /** Source-side federation fan-out for the reserved pause/resume target. */
   controlFederation?(operation: 'pause_session' | 'resume_session', actor: OperationActor): Promise<string>;
   getDocumentation(topic?: string): Promise<string>;
@@ -346,7 +348,10 @@ export class ConductorOperations {
         federation: 'routable',
         inputSchema: schema({ codename: stringProperty("Session codename or 'all'") }, ['codename']),
         handler: (args, actor) =>
-          this.forTargets(args, actor, 'stop', (codename) => this.deps.lifecycle.stop(codename)),
+          this.forTargets(args, actor, 'stop', (codename) => {
+            this.deps.cancelScheduledRuns?.(codename);
+            return this.deps.lifecycle.stop(codename);
+          }),
       },
       {
         name: 'continue_session',
