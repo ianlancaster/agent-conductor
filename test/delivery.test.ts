@@ -86,7 +86,7 @@ describe('DeliveryQueue', () => {
 
   it.each(['›', '»'])('holds a Codex %s draft, then drains when the composer becomes empty', async (glyph) => {
     const codex = new CodexRuntime({ config: { binary: 'codex', toolTimeoutSec: 600 }, baseDir: '/tmp' });
-    runtime.parseInputState = (capture, session) => codex.parseInputState(capture, session);
+    runtime.parseInputState = (capture: string, session?: string) => codex.parseInputState(capture, session);
     backend.setPaneContent(pane.id, `${glyph} unfinished draft\n  codex-test high · /repo`);
     await expect(queue.deliverOrQueue('alpha', 'preserved message')).resolves.toBe('queued');
     expect(backend.panes.get(pane.id)?.received).toEqual([]);
