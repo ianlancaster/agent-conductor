@@ -1263,6 +1263,8 @@ scheduled but FIFO safety is holding it behind an older receipt; inspect that ol
 instead of treating the later one as a dead queue. Raw recipient activation and runtime turn events
 both trigger a fresh protected-delivery pass.
 
+Codex composer detection supports both `›` and `»` prompt markers. If an older build treats a visible empty composer as unavailable, update the compiled Conductor before restarting the affected fleet. Do not clear unknown input or force message delivery to work around runtime UI changes.
+
 `recipient-paused` means a peer delivery is durably held until ordinary resume. Operator messages intentionally bypass the pause and may pass older held peer traffic; held traffic retains its own FIFO order. A stopped paused recipient is not started merely to drain the queue.
 
 Receipt IDs share one fleet-wide sequence. A managed session sees only receipts it sent or
