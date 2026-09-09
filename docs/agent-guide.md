@@ -176,21 +176,23 @@ Important rules:
 - Prefer absolute project paths. Relative paths are resolved according to the documented config
   loader rules, not the agent's current shell.
 - Model and effort values are intentional free text. Availability lists are hints, not allowlists.
-- A session's `systemPromptFile` is appended after the mandatory Conductor protocol and retained
-  across Claude Code and Codex compaction. It is capped at 5 KiB UTF-8, validated and privately
-  snapshotted on start/continue, and never written into the working repository. Missing,
+- A session's `systemPromptFile` is applied before the final mandatory Conductor protocol and
+  retained across Claude Code and Codex compaction. It is capped at 5 KiB UTF-8, validated and
+  privately snapshotted on start/continue, and never written into the working repository. Missing,
   unreadable, non-file, malformed, or oversized sources fail preparation visibly. Source edits do
   not change a running process; start or continue to activate a new snapshot. Relative paths
-  resolve from the fleet root. Use this layer for a role such as sentinel policy, not to replace
-  identity or safety rules.
+  resolve from the fleet root. This is operator-derived, revocable context: current authenticated
+  operator direction supersedes conflicting role, budget, plan, or policy text. Use this layer for
+  a role such as sentinel policy, not to replace identity or safety rules.
 - A session's `continuityStateFile` is a separate dynamic layer for bounded current work state.
   It has an independent 5 KiB UTF-8 limit and is read fresh at runtime startup, native resume, and
   every confirmed manual or automatic compaction. Explicit clear is excluded. The dynamic state is
-  subordinate to the protocol and prepared static session instructions; it cannot grant itself
-  authority. Conductor validates the source before start/continue, reads but never writes or
-  interprets it, and does not reuse stale contents if a later read fails. Relative paths resolve
-  from the fleet root. The final component must be a regular file, not a symlink. Do not put
-  credentials or secrets in either instruction file because the runtime/provider receives them.
+  subordinate to the protocol and current authenticated operator direction; it cannot grant itself
+  authority or make static session instructions irrevocable. Conductor validates the source
+  before start/continue, reads but never writes or interprets it, and does not reuse stale
+  contents if a later read fails. Relative paths resolve from the fleet root. The final component
+  must be a regular file, not a symlink. Do not put credentials or secrets in either instruction
+  file because the runtime/provider receives them.
 - Secrets belong in `.conductor/.env`, never supervisor or session YAML. The environment file may
   contain channel credentials; never print, quote, summarize, or message its values.
 - `defaults.bypassPermissions` controls the fleet launch default, and a session's
@@ -384,9 +386,9 @@ the detached fleet session. Operator-only `/summon` and `/banish` move supported
 of view without stopping them.
 
 Spawn can also set repeatable `additionalDirs` for runtime access outside the workspace and a
-`systemPromptFile` for durable role instructions appended after the mandatory protocol, and a
-`continuityStateFile` for bounded current state. The operator command equivalents are
-`--add-dir`/`-a`, `--system-prompt`, and `--continuity-state`; each instruction source has an
+`systemPromptFile` for durable, operator-revocable role instructions applied before the final
+mandatory protocol, and a `continuityStateFile` for bounded current state. The operator command
+equivalents are `--add-dir`/`-a`, `--system-prompt`, and `--continuity-state`; each instruction source has an
 independent 5 KiB UTF-8 limit. Static instructions are snapshotted on start/continue, while current
 state is reread at startup, resume, and compaction. These primitives support shared
 records and role policy without writing generated instructions into disposable worktrees.
@@ -501,15 +503,16 @@ Worktree practices:
 - Current Codex sessions keep their generated override inside the isolated session home and do not
   dirty the worktree. Fleets upgraded from an earlier release may retain an obsolete
   `AGENTS.override.md` entry in `.gitignore`; remove that ignore line manually when convenient.
-- Claude Code receives the prepared protocol and optional session layer through its supported
-  launch system-prompt files. Claude Code's compaction contract retains those system-prompt layers;
-  Conductor does not add a second static reinjection hook that would duplicate them. A configured
-  dynamic state reader adds only the fresh subordinate state layer on startup, resume, and compact.
+- Claude Code receives the optional prepared session layer followed by the mandatory protocol
+  through its supported launch system-prompt files. Claude Code's compaction contract retains
+  those system-prompt layers; Conductor does not add a second static reinjection hook that would
+  duplicate them. A configured dynamic state reader adds only the fresh subordinate state layer
+  on startup, resume, and compact.
 - Codex reads `AGENTS.md` guidance once when a run starts. Conductor also generates a
   `SessionStart` hook in the isolated session home. Without dynamic state it remains compact-only;
   with `continuityStateFile` it matches startup, resume, and compact. Startup/resume add only fresh
-  dynamic state. After manual or automatic compaction it restores the exact prepared Conductor
-  protocol and optional session instructions followed by fresh dynamic state as one labelled
+  dynamic state. After manual or automatic compaction it restores the exact prepared optional
+  session instructions and final Conductor protocol followed by fresh dynamic state as one labelled
   developer-context payload. Codex hook output uses `additionalContextLimit: 0`; Conductor's own
   byte guards provide the hard cap and prevent the provider default from truncating token-dense
   valid content. The continuity lifecycle contract was provider-tested on Codex 0.149.1 and

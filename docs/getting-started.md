@@ -12,17 +12,20 @@ Managed Claude Code and Codex sessions receive a small mandatory protocol plus t
 authoritative configuration paths, so an agent can help operate or maintain Conductor without
 preloading the full [managed-agent handbook](agent-guide.md).
 
-An optional session `systemPromptFile` adds durable role or policy instructions after that
-protocol. Conductor validates and privately snapshots at most 5 KiB of UTF-8 content on each start
-or continue. Claude Code retains its launch system-prompt layers across compaction; Codex restores
-the same prepared layers through its compact-only `SessionStart` hook. Neither path types a
-continuation prompt or writes instruction files into the working repository.
+An optional session `systemPromptFile` adds durable role or policy instructions before the final
+mandatory protocol. Conductor validates and privately snapshots at most 5 KiB of UTF-8 content on
+each start or continue. The layer is operator-derived and revocable: current authenticated
+operator direction supersedes conflicts in the snapshot. Claude Code retains its launch
+system-prompt layers across compaction; Codex restores the same prepared layers through its
+compact-only `SessionStart` hook. Neither path types a continuation prompt or writes instruction
+files into the working repository.
 
 An optional `continuityStateFile` adds a separate, bounded current-state layer. Conductor validates
 the file before start or continue, then reads it fresh at runtime startup, native resume, and each
-confirmed manual or automatic compaction. It is limited to 5 KiB UTF-8, subordinate to the protocol
-and static instructions, and never written or interpreted by Conductor. Keep full source documents
-on disk and never place secrets in either model-visible instruction file.
+confirmed manual or automatic compaction. It is limited to 5 KiB UTF-8, subordinate to the
+protocol and current authenticated operator direction, and never written or interpreted by
+Conductor. Keep full source documents on disk and never place secrets in either model-visible
+instruction file.
 
 ```bash
 mkdir ~/fleet && cd ~/fleet
@@ -402,8 +405,8 @@ primitive, not an approval or execution queue.
   dirty; local reports, `.env.local`, and other ignored artifacts are deleted with the worktree.
 - **Codex sessions**: set `runtime: codex`. Before every start or continue, the conductor
   generates `AGENTS.override.md` inside that session's isolated `CODEX_HOME`. The generated file
-  inherits the active global Codex instructions, then adds the Conductor protocol and optional
-  session prompt. Its `SessionStart` hook restores those same prepared protocol and session layers
+  inherits the active global Codex instructions, then adds the optional session prompt followed by
+  the mandatory Conductor protocol. Its `SessionStart` hook restores those same prepared layers
   at compaction and, when `continuityStateFile` is configured, appends the freshly read dynamic
   layer. Startup and resume receive only that dynamic layer. A down Conductor endpoint cannot
   suppress the local restoration output. Repository instruction files still load through Codex normally; Conductor does

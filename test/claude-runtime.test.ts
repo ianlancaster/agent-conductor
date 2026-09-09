@@ -215,7 +215,7 @@ describe('prepare', () => {
     expect(settings.spinnerTipsEnabled).toBeUndefined();
   });
 
-  it('snapshots protocol then session instructions and fails visibly for a missing configured source', async () => {
+  it('launches snapshotted session instructions before the final protocol and fails visibly for a missing source', async () => {
     const protocolPath = join(configDir, 'source-protocol.md');
     const sessionPath = join(configDir, 'source-session.md');
     writeFileSync(protocolPath, 'PROTOCOL SOURCE');
@@ -231,7 +231,7 @@ describe('prepare', () => {
     expect(readFileSync(join(configDir, 'conductor-protocol.md'), 'utf8')).toBe('PROTOCOL SOURCE\n');
     expect(readFileSync(join(configDir, 'session-instructions.md'), 'utf8')).toBe('SESSION SOURCE\n');
     const command = custom.buildLaunchCommand(configured, identity, {});
-    expect(command.indexOf('conductor-protocol.md')).toBeLessThan(command.indexOf('session-instructions.md'));
+    expect(command.indexOf('session-instructions.md')).toBeLessThan(command.indexOf('conductor-protocol.md'));
 
     await expect(
       custom.prepare({ ...session, systemPromptFile: join(configDir, 'missing.md') }, identity),

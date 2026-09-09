@@ -159,17 +159,17 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     }
     flags.push('--mcp-config', shellQuote(this.mcpConfigPath(identity)));
     flags.push('--settings', shellQuote(this.hooksSettingsPath(identity)));
-    // Conductor protocol first (all sessions), then any per-session instructions
-    // (e.g. the sentinel prompt). Claude Code allows repeated appends.
-    const promptFile = this.systemPromptPath(identity);
-    if (promptFile !== undefined) {
-      flags.push('--append-system-prompt-file', shellQuote(promptFile));
-    }
+    // Session instructions are delegated context. Append the mandatory protocol
+    // last so its operator-authority and transport contract is the final managed layer.
     if (session.systemPromptFile !== undefined) {
       flags.push(
         '--append-system-prompt-file',
         shellQuote(join(identity.configDir, SESSION_INSTRUCTIONS_SNAPSHOT_NAME)),
       );
+    }
+    const promptFile = this.systemPromptPath(identity);
+    if (promptFile !== undefined) {
+      flags.push('--append-system-prompt-file', shellQuote(promptFile));
     }
 
     const claude = `${this.config.binary} ${flags.join(' ')}`;

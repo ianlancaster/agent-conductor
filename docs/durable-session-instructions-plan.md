@@ -11,8 +11,9 @@ Claude Code and Codex
 
 Agent Conductor should provide one runtime-neutral guarantee:
 
-> When a session has `systemPromptFile` configured, Conductor applies those instructions at launch
-> and restores them after every confirmed context compaction.
+> When a session has `systemPromptFile` configured, Conductor applies those operator-revocable
+> instructions at launch and restores them after every confirmed context compaction. The mandatory
+> protocol remains the final managed static layer.
 
 This is a valuable and appropriately mechanical Conductor primitive. Long-running workers,
 reviewers, coordinators, and sentinels need their role and assignment constraints after the runtime
@@ -30,10 +31,10 @@ Conductor already has most of the required startup path:
 
 - `SessionConfig.systemPromptFile` accepts a fleet-root-relative or absolute file path.
 - `spawn_session.systemPromptFile` and `/spawn --system-prompt` expose the same setting.
-- Claude Code receives the Conductor protocol followed by the session instruction file through
+- Claude Code receives the session instruction file followed by the Conductor protocol through
   repeated `--append-system-prompt-file` arguments.
-- Codex receives the Conductor protocol and session instructions in the conductor-managed section
-  of its isolated `AGENTS.override.md`.
+- Codex receives session instructions followed by the Conductor protocol in the conductor-managed
+  section of its isolated `AGENTS.override.md`.
 - Codex already has a generated `SessionStart` hook matched to `source=compact`. It restores the
   Conductor protocol through `hookSpecificOutput.additionalContext` and reports the lifecycle event
   to Conductor.
@@ -117,7 +118,7 @@ The strengthened semantics are:
 
 1. The path is resolved using the existing fleet configuration rules.
 2. Conductor reads and validates it during runtime preparation.
-3. Launch receives the mandatory Conductor protocol followed by the session instructions.
+3. Launch receives the session instructions followed by the final mandatory Conductor protocol.
 4. A confirmed compaction restores both layers through the runtime’s supported context channel.
 5. Editing session configuration or its referenced file does not rewrite a running CLI. The new
    content takes effect on the next `start_session` or `continue_session`, matching current launch
@@ -135,7 +136,7 @@ The instruction layer needs a hard product limit, not a fleet setting. Hook outp
 model-visible capacity, and silent runtime fallback to a preview would violate the durability
 claim.
 
-The ratified user-instruction limit is 5 KiB UTF-8. The current 3,438-byte protocol plus labels and
+The ratified user-instruction limit is 5 KiB UTF-8. The current protocol plus labels and
 framing then remains below both providers' 10,000-unit model-visible hook thresholds with growth
 headroom. The complete rendered restoration context is guarded at 10,000 UTF-8 bytes and 10,000
 JavaScript characters so provider spill/truncation behavior cannot silently weaken the guarantee.
@@ -172,7 +173,8 @@ the same layers through their own adapter-owned configuration formats.
 
 At launch:
 
-- preserve the current ordering: mandatory Conductor protocol first, session instructions second;
+- preserve the current ordering: revocable session instructions first, mandatory Conductor
+  protocol last;
 - use the validated prepared content rather than silently checking `existsSync` and skipping a bad
   configured path.
 
@@ -191,8 +193,8 @@ mutation would make those roles collide.
 At launch:
 
 - preserve the isolated per-session `CODEX_HOME`;
-- keep the generated `AGENTS.override.md` ordering: inherited global guidance, mandatory Conductor
-  protocol, then session instructions;
+- keep the generated `AGENTS.override.md` ordering: inherited global guidance, revocable session
+  instructions, then the mandatory Conductor protocol;
 - use the validated prepared content for both startup and later restoration.
 
 After compaction:

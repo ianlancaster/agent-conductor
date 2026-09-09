@@ -84,8 +84,8 @@ consumer repository, while existing fleets migrate without retaining stale proto
 - Generate a per-session `$CODEX_HOME/AGENTS.override.md`.
 - Compose the file in this order:
   1. The operator's active global Codex guidance.
-  2. The Conductor protocol.
-  3. The session's `systemPromptFile`, when configured.
+  2. The session's `systemPromptFile`, when configured.
+  3. The Conductor protocol.
 - Reproduce Codex's active global-source rule:
   - Use a non-empty shared `$CODEX_HOME/AGENTS.override.md` first.
   - Otherwise use a non-empty shared `$CODEX_HOME/AGENTS.md`.
@@ -138,7 +138,7 @@ Codex applies a combined AGENTS size limit. The implementation must:
 
 - Active global-source tests cover: non-empty override, only AGENTS, neither file, and empty
   override falling back to AGENTS.
-- Composition tests prove user guidance precedes protocol and session instructions.
+- Composition tests prove inherited and session guidance precede the final mandatory protocol.
 - Limit tests prove inherited content may be bounded but protocol and session instructions remain
   intact, and the generated config cap is raised.
 - Cleanup tests cover generated-untracked deletion, tracked/user block stripping, non-marker

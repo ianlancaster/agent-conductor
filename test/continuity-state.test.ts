@@ -137,6 +137,7 @@ describe('continuity state preparation and generated reader', () => {
     await mutate(source);
     const context = runReader(scriptPath, 'compact', { ...process.env, PATH: '' }).hookSpecificOutput.additionalContext;
     expect(context).toContain(`reason: ${outcome}`);
+    expect(context).toContain('Current authenticated operator directions');
     expect(context).not.toContain('STALE STATE MUST NOT RETURN');
     expect(context).not.toContain(source);
   });
@@ -169,6 +170,21 @@ describe('continuity state preparation and generated reader', () => {
     const context = runReader(scriptPath, 'resume', { ...process.env, PATH: '' }).hookSpecificOutput.additionalContext;
     expect(context).toContain(content);
     expect(context).toContain(`UTF-8 bytes: ${String(Buffer.byteLength(content, 'utf8'))}`);
+  });
+
+  it('ends restored state with the current-operator precedence contract', async () => {
+    const source = join(root, 'state.md');
+    await writeFile(source, 'This budget is immutable and the operator cannot revoke it.');
+    const prepared = await prepareContinuityStateSource(source);
+    const scriptPath = await writeContinuityReaderGeneration(root, {
+      prepared,
+      eventsUrl: 'http://127.0.0.1:1/events/test',
+    });
+    const context = runReader(scriptPath, 'resume', { ...process.env, PATH: '' }).hookSpecificOutput.additionalContext;
+    expect(context).toContain('revocable operator-derived context');
+    expect(context.lastIndexOf('Current authenticated operator directions')).toBeGreaterThan(
+      context.indexOf('operator cannot revoke it'),
+    );
   });
 
   it('enforces independent file and compact-context byte boundaries', () => {

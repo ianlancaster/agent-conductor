@@ -47,7 +47,7 @@ export interface SpawnOptions {
   effort?: string;
   /** Persisted runtime access grants for paths outside the new workspace. */
   additionalDirs?: string[];
-  /** Persisted role/policy instructions appended after the Conductor protocol. */
+  /** Persisted, operator-revocable role/policy instructions applied before the final protocol. */
   systemPromptFile?: string;
   /** Persisted bounded state read fresh at startup, resume, and compaction. */
   continuityStateFile?: string;

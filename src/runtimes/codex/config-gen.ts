@@ -160,11 +160,11 @@ export function renderLifecycleHookScript(eventsUrl: string): string {
 /** Model-visible reminder injected by the generated SessionStart(source=compact) hook. */
 export function renderProtocolReminderContext(protocolText: string, sessionPromptText?: string | null): string {
   const labelledLayers = [
-    '# Conductor protocol',
-    protocolText,
     ...(sessionPromptText === undefined || sessionPromptText === null
       ? []
       : ['# Session instructions', sessionPromptText]),
+    '# Conductor protocol',
+    protocolText,
   ].join('\n');
   return `Agent Conductor instructions restored after context compaction.\n\n${labelledLayers}`;
 }
@@ -238,12 +238,13 @@ export function renderProtocolHooks(
 
 /** The refreshable conductor-owned section appended to AGENTS.override.md. */
 function renderConductorBlock(protocolText: string, sessionPromptText?: string | null): string {
-  let content = `${CONDUCTOR_BLOCK_START}\n\n# Conductor protocol\n\n${protocolText}`;
-  if (!content.endsWith('\n')) content += '\n';
+  let content = `${CONDUCTOR_BLOCK_START}\n`;
   if (sessionPromptText !== undefined && sessionPromptText !== null) {
-    content += `\n# Session instructions\n\n${sessionPromptText}`;
+    content += `\n\n# Session instructions\n\n${sessionPromptText}`;
     if (!content.endsWith('\n')) content += '\n';
   }
+  content += `\n# Conductor protocol\n\n${protocolText}`;
+  if (!content.endsWith('\n')) content += '\n';
   return `${content}\n${CONDUCTOR_BLOCK_END}`;
 }
 

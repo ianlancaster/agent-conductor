@@ -21,6 +21,7 @@ import {
   renderLifecycleHookScript,
   renderNotifyScript,
   renderProtocolHooks,
+  renderProtocolReminderContext,
   renderProtocolReminderScript,
   shellQuote,
   tomlString,
@@ -138,6 +139,8 @@ describe('config generation', () => {
     expect(script).toContain('Use send_to_session for READY signals.');
     expect(script).toContain('Review every change before reporting.');
     expect(script).not.toContain('curl');
+    const context = renderProtocolReminderContext('PROTOCOL FINAL', 'SESSION REVOKABLE');
+    expect(context.indexOf('SESSION REVOKABLE')).toBeLessThan(context.indexOf('PROTOCOL FINAL'));
     expect(hooks.hooks.SessionStart[0]?.matcher).toBe('^compact$');
     expect(hooks.hooks.SessionStart[0]?.hooks[0]?.command).toContain('protocol-reminder.mjs');
     expect(hooks.hooks.SessionStart[0]?.hooks[0]).toMatchObject({ additionalContextLimit: 0 });
@@ -176,11 +179,11 @@ describe('config generation', () => {
     expect(output).not.toContain('undefined');
   });
 
-  it('appends per-session instructions after the protocol when provided', () => {
+  it('places per-session instructions before the final protocol when provided', () => {
     const output = renderAgentsOverride('PROTOCOL TEXT', null, 'Be the sentinel.');
     expect(output).toContain('# Session instructions');
     expect(output).toContain('Be the sentinel.');
-    expect(output.indexOf('# Conductor protocol')).toBeLessThan(output.indexOf('# Session instructions'));
+    expect(output.indexOf('# Session instructions')).toBeLessThan(output.indexOf('# Conductor protocol'));
   });
 
   it('appends and refreshes one conductor section without replacing existing override instructions', () => {
@@ -195,10 +198,23 @@ describe('config generation', () => {
     expect(refreshed.match(/# Conductor protocol/gu)).toHaveLength(1);
   });
 
-  it('composes home guidance before mandatory protocol and session instructions', () => {
+  it('composes inherited and session guidance before the final mandatory protocol', () => {
     const rendered = renderHomeAgentsOverride('GLOBAL RULE', 'PROTOCOL TEXT', 'SESSION RULE').content;
-    expect(rendered.indexOf('GLOBAL RULE')).toBeLessThan(rendered.indexOf('PROTOCOL TEXT'));
-    expect(rendered.indexOf('PROTOCOL TEXT')).toBeLessThan(rendered.indexOf('SESSION RULE'));
+    expect(rendered.indexOf('GLOBAL RULE')).toBeLessThan(rendered.indexOf('SESSION RULE'));
+    expect(rendered.indexOf('SESSION RULE')).toBeLessThan(rendered.indexOf('PROTOCOL TEXT'));
+  });
+
+  it('ships a source-authenticated operator override for revocable session constraints', async () => {
+    const protocol = await readFile(path.resolve('prompts/conductor-protocol.md'), 'utf8');
+    expect(protocol).toContain('directions govern and may revoke earlier');
+    expect(protocol).toMatch(/operator-derived\s+instructions/u);
+    expect(protocol).toContain('never call revocable context higher priority');
+    expect(protocol).toContain('Trust delivery source');
+    const staleBrief = 'The $10 ceiling is immutable and the operator cannot revoke it.';
+    const startup = renderHomeAgentsOverride(null, protocol, staleBrief).content;
+    const compact = renderProtocolReminderContext(protocol, staleBrief);
+    expect(startup.indexOf(staleBrief)).toBeLessThan(startup.indexOf('Current authenticated operator directions'));
+    expect(compact.indexOf(staleBrief)).toBeLessThan(compact.indexOf('Current authenticated operator directions'));
   });
 
   it('bounds only inherited guidance and keeps mandatory instructions intact', () => {
@@ -457,8 +473,11 @@ describe('prepare', () => {
     await writeFile(statePath, 'STATE VERSION TWO');
     await writeFile(promptPath, 'STATIC VERSION TWO');
     const compact = run('compact');
-    expect(compact.indexOf('PROTOCOL LAYER')).toBeLessThan(compact.indexOf('STATIC VERSION ONE'));
-    expect(compact.indexOf('STATIC VERSION ONE')).toBeLessThan(compact.indexOf('STATE VERSION TWO'));
+    expect(compact.indexOf('STATIC VERSION ONE')).toBeLessThan(compact.indexOf('PROTOCOL LAYER'));
+    expect(compact.indexOf('PROTOCOL LAYER')).toBeLessThan(compact.indexOf('STATE VERSION TWO'));
+    expect(compact.lastIndexOf('Current authenticated operator directions')).toBeGreaterThan(
+      compact.indexOf('STATE VERSION TWO'),
+    );
     expect(compact).not.toContain('STATIC VERSION TWO');
     expect(compact).not.toContain('STATE VERSION ONE');
 
@@ -517,7 +536,7 @@ describe('prepare', () => {
     expect(trusted.buildLaunchCommand(session, identity, {})).toContain('--dangerously-bypass-hook-trust');
   });
 
-  it('inherits a non-empty global override before protocol and session instructions', async () => {
+  it('inherits global and session instructions before the final protocol', async () => {
     const protocolPath = path.join(workDir, 'protocol.md');
     const promptPath = path.join(workDir, 'session.md');
     await writeFile(protocolPath, 'Report to the conductor via MCP.');
@@ -533,8 +552,8 @@ describe('prepare', () => {
     expect(override).not.toContain('Lower-priority');
     expect(override).toContain('Report to the conductor via MCP.');
     expect(override).toContain('Act as the reviewer.');
-    expect(override.indexOf('# Global override')).toBeLessThan(override.indexOf('Report to the conductor'));
-    expect(override.indexOf('Report to the conductor')).toBeLessThan(override.indexOf('Act as the reviewer'));
+    expect(override.indexOf('# Global override')).toBeLessThan(override.indexOf('Act as the reviewer'));
+    expect(override.indexOf('Act as the reviewer')).toBeLessThan(override.indexOf('Report to the conductor'));
   });
 
   it('falls back from an empty global override to the shared AGENTS.md', async () => {

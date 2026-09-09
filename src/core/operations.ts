@@ -418,10 +418,10 @@ export class ConductorOperations {
               items: { type: 'string', minLength: 1 },
             },
             systemPromptFile: stringProperty(
-              'Durable role or policy instructions (max 5 KiB UTF-8), applied after the mandatory Conductor protocol at start/continue and retained across compaction',
+              'Durable, operator-revocable role or policy instructions (max 5 KiB UTF-8), applied before the final mandatory Conductor protocol at start/continue and retained across compaction',
             ),
             continuityStateFile: stringProperty(
-              'Bounded current-state text (max 5 KiB UTF-8), read fresh at runtime startup, native resume, and each confirmed compaction',
+              'Bounded, operator-revocable current-state text (max 5 KiB UTF-8), read fresh at runtime startup, native resume, and each confirmed compaction',
             ),
             admissionClaim: stringProperty(
               'External host-resource admission claim ID (required only when fleet session admission is enabled)',

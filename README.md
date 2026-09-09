@@ -200,14 +200,16 @@ systemPromptFile: ./.conductor/prompts/sentinel.md
 Copy [prompts/sentinel.md](prompts/sentinel.md) into `.conductor/prompts/sentinel.md`, or
 have the onboarding assistant do it using the authoritative fleet paths. Session files
 hot-reload. `systemPromptFile` is a private, per-session instruction layer (maximum 5 KiB
-UTF-8): Conductor validates and snapshots it on each start or continue, applies it after the
-mandatory protocol, and retains it across Claude Code and Codex compaction without typing into
-the pane or modifying the repository. Source edits take effect on the next start or continue.
+UTF-8): Conductor validates and snapshots it on each start or continue, applies it before the
+final mandatory protocol, and retains it across Claude Code and Codex compaction without typing
+into the pane or modifying the repository. It is durable but operator-revocable: a current
+authenticated operator instruction supersedes conflicting role, budget, plan, or policy text in
+the snapshot. Source edits take effect on the next start or continue.
 For evolving work state, an optional `continuityStateFile` is also capped at 5 KiB UTF-8 but is
 read fresh at runtime startup, native resume, and every confirmed manual or automatic compaction.
-It is subordinate to the protocol and static session instructions; Conductor reads but never
-updates or interprets it. Do not put credentials or secrets in either file because both become
-provider-visible context.
+It and the static session instructions are subordinate to the protocol and current authenticated
+operator directions; Conductor reads but never updates or interprets the continuity file. Do not
+put credentials or secrets in either file because both become provider-visible context.
 Then start and designate the sentinel before enabling autonomous workers:
 
 ```text

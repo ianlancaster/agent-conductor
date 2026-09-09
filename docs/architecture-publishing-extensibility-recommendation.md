@@ -137,7 +137,7 @@ transport for the full mandatory protocol:
   mechanism for mandatory protocol changes.
 
 Instead, generate `$CODEX_HOME/AGENTS.override.md` for each managed session. Compose the operator's
-active global guidance first, the Conductor protocol second, and `systemPromptFile` last. This
+active global guidance first, `systemPromptFile` second, and the Conductor protocol last. This
 preserves turn-zero delivery, refreshes on resume, restores global guidance and native project
 instruction discovery, and prevents two sessions in one repository from racing over a shared
 override file.

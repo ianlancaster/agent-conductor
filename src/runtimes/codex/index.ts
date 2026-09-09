@@ -300,7 +300,7 @@ function visibleInputBlock(capture: string): string | null {
  * Identity, hooks, and instructions live in an isolated per-session CODEX_HOME.
  * The operator's shared auth/config and the consumer repository are never
  * mutated. The generated home override inherits the operator's active global
- * guidance, then appends the mandatory protocol and session instructions.
+ * guidance, then appends revocable session instructions followed by the mandatory protocol.
  */
 export class CodexRuntime implements SessionRuntime {
   readonly name = 'codex';

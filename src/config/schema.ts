@@ -136,14 +136,14 @@ export const sessionConfigSchema = z
     effort: z.string().min(1).optional(),
     additionalDirs: z.array(z.string()).default([]),
     /**
-     * Per-session durable role instructions, appended after the conductor protocol and
-     * retained across runtime compaction. Maximum 5 KiB UTF-8. Absolute, or resolved
-     * relative to the fleet root.
+     * Per-session durable role instructions, applied before the final mandatory conductor
+     * protocol and retained across runtime compaction. Maximum 5 KiB UTF-8. Absolute, or
+     * resolved relative to the fleet root.
      */
     systemPromptFile: z.string().trim().min(1).optional(),
     /**
-     * Bounded current-state text read fresh at supported startup, resume, and
-     * compact SessionStart boundaries. Absolute, or fleet-root-relative.
+     * Bounded, operator-revocable current-state text read fresh at supported startup,
+     * resume, and compact SessionStart boundaries. Absolute, or fleet-root-relative.
      */
     continuityStateFile: z.string().trim().min(1).optional(),
     /** External host-resource admission claim ID. Required only when supervisor admission is enabled. */
