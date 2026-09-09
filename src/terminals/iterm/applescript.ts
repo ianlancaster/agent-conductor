@@ -1,18 +1,6 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { OsaRunner } from './osa-worker.js';
 
-const execFileAsync = promisify(execFile);
-
-/** osascript stdout can include large pane captures. */
-const OSA_MAX_BUFFER = 10 * 1024 * 1024;
-
-/**
- * Hard timeout for any osascript call. iTerm2 can block indefinitely on a modal
- * dialog, a beachball, or a macOS automation-permission (TCC) prompt; without a
- * timeout the heartbeat/focus intervals would spawn a fresh stuck process every
- * tick. On timeout execFile kills the child and rejects.
- */
-const OSA_TIMEOUT_MS = 20_000;
+let runner: OsaRunner | undefined;
 
 /** iTerm2 session user variable holding the base64-encoded session codename (used for restart rediscovery). */
 export const SESSION_USER_VAR = 'user.conductor_session';
@@ -23,16 +11,12 @@ const ESC = '\u001b';
 // ── Runner ────────────────────────────────────────────────────────────────────
 
 /**
- * Run an AppleScript via osascript without blocking the event loop.
- * Returns raw stdout (callers trim as needed).
+ * Run an AppleScript in a persistent interpreter without blocking Node.
+ * Requests are bounded and never replayed automatically after a worker failure.
  */
 export async function runOsa(script: string, args: readonly string[] = []): Promise<string> {
-  const osaArgs = args.length === 0 ? ['-e', script] : ['-e', script, '--', ...args];
-  const { stdout } = await execFileAsync('osascript', osaArgs, {
-    maxBuffer: OSA_MAX_BUFFER,
-    timeout: OSA_TIMEOUT_MS,
-  });
-  return stdout;
+  runner ??= new OsaRunner();
+  return runner.run(script, args);
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────

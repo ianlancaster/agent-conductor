@@ -80,8 +80,8 @@ const PANE_CHANGED_RESULT = '__CONDUCTOR_ITERM_PANE_CHANGED__';
 const LIVENESS_CONFIRM_DELAY_MS = 100;
 
 /**
- * iTerm2 TerminalBackend, driven via async AppleScript (execFile, never execSync —
- * osascript calls must not block the event loop).
+ * iTerm2 TerminalBackend, driven via a persistent asynchronous AppleScript worker.
+ * Automation must not block Node's event loop or spawn a process per observation.
  *
  * Key design, ported from cc-conductor's IterminalWorkspace:
  *  - Panes are tracked by iTerm2 session UUID, searched across ALL windows, so

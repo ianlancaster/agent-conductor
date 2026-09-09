@@ -1187,6 +1187,20 @@ pnpm add --global .
 
 A running process still holds its old code until deliberately restarted.
 
+### macOS apps say they are no longer open
+
+Conductor's iTerm backend reuses one AppleScript interpreter per supervisor to avoid
+registering a new macOS application process for every observation. Requests have a
+20-second deadline, a bounded queue, and failure cooldown; uncertain interpreter
+requests are never automatically replayed. A healthy worker survives script errors.
+
+On a system already affected by Launch Services serial-number rollover, new apps
+may remain stopped and bundle-based lookups may disagree with PID-based lookups.
+Resuming a verified stopped app can recover that process but does not repair the
+registry. Preserve work before logout/reboot, and deliberately restart updated
+supervisors to load the mitigation. See `guides/iterm-troubleshooting.md` for diagnosis,
+recovery limits, and the read-only interpreter verification procedure.
+
 ### Session instructions fail preparation or disappear after compaction
 
 A configured `systemPromptFile` must resolve to a readable regular UTF-8 file no larger than 5 KiB.

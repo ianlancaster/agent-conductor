@@ -492,6 +492,8 @@ Start here:
   can also read it lazily through `get_conductor_docs`.
 - [Complete supervisor example](examples/supervisor.yaml) — every setting and effective
   default.
+- [iTerm and macOS troubleshooting](guides/iterm-troubleshooting.md) — persistent
+  automation, app-launch identity failures, and recovery limits.
 - [Engineering management runbook](runbooks/agent-conductor/engineering-management/README.md) — a tiered,
   end-to-end EM, worker, review, Sentinel, and PR Shepherd fleet pattern.
 - [Authoring and sharing runbooks](guides/runbooks.md) — bundle format, local discovery,
