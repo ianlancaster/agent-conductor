@@ -2,4 +2,4 @@
 'agent-conductor': patch
 ---
 
-Allow up to 60 seconds for Slack-enabled fleets to report startup readiness.
+Start the core Supervisor without waiting for optional external channels such as Slack to connect.

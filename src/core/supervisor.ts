@@ -120,6 +120,7 @@ export class Supervisor {
   private readonly integrations: IntegrationManager;
   private readonly channelCandidates: ChannelAdapter[];
   private readonly channels: ChannelAdapter[] = [];
+  private readonly startingChannels = new Set<ChannelAdapter>();
   private readonly channelFailures = new Map<string, string>();
   private readonly env: NodeJS.ProcessEnv;
   private readonly resolvedInstance: ResolvedInstance;
@@ -127,6 +128,8 @@ export class Supervisor {
   private readonly admission: SessionClaimAdmission;
   private readonly attestor: SessionStatusAttestor;
   private heartbeatTimer: NodeJS.Timeout | undefined;
+  private channelStartup: Promise<void> | undefined;
+  private channelsStopping = false;
   private startupRecoveryActive = false;
   private readonly startupRunnable = new Set<string>();
 
@@ -605,6 +608,7 @@ export class Supervisor {
   }
 
   private async startLocked(opts: SupervisorStartOptions): Promise<void> {
+    this.channelsStopping = false;
     // A subscriber attached from boot receives the complete roster before any
     // surviving panes can produce started/ready/activity events.
     for (const codename of this.sessions.keys()) {
@@ -654,20 +658,17 @@ export class Supervisor {
       throw error;
     }
     try {
-      await this.connectChannels();
-      // /health is the CLI's readiness signal. Expose it only after every
-      // optional channel has either connected or been explicitly marked
-      // unavailable, so `conductor start` cannot observe a transient false-ready
-      // process that is about to roll startup back.
+      // /health is the CLI's readiness signal. Optional external channels must
+      // not delay core readiness; they connect independently once ingress is up.
       await this.mcpServer.start();
       // Publish only after the ingress is listening, so a discoverable fleet is
       // immediately callable. Registry claim failures share startup rollback.
       await this.federationRegistry?.claim();
     } catch (error) {
-      await this.rollbackChannelStartup();
       await this.mcpServer.stop();
       throw error;
     }
+    this.channelStartup = this.connectChannels();
     if (this.config.federation !== undefined) {
       log().info(
         'federation',
@@ -711,10 +712,18 @@ export class Supervisor {
 
     await this.integrations.start();
 
-    // Initial registered sessions begin as stopped until surviving panes have
-    // been rediscovered and optional start-all launches finish. Channels must
-    // also be ready before a threshold-zero alert can be emitted.
-    this.sentinel.activateFleetWatch();
+    // Preserve the first fleet-watch notification until optional channels have
+    // settled, without making those channels part of core readiness.
+    const channelStartup = this.channelStartup;
+    if (channelStartup === undefined) {
+      this.sentinel.activateFleetWatch();
+    } else {
+      void channelStartup.then(() => {
+        if (!this.channelsStopping && this.channelStartup === channelStartup) {
+          this.sentinel.activateFleetWatch();
+        }
+      });
+    }
 
     // The sentinel is optional extra functionality — never nag about its
     // absence. A configured-but-missing codename IS a config error, though.
@@ -726,6 +735,7 @@ export class Supervisor {
   }
 
   async stop(): Promise<void> {
+    this.channelsStopping = true;
     if (this.heartbeatTimer !== undefined) clearInterval(this.heartbeatTimer);
     this.watcher.stop();
     this.scheduler.stop();
@@ -735,7 +745,7 @@ export class Supervisor {
     await this.shepherd.stop();
     this.messaging.stop();
     this.delivery.stop();
-    const stoppedChannels = this.channels.splice(0);
+    const stoppedChannels = [...new Set([...this.channels.splice(0), ...this.startingChannels])];
     const stopResults = await Promise.allSettled(stoppedChannels.map((channel) => channel.stop()));
     for (const [index, result] of stopResults.entries()) {
       if (result.status === 'rejected') {
@@ -745,6 +755,7 @@ export class Supervisor {
         );
       }
     }
+    this.channelStartup = undefined;
     await this.mcpServer.stop();
     await this.federationRegistry?.release();
     this.store.close();
@@ -1039,44 +1050,42 @@ export class Supervisor {
     for (const [name, reason] of this.channelFailures) {
       log().error('supervisor', `${name} channel unavailable (${reason}); conductor will continue without it.`);
     }
-    for (const channel of this.channelCandidates) {
-      try {
-        await channel.start({
-          onCommand: (command, args, context) =>
-            this.commands.route(`/${command} ${args.join(' ')}`.trim(), `${channel.name}:${context.conversationId}`),
-          onFreeText: (text, context) => this.commands.freeText(text, `${channel.name}:${context.conversationId}`),
-        });
-        this.channels.push(channel);
-        this.channelFailures.delete(channel.name);
-        log().info('supervisor', `${channel.name} channel connected.`);
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        log().error(
-          'supervisor',
-          `${channel.name} channel failed to connect; conductor will continue without it: ${reason}`,
-        );
-        try {
-          await channel.stop();
-        } catch (stopError) {
-          log().warn(
-            'supervisor',
-            `${channel.name} channel cleanup failed after startup error: ${stopError instanceof Error ? stopError.message : String(stopError)}`,
-          );
-        }
-      }
-    }
+    await Promise.all(this.channelCandidates.map((channel) => this.connectChannel(channel)));
   }
 
-  private async rollbackChannelStartup(): Promise<void> {
-    const started = this.channels.splice(0);
-    const results = await Promise.allSettled(started.map((channel) => channel.stop()));
-    for (const [index, result] of results.entries()) {
-      if (result.status === 'rejected') {
+  private async connectChannel(channel: ChannelAdapter): Promise<void> {
+    this.startingChannels.add(channel);
+    try {
+      await channel.start({
+        onCommand: (command, args, context) =>
+          this.commands.route(`/${command} ${args.join(' ')}`.trim(), `${channel.name}:${context.conversationId}`),
+        onFreeText: (text, context) => this.commands.freeText(text, `${channel.name}:${context.conversationId}`),
+      });
+      if (this.channelsStopping) {
+        await channel.stop();
+        return;
+      }
+      this.channels.push(channel);
+      this.channelFailures.delete(channel.name);
+      log().info('supervisor', `${channel.name} channel connected.`);
+    } catch (error) {
+      if (this.channelsStopping) return;
+      const reason = error instanceof Error ? error.message : String(error);
+      this.channelFailures.set(channel.name, reason);
+      log().error(
+        'supervisor',
+        `${channel.name} channel failed to connect; conductor will continue without it: ${reason}`,
+      );
+      try {
+        await channel.stop();
+      } catch (stopError) {
         log().warn(
           'supervisor',
-          `channel ${started[index]?.name ?? String(index)} rollback failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+          `${channel.name} channel cleanup failed after startup error: ${stopError instanceof Error ? stopError.message : String(stopError)}`,
         );
       }
+    } finally {
+      this.startingChannels.delete(channel);
     }
   }
 
