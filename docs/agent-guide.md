@@ -669,7 +669,9 @@ schedules:
 
 The cron expression uses the Conductor process's local timezone. Each entry has:
 
-- `label`: optional operator-readable name.
+- `label`: strongly recommended operator-readable name. For compatibility, an omitted or blank
+  label receives the generated name `schedule-N`, based on its position in the session's schedule
+  list.
 - `cron`: required Croner-compatible expression.
 - `prompt`: the task delivered to the session.
 - `paused`: disables only that schedule entry.
@@ -678,7 +680,10 @@ The cron expression uses the Conductor process's local timezone. Each entry has:
 
 Behavior:
 
-- An active session receives a normal protected message.
+- Every occurrence is delivered with a visible automation signature containing its name and exact
+  cron expression, for example `[Cron name="weekday review" period="0 9 * * 1-5"]`. It is never
+  presented as direct operator input.
+- An active session receives the signed prompt through normal protected delivery.
 - An inactive session is skipped unless `wakeIfStopped: true`. This includes targets whose runtime
   exited or whose pane was closed; reconciliation checks process state before firing.
 - Skipped occurrences are discarded, not queued for catch-up when the session next starts.

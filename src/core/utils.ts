@@ -37,6 +37,11 @@ export function conductorEnvelope(message: string): string {
   return `[Message from conductor] ${message}`;
 }
 
+/** Identify recurring automation without allowing it to resemble direct operator input. */
+export function scheduleEnvelope(name: string, period: string, message: string): string {
+  return `[Cron name=${JSON.stringify(name)} period=${JSON.stringify(period)}] ${message}`;
+}
+
 export function stallEnvelope(session: string, kind: string, detectedAt: string, detail: string): string {
   return `[Stall] session=${session} kind=${kind} detected-at=${detectedAt} ${detail}`;
 }

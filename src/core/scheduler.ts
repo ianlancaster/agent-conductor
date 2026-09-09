@@ -1,7 +1,7 @@
 import { Cron } from 'croner';
 import { log } from '../logger.js';
 import type { SessionConfig, ScheduleEntry } from '../config/schema.js';
-import { sleep } from './utils.js';
+import { scheduleEnvelope, sleep } from './utils.js';
 import type { ConductorEventPublisher } from '../events/types.js';
 
 const FRESH_SESSION_SETTLE_MS = 3000;
@@ -30,20 +30,23 @@ export class Scheduler {
   rebuild(): void {
     this.stop();
     for (const [codename, session] of this.deps.sessions()) {
-      for (const entry of session.schedules) {
+      for (const [index, entry] of session.schedules.entries()) {
         if (entry.paused) continue;
+        const configuredName = entry.label?.trim();
+        const name =
+          configuredName !== undefined && configuredName.length > 0 ? configuredName : `schedule-${index + 1}`;
         try {
           // The callback must be async (not a sync fn that voids a promise) or
           // croner's `protect` clears the moment the sync fn returns and overlap
           // protection never engages.
           const job = new Cron(entry.cron, { catch: true, protect: true }, async () => {
-            await this.enqueue(codename, entry);
+            await this.enqueue(codename, entry, name);
           });
           this.jobs.push(job);
         } catch (err) {
           log().warn(
             'scheduler',
-            `${codename}: invalid cron '${entry.cron}' (${entry.label ?? 'unlabeled'}): ${err instanceof Error ? err.message : String(err)}`,
+            `${codename}: invalid cron '${entry.cron}' (${name}): ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }
@@ -51,15 +54,15 @@ export class Scheduler {
     log().debug('scheduler', `${this.jobs.length} schedule(s) armed`);
   }
 
-  private enqueue(codename: string, entry: ScheduleEntry): Promise<void> {
+  private enqueue(codename: string, entry: ScheduleEntry, name: string): Promise<void> {
     const generation = this.generation;
     const cancellation = this.cancellations.get(codename);
     const isCurrent = (): boolean =>
       generation === this.generation && cancellation === this.cancellations.get(codename);
     const previous = this.sessionRuns.get(codename) ?? Promise.resolve();
     const run = previous.then(
-      () => this.fire(codename, entry, isCurrent),
-      () => this.fire(codename, entry, isCurrent),
+      () => this.fire(codename, entry, name, isCurrent),
+      () => this.fire(codename, entry, name, isCurrent),
     );
     this.sessionRuns.set(codename, run);
     return run.finally(() => {
@@ -78,8 +81,9 @@ export class Scheduler {
     this.cancellations.set(codename, (this.cancellations.get(codename) ?? 0) + 1);
   }
 
-  private async fire(codename: string, entry: ScheduleEntry, isCurrent: () => boolean): Promise<void> {
-    const label = entry.label ?? entry.cron;
+  private async fire(codename: string, entry: ScheduleEntry, name: string, isCurrent: () => boolean): Promise<void> {
+    const label = name;
+    const prompt = scheduleEnvelope(name, entry.cron, entry.prompt);
     const canRun = (): boolean => {
       if (!isCurrent()) {
         this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'skipped-cancelled' });
@@ -104,15 +108,15 @@ export class Scheduler {
           await sleep(FRESH_SESSION_SETTLE_MS);
         }
         if (!canRun()) return;
-        await this.deps.startSession(codename, { prompt: entry.prompt });
+        await this.deps.startSession(codename, { prompt });
         log().info('scheduler', `${codename}: '${label}' fired (fresh session)`);
         this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'fired-fresh' });
         return;
       }
       if (active) {
-        await this.deps.deliver(codename, entry.prompt);
+        await this.deps.deliver(codename, prompt);
       } else {
-        await this.deps.startSession(codename, { prompt: entry.prompt });
+        await this.deps.startSession(codename, { prompt });
       }
       log().info('scheduler', `${codename}: '${label}' fired`);
       this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'fired' });

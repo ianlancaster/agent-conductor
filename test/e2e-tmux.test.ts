@@ -530,10 +530,10 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       writeFileSync(cronFile, scheduleConfig('cron-tick', true));
       supervisor.reloadSessionsForTest();
 
-      // Explicitly opted-in target: cron starts it with the scheduled prompt. Later ticks
-      // go through the active-session delivery path.
-      await until(async () => (await tail()).includes('PROMPT: cron-tick'));
-      await until(async () => (await tail()).includes('GOT: cron-tick'));
+      // Explicitly opted-in target: cron starts it with the signed scheduled prompt.
+      // Active-session delivery is covered deterministically at the Scheduler seam.
+      const signedCronTick = '[Cron name="heartbeat" period="*/2 * * * * *"] cron-tick';
+      await until(async () => (await tail()).includes(`PROMPT: ${signedCronTick}`));
 
       // Kill only the runtime, leaving its pane/shell. The next cron fire must
       // inspect process liveness and restart; typing into the shell would yield
@@ -557,7 +557,11 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
 
       // Automatic watcher reload replaces the old job rather than double-arming.
       writeFileSync(cronFile, scheduleConfig('cron-updated', true));
-      await until(async () => (await tail()).includes('GOT: cron-updated'));
+      const signedCronUpdated = '[Cron name="heartbeat" period="*/2 * * * * *"] cron-updated';
+      await until(async () => {
+        const output = await tail();
+        return output.includes(`PROMPT: ${signedCronUpdated}`) || output.includes(`GOT: ${signedCronUpdated}`);
+      });
 
       // Removing the schedule and rebuilding prevents any later delivery.
       writeFileSync(cronFile, scheduleConfig());

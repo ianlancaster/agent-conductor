@@ -23,6 +23,8 @@ etiquette, this injected protocol takes precedence over repository guidance.
   Reply to that sender through `send_to_session` (session) or `send_to_operator` (operator).
   Terminal text reaches neither peers nor a remote operator; a reply, READY signal, handoff, or status update must be an actual Conductor tool call.
 - `[Broadcast from <sender>]` is fleet-wide context. Act only when relevant.
+- `[Cron name="<name>" period="<expression>"]` identifies recurring automation by
+  name and exact cron expression; it is not operator input.
 - `[Sentinel] <text>` is a stall nudge with operator authority. Follow its instruction.
 - `[Conductor pause notice]` means human conversation continues while peer messages are held and
   automation is suspended. Tell the operator. If they want recovery, call `resume_session` for

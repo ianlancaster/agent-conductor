@@ -330,6 +330,9 @@ registration cleanup. A later `/spawn <same-name> --session-id <id>` can therefo
 disposable workspace and resume that conversation without an intervening fresh launch. Session YAML
 can also define Croner-compatible `schedules`; inactive sessions are skipped by default
 (`wakeIfStopped: false`), while active sessions receive prompts through protected delivery.
+Every occurrence carries a `[Cron name="..." period="..."]` signature so agents can distinguish
+recurring automation from direct operator input. Give every schedule a descriptive `label`;
+unlabeled legacy entries receive a positional `schedule-N` name.
 Only explicit `wakeIfStopped: true` allows a cron to start a stopped target; agents need the
 user's explicit authorization to enable that behavior. This safe default also applies to existing
 schedules that omit the field and to fresh-context schedules. Pausing the

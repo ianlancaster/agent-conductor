@@ -74,7 +74,7 @@ describe('Scheduler', () => {
     expect(events.events).toContainEqual({
       type: 'schedule',
       session: 'alpha',
-      label: EVERY_SECOND,
+      label: 'schedule-1',
       outcome: 'skipped-stopped',
     });
     active = true;
@@ -89,7 +89,7 @@ describe('Scheduler', () => {
     );
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
-    expect(started).toEqual([{ session: 'alpha', prompt: 'fresh' }]);
+    expect(started).toEqual([{ session: 'alpha', prompt: `[Cron name="schedule-1" period="${EVERY_SECOND}"] fresh` }]);
     expect(stopped).toEqual([]);
   });
 
@@ -133,23 +133,29 @@ describe('Scheduler', () => {
       expect(events.events).toContainEqual({
         type: 'schedule',
         session: 'alpha',
-        label: EVERY_SECOND,
+        label: 'schedule-1',
         outcome: 'skipped-cancelled',
       });
     },
   );
 
   it('delivers the prompt into an active session', async () => {
-    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: false, freshContext: false }]));
+    sessions.set(
+      'alpha',
+      sessionWith([{ label: 'heartbeat', cron: EVERY_SECOND, prompt: 'tick', paused: false, freshContext: false }]),
+    );
     active = true;
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
-    expect(delivered[0]).toEqual({ session: 'alpha', text: 'tick' });
+    expect(delivered[0]).toEqual({
+      session: 'alpha',
+      text: `[Cron name="heartbeat" period="${EVERY_SECOND}"] tick`,
+    });
     expect(started).toEqual([]);
     expect(events.events).toContainEqual({
       type: 'schedule',
       session: 'alpha',
-      label: EVERY_SECOND,
+      label: 'heartbeat',
       outcome: 'fired',
     });
   });
@@ -161,7 +167,10 @@ describe('Scheduler', () => {
     );
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
-    expect(started[0]).toEqual({ session: 'alpha', prompt: 'wake up' });
+    expect(started[0]).toEqual({
+      session: 'alpha',
+      prompt: `[Cron name="schedule-1" period="${EVERY_SECOND}"] wake up`,
+    });
     expect(delivered).toEqual([]);
   });
 
@@ -173,11 +182,14 @@ describe('Scheduler', () => {
     expect(stopped).toEqual(['alpha']);
     expect(started).toEqual([]);
     await vi.advanceTimersByTimeAsync(3100); // settle period elapses
-    expect(started[0]).toEqual({ session: 'alpha', prompt: 'nightly' });
+    expect(started[0]).toEqual({
+      session: 'alpha',
+      prompt: `[Cron name="schedule-1" period="${EVERY_SECOND}"] nightly`,
+    });
     expect(events.events).toContainEqual({
       type: 'schedule',
       session: 'alpha',
-      label: EVERY_SECOND,
+      label: 'schedule-1',
       outcome: 'fired-fresh',
     });
   });
@@ -192,7 +204,7 @@ describe('Scheduler', () => {
     expect(events.events).toContainEqual({
       type: 'schedule',
       session: 'alpha',
-      label: EVERY_SECOND,
+      label: 'schedule-1',
       outcome: 'deferred-paused',
     });
   });
@@ -228,7 +240,7 @@ describe('Scheduler', () => {
     expect(events.events).toContainEqual({
       type: 'schedule',
       session: 'alpha',
-      label: EVERY_SECOND,
+      label: 'schedule-1',
       outcome: 'deferred-paused',
     });
   });
@@ -247,7 +259,7 @@ describe('Scheduler', () => {
     expect(events.events).toContainEqual({
       type: 'schedule',
       session: 'alpha',
-      label: EVERY_SECOND,
+      label: 'schedule-1',
       outcome: 'deferred-paused',
     });
   });
@@ -272,7 +284,7 @@ describe('Scheduler', () => {
       scheduler.rebuild();
     }).not.toThrow();
     await vi.advanceTimersByTimeAsync(1100);
-    expect(started[0]?.prompt).toBe('still works');
+    expect(started[0]?.prompt).toBe(`[Cron name="schedule-2" period="${EVERY_SECOND}"] still works`);
   });
 
   it('rebuild replaces jobs and stop() cancels them', async () => {
@@ -301,8 +313,8 @@ describe('Scheduler', () => {
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
 
-    expect(started).toEqual([{ session: 'alpha', prompt: 'first' }]);
-    expect(delivered).toEqual([{ session: 'alpha', text: 'second' }]);
+    expect(started).toEqual([{ session: 'alpha', prompt: `[Cron name="schedule-1" period="${EVERY_SECOND}"] first` }]);
+    expect(delivered).toEqual([{ session: 'alpha', text: `[Cron name="schedule-2" period="${EVERY_SECOND}"] second` }]);
   });
 
   it('uses an asynchronous authoritative activity check', async () => {
@@ -331,7 +343,7 @@ describe('Scheduler', () => {
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
     expect(inspected).toBe(1);
-    expect(started[0]?.prompt).toBe('restart');
+    expect(started[0]?.prompt).toBe(`[Cron name="schedule-1" period="${EVERY_SECOND}"] restart`);
     expect(delivered).toEqual([]);
   });
 
