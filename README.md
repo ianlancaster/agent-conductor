@@ -450,7 +450,9 @@ merge-group evidence, durably fences unchanged heads after provider-attributed c
 keeps bounded exact-head retries for provider-confirmed transient removals.
 An optional disabled-by-default `automation.syncAfterReject` recovery conditionally updates one
 recent, unchanged, conclusively attributed rejected head, then waits for exact-head PR readiness
-before normal queue re-entry.
+before normal queue re-entry. Repositories may additionally configure one head-bound PR comment
+and one exact check name as a post-sync full-validation proof; both the trigger and proof are
+disabled by default.
 Tracked claims may instead select provider-action-ready admission, where GitHub's current Add to
 merge queue availability is authoritative and Shepherd adds no local readiness or attestation gate.
 See [PR Shepherd V2](docs/pr-shepherd.md) for its policy and delivery model.

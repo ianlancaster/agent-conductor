@@ -46,6 +46,8 @@ features:
 automation:
   autoMerge: notify
   syncAfterReject: false
+  # Optional after a Shepherd sync: { triggerComment: /validate, requiredCheck: full-validation }
+  syncAfterRejectValidation: null
   branchUpdate: notify
   reviewerComment: notify
 delivery:

@@ -912,6 +912,209 @@ describe('async gh provider', () => {
     expect(mutation?.find((arg) => arg.startsWith('query='))).toContain('updatePullRequestBranch');
   });
 
+  it('reports exhaustive check runs explicitly bound to the requested head', async () => {
+    const headSha = 'a'.repeat(40);
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        expect(query).toContain('query CommitCheckEvidence');
+        return JSON.stringify({
+          data: {
+            repository: {
+              object: {
+                oid: headSha,
+                checkSuites: {
+                  nodes: [
+                    {
+                      id: 'suite-1',
+                      status: 'COMPLETED',
+                      conclusion: 'SUCCESS',
+                      branch: { name: 'feature' },
+                      workflowRun: { id: 'run-1', databaseId: 1, event: 'pull_request', url: 'https://run' },
+                      checkRuns: {
+                        nodes: [
+                          {
+                            id: 'check-1',
+                            name: 'full-validation',
+                            status: 'COMPLETED',
+                            conclusion: 'SUCCESS',
+                            permalink: 'https://check',
+                            summary: null,
+                            text: null,
+                            steps: null,
+                          },
+                          {
+                            id: 'check-2',
+                            name: 'still-running',
+                            status: 'IN_PROGRESS',
+                            conclusion: null,
+                            permalink: 'https://check-2',
+                            summary: null,
+                            text: null,
+                            steps: null,
+                          },
+                        ],
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        });
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+
+    await expect(provider.getCheckRunsForHead({ repo: 'acme/api', number: 7 }, headSha)).resolves.toEqual({
+      headSha,
+      exhaustive: true,
+      checks: [
+        {
+          id: 'check-1',
+          name: 'full-validation',
+          state: 'SUCCESS',
+          bucket: 'pass',
+          workflow: 'pull_request',
+        },
+        {
+          id: 'check-2',
+          name: 'still-running',
+          state: 'IN_PROGRESS',
+          bucket: 'pending',
+          workflow: 'pull_request',
+        },
+      ],
+    });
+  });
+
+  it('posts an idempotent exact-head PR comment only after two safe state reads', async () => {
+    const calls: string[][] = [];
+    const headSha = 'a'.repeat(40);
+    const body = '/validate';
+    let commentReads = 0;
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query PullRequestMutationState')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: { id: 'PR_node', headRefOid: headSha, autoMergeRequest: null, mergeQueueEntry: null },
+              },
+            },
+          });
+        }
+        if (args.includes(`repos/acme/api/issues/7/comments`)) {
+          commentReads += 1;
+          return JSON.stringify(
+            commentReads === 1
+              ? [[]]
+              : [
+                  [
+                    {
+                      id: 1,
+                      user: { login: 'octocat' },
+                      body,
+                      created_at: '2026-07-20T10:00:01Z',
+                    },
+                  ],
+                ],
+          );
+        }
+        return '';
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+
+    await provider.mutate({
+      type: 'post-pr-comment-exact-head',
+      pr: { repo: 'acme/api', number: 7 },
+      headSha,
+      body,
+      notBefore: '2026-07-20T10:00:00Z',
+    });
+    await provider.mutate({
+      type: 'post-pr-comment-exact-head',
+      pr: { repo: 'acme/api', number: 7 },
+      headSha,
+      body,
+      notBefore: '2026-07-20T10:00:00Z',
+    });
+
+    expect(
+      calls.filter((args) => (args.find((arg) => arg.startsWith('query=')) ?? '').includes('MutationState')),
+    ).toHaveLength(3);
+    expect(calls.filter((args) => args[0] === 'pr' && args[1] === 'comment')).toEqual([
+      expect.arrayContaining(['--body', body]),
+    ]);
+  });
+
+  it('rejects mismatched commit evidence and a changed head before a validation comment', async () => {
+    const headSha = 'a'.repeat(40);
+    let stateReads = 0;
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query CommitCheckEvidence')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                object: {
+                  oid: 'b'.repeat(40),
+                  checkSuites: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+                },
+              },
+            },
+          });
+        }
+        if (query.includes('query PullRequestMutationState')) {
+          stateReads += 1;
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  id: 'PR_node',
+                  headRefOid: stateReads === 1 ? headSha : 'b'.repeat(40),
+                  autoMergeRequest: null,
+                  mergeQueueEntry: null,
+                },
+              },
+            },
+          });
+        }
+        if (args.includes(`repos/acme/api/issues/7/comments`)) return JSON.stringify([[]]);
+        return '';
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+
+    await expect(provider.getCheckRunsForHead({ repo: 'acme/api', number: 7 }, headSha)).rejects.toThrow(
+      /while resolving exact head/,
+    );
+    await expect(
+      provider.mutate({
+        type: 'post-pr-comment-exact-head',
+        pr: { repo: 'acme/api', number: 7 },
+        headSha,
+        body: '/validate',
+        notBefore: '2026-07-20T10:00:00Z',
+      }),
+    ).rejects.toThrow(/head or queue state changed/);
+  });
+
   it('refuses an exact-head branch sync after the provider head changes', async () => {
     const calls: string[][] = [];
     const executor: ProcessExecutor = {

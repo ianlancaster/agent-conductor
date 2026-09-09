@@ -20,11 +20,28 @@ describe('PR Shepherd V2 configuration', () => {
     expect(config.automation).toEqual({
       autoMerge: 'notify',
       syncAfterReject: false,
+      syncAfterRejectValidation: null,
       branchUpdate: 'notify',
       reviewerComment: 'notify',
     });
     expect(config.delivery).toEqual({ type: 'stdout' });
     expect(config.github.mergeMethod).toBe('squash');
+  });
+
+  it('accepts an optional generic post-sync validation trigger while preserving the boolean option', () => {
+    const config = parseShepherdConfig({
+      version: 2,
+      profile: { githubUser: 'octocat' },
+      automation: {
+        syncAfterReject: true,
+        syncAfterRejectValidation: { triggerComment: ' /validate ', requiredCheck: ' full-validation ' },
+      },
+    });
+    expect(config.automation.syncAfterReject).toBe(true);
+    expect(config.automation.syncAfterRejectValidation).toEqual({
+      triggerComment: '/validate',
+      requiredCheck: 'full-validation',
+    });
   });
 
   it('keeps the exact-head gate inert by default and validates generic tracked selectors', () => {
