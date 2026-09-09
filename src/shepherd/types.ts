@@ -64,6 +64,12 @@ export interface CheckRun {
   workflow: string;
 }
 
+export interface HeadCheckSnapshot {
+  headSha: string;
+  checks: CheckRun[];
+  exhaustive: boolean;
+}
+
 export interface Review {
   id: string;
   author: string;
@@ -209,6 +215,8 @@ export type GitHubMutation =
   | { type: 'dequeue'; pr: PullRequestRef }
   | { type: 'disable-auto-merge'; pr: PullRequestRef }
   | { type: 'update-branch'; pr: PullRequestRef }
+  | { type: 'sync-branch-exact-head'; pr: PullRequestRef; headSha: string }
+  | { type: 'post-pr-comment-exact-head'; pr: PullRequestRef; headSha: string; body: string; notBefore: string }
   | { type: 'post-reviewer-comment'; pr: PullRequestRef; reviewer: string; body: string };
 
 export interface GitHubProvider {
@@ -218,6 +226,7 @@ export interface GitHubProvider {
   ): Promise<DiscoveryResult<TrackedPullRequestCandidate>>;
   getPullRequest(pr: PullRequestRef): Promise<PullRequestDetails>;
   getMergeAutomationState?(pr: PullRequestRef): Promise<MergeAutomationState>;
+  getCheckRunsForHead?(pr: PullRequestRef, headSha: string): Promise<HeadCheckSnapshot>;
   mutate(mutation: GitHubMutation): Promise<void>;
 }
 

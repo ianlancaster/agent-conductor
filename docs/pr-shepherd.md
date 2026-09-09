@@ -43,6 +43,8 @@ installing the command does not enable it.
      bootstrap: baseline-only
    automation:
      autoMerge: notify
+     syncAfterReject: false
+     syncAfterRejectValidation: null
      branchUpdate: notify
      reviewerComment: notify
    delivery:
@@ -138,6 +140,8 @@ Configuration is strict, versioned YAML: unknown keys and unknown guidance event
 | `features.reviewerNudge`                   | Optional reviewer-comment/escalation workflow, including threshold, weekday handling, timezone, and repeat cap; disabled by default.   |
 | `features.staleThresholdHours`             | Authored-PR staleness interval; default `4`. Set `0` for immediate first-cycle staleness.                                              |
 | `automation.autoMerge`                     | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
+| `automation.syncAfterReject`               | Conditionally sync one recent, unchanged, conclusively attributed rejected queue head before retry; default `false`.                   |
+| `automation.syncAfterRejectValidation`     | Optional `{ triggerComment, requiredCheck }` exact-head validation gate after Shepherd performs that sync; default `null`.             |
 | `automation.branchUpdate`                  | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
 | `automation.reviewerComment`               | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
 | `delivery.type`                            | `stdout` or `conductor`; default `stdout`.                                                                                             |
@@ -210,6 +214,78 @@ supplies this capability. An injected
 `GitHubProvider` that omits the optional `getMergeAutomationState` method retains legacy
 `enable-auto-merge` submission and cannot report or retry queue eviction until its adapter exposes
 that state.
+
+Set `automation.syncAfterReject: true` to opt an executing merge-queue auto-merge profile into one
+additional recovery step for a conclusively attributed `failed_checks` rejection. The setting is
+inert unless `github.mode: merge-queue` and `automation.autoMerge: execute` are both active. It does
+not reuse `automation.branchUpdate`, change direct-mode behavior, or turn a `notify` auto-merge
+profile into an executing profile.
+
+An eligible rejection must be the provider removal observed after Shepherd's completed queue
+submission for the exact current head. Merge-group evidence must be `complete`, queue-stack
+attribution cannot be `ambiguous` or `unavailable`, and the removal must be no more than 24 hours
+old. This fixed window accommodates an overnight Shepherd pause or restart while preventing an old
+timeline event from authorizing a later mutation. Missing, stale, truncated, contradictory, or
+ambiguous evidence remains fenced and notification-only.
+
+Shepherd persists a one-shot action keyed by repository, pull request, and rejected head, then
+re-fetches the PR and removal under the durable GitHub mutation mutex. The built-in provider calls
+GitHub's native `updatePullRequestBranch` mutation with the rejected SHA as `expectedHeadOid`; a
+concurrent author push or queue transition cancels the local action without changing the branch.
+Provider failures use the existing bounded mutation retry policy and emit `branch-update-failed`
+after five attempts. A successful action is never followed by enqueue in the same poll, and the
+same exact head is never synced twice even if it is rejected again.
+
+An injected `GitHubProvider` used with this option must both expose `getMergeAutomationState` and
+implement the `sync-branch-exact-head` mutation with an equivalent provider-side expected-head
+precondition. Profiles backed by an adapter without durable queue evidence remain
+notification-only.
+
+If the sync creates a new head, ordinary PR-attached checks and a review attached to that exact head
+must satisfy readiness before a conditional enqueue. This exact-head recovery rule also applies to
+`provider-action-ready` tracked claims; their initial admission remains provider-owned, but their
+post-sync re-entry is conditional and waits for the configured check and approval readiness. An
+author push or independently completed current-main sync changes the head before Shepherd acts and
+therefore follows ordinary readiness without a recovery mutation. A provider-confirmed no-op sync
+records the one-shot action and returns the unchanged exact head to ordinary readiness only after a
+later poll observes new check identities and any configured number of new exact-head approvals.
+Shepherd never copies or reuses check or approval evidence from before the sync.
+
+To ask a repository to run a fuller validation suite after that sync, configure the optional
+repository-neutral contract:
+
+```yaml
+automation:
+  autoMerge: execute
+  syncAfterReject: true
+  syncAfterRejectValidation:
+    triggerComment: /validate
+    requiredCheck: full-validation
+```
+
+The values are opaque repository configuration; Shepherd does not know command or workflow
+semantics. After the sync mutation, Shepherd re-reads and records GitHub's resulting head under the
+mutation mutex. Only that confirmed head gets one durable PR comment whose body is exactly the
+configured text; remote retry deduplication is bounded to identical comments created after the
+durable action was scheduled. Before posting it, Shepherd snapshots check-run identities directly
+from the exact commit. Queue re-entry then requires the comment action to complete and a later,
+previously unseen check with the exact configured name to pass in an exhaustive provider snapshot
+explicitly bound to the same SHA.
+Pre-trigger, rejected-head, unrelated, pending, failed, incomplete, or mismatched-SHA checks cannot
+satisfy the gate. A changed head, configuration drift, trigger failure, or missing proof fails
+closed, and neither the sync poll nor the trigger poll can enqueue. Author or independent-sync
+heads that supersede the confirmed Shepherd result retain ordinary readiness.
+
+An injected provider using `syncAfterRejectValidation` must additionally expose
+`getCheckRunsForHead`, return an exhaustive snapshot labeled with the requested SHA, and implement
+`post-pr-comment-exact-head` with head and queue rechecks plus idempotent exact-body handling. The
+built-in GitHub provider supplies these capabilities. Existing boolean-only profiles and entity
+databases need no migration; `null` preserves the original sync-only behavior.
+
+Existing version 2 profiles and databases need no migration: the omitted setting resolves to
+`false`, and recovery metadata uses the existing schema-free entity store. Add the explicit setting
+to a profile only when deliberately rolling out this behavior; profile changes require a Shepherd
+restart.
 
 ### Persistent tracked pull requests
 

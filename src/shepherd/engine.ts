@@ -11,6 +11,7 @@ import type {
   EntityUpdate,
   GitHubMutation,
   GitHubProvider,
+  HeadCheckSnapshot,
   MergeAutomationState,
   MergeQueueRemoval,
   PullRequestDetails,
@@ -34,7 +35,25 @@ interface AuthoredState {
   readyForReviewCycle?: number;
   receivedReviewThreads?: Record<string, ReceivedReviewThreadState>;
   mergeQueueRetry?: MergeQueueRetryState;
+  syncAfterRejectHead?: SyncAfterRejectHeadState;
   sources?: { authored: boolean; trackedGeneration?: number };
+}
+
+interface SyncAfterRejectHeadState {
+  rejectedHeadSha: string;
+  currentHeadSha: string;
+  removalId: string;
+  actionKey: string;
+  priorCheckIds: string[];
+  priorApprovalIds: string[];
+  validation?: SyncAfterRejectValidationState;
+}
+
+interface SyncAfterRejectValidationState {
+  actionKey: string;
+  triggerComment: string;
+  requiredCheck: string;
+  priorCheckIds: string[];
 }
 
 interface MergeQueueRetryState {
@@ -56,6 +75,7 @@ interface MergeQueueFence {
   removalReason: string;
   classification: 'code-failure' | 'provider-evidence-ambiguous' | 'non-retryable-removal';
   createdAt: string;
+  syncActionKey?: string;
 }
 
 interface ReceivedReviewThreadState {
@@ -145,11 +165,38 @@ interface ActionState {
   enqueueAttempt?: number;
   queueScope?: string;
   queueObservationHeadSha?: string;
+  syncAfterRejectRemovalId?: string;
+  syncAfterRejectRemovedAt?: string;
+  syncAfterRejectHeadSha?: string;
+  syncAfterRejectResultHeadSha?: string;
+  syncAfterRejectPriorCheckIds?: string[];
+  syncAfterRejectPriorApprovalIds?: string[];
+  syncAfterRejectActionKey?: string;
+  syncAfterRejectValidationActionKey?: string;
+  syncAfterRejectValidationTriggerComment?: string;
+  syncAfterRejectValidationRequiredCheck?: string;
+  syncAfterRejectValidationPriorCheckIds?: string[];
 }
+
+type MergeQueueActionContext = Pick<
+  ActionState,
+  | 'trackedGeneration'
+  | 'attestationHeadSha'
+  | 'attestationId'
+  | 'syncAfterRejectHeadSha'
+  | 'syncAfterRejectPriorCheckIds'
+  | 'syncAfterRejectPriorApprovalIds'
+  | 'syncAfterRejectActionKey'
+  | 'syncAfterRejectValidationActionKey'
+  | 'syncAfterRejectValidationTriggerComment'
+  | 'syncAfterRejectValidationRequiredCheck'
+  | 'syncAfterRejectValidationPriorCheckIds'
+>;
 
 const MERGE_QUEUE_MAX_ATTEMPTS = 5;
 const MERGE_QUEUE_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000] as const;
 const RETRYABLE_QUEUE_REMOVAL_REASONS = new Set(['checks_timed_out', 'stack_invalidated']);
+const SYNC_AFTER_REJECT_RECENT_MS = 24 * 60 * 60_000;
 
 export interface PollSummary {
   discovered: number;
@@ -224,6 +271,24 @@ function mergeQueueRetryDisposition(removal: MergeQueueRemoval | undefined):
     classification: reason === '' ? 'provider-evidence-ambiguous-fenced' : 'non-retryable-removal-fenced',
     fenceClassification: reason === '' ? 'provider-evidence-ambiguous' : 'non-retryable-removal',
   };
+}
+
+function syncAfterRejectRemovalTimeReason(createdAt: string, now: Date): string | undefined {
+  const removedAt = new Date(createdAt).getTime();
+  const ageMs = now.getTime() - removedAt;
+  if (!Number.isFinite(removedAt) || ageMs < 0) return 'invalid-removal-time';
+  if (ageMs > SYNC_AFTER_REJECT_RECENT_MS) return 'removal-is-not-recent';
+  return undefined;
+}
+
+function syncAfterRejectEvidenceReason(removal: MergeQueueRemoval | undefined, now: Date): string | undefined {
+  if (removal === undefined) return 'missing-removal-evidence';
+  if (normalizedQueueRemovalReason(removal.reason) !== 'failed_checks') return 'removal-was-not-failed-checks';
+  if (removal.evidence?.status !== 'complete') return 'ambiguous-provider-evidence';
+  if (['ambiguous', 'unavailable'].includes(removal.evidence.queueStack.attribution)) {
+    return 'ambiguous-queue-stack-attribution';
+  }
+  return syncAfterRejectRemovalTimeReason(removal.createdAt, now);
 }
 
 function prKey(kind: string, pr: PullRequestRef): string {
@@ -449,6 +514,51 @@ export class ShepherdEngine {
           });
           if (mutated) completed += 1;
           continue;
+        } else if (entity.value.mutation.type === 'sync-branch-exact-head') {
+          const mutated = await this.releaseMutex().runExclusive(async (lease) => {
+            const details = await this.github.getPullRequest(entity.value.mutation.pr);
+            const automation = await this.mergeAutomationSnapshot(details);
+            if (!this.syncAfterRejectActionStillApplicable(entity.key, entity.value, details, automation)) {
+              this.cancelAction(entity.key, entity.value, 'sync-after-reject evidence is no longer applicable');
+              return false;
+            }
+            lease.assertOwned();
+            await this.github.mutate(entity.value.mutation);
+            lease.assertOwned();
+            const current = await this.github.getPullRequest(entity.value.mutation.pr);
+            if (current.state !== 'OPEN') {
+              throw new Error('GitHub pull request closed while confirming the conditional branch sync.');
+            }
+            this.completeAction(
+              entity.key,
+              { ...entity.value, syncAfterRejectResultHeadSha: current.headSha },
+              this.clock().toISOString(),
+            );
+            return true;
+          });
+          if (mutated) completed += 1;
+          continue;
+        } else if (entity.value.mutation.type === 'post-pr-comment-exact-head') {
+          const mutation = entity.value.mutation;
+          const mutated = await this.releaseMutex().runExclusive(async (lease) => {
+            const details = await this.github.getPullRequest(mutation.pr);
+            const automation = await this.mergeAutomationSnapshot(details);
+            if (!this.postSyncValidationActionStillApplicable(entity.key, entity.value, details, automation)) {
+              this.cancelAction(entity.key, entity.value, 'post-sync validation trigger is no longer applicable');
+              return false;
+            }
+            lease.assertOwned();
+            await this.github.mutate(mutation);
+            lease.assertOwned();
+            const current = await this.github.getPullRequest(mutation.pr);
+            if (current.headSha.toLowerCase() !== mutation.headSha.toLowerCase()) {
+              throw new Error('GitHub head changed while posting the post-sync validation trigger.');
+            }
+            this.completeAction(entity.key, entity.value, this.clock().toISOString());
+            return true;
+          });
+          if (mutated) completed += 1;
+          continue;
         } else if (
           entity.value.mutation.type === 'merge-exact-head' ||
           entity.value.mutation.type === 'enqueue-exact-head'
@@ -456,10 +566,15 @@ export class ShepherdEngine {
           const mutateExactHead = async (assertOwned: () => void): Promise<boolean> => {
             const details = await this.github.getPullRequest(entity.value.mutation.pr);
             const applicable =
-              entity.value.trackedGeneration === undefined && entity.value.mutation.type === 'enqueue-exact-head'
-                ? this.actionStillApplicable(entity.value) &&
-                  this.authoredQueueActionStillApplicable(entity.value, details)
-                : this.gatedActionStillApplicable(entity.value, details);
+              entity.value.syncAfterRejectHeadSha !== undefined &&
+              entity.value.trackedGeneration !== undefined &&
+              supportsTrackedPullRequests(this.store) &&
+              this.store.getTrackedPullRequest(entity.value.mutation.pr)?.releaseGate === 'provider-action-ready'
+                ? await this.providerReadySyncEnqueueStillApplicable(entity.value, details)
+                : entity.value.trackedGeneration === undefined && entity.value.mutation.type === 'enqueue-exact-head'
+                  ? this.actionStillApplicable(entity.value) &&
+                    (await this.authoredQueueActionStillApplicable(entity.value, details))
+                  : await this.gatedActionStillApplicable(entity.value, details);
             if (!applicable) {
               this.cancelAction(entity.key, entity.value, 'exact-head mutation is no longer applicable');
               return false;
@@ -517,7 +632,8 @@ export class ShepherdEngine {
         this.store.logHealth('github-mutation-failed', `${entity.key}: ${message.slice(0, 500)}`);
         if (
           (entity.value.mutation.type === 'enqueue-exact-head' ||
-            entity.value.mutation.type === 'enqueue-provider-ready') &&
+            entity.value.mutation.type === 'enqueue-provider-ready' ||
+            entity.value.mutation.type === 'post-pr-comment-exact-head') &&
           attempts >= 5
         ) {
           this.store.commit(
@@ -530,7 +646,10 @@ export class ShepherdEngine {
             ],
             [],
           );
-        } else if (entity.value.mutation.type === 'update-branch' && attempts >= 5) {
+        } else if (
+          (entity.value.mutation.type === 'update-branch' || entity.value.mutation.type === 'sync-branch-exact-head') &&
+          attempts >= 5
+        ) {
           const event = buildEvent(
             this.config,
             'branch-update-failed',
@@ -619,6 +738,44 @@ export class ShepherdEngine {
     if (action.mutation.type === 'enqueue-provider-ready') {
       return this.providerReadyActionContextStillApplicable(action);
     }
+    if (action.mutation.type === 'sync-branch-exact-head') {
+      const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+      return (
+        authored !== undefined &&
+        this.syncAfterRejectOwnershipStillApplicable(action, authored) &&
+        authored.details.state === 'OPEN' &&
+        authored.details.headSha.toLowerCase() === action.mutation.headSha.toLowerCase() &&
+        this.syncAfterRejectActionFenceMatches(action)
+      );
+    }
+    if (action.mutation.type === 'post-pr-comment-exact-head') {
+      const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+      return (
+        authored?.details.state === 'OPEN' &&
+        authored.details.headSha.toLowerCase() === action.mutation.headSha.toLowerCase() &&
+        authored.syncAfterRejectHead?.validation?.actionKey === action.syncAfterRejectValidationActionKey &&
+        action.syncAfterRejectValidationActionKey !== undefined
+      );
+    }
+    if (
+      action.mutation.type === 'enqueue-exact-head' &&
+      action.syncAfterRejectHeadSha !== undefined &&
+      action.trackedGeneration !== undefined &&
+      supportsTrackedPullRequests(this.store)
+    ) {
+      const tracked = this.store.getTrackedPullRequest(action.mutation.pr);
+      const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+      return (
+        this.config.automation.syncAfterReject &&
+        this.config.automation.autoMerge === 'execute' &&
+        this.config.features.trackedPRs.enabled &&
+        tracked?.status === 'active' &&
+        tracked.generation === action.trackedGeneration &&
+        tracked.releaseGate === 'provider-action-ready' &&
+        authored?.details.state === 'OPEN' &&
+        authored.details.headSha.toLowerCase() === action.syncAfterRejectHeadSha.toLowerCase()
+      );
+    }
     if (action.mutation.type === 'merge-exact-head' || action.trackedGeneration !== undefined) {
       return (
         this.config.features.trackedPRs.enabled &&
@@ -662,6 +819,108 @@ export class ShepherdEngine {
     );
   }
 
+  private syncAfterRejectOwnershipStillApplicable(action: ActionState, authored: AuthoredState): boolean {
+    if (
+      !this.config.automation.syncAfterReject ||
+      this.config.automation.autoMerge !== 'execute' ||
+      this.config.github.mode !== 'merge-queue'
+    ) {
+      return false;
+    }
+    if (authored.sources?.authored !== false) return true;
+    if (
+      action.trackedGeneration === undefined ||
+      !this.config.features.trackedPRs.enabled ||
+      !supportsTrackedPullRequests(this.store)
+    ) {
+      return false;
+    }
+    const tracked = this.store.getTrackedPullRequest(action.mutation.pr);
+    return tracked?.status === 'active' && tracked.generation === action.trackedGeneration;
+  }
+
+  private syncAfterRejectActionFenceMatches(action: ActionState): boolean {
+    if (
+      action.mutation.type !== 'sync-branch-exact-head' ||
+      action.syncAfterRejectRemovalId === undefined ||
+      action.syncAfterRejectRemovedAt === undefined ||
+      syncAfterRejectRemovalTimeReason(action.syncAfterRejectRemovedAt, this.clock()) !== undefined
+    ) {
+      return false;
+    }
+    const fence = this.recoverMergeQueueFence(action.mutation.pr, action.mutation.headSha);
+    return fence?.removalId === action.syncAfterRejectRemovalId && fence.syncActionKey !== undefined;
+  }
+
+  private syncAfterRejectActionStillApplicable(
+    key: string,
+    action: ActionState,
+    details: PullRequestDetails,
+    automation: MergeAutomationState | undefined,
+  ): boolean {
+    if (
+      action.mutation.type !== 'sync-branch-exact-head' ||
+      action.syncAfterRejectRemovalId === undefined ||
+      details.state !== 'OPEN' ||
+      details.headSha.toLowerCase() !== action.mutation.headSha.toLowerCase() ||
+      automation === undefined ||
+      automation.queued ||
+      automation.headSha.toLowerCase() !== action.mutation.headSha.toLowerCase() ||
+      automation.latestQueueRemoval?.id !== action.syncAfterRejectRemovalId ||
+      syncAfterRejectEvidenceReason(automation.latestQueueRemoval, this.clock()) !== undefined
+    ) {
+      return false;
+    }
+    const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+    if (authored === undefined || !this.syncAfterRejectOwnershipStillApplicable(action, authored)) return false;
+    const fence = this.recoverMergeQueueFence(action.mutation.pr, action.mutation.headSha);
+    return fence?.removalId === action.syncAfterRejectRemovalId && fence.syncActionKey === key;
+  }
+
+  private postSyncValidationActionStillApplicable(
+    key: string,
+    action: ActionState,
+    details: PullRequestDetails,
+    automation: MergeAutomationState | undefined,
+  ): boolean {
+    const validationConfig = this.config.automation.syncAfterRejectValidation;
+    if (
+      action.mutation.type !== 'post-pr-comment-exact-head' ||
+      action.syncAfterRejectActionKey === undefined ||
+      action.syncAfterRejectValidationActionKey !== key ||
+      action.syncAfterRejectValidationTriggerComment === undefined ||
+      action.syncAfterRejectValidationRequiredCheck === undefined ||
+      action.syncAfterRejectValidationPriorCheckIds === undefined ||
+      validationConfig?.triggerComment !== action.syncAfterRejectValidationTriggerComment ||
+      validationConfig?.requiredCheck !== action.syncAfterRejectValidationRequiredCheck ||
+      action.mutation.body !== action.syncAfterRejectValidationTriggerComment ||
+      !Number.isFinite(new Date(action.mutation.notBefore).getTime()) ||
+      details.state !== 'OPEN' ||
+      details.headSha.toLowerCase() !== action.mutation.headSha.toLowerCase() ||
+      automation?.queued !== false ||
+      automation?.headSha.toLowerCase() !== action.mutation.headSha.toLowerCase()
+    ) {
+      return false;
+    }
+    const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+    const syncState = authored?.syncAfterRejectHead;
+    const validationState = syncState?.validation;
+    const syncAction = this.store.getEntity<ActionState>(action.syncAfterRejectActionKey)?.value;
+    return (
+      authored !== undefined &&
+      this.syncAfterRejectOwnershipStillApplicable(action, authored) &&
+      syncState?.actionKey === action.syncAfterRejectActionKey &&
+      syncState.currentHeadSha.toLowerCase() === action.mutation.headSha.toLowerCase() &&
+      validationState?.actionKey === key &&
+      validationState.triggerComment === action.syncAfterRejectValidationTriggerComment &&
+      validationState.requiredCheck === action.syncAfterRejectValidationRequiredCheck &&
+      validationState.priorCheckIds.join('\u0000') === action.syncAfterRejectValidationPriorCheckIds.join('\u0000') &&
+      syncAction?.status === 'completed' &&
+      syncAction.mutation.type === 'sync-branch-exact-head' &&
+      syncAction.syncAfterRejectResultHeadSha?.toLowerCase() === action.mutation.headSha.toLowerCase()
+    );
+  }
+
   private providerReadyActionContextStillApplicable(action: ActionState): boolean {
     if (
       action.mutation.type !== 'enqueue-provider-ready' ||
@@ -681,21 +940,67 @@ export class ShepherdEngine {
     );
   }
 
-  private authoredQueueActionStillApplicable(action: ActionState, details: PullRequestDetails): boolean {
+  private async authoredQueueActionStillApplicable(action: ActionState, details: PullRequestDetails): Promise<boolean> {
     if (action.mutation.type !== 'enqueue-exact-head' || this.config.github.mode !== 'merge-queue') return false;
+    if (
+      action.syncAfterRejectHeadSha !== undefined &&
+      (action.syncAfterRejectPriorCheckIds === undefined || action.syncAfterRejectPriorApprovalIds === undefined)
+    ) {
+      return false;
+    }
     if (details.state !== 'OPEN' || details.headSha !== action.mutation.headSha || details.autoMergeRequest !== null) {
       return false;
     }
     const reviews = latestReviews(details.reviews);
+    const approvals = reviews.filter(
+      (review) =>
+        review.state === 'APPROVED' &&
+        (action.syncAfterRejectHeadSha === undefined ||
+          (review.commitSha?.toLowerCase() === details.headSha.toLowerCase() &&
+            !action.syncAfterRejectPriorApprovalIds?.includes(review.id))),
+    );
     return (
       details.mergeable === 'MERGEABLE' &&
-      this.checksReady(details) &&
+      this.checksReady(details, action.syncAfterRejectPriorCheckIds) &&
+      (await this.postSyncValidationActionReady(action, details)) &&
       !reviews.some((review) => review.state === 'CHANGES_REQUESTED') &&
-      reviews.filter((review) => review.state === 'APPROVED').length >= this.config.reviews.requiredApprovals
+      approvals.length >= this.config.reviews.requiredApprovals
     );
   }
 
-  private gatedActionStillApplicable(action: ActionState, details: PullRequestDetails): boolean {
+  private async providerReadySyncEnqueueStillApplicable(
+    action: ActionState,
+    details: PullRequestDetails,
+  ): Promise<boolean> {
+    if (
+      action.mutation.type !== 'enqueue-exact-head' ||
+      action.trackedGeneration === undefined ||
+      action.syncAfterRejectHeadSha?.toLowerCase() !== details.headSha.toLowerCase() ||
+      !this.config.automation.syncAfterReject ||
+      this.config.automation.autoMerge !== 'execute' ||
+      !this.config.features.trackedPRs.enabled ||
+      !supportsTrackedPullRequests(this.store) ||
+      this.github.getMergeAutomationState === undefined
+    ) {
+      return false;
+    }
+    const tracked = this.store.getTrackedPullRequest(action.mutation.pr);
+    if (
+      tracked?.status !== 'active' ||
+      tracked.generation !== action.trackedGeneration ||
+      tracked.releaseGate !== 'provider-action-ready' ||
+      !(await this.authoredQueueActionStillApplicable(action, details))
+    ) {
+      return false;
+    }
+    const automation = await this.github.getMergeAutomationState(action.mutation.pr);
+    return (
+      automation.headSha.toLowerCase() === details.headSha.toLowerCase() &&
+      (automation.queued || automation.enqueueAvailable === true)
+    );
+  }
+
+  private async gatedActionStillApplicable(action: ActionState, details: PullRequestDetails): Promise<boolean> {
     if (
       action.trackedGeneration === undefined ||
       action.attestationHeadSha === undefined ||
@@ -705,6 +1010,12 @@ export class ShepherdEngine {
       !supportsReleaseGate(this.store)
     )
       return false;
+    if (
+      action.syncAfterRejectHeadSha !== undefined &&
+      (action.syncAfterRejectPriorCheckIds === undefined || action.syncAfterRejectPriorApprovalIds === undefined)
+    ) {
+      return false;
+    }
     const tracked = this.store.getTrackedPullRequest(action.mutation.pr);
     if (
       tracked?.status !== 'active' ||
@@ -718,14 +1029,65 @@ export class ShepherdEngine {
     )
       return false;
     const reviews = latestReviews(details.reviews);
+    const approvals = reviews.filter(
+      (review) =>
+        review.state === 'APPROVED' &&
+        (action.syncAfterRejectHeadSha === undefined ||
+          (review.commitSha?.toLowerCase() === details.headSha.toLowerCase() &&
+            !action.syncAfterRejectPriorApprovalIds?.includes(review.id))),
+    );
     const directBehind = this.config.github.mode === 'direct' && details.mergeStateStatus === 'BEHIND';
     return (
       details.mergeable === 'MERGEABLE' &&
       !directBehind &&
-      this.checksReady(details) &&
+      this.checksReady(details, action.syncAfterRejectPriorCheckIds) &&
+      (await this.postSyncValidationActionReady(action, details)) &&
       !reviews.some((review) => review.state === 'CHANGES_REQUESTED') &&
-      reviews.filter((review) => review.state === 'APPROVED').length >= this.config.reviews.requiredApprovals
+      approvals.length >= this.config.reviews.requiredApprovals
     );
+  }
+
+  private async postSyncValidationActionReady(action: ActionState, details: PullRequestDetails): Promise<boolean> {
+    const actionKey = action.syncAfterRejectValidationActionKey;
+    const requiredCheck = action.syncAfterRejectValidationRequiredCheck;
+    const triggerComment = action.syncAfterRejectValidationTriggerComment;
+    const priorCheckIds = action.syncAfterRejectValidationPriorCheckIds;
+    const hasAnyValidationField =
+      actionKey !== undefined ||
+      requiredCheck !== undefined ||
+      triggerComment !== undefined ||
+      priorCheckIds !== undefined;
+    if (!hasAnyValidationField) return true;
+    const configured = this.config.automation.syncAfterRejectValidation;
+    if (
+      !this.config.automation.syncAfterReject ||
+      this.config.automation.autoMerge !== 'execute' ||
+      actionKey === undefined ||
+      requiredCheck === undefined ||
+      triggerComment === undefined ||
+      priorCheckIds === undefined ||
+      configured?.requiredCheck !== requiredCheck ||
+      configured?.triggerComment !== triggerComment ||
+      this.store.getEntity<ActionState>(actionKey)?.value.status !== 'completed' ||
+      this.github.getCheckRunsForHead === undefined
+    ) {
+      return false;
+    }
+    const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+    const validation = authored?.syncAfterRejectHead?.validation;
+    if (
+      authored?.syncAfterRejectHead?.currentHeadSha.toLowerCase() !== details.headSha.toLowerCase() ||
+      validation?.actionKey !== actionKey ||
+      validation.requiredCheck !== requiredCheck ||
+      validation.triggerComment !== triggerComment
+    ) {
+      return false;
+    }
+    const snapshot = await this.github.getCheckRunsForHead(details, details.headSha);
+    if (!snapshot.exhaustive || snapshot.headSha.toLowerCase() !== details.headSha.toLowerCase()) return false;
+    const prior = new Set(priorCheckIds);
+    const fresh = snapshot.checks.filter((check) => check.name === requiredCheck && !prior.has(check.id));
+    return fresh.some((check) => check.bucket === 'pass' && check.state.toUpperCase() === 'SUCCESS');
   }
 
   private async poll(): Promise<PollSummary> {
@@ -874,6 +1236,7 @@ export class ShepherdEngine {
             details,
             tracked?.releaseGate !== 'provider-action-ready',
           );
+          const postSyncChecks = await this.postSyncValidationSnapshot(details, previous);
           const baseline = isBaseline || (previous === undefined && tracked?.baselinePending === true);
           const { state, events, actions, nudges } = this.evaluateAuthored(
             details,
@@ -882,6 +1245,7 @@ export class ShepherdEngine {
             tracked,
             authoredKeys.has(key),
             mergeAutomation,
+            postSyncChecks,
           );
           if (tracked !== undefined) {
             const result = this.trackedStore().commitTrackedObservation(
@@ -897,7 +1261,15 @@ export class ShepherdEngine {
             if (!result.applied && authoredKeys.has(key)) {
               const currentTracked = this.trackedStore().getTrackedPullRequest(details);
               if (currentTracked?.status === 'active') return;
-              const fallback = this.evaluateAuthored(details, previous, isBaseline, undefined, true, mergeAutomation);
+              const fallback = this.evaluateAuthored(
+                details,
+                previous,
+                isBaseline,
+                undefined,
+                true,
+                mergeAutomation,
+                postSyncChecks,
+              );
               const fallbackResult = this.trackedStore().commitAuthoredObservationAfterTrackedRelease(
                 details,
                 tracked.generation,
@@ -953,6 +1325,42 @@ export class ShepherdEngine {
     return state;
   }
 
+  private async postSyncValidationSnapshot(
+    details: PullRequestDetails,
+    previous: AuthoredState | undefined,
+  ): Promise<HeadCheckSnapshot | undefined> {
+    const configured =
+      this.config.automation.syncAfterReject &&
+      this.config.automation.autoMerge === 'execute' &&
+      this.config.automation.syncAfterRejectValidation !== null;
+    const existing = previous?.syncAfterRejectHead;
+    const previousFence = previous?.mergeQueueRetry?.fence;
+    const completedSyncAction =
+      previousFence?.syncActionKey === undefined
+        ? undefined
+        : this.store.getEntity<ActionState>(previousFence.syncActionKey)?.value;
+    const completedFenceSync =
+      completedSyncAction?.status === 'completed' &&
+      completedSyncAction.syncAfterRejectResultHeadSha?.toLowerCase() === details.headSha.toLowerCase();
+    const applies = existing?.currentHeadSha.toLowerCase() === details.headSha.toLowerCase() || completedFenceSync;
+    if (!configured || !applies) return undefined;
+    if (this.github.getCheckRunsForHead === undefined) {
+      throw new Error('The GitHub provider cannot observe exact-head check runs for post-sync validation.');
+    }
+    const snapshot = await this.github.getCheckRunsForHead(details, details.headSha);
+    if (snapshot.headSha.toLowerCase() !== details.headSha.toLowerCase()) {
+      throw new Error(
+        `GitHub returned post-sync checks for ${snapshot.headSha}, expected ${details.headSha} for ${details.repo}#${String(details.number)}.`,
+      );
+    }
+    if (!snapshot.exhaustive) {
+      throw new Error(
+        `GitHub returned incomplete post-sync checks for ${details.repo}#${String(details.number)}@${details.headSha}.`,
+      );
+    }
+    return snapshot;
+  }
+
   private evaluateAuthored(
     details: PullRequestDetails,
     previous: AuthoredState | undefined,
@@ -960,6 +1368,7 @@ export class ShepherdEngine {
     trackedClaim?: TrackedPullRequest,
     authored = true,
     mergeAutomation?: MergeAutomationState,
+    postSyncChecks?: HeadCheckSnapshot,
   ): { state: AuthoredState; events: ShepherdEvent[]; actions: EntityUpdate[]; nudges: EntityUpdate[] } {
     const now = this.clock();
     const events: ShepherdEvent[] = [];
@@ -974,6 +1383,95 @@ export class ShepherdEngine {
     let conflictCycle = previous?.conflictCycle ?? 0;
     let readyForReviewCycle = previous?.readyForReviewCycle ?? 0;
     let mergeQueueRetry = previous?.mergeQueueRetry?.headSha === details.headSha ? previous.mergeQueueRetry : undefined;
+    let syncAfterRejectHead =
+      previous?.syncAfterRejectHead?.currentHeadSha.toLowerCase() === details.headSha.toLowerCase()
+        ? previous.syncAfterRejectHead
+        : undefined;
+    let mayStartPostSyncValidation = false;
+    const validationConfig = this.config.automation.syncAfterRejectValidation;
+    const previousSyncFence = previous?.mergeQueueRetry?.fence;
+    if (previousSyncFence?.syncActionKey !== undefined && previousDetails !== undefined) {
+      const syncAction = this.store.getEntity<ActionState>(previousSyncFence.syncActionKey);
+      if (
+        syncAction?.value.status === 'completed' &&
+        previousSyncFence.headSha.toLowerCase() === previousDetails.headSha.toLowerCase() &&
+        (validationConfig === null ||
+          syncAction.value.syncAfterRejectResultHeadSha?.toLowerCase() === details.headSha.toLowerCase())
+      ) {
+        syncAfterRejectHead = {
+          rejectedHeadSha: previousSyncFence.headSha,
+          currentHeadSha: details.headSha,
+          removalId: previousSyncFence.removalId,
+          actionKey: previousSyncFence.syncActionKey,
+          priorCheckIds: previousDetails.checks.map((check) => check.id).sort(),
+          priorApprovalIds: latestReviews(previousDetails.reviews)
+            .filter((review) => review.state === 'APPROVED')
+            .map((review) => review.id)
+            .sort(),
+        };
+        mayStartPostSyncValidation = validationConfig !== null;
+      }
+    }
+    if (
+      !baseline &&
+      mayStartPostSyncValidation &&
+      syncAfterRejectHead !== undefined &&
+      syncAfterRejectHead.validation === undefined &&
+      validationConfig !== null
+    ) {
+      if (postSyncChecks === undefined) {
+        throw new Error(
+          `Missing exact-head check snapshot for post-sync validation on ${details.repo}#${String(details.number)}.`,
+        );
+      }
+      const identity = createHash('sha256')
+        .update(
+          [
+            details.repo.toLowerCase(),
+            String(details.number),
+            syncAfterRejectHead.actionKey,
+            details.headSha.toLowerCase(),
+            validationConfig.triggerComment,
+            validationConfig.requiredCheck,
+          ].join('\u0000'),
+        )
+        .digest('hex')
+        .slice(0, 24);
+      const actionKey = `${prKey('action:post-sync-validation', pr)}:${identity}`;
+      const validation: SyncAfterRejectValidationState = {
+        actionKey,
+        triggerComment: validationConfig.triggerComment,
+        requiredCheck: validationConfig.requiredCheck,
+        priorCheckIds: postSyncChecks.checks
+          .filter((check) => check.name === validationConfig.requiredCheck)
+          .map((check) => check.id)
+          .sort(),
+      };
+      syncAfterRejectHead = { ...syncAfterRejectHead, validation };
+      if (this.store.getEntity<ActionState>(actionKey) === undefined) {
+        actions.push({
+          key: actionKey,
+          kind: 'action',
+          value: {
+            status: 'pending',
+            mutation: {
+              type: 'post-pr-comment-exact-head',
+              pr,
+              headSha: details.headSha,
+              body: validationConfig.triggerComment,
+              notBefore: now.toISOString(),
+            },
+            expectedHeadSha: details.headSha,
+            syncAfterRejectActionKey: syncAfterRejectHead.actionKey,
+            syncAfterRejectValidationActionKey: actionKey,
+            syncAfterRejectValidationTriggerComment: validation.triggerComment,
+            syncAfterRejectValidationRequiredCheck: validation.requiredCheck,
+            syncAfterRejectValidationPriorCheckIds: validation.priorCheckIds,
+            ...(trackedGeneration === undefined ? {} : { trackedGeneration }),
+          } satisfies ActionState,
+        });
+      }
+    }
     const receivedReviewFeedback = this.receivedReviewFeedback(details, previous, baseline);
     if (baseline) {
       const threshold = this.config.features.staleThresholdHours;
@@ -1072,11 +1570,18 @@ export class ShepherdEngine {
       const reviews = latestReviews(details.reviews);
       if (receivedReviewFeedback.event !== undefined) events.push(receivedReviewFeedback.event);
 
-      const approvals = reviews.filter((review) => review.state === 'APPROVED');
+      const approvals = reviews.filter(
+        (review) =>
+          review.state === 'APPROVED' &&
+          (syncAfterRejectHead === undefined ||
+            (review.commitSha?.toLowerCase() === details.headSha.toLowerCase() &&
+              !syncAfterRejectHead.priorApprovalIds.includes(review.id))),
+      );
       const changesRequested = reviews.filter((review) => review.state === 'CHANGES_REQUESTED');
       const oldReviews = latestReviews(previousDetails?.reviews ?? []);
       const oldApprovals = oldReviews.filter((review) => review.state === 'APPROVED');
-      const checksReady = this.checksReady(details);
+      const checksReady = this.checksReady(details, syncAfterRejectHead?.priorCheckIds);
+      const postSyncValidationReady = this.postSyncValidationReady(syncAfterRejectHead, postSyncChecks);
       const previousChecksReady = previousDetails !== undefined && this.checksReady(previousDetails);
       const directBehind =
         this.config.github.mode === 'direct' &&
@@ -1086,8 +1591,26 @@ export class ShepherdEngine {
       const releaseReady =
         mergeReady &&
         checksReady &&
+        postSyncValidationReady &&
         changesRequested.length === 0 &&
         approvals.length >= this.config.reviews.requiredApprovals;
+      const syncActionContext: MergeQueueActionContext =
+        syncAfterRejectHead === undefined
+          ? {}
+          : {
+              syncAfterRejectHeadSha: details.headSha,
+              syncAfterRejectPriorCheckIds: syncAfterRejectHead.priorCheckIds,
+              syncAfterRejectPriorApprovalIds: syncAfterRejectHead.priorApprovalIds,
+              syncAfterRejectActionKey: syncAfterRejectHead.actionKey,
+              ...(syncAfterRejectHead.validation === undefined
+                ? {}
+                : {
+                    syncAfterRejectValidationActionKey: syncAfterRejectHead.validation.actionKey,
+                    syncAfterRejectValidationTriggerComment: syncAfterRejectHead.validation.triggerComment,
+                    syncAfterRejectValidationRequiredCheck: syncAfterRejectHead.validation.requiredCheck,
+                    syncAfterRejectValidationPriorCheckIds: syncAfterRejectHead.validation.priorCheckIds,
+                  }),
+            };
       const readinessChanged =
         oldReviews.some((review) => review.state === 'CHANGES_REQUESTED') ||
         approvals
@@ -1129,7 +1652,10 @@ export class ShepherdEngine {
         if (mergeAutomation === undefined) {
           throw new Error('The GitHub provider cannot observe Add to merge queue availability.');
         }
-        if (mergeAutomation.queued || mergeAutomation.enqueueAvailable === true) {
+        if (
+          (mergeAutomation.queued || mergeAutomation.enqueueAvailable === true) &&
+          (syncAfterRejectHead === undefined || releaseReady)
+        ) {
           mergeQueueRetry = this.addMergeQueueDecision(
             this.config.automation.autoMerge,
             pr,
@@ -1140,7 +1666,10 @@ export class ShepherdEngine {
               releaseGate: 'provider-action-ready',
               trackedGeneration: trackedClaim.generation,
             },
-            { trackedGeneration: trackedClaim.generation },
+            {
+              trackedGeneration: trackedClaim.generation,
+              ...syncActionContext,
+            },
             trackedClaim.generation,
             events,
             actions,
@@ -1189,6 +1718,7 @@ export class ShepherdEngine {
                 trackedGeneration: trackedClaim.generation,
                 attestationHeadSha: details.headSha,
                 attestationId: attestation.idempotencyKey,
+                ...syncActionContext,
               },
               trackedClaim.generation,
               events,
@@ -1246,7 +1776,7 @@ export class ShepherdEngine {
                 mergeAutomation,
                 mergeQueueRetry,
                 {},
-                {},
+                syncActionContext,
                 trackedGeneration,
                 events,
                 actions,
@@ -1374,6 +1904,7 @@ export class ShepherdEngine {
         readyForReviewCycle,
         receivedReviewThreads: receivedReviewFeedback.threads,
         ...(mergeQueueRetry === undefined ? {} : { mergeQueueRetry }),
+        ...(syncAfterRejectHead === undefined ? {} : { syncAfterRejectHead }),
         sources: { authored, ...(trackedGeneration === undefined ? {} : { trackedGeneration }) },
       },
       events:
@@ -1830,21 +2361,30 @@ export class ShepherdEngine {
     automation: MergeAutomationState | undefined,
     previous: MergeQueueRetryState | undefined,
     identityContext: Record<string, unknown>,
-    actionContext: Pick<ActionState, 'trackedGeneration' | 'attestationHeadSha' | 'attestationId'>,
+    actionContext: MergeQueueActionContext,
     trackedGeneration: number | undefined,
     events: ShepherdEvent[],
     actions: EntityUpdate[],
   ): MergeQueueRetryState | undefined {
     if (automation === undefined) throw new Error('Merge-queue automation state was not observed.');
     const providerReady = identityContext.releaseGate === 'provider-action-ready';
-    const scope =
+    const baseScope =
       typeof identityContext.attestationId === 'string'
         ? identityContext.attestationId
         : providerReady && actionContext.trackedGeneration !== undefined
           ? `provider-action-ready:${String(actionContext.trackedGeneration)}`
           : 'authored';
     const previousFence = previous?.fence ?? this.recoverMergeQueueFence(pr, details.headSha);
-    const fence = previousFence?.headSha.toLowerCase() === details.headSha.toLowerCase() ? previousFence : undefined;
+    const completedFenceSync =
+      previousFence?.syncActionKey === undefined
+        ? false
+        : this.store.getEntity<ActionState>(previousFence.syncActionKey)?.value.status === 'completed';
+    const postSync = actionContext.syncAfterRejectHeadSha !== undefined || completedFenceSync;
+    const scope = postSync ? `${baseScope}:sync-after-reject:${details.headSha.toLowerCase()}` : baseScope;
+    const fence =
+      !completedFenceSync && previousFence?.headSha.toLowerCase() === details.headSha.toLowerCase()
+        ? previousFence
+        : undefined;
     const recovered = previous?.scope === scope ? previous : this.recoverMergeQueueRetry(pr, details.headSha, scope);
     const retry = recovered === undefined ? undefined : { ...recovered, ...(fence === undefined ? {} : { fence }) };
 
@@ -1862,6 +2402,28 @@ export class ShepherdEngine {
     if (providerReady ? automation.enqueueAvailable !== true : automation.autoMergeEnabled) return retry;
 
     if (fence !== undefined) {
+      const removal = automation.latestQueueRemoval?.id === fence.removalId ? automation.latestQueueRemoval : undefined;
+      const syncDecision = this.addSyncAfterRejectDecision(
+        mode,
+        pr,
+        details,
+        removal,
+        fence.classification === 'code-failure',
+        actionContext,
+        events,
+        actions,
+      );
+      const reconciledFence =
+        fence.syncActionKey === undefined && syncDecision.actionKey !== undefined
+          ? { ...fence, syncActionKey: syncDecision.actionKey }
+          : fence;
+      if (reconciledFence !== fence) {
+        actions.push({
+          key: `${prKey('merge-queue-fence', pr)}:${details.headSha.toLowerCase()}`,
+          kind: 'merge-queue-fence',
+          value: reconciledFence,
+        });
+      }
       return {
         headSha: details.headSha,
         scope,
@@ -1869,7 +2431,7 @@ export class ShepherdEngine {
         ...(retry?.lastActionKey === undefined ? {} : { lastActionKey: retry.lastActionKey }),
         observedQueued: false,
         exhausted: true,
-        fence,
+        fence: reconciledFence,
       };
     }
 
@@ -1931,7 +2493,7 @@ export class ShepherdEngine {
     retry: MergeQueueRetryState,
     completedAt: string | undefined,
     identityContext: Record<string, unknown>,
-    actionContext: Pick<ActionState, 'trackedGeneration' | 'attestationHeadSha' | 'attestationId'>,
+    actionContext: MergeQueueActionContext,
     trackedGeneration: number | undefined,
     events: ShepherdEvent[],
     actions: EntityUpdate[],
@@ -1949,6 +2511,16 @@ export class ShepherdEngine {
     const disposition = mergeQueueRetryDisposition(removalAfterAttempt);
     const exhausted = retry.attempts >= MERGE_QUEUE_MAX_ATTEMPTS || disposition.retryable === false;
     const removalIdentity = removalAfterAttempt?.id ?? retry.lastActionKey ?? `${retry.scope}:observed-queue`;
+    const syncDecision = this.addSyncAfterRejectDecision(
+      mode,
+      pr,
+      details,
+      removalAfterAttempt,
+      disposition.classification === 'code-failure-fenced',
+      actionContext,
+      events,
+      actions,
+    );
     events.push(
       buildEvent(
         this.config,
@@ -1961,6 +2533,7 @@ export class ShepherdEngine {
           attempts: retry.attempts,
           retryExhausted: exhausted,
           retryEligibility: disposition.classification,
+          syncAfterReject: syncDecision.reason,
           ...(removalAfterAttempt?.evidence === undefined ? {} : { providerEvidence: removalAfterAttempt.evidence }),
           ...(exhausted || mode !== 'execute' ? {} : { retryAt }),
           title: details.title,
@@ -1979,6 +2552,7 @@ export class ShepherdEngine {
         removalReason: removalAfterAttempt?.reason ?? 'queue-entry-absent-after-submission',
         classification: disposition.fenceClassification,
         createdAt: removalAfterAttempt?.createdAt ?? this.clock().toISOString(),
+        ...(syncDecision.actionKey === undefined ? {} : { syncActionKey: syncDecision.actionKey }),
       };
       actions.push({
         key: `${prKey('merge-queue-fence', pr)}:${details.headSha.toLowerCase()}`,
@@ -2004,6 +2578,62 @@ export class ShepherdEngine {
     );
   }
 
+  private addSyncAfterRejectDecision(
+    mode: 'off' | 'notify' | 'execute',
+    pr: PullRequestRef,
+    details: PullRequestDetails,
+    removal: MergeQueueRemoval | undefined,
+    attributedCheckRejection: boolean,
+    actionContext: MergeQueueActionContext,
+    events: ShepherdEvent[],
+    actions: EntityUpdate[],
+  ): { reason: string; actionKey?: string } {
+    let reason = !this.config.automation.syncAfterReject
+      ? 'disabled'
+      : mode !== 'execute' || this.config.automation.autoMerge !== 'execute'
+        ? 'auto-merge-is-not-executing'
+        : !supportsReleaseGate(this.store)
+          ? 'durable-mutation-lock-unavailable'
+          : !attributedCheckRejection
+            ? 'removal-is-not-an-attributed-check-rejection'
+            : syncAfterRejectEvidenceReason(removal, this.clock());
+    const actionKey = `${prKey('action:sync-after-reject', pr)}:${details.headSha.toLowerCase()}`;
+    if (reason === undefined && this.store.getEntity<ActionState>(actionKey) !== undefined) {
+      reason = 'already-attempted-for-head';
+    }
+    if (reason !== undefined || removal === undefined) return { reason: reason ?? 'missing-removal-evidence' };
+
+    events.push(
+      buildEvent(
+        this.config,
+        'branch-update-decision',
+        pr,
+        { headSha: details.headSha, removalId: removal.id, reason: 'sync-after-reject' },
+        {
+          mode: 'execute',
+          reason: 'sync-after-reject',
+          removedAt: removal.createdAt,
+          title: details.title,
+          url: details.url,
+        },
+        this.clock().toISOString(),
+      ),
+    );
+    actions.push({
+      key: actionKey,
+      kind: 'action',
+      value: {
+        status: 'pending',
+        mutation: { type: 'sync-branch-exact-head', pr, headSha: details.headSha },
+        expectedHeadSha: details.headSha,
+        syncAfterRejectRemovalId: removal.id,
+        syncAfterRejectRemovedAt: removal.createdAt,
+        ...actionContext,
+      } satisfies ActionState,
+    });
+    return { reason: 'scheduled', actionKey };
+  }
+
   private scheduleMergeQueueAttempt(
     mode: 'off' | 'notify' | 'execute',
     pr: PullRequestRef,
@@ -2012,7 +2642,7 @@ export class ShepherdEngine {
     attempt: number,
     nextAttemptAt: string | undefined,
     identityContext: Record<string, unknown>,
-    actionContext: Pick<ActionState, 'trackedGeneration' | 'attestationHeadSha' | 'attestationId'>,
+    actionContext: MergeQueueActionContext,
     events: ShepherdEvent[],
     actions: EntityUpdate[],
   ): MergeQueueRetryState | undefined {
@@ -2025,6 +2655,7 @@ export class ShepherdEngine {
         headSha: details.headSha,
         mergeMethod: this.config.github.mergeMethod,
         enqueueAttempt: attempt,
+        ...(actionContext.syncAfterRejectHeadSha === undefined ? {} : { syncAfterReject: true }),
         ...identityContext,
       },
       {
@@ -2045,10 +2676,12 @@ export class ShepherdEngine {
         value: {
           status: 'pending',
           mutation:
-            identityContext.releaseGate === 'provider-action-ready'
+            identityContext.releaseGate === 'provider-action-ready' &&
+            actionContext.syncAfterRejectHeadSha === undefined
               ? { type: 'enqueue-provider-ready', pr }
               : { type: 'enqueue-exact-head', pr, headSha: details.headSha },
-          ...(identityContext.releaseGate === 'provider-action-ready'
+          ...(identityContext.releaseGate === 'provider-action-ready' &&
+          actionContext.syncAfterRejectHeadSha === undefined
             ? { queueObservationHeadSha: details.headSha }
             : { expectedHeadSha: details.headSha }),
           enqueueAttempt: attempt,
@@ -2127,7 +2760,7 @@ export class ShepherdEngine {
     mutation: GitHubMutation,
     events: ShepherdEvent[],
     actions: EntityUpdate[],
-    actionContext: Pick<ActionState, 'trackedGeneration' | 'attestationHeadSha' | 'attestationId'> = {},
+    actionContext: MergeQueueActionContext = {},
   ): void {
     if (mode === 'off') return;
     const event = buildEvent(this.config, type, pr, identity, { mode, ...facts }, this.clock().toISOString());
@@ -2188,10 +2821,43 @@ export class ShepherdEngine {
       : details.checks.filter((check) => this.config.checks.required.includes(check.name));
   }
 
-  private checksReady(details: PullRequestDetails): boolean {
-    return this.relevantChecks(details).every(
+  private checksReady(details: PullRequestDetails, priorCheckIds?: readonly string[]): boolean {
+    const relevant = this.relevantChecks(details);
+    if (priorCheckIds !== undefined) {
+      const prior = new Set(priorCheckIds);
+      const fresh = relevant.filter((check) => !prior.has(check.id));
+      if (this.config.checks.required.length === 0 && fresh.length === 0) return false;
+      const observed = new Set(fresh.map((check) => check.name));
+      if (this.config.checks.required.some((required) => !observed.has(required))) return false;
+    }
+    return relevant.every(
       (check) => check.bucket !== 'fail' && check.bucket !== 'cancel' && check.bucket !== 'pending',
     );
+  }
+
+  private postSyncValidationReady(
+    syncState: SyncAfterRejectHeadState | undefined,
+    snapshot: HeadCheckSnapshot | undefined,
+  ): boolean {
+    if (syncState?.validation === undefined) return true;
+    const validation = syncState.validation;
+    const configured = this.config.automation.syncAfterRejectValidation;
+    if (
+      !this.config.automation.syncAfterReject ||
+      this.config.automation.autoMerge !== 'execute' ||
+      configured?.triggerComment !== validation.triggerComment ||
+      configured?.requiredCheck !== validation.requiredCheck ||
+      snapshot === undefined ||
+      !snapshot.exhaustive ||
+      snapshot.headSha.toLowerCase() !== syncState.currentHeadSha.toLowerCase()
+    ) {
+      return false;
+    }
+    const action = this.store.getEntity<ActionState>(validation.actionKey)?.value;
+    if (action?.status !== 'completed') return false;
+    const prior = new Set(validation.priorCheckIds);
+    const fresh = snapshot.checks.filter((check) => check.name === validation.requiredCheck && !prior.has(check.id));
+    return fresh.some((check) => check.bucket === 'pass' && check.state.toUpperCase() === 'SUCCESS');
   }
 
   private async cleanupMissingAuthored(

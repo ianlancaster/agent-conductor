@@ -109,6 +109,13 @@ const configSchema = strictObject({
   }).default({}),
   automation: strictObject({
     autoMerge: automationMode.default('notify'),
+    syncAfterReject: z.boolean().default(false),
+    syncAfterRejectValidation: strictObject({
+      triggerComment: z.string().trim().min(1),
+      requiredCheck: z.string().trim().min(1),
+    })
+      .nullable()
+      .default(null),
     branchUpdate: automationMode.default('notify'),
     reviewerComment: automationMode.default('notify'),
   }).default({}),

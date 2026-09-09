@@ -10,6 +10,7 @@ import type {
   DiscoveryResult,
   GitHubMutation,
   GitHubProvider,
+  HeadCheckSnapshot,
   MergeAutomationState,
   MergeQueueEvidenceStatus,
   MergeQueueRemoval,
@@ -230,6 +231,7 @@ interface CommitCheckEvidence {
   sha: string;
   suites: RawCheckSuiteEvidence[];
   truncated: boolean;
+  checkRunsTruncated: boolean;
 }
 
 interface RawWorkflowRunEvidence {
@@ -382,6 +384,13 @@ mutation DequeuePullRequest($pullRequestId: ID!) {
 const DISABLE_AUTO_MERGE_MUTATION = `
 mutation DisableAutoMerge($pullRequestId: ID!) {
   disablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId }) { pullRequest { id } }
+}`;
+
+const SYNC_BRANCH_EXACT_HEAD_MUTATION = `
+mutation SyncBranchExactHead($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
+  updatePullRequestBranch(input: { pullRequestId: $pullRequestId, expectedHeadOid: $expectedHeadOid }) {
+    pullRequest { id headRefOid }
+  }
 }`;
 
 const PULL_REQUEST_MUTATION_STATE_QUERY = `
@@ -696,6 +705,23 @@ export class GhGitHubProvider implements GitHubProvider {
     };
   }
 
+  async getCheckRunsForHead(pr: PullRequestRef, headSha: string): Promise<HeadCheckSnapshot> {
+    const evidence = await this.commitCheckEvidence(pr.repo, headSha);
+    return {
+      headSha: evidence.sha,
+      exhaustive: !evidence.checkRunsTruncated,
+      checks: evidence.suites.flatMap((suite) =>
+        suite.checkRuns.nodes.map((run) => ({
+          id: run.id,
+          name: run.name,
+          state: run.conclusion ?? run.status,
+          bucket: checkRunBucket(run.status, run.conclusion),
+          workflow: suite.workflowRun?.event ?? '',
+        })),
+      ),
+    };
+  }
+
   private async mergeQueueRemoval(
     pr: PullRequestRef,
     headSha: string,
@@ -864,13 +890,18 @@ export class GhGitHubProvider implements GitHubProvider {
     const { owner, name } = this.repoParts(repo);
     const suites: RawCheckSuiteEvidence[] = [];
     let truncated = false;
+    let checkRunsTruncated = false;
     let cursor: string | undefined;
     do {
       const raw = await this.graphql(COMMIT_CHECK_EVIDENCE_QUERY, { owner, name, oid: sha, cursor });
       const response = this.json<RawCommitCheckEvidence>(raw, `${repo}@${sha} check evidence`);
       const commit = response.data.repository?.object;
       if (commit === undefined || commit === null) throw new Error(`GitHub returned no commit ${sha} for ${repo}.`);
+      if (commit.oid.toLowerCase() !== sha.toLowerCase()) {
+        throw new Error(`GitHub returned commit ${commit.oid} while resolving exact head ${sha} for ${repo}.`);
+      }
       suites.push(...commit.checkSuites.nodes);
+      checkRunsTruncated ||= commit.checkSuites.nodes.some((suite) => suite.checkRuns.pageInfo.hasNextPage);
       truncated ||= commit.checkSuites.nodes.some(
         (suite) =>
           suite.checkRuns.pageInfo.hasNextPage ||
@@ -880,7 +911,7 @@ export class GhGitHubProvider implements GitHubProvider {
         ? this.nextCursor(commit.checkSuites.pageInfo, `${repo}@${sha} check suites`)
         : undefined;
     } while (cursor !== undefined);
-    return { sha, suites, truncated };
+    return { sha, suites, truncated, checkRunsTruncated };
   }
 
   async mutate(mutation: GitHubMutation): Promise<void> {
@@ -947,6 +978,59 @@ export class GhGitHubProvider implements GitHubProvider {
     }
     if (mutation.type === 'update-branch') {
       await this.gh(['pr', 'update-branch', String(mutation.pr.number), '-R', mutation.pr.repo]);
+      return;
+    }
+    if (mutation.type === 'sync-branch-exact-head') {
+      const state = await this.pullRequestMutationState(mutation.pr);
+      if (state.headRefOid.toLowerCase() !== mutation.headSha.toLowerCase()) {
+        throw new Error(
+          `GitHub head changed before the conditional branch sync for ${mutation.pr.repo}#${String(mutation.pr.number)}.`,
+        );
+      }
+      if (state.mergeQueueEntry !== null) {
+        throw new Error(`GitHub pull request ${mutation.pr.repo}#${String(mutation.pr.number)} is already queued.`);
+      }
+      await this.graphql(SYNC_BRANCH_EXACT_HEAD_MUTATION, {
+        pullRequestId: state.id,
+        expectedHeadOid: mutation.headSha,
+      });
+      return;
+    }
+    if (mutation.type === 'post-pr-comment-exact-head') {
+      const state = await this.pullRequestMutationState(mutation.pr);
+      if (state.headRefOid.toLowerCase() !== mutation.headSha.toLowerCase()) {
+        throw new Error(
+          `GitHub head changed before the conditional PR comment for ${mutation.pr.repo}#${String(mutation.pr.number)}.`,
+        );
+      }
+      if (state.mergeQueueEntry !== null) {
+        throw new Error(`GitHub pull request ${mutation.pr.repo}#${String(mutation.pr.number)} is already queued.`);
+      }
+      const commentsRaw = await this.gh([
+        'api',
+        `repos/${mutation.pr.repo}/issues/${String(mutation.pr.number)}/comments`,
+        '--paginate',
+        '--slurp',
+      ]);
+      const comments = this.json<RawComment[][]>(
+        commentsRaw || '[]',
+        `${mutation.pr.repo}#${String(mutation.pr.number)} comments`,
+      ).flat();
+      if (
+        comments.some(
+          (comment) =>
+            comment.body === mutation.body &&
+            new Date(comment.created_at).getTime() >= new Date(mutation.notBefore).getTime(),
+        )
+      )
+        return;
+      const current = await this.pullRequestMutationState(mutation.pr);
+      if (current.headRefOid.toLowerCase() !== mutation.headSha.toLowerCase() || current.mergeQueueEntry !== null) {
+        throw new Error(
+          `GitHub head or queue state changed before the conditional PR comment for ${mutation.pr.repo}#${String(mutation.pr.number)}.`,
+        );
+      }
+      await this.gh(['pr', 'comment', String(mutation.pr.number), '-R', mutation.pr.repo, '--body', mutation.body]);
       return;
     }
     const commentsRaw = await this.gh([
@@ -1240,6 +1324,22 @@ function normalizeQueueRemovalReason(reason: string | null): string {
     .toLowerCase()
     .replaceAll(/[^a-z0-9]+/g, '_')
     .replaceAll(/^_+|_+$/g, '');
+}
+
+function checkRunBucket(status: string, conclusion: string | null): CheckRun['bucket'] {
+  if (status.toUpperCase() !== 'COMPLETED') return 'pending';
+  switch ((conclusion ?? '').toUpperCase()) {
+    case 'SUCCESS':
+    case 'NEUTRAL':
+      return 'pass';
+    case 'SKIPPED':
+      return 'skipping';
+    case 'CANCELLED':
+    case 'STALE':
+      return 'cancel';
+    default:
+      return 'fail';
+  }
 }
 
 function unavailableMergeQueueEvidence(currentPrNumber: number, detail: string): MergeQueueRemovalEvidence {
