@@ -84,6 +84,17 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['the stalled envelope']);
   });
 
+  it.each(['›', '»'])('holds a Codex %s draft, then drains when the composer becomes empty', async (glyph) => {
+    const codex = new CodexRuntime({ config: { binary: 'codex', toolTimeoutSec: 600 }, baseDir: '/tmp' });
+    runtime.parseInputState = (capture: string, session?: string) => codex.parseInputState(capture, session);
+    backend.setPaneContent(pane.id, `${glyph} unfinished draft\n  codex-test high · /repo`);
+    await expect(queue.deliverOrQueue('alpha', 'preserved message')).resolves.toBe('queued');
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    backend.setPaneContent(pane.id, `${glyph} Ask Codex to do anything\n  codex-test high · /repo`);
+    await queue.drainNow();
+    expect(backend.panes.get(pane.id)?.received).toEqual(['preserved message']);
+  });
+
   it('self-heals stale runtime metadata before draining a protected message', async () => {
     const recordedClaude = new FakeRuntime('claude-code');
     recordedClaude.inputState = null;

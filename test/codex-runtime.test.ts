@@ -751,6 +751,20 @@ describe('parseEvent', () => {
 describe('parseInputState', () => {
   const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base' });
 
+  it.each(['›', '»'])('recognizes composer marker %s without weakening draft or transcript protection', (glyph) => {
+    const footer = '\n  codex-test high · Context 73% used · /repo';
+    expect(runtime.parseInputState(`${glyph} Ask Codex to do anything${footer}`, 'alpha')).toBe('clear');
+    expect(runtime.parseInputState(`${glyph} ${footer}`, 'alpha')).toBe('clear');
+    expect(runtime.parseInputState(`${glyph} unfinished operator draft${footer}`, 'alpha')).toBe('draft');
+    expect(runtime.parseInputState(`${glyph} [Message from beta] do this${footer}`, 'alpha')).toBe('draft');
+    expect(
+      runtime.parseInputState(`\u001b[1m${glyph}\u001b[0m \u001b[2mAsk Codex to do anything\u001b[0m${footer}`),
+    ).toBe('clear');
+    expect(runtime.parseInputState(`\u001b[1m${glyph}\u001b[0m unfinished draft${footer}`)).toBe('draft');
+    expect(runtime.parseInputState(`\u001b[1;2m${glyph} old transcript\u001b[0m${footer}`)).toBeNull();
+    expect(runtime.parseActivityState(`Working (3s • esc to interrupt)\n${glyph} ${footer}`)).toBe('working');
+  });
+
   it('reports clear for an empty composer row', () => {
     expect(runtime.parseInputState('some output\n\n› \n  ⏎ send   Ctrl+J newline')).toBe('clear');
   });
@@ -878,23 +892,26 @@ describe('resolveInputState — plain iTerm transcript evidence', () => {
     await rm(workDir, { recursive: true, force: true });
   });
 
-  it('releases an aborted submitted row that remains at the bottom of an idle Codex pane', async () => {
-    const submitted =
-      '[Message from beta] Ack: inbound works. My outbound direct-message path is still broken; inspect /workspace/projects/alpha.';
-    await writeInputRollout(submitted, 'turn_aborted');
-    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base', sessionDataDir: workDir });
-    const capture = [
-      '› [Message from beta] Ack: inbound works. My outbound direct-',
-      '  message path is still broken; inspect /workspace/',
-      '  projects/alpha.',
-      '',
-      '  codex-test high · Context 42% used · alpha',
-    ].join('\n');
-    const parsed = runtime.parseInputState(capture, 'alpha');
+  it.each(['›', '»'])(
+    'releases an aborted submitted row with marker %s at the bottom of an idle Codex pane',
+    async (glyph) => {
+      const submitted =
+        '[Message from beta] Ack: inbound works. My outbound direct-message path is still broken; inspect /workspace/projects/alpha.';
+      await writeInputRollout(submitted, 'turn_aborted');
+      const runtime = new CodexRuntime({ config: SETTINGS, baseDir: '/base', sessionDataDir: workDir });
+      const capture = [
+        `${glyph} [Message from beta] Ack: inbound works. My outbound direct-`,
+        '  message path is still broken; inspect /workspace/',
+        '  projects/alpha.',
+        '',
+        '  codex-test high · Context 42% used · alpha',
+      ].join('\n');
+      const parsed = runtime.parseInputState(capture, 'alpha');
 
-    expect(parsed).toBeNull();
-    await expect(runtime.resolveInputState(capture, 'alpha', parsed)).resolves.toBe('clear');
-  });
+      expect(parsed).toBeNull();
+      await expect(runtime.resolveInputState(capture, 'alpha', parsed)).resolves.toBe('clear');
+    },
+  );
 
   it('releases the submitted suffix when terminal wrapping pushes the prompt glyph outside the capture', async () => {
     const submitted =
