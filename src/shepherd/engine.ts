@@ -13,6 +13,7 @@ import type {
   GitHubProvider,
   HeadCheckSnapshot,
   MergeAutomationState,
+  MergeQueueFailureAttribution,
   MergeQueueRemoval,
   PullRequestDetails,
   PullRequestRef,
@@ -167,6 +168,7 @@ interface ActionState {
   queueObservationHeadSha?: string;
   syncAfterRejectRemovalId?: string;
   syncAfterRejectRemovedAt?: string;
+  syncAfterRejectQueueStackAttribution?: MergeQueueFailureAttribution;
   syncAfterRejectHeadSha?: string;
   syncAfterRejectResultHeadSha?: string;
   syncAfterRejectPriorCheckIds?: string[];
@@ -281,13 +283,22 @@ function syncAfterRejectRemovalTimeReason(createdAt: string, now: Date): string 
   return undefined;
 }
 
-function syncAfterRejectEvidenceReason(removal: MergeQueueRemoval | undefined, now: Date): string | undefined {
+function syncAfterRejectAttributionReason(removal: MergeQueueRemoval | undefined): string | undefined {
   if (removal === undefined) return 'missing-removal-evidence';
   if (normalizedQueueRemovalReason(removal.reason) !== 'failed_checks') return 'removal-was-not-failed-checks';
   if (removal.evidence?.status !== 'complete') return 'ambiguous-provider-evidence';
+  if (removal.evidence.queueStack.attribution === 'upstream-queued-pr') {
+    return 'failure-belongs-to-upstream-queued-pr';
+  }
   if (['ambiguous', 'unavailable'].includes(removal.evidence.queueStack.attribution)) {
     return 'ambiguous-queue-stack-attribution';
   }
+  return undefined;
+}
+
+function syncAfterRejectEvidenceReason(removal: MergeQueueRemoval | undefined, now: Date): string | undefined {
+  const attributionReason = syncAfterRejectAttributionReason(removal);
+  if (attributionReason !== undefined || removal === undefined) return attributionReason;
   return syncAfterRejectRemovalTimeReason(removal.createdAt, now);
 }
 
@@ -877,6 +888,33 @@ export class ShepherdEngine {
     return fence?.removalId === action.syncAfterRejectRemovalId && fence.syncActionKey === key;
   }
 
+  private syncAfterRejectValidationObligationApplies(
+    syncState: Pick<SyncAfterRejectHeadState, 'rejectedHeadSha' | 'currentHeadSha' | 'removalId' | 'actionKey'>,
+    removal?: MergeQueueRemoval,
+  ): boolean {
+    const syncAction = this.store.getEntity<ActionState>(syncState.actionKey)?.value;
+    if (
+      syncAction?.mutation.type !== 'sync-branch-exact-head' ||
+      syncAction.mutation.headSha.toLowerCase() !== syncState.rejectedHeadSha.toLowerCase() ||
+      syncAction.syncAfterRejectRemovalId !== syncState.removalId
+    ) {
+      return false;
+    }
+    const attribution = syncAction.syncAfterRejectQueueStackAttribution;
+    if (
+      attribution === undefined
+        ? removal?.id !== syncState.removalId || syncAfterRejectAttributionReason(removal) !== undefined
+        : attribution !== 'branch-local' && attribution !== 'current-main-interaction'
+    ) {
+      return false;
+    }
+    if (syncState.currentHeadSha.toLowerCase() !== syncState.rejectedHeadSha.toLowerCase()) return true;
+    return (
+      syncAction.status === 'completed' &&
+      syncAction.syncAfterRejectResultHeadSha?.toLowerCase() === syncState.currentHeadSha.toLowerCase()
+    );
+  }
+
   private postSyncValidationActionStillApplicable(
     key: string,
     action: ActionState,
@@ -905,7 +943,6 @@ export class ShepherdEngine {
     const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
     const syncState = authored?.syncAfterRejectHead;
     const validationState = syncState?.validation;
-    const syncAction = this.store.getEntity<ActionState>(action.syncAfterRejectActionKey)?.value;
     return (
       authored !== undefined &&
       this.syncAfterRejectOwnershipStillApplicable(action, authored) &&
@@ -915,9 +952,7 @@ export class ShepherdEngine {
       validationState.triggerComment === action.syncAfterRejectValidationTriggerComment &&
       validationState.requiredCheck === action.syncAfterRejectValidationRequiredCheck &&
       validationState.priorCheckIds.join('\u0000') === action.syncAfterRejectValidationPriorCheckIds.join('\u0000') &&
-      syncAction?.status === 'completed' &&
-      syncAction.mutation.type === 'sync-branch-exact-head' &&
-      syncAction.syncAfterRejectResultHeadSha?.toLowerCase() === action.mutation.headSha.toLowerCase()
+      this.syncAfterRejectValidationObligationApplies(syncState, automation?.latestQueueRemoval)
     );
   }
 
@@ -1236,7 +1271,7 @@ export class ShepherdEngine {
             details,
             tracked?.releaseGate !== 'provider-action-ready',
           );
-          const postSyncChecks = await this.postSyncValidationSnapshot(details, previous);
+          const postSyncChecks = await this.postSyncValidationSnapshot(details, previous, mergeAutomation);
           const baseline = isBaseline || (previous === undefined && tracked?.baselinePending === true);
           const { state, events, actions, nudges } = this.evaluateAuthored(
             details,
@@ -1328,6 +1363,7 @@ export class ShepherdEngine {
   private async postSyncValidationSnapshot(
     details: PullRequestDetails,
     previous: AuthoredState | undefined,
+    automation: MergeAutomationState | undefined,
   ): Promise<HeadCheckSnapshot | undefined> {
     const configured =
       this.config.automation.syncAfterReject &&
@@ -1335,14 +1371,21 @@ export class ShepherdEngine {
       this.config.automation.syncAfterRejectValidation !== null;
     const existing = previous?.syncAfterRejectHead;
     const previousFence = previous?.mergeQueueRetry?.fence;
-    const completedSyncAction =
+    const fenceState =
       previousFence?.syncActionKey === undefined
         ? undefined
-        : this.store.getEntity<ActionState>(previousFence.syncActionKey)?.value;
-    const completedFenceSync =
-      completedSyncAction?.status === 'completed' &&
-      completedSyncAction.syncAfterRejectResultHeadSha?.toLowerCase() === details.headSha.toLowerCase();
-    const applies = existing?.currentHeadSha.toLowerCase() === details.headSha.toLowerCase() || completedFenceSync;
+        : {
+            rejectedHeadSha: previousFence.headSha,
+            currentHeadSha: details.headSha,
+            removalId: previousFence.removalId,
+            actionKey: previousFence.syncActionKey,
+          };
+    const existingState = existing === undefined ? undefined : { ...existing, currentHeadSha: details.headSha };
+    const applies =
+      (existingState !== undefined &&
+        this.syncAfterRejectValidationObligationApplies(existingState, automation?.latestQueueRemoval)) ||
+      (fenceState !== undefined &&
+        this.syncAfterRejectValidationObligationApplies(fenceState, automation?.latestQueueRemoval));
     if (!configured || !applies) return undefined;
     if (this.github.getCheckRunsForHead === undefined) {
       throw new Error('The GitHub provider cannot observe exact-head check runs for post-sync validation.');
@@ -1383,20 +1426,48 @@ export class ShepherdEngine {
     let conflictCycle = previous?.conflictCycle ?? 0;
     let readyForReviewCycle = previous?.readyForReviewCycle ?? 0;
     let mergeQueueRetry = previous?.mergeQueueRetry?.headSha === details.headSha ? previous.mergeQueueRetry : undefined;
+    const validationConfig = this.config.automation.syncAfterRejectValidation;
+    const previousSyncState = previous?.syncAfterRejectHead;
     let syncAfterRejectHead =
-      previous?.syncAfterRejectHead?.currentHeadSha.toLowerCase() === details.headSha.toLowerCase()
-        ? previous.syncAfterRejectHead
+      previousSyncState?.currentHeadSha.toLowerCase() === details.headSha.toLowerCase() &&
+      (validationConfig === null ||
+        this.syncAfterRejectValidationObligationApplies(previousSyncState, mergeAutomation?.latestQueueRemoval))
+        ? previousSyncState
         : undefined;
     let mayStartPostSyncValidation = false;
-    const validationConfig = this.config.automation.syncAfterRejectValidation;
     const previousSyncFence = previous?.mergeQueueRetry?.fence;
-    if (previousSyncFence?.syncActionKey !== undefined && previousDetails !== undefined) {
-      const syncAction = this.store.getEntity<ActionState>(previousSyncFence.syncActionKey);
+    const reboundSyncState =
+      previousSyncState === undefined
+        ? undefined
+        : { ...previousSyncState, currentHeadSha: details.headSha, validation: undefined };
+    if (
+      validationConfig !== null &&
+      reboundSyncState !== undefined &&
+      this.syncAfterRejectValidationObligationApplies(reboundSyncState, mergeAutomation?.latestQueueRemoval)
+    ) {
+      syncAfterRejectHead ??= {
+        ...reboundSyncState,
+        priorCheckIds: (previousDetails?.checks ?? []).map((check) => check.id).sort(),
+        priorApprovalIds: latestReviews(previousDetails?.reviews ?? [])
+          .filter((review) => review.state === 'APPROVED')
+          .map((review) => review.id)
+          .sort(),
+      };
+      mayStartPostSyncValidation = syncAfterRejectHead.validation === undefined;
+    } else if (previousSyncFence?.syncActionKey !== undefined && previousDetails !== undefined) {
+      const syncAction = this.store.getEntity<ActionState>(previousSyncFence.syncActionKey)?.value;
+      const fenceState = {
+        rejectedHeadSha: previousSyncFence.headSha,
+        currentHeadSha: details.headSha,
+        removalId: previousSyncFence.removalId,
+        actionKey: previousSyncFence.syncActionKey,
+      };
       if (
-        syncAction?.value.status === 'completed' &&
         previousSyncFence.headSha.toLowerCase() === previousDetails.headSha.toLowerCase() &&
-        (validationConfig === null ||
-          syncAction.value.syncAfterRejectResultHeadSha?.toLowerCase() === details.headSha.toLowerCase())
+        (validationConfig === null
+          ? syncAction?.status === 'completed' &&
+            syncAction.syncAfterRejectResultHeadSha?.toLowerCase() === details.headSha.toLowerCase()
+          : this.syncAfterRejectValidationObligationApplies(fenceState, mergeAutomation?.latestQueueRemoval))
       ) {
         syncAfterRejectHead = {
           rejectedHeadSha: previousSyncFence.headSha,
@@ -2628,6 +2699,7 @@ export class ShepherdEngine {
         expectedHeadSha: details.headSha,
         syncAfterRejectRemovalId: removal.id,
         syncAfterRejectRemovedAt: removal.createdAt,
+        syncAfterRejectQueueStackAttribution: removal.evidence?.queueStack.attribution,
         ...actionContext,
       } satisfies ActionState,
     });

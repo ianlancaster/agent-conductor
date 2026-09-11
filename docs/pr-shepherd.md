@@ -141,7 +141,7 @@ Configuration is strict, versioned YAML: unknown keys and unknown guidance event
 | `features.staleThresholdHours`             | Authored-PR staleness interval; default `4`. Set `0` for immediate first-cycle staleness.                                              |
 | `automation.autoMerge`                     | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
 | `automation.syncAfterReject`               | Conditionally sync one recent, unchanged, conclusively attributed rejected queue head before retry; default `false`.                   |
-| `automation.syncAfterRejectValidation`     | Optional `{ triggerComment, requiredCheck }` exact-head validation gate after Shepherd performs that sync; default `null`.             |
+| `automation.syncAfterRejectValidation`     | Optional `{ triggerComment, requiredCheck }` exact-head validation gate after an eligible failed-check eviction; default `null`.       |
 | `automation.branchUpdate`                  | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
 | `automation.reviewerComment`               | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
 | `delivery.type`                            | `stdout` or `conductor`; default `stdout`.                                                                                             |
@@ -207,6 +207,10 @@ head, the merge-group commit, and an upstream queue parent when GitHub exposes a
 | Missing removal event, missing/contradictory merge-group provenance, unknown/null reason        | Fence as ambiguous; no retry |
 | Any other explicit non-transient reason                                                         | Fence; no retry              |
 
+Complete `upstream-queued-pr` attribution preserves the failed head's fence but identifies the
+failure as unrelated to the current PR, so it cannot authorize sync-after-reject or its optional
+validation trigger.
+
 Pending attempts, backoff, fences, and exhaustion survive restart, and completed queue submissions
 from older Shepherd versions seed the same recovery state. Fence persistence uses the existing
 schema-free Shepherd entity store, so no SQLite migration is required. The built-in GitHub provider
@@ -223,10 +227,11 @@ profile into an executing profile.
 
 An eligible rejection must be the provider removal observed after Shepherd's completed queue
 submission for the exact current head. Merge-group evidence must be `complete`, queue-stack
-attribution cannot be `ambiguous` or `unavailable`, and the removal must be no more than 24 hours
-old. This fixed window accommodates an overnight Shepherd pause or restart while preventing an old
-timeline event from authorizing a later mutation. Missing, stale, truncated, contradictory, or
-ambiguous evidence remains fenced and notification-only.
+attribution must be `branch-local` or `current-main-interaction`, and the removal must be no more
+than 24 hours old. This fixed window accommodates an overnight Shepherd pause or restart while
+preventing an old timeline event from authorizing a later mutation. Missing, stale, truncated,
+contradictory, ambiguous, unavailable, or `upstream-queued-pr` evidence remains fenced and
+notification-only.
 
 Shepherd persists a one-shot action keyed by repository, pull request, and rejected head, then
 re-fetches the PR and removal under the durable GitHub mutation mutex. The built-in provider calls
@@ -246,13 +251,14 @@ must satisfy readiness before a conditional enqueue. This exact-head recovery ru
 `provider-action-ready` tracked claims; their initial admission remains provider-owned, but their
 post-sync re-entry is conditional and waits for the configured check and approval readiness. An
 author push or independently completed current-main sync changes the head before Shepherd acts and
-therefore follows ordinary readiness without a recovery mutation. A provider-confirmed no-op sync
-records the one-shot action and returns the unchanged exact head to ordinary readiness only after a
-later poll observes new check identities and any configured number of new exact-head approvals.
-Shepherd never copies or reuses check or approval evidence from before the sync.
+therefore follows ordinary readiness without a recovery mutation when no post-rejection validation
+is configured. A provider-confirmed no-op sync records the one-shot action and returns the
+unchanged exact head to ordinary readiness only after a later poll observes new check identities
+and any configured number of new exact-head approvals. Shepherd never copies or reuses check or
+approval evidence from before the sync.
 
-To ask a repository to run a fuller validation suite after that sync, configure the optional
-repository-neutral contract:
+To ask a repository to run a fuller validation suite after an eligible eviction, configure the
+optional repository-neutral contract:
 
 ```yaml
 automation:
@@ -264,17 +270,23 @@ automation:
 ```
 
 The values are opaque repository configuration; Shepherd does not know command or workflow
-semantics. After the sync mutation, Shepherd re-reads and records GitHub's resulting head under the
-mutation mutex. Only that confirmed head gets one durable PR comment whose body is exactly the
-configured text; remote retry deduplication is bounded to identical comments created after the
-durable action was scheduled. Before posting it, Shepherd snapshots check-run identities directly
-from the exact commit. Queue re-entry then requires the comment action to complete and a later,
-previously unseen check with the exact configured name to pass in an exhaustive provider snapshot
-explicitly bound to the same SHA.
+semantics. An eligible, attributable failed-check eviction creates the conditional validation
+obligation; initial admission never does. After the sync mutation, Shepherd re-reads and records
+GitHub's resulting head under the mutation mutex. That head gets one durable PR comment whose body
+is exactly the configured text; remote retry deduplication is bounded to identical comments
+created after the durable action was scheduled. Before posting it, Shepherd snapshots check-run
+identities directly from the exact commit. Queue re-entry then requires the comment action to
+complete and a later, previously unseen check with the exact configured name to pass in an
+exhaustive provider snapshot explicitly bound to the same SHA.
 Pre-trigger, rejected-head, unrelated, pending, failed, incomplete, or mismatched-SHA checks cannot
-satisfy the gate. A changed head, configuration drift, trigger failure, or missing proof fails
-closed, and neither the sync poll nor the trigger poll can enqueue. Author or independent-sync
-heads that supersede the confirmed Shepherd result retain ordinary readiness.
+satisfy the gate. A head change during a specific trigger attempt, configuration drift, trigger
+failure, or missing proof fails closed, and neither the sync poll nor the trigger poll can enqueue.
+On its next observation after an author changes the head, the same durable obligation rebinds to
+the new exact head without requesting another sync solely for that change. The old comment
+attachment and all old-head proof are invalidated; Shepherd posts the configured validation
+comment for the new head and requires a new successful configured check on that exact SHA. Further
+head changes repeat that rebinding. Voluntary or transient removals, ambiguous evidence, and
+unrelated upstream failures never create the obligation.
 
 An injected provider using `syncAfterRejectValidation` must additionally expose
 `getCheckRunsForHead`, return an exhaustive snapshot labeled with the requested SHA, and implement

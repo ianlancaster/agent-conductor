@@ -915,17 +915,22 @@ and be no more than 24 hours old. Shepherd then requests one GitHub-native condi
 for that exact head under the durable mutation mutex. It never enqueues in the same poll, never
 syncs the same head twice, and waits for checks plus an approval attached to a newly synced head
 before conditional queue re-entry. A successful no-op likewise requires later, newly identified
-checks and any configured number of new exact-head approvals. Changed heads use ordinary readiness;
-stale, duplicate, or ambiguous evidence remains notification-only. The omitted setting is `false`,
-existing databases need no migration, and a profile edit requires a deliberate Shepherd restart.
+checks and any configured number of new exact-head approvals. Complete `upstream-queued-pr`
+attribution is unrelated and cannot authorize sync; stale, duplicate, or ambiguous evidence also
+remains notification-only. The omitted setting is `false`, existing databases need no migration,
+and a profile edit requires a deliberate Shepherd restart.
 
-An optional `automation.syncAfterRejectValidation` object can bind that Shepherd-created sync head
-to one repository-defined PR comment and one exact required check name. The trigger is durable,
-head-guarded, and one-shot across restarts. Shepherd snapshots exact-commit check identities before
-the comment and will not re-enter the queue until a new check with the configured name passes on
-that same confirmed SHA. It fails closed on trigger errors, incomplete or mismatched provider
-evidence, and head/configuration races. Leave it `null` for sync-only behavior; this general
-primitive contains no repository command or workflow-name policy.
+An optional `automation.syncAfterRejectValidation` object binds the attributable eviction's current
+head to one repository-defined PR comment and one exact required check name. The trigger is
+durable, head-guarded, and one-shot across restarts. Shepherd snapshots exact-commit check
+identities before the comment and will not re-enter the queue until a new check with the configured
+name passes on that same confirmed SHA. If an author changes the head after the attributable eviction, Shepherd
+does not sync again solely for the push: it invalidates the old-head attachment, posts one new
+head-bound trigger, and requires proof on the new exact SHA. Initial admission and non-attributable,
+voluntary, transient, ambiguous, or upstream-failure removals never create this obligation. It
+fails closed on trigger errors, incomplete or mismatched provider evidence, and head/configuration
+races. Leave it `null` for sync-only behavior; this general primitive contains no repository
+command or workflow-name policy.
 
 While the managed companion has a fresh healthy heartbeat, fleet `/status` adds
 `PR Shepherd Status Online` directly below the Conductor heading and marks the configured
