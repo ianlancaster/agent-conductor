@@ -136,6 +136,19 @@ interface RawComment {
   created_at: string;
 }
 
+interface RawCommitStatus {
+  id: number;
+  node_id: string;
+  state: string;
+  context: string;
+}
+
+interface RawCombinedStatusPage {
+  sha: string;
+  total_count: number;
+  statuses: RawCommitStatus[];
+}
+
 interface RawPageInfo {
   hasNextPage: boolean;
   endCursor: string | null;
@@ -706,19 +719,25 @@ export class GhGitHubProvider implements GitHubProvider {
   }
 
   async getCheckRunsForHead(pr: PullRequestRef, headSha: string): Promise<HeadCheckSnapshot> {
-    const evidence = await this.commitCheckEvidence(pr.repo, headSha);
+    const [evidence, statuses] = await Promise.all([
+      this.commitCheckEvidence(pr.repo, headSha),
+      this.commitStatusEvidence(pr.repo, headSha),
+    ]);
     return {
       headSha: evidence.sha,
-      exhaustive: !evidence.checkRunsTruncated,
-      checks: evidence.suites.flatMap((suite) =>
-        suite.checkRuns.nodes.map((run) => ({
-          id: run.id,
-          name: run.name,
-          state: run.conclusion ?? run.status,
-          bucket: checkRunBucket(run.status, run.conclusion),
-          workflow: suite.workflowRun?.event ?? '',
-        })),
-      ),
+      exhaustive: !evidence.checkRunsTruncated && statuses.exhaustive,
+      checks: [
+        ...evidence.suites.flatMap((suite) =>
+          suite.checkRuns.nodes.map((run) => ({
+            id: run.id,
+            name: run.name,
+            state: run.conclusion ?? run.status,
+            bucket: checkRunBucket(run.status, run.conclusion),
+            workflow: suite.workflowRun?.event ?? '',
+          })),
+        ),
+        ...statuses.checks,
+      ],
     };
   }
 
@@ -912,6 +931,53 @@ export class GhGitHubProvider implements GitHubProvider {
         : undefined;
     } while (cursor !== undefined);
     return { sha, suites, truncated, checkRunsTruncated };
+  }
+
+  private async commitStatusEvidence(repo: string, sha: string): Promise<{ checks: CheckRun[]; exhaustive: boolean }> {
+    const raw = await this.gh([
+      'api',
+      '-X',
+      'GET',
+      `repos/${repo}/commits/${sha}/status`,
+      '-f',
+      `per_page=${String(GRAPHQL_PAGE_SIZE)}`,
+      '--paginate',
+      '--slurp',
+    ]);
+    const pages = this.json<RawCombinedStatusPage[]>(raw || '[]', `${repo}@${sha} commit statuses`);
+    if (pages.length === 0) throw new Error(`GitHub returned no commit status snapshot for ${repo}@${sha}.`);
+    const expectedCount = pages[0]?.total_count;
+    let exhaustive = Number.isSafeInteger(expectedCount) && expectedCount !== undefined && expectedCount >= 0;
+    const normalized: CheckRun[] = [];
+    for (const page of pages) {
+      if (page.sha.toLowerCase() !== sha.toLowerCase()) {
+        throw new Error(`GitHub returned commit statuses for ${page.sha}, expected exact head ${sha} for ${repo}.`);
+      }
+      exhaustive &&= page.total_count === expectedCount;
+      for (const status of page.statuses) normalized.push(commitStatusCheck(status, repo, sha));
+    }
+    normalized.sort(
+      (left, right) =>
+        left.id.localeCompare(right.id) ||
+        left.name.localeCompare(right.name) ||
+        left.state.localeCompare(right.state) ||
+        left.bucket.localeCompare(right.bucket),
+    );
+    const checks = new Map<string, CheckRun>();
+    for (const status of normalized) {
+      const existing = checks.get(status.id);
+      if (existing !== undefined) {
+        exhaustive &&=
+          existing.name === status.name &&
+          existing.state === status.state &&
+          existing.bucket === status.bucket &&
+          existing.workflow === status.workflow;
+        continue;
+      }
+      checks.set(status.id, status);
+    }
+    exhaustive &&= checks.size === expectedCount;
+    return { checks: [...checks.values()], exhaustive };
   }
 
   async mutate(mutation: GitHubMutation): Promise<void> {
@@ -1337,6 +1403,37 @@ function checkRunBucket(status: string, conclusion: string | null): CheckRun['bu
     case 'CANCELLED':
     case 'STALE':
       return 'cancel';
+    default:
+      return 'fail';
+  }
+}
+
+function commitStatusCheck(status: RawCommitStatus, repo: string, sha: string): CheckRun {
+  if (
+    typeof status.node_id !== 'string' ||
+    status.node_id === '' ||
+    typeof status.context !== 'string' ||
+    status.context === '' ||
+    typeof status.state !== 'string'
+  ) {
+    throw new Error(`GitHub returned an invalid commit status identity for ${repo}@${sha}.`);
+  }
+  const state = status.state.toUpperCase();
+  return {
+    id: `status:${status.node_id}`,
+    name: status.context,
+    state,
+    bucket: commitStatusBucket(state),
+    workflow: '',
+  };
+}
+
+function commitStatusBucket(state: string): CheckRun['bucket'] {
+  switch (state) {
+    case 'SUCCESS':
+      return 'pass';
+    case 'PENDING':
+      return 'pending';
     default:
       return 'fail';
   }

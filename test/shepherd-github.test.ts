@@ -41,6 +41,14 @@ function commitCheckResponse(sha: string, suites: unknown[], options: { hasNextP
   });
 }
 
+function combinedStatusResponse(
+  sha: string,
+  statuses: { id: number; node_id: string; state: string; context: string }[][],
+  totalCount = statuses.flat().length,
+): string {
+  return JSON.stringify(statuses.map((page) => ({ sha, total_count: totalCount, statuses: page })));
+}
+
 function checkSuite(
   conclusion: string | null,
   options: {
@@ -912,12 +920,31 @@ describe('async gh provider', () => {
     expect(mutation?.find((arg) => arg.startsWith('query='))).toContain('updatePullRequestBranch');
   });
 
-  it('reports exhaustive check runs explicitly bound to the requested head', async () => {
+  it('reports exhaustive check runs and commit statuses explicitly bound to the requested head', async () => {
     const headSha = 'a'.repeat(40);
     const executor: ProcessExecutor = {
       run: async (_file, args) => {
         const query = args.find((arg) => arg.startsWith('query=')) ?? '';
-        expect(query).toContain('query CommitCheckEvidence');
+        if (!query.includes('query CommitCheckEvidence')) {
+          expect(args).toEqual([
+            'api',
+            '-X',
+            'GET',
+            `repos/acme/api/commits/${headSha}/status`,
+            '-f',
+            'per_page=100',
+            '--paginate',
+            '--slurp',
+          ]);
+          return combinedStatusResponse(headSha, [
+            [
+              { id: 11, node_id: 'status-1', state: 'success', context: 'full-ci-on-demand' },
+              { id: 12, node_id: 'status-2', state: 'pending', context: 'status-pending' },
+              { id: 13, node_id: 'status-3', state: 'failure', context: 'status-failure' },
+              { id: 14, node_id: 'status-4', state: 'error', context: 'status-error' },
+            ],
+          ]);
+        }
         return JSON.stringify({
           data: {
             repository: {
@@ -989,8 +1016,96 @@ describe('async gh provider', () => {
           bucket: 'pending',
           workflow: 'pull_request',
         },
+        {
+          id: 'status:status-1',
+          name: 'full-ci-on-demand',
+          state: 'SUCCESS',
+          bucket: 'pass',
+          workflow: '',
+        },
+        {
+          id: 'status:status-2',
+          name: 'status-pending',
+          state: 'PENDING',
+          bucket: 'pending',
+          workflow: '',
+        },
+        {
+          id: 'status:status-3',
+          name: 'status-failure',
+          state: 'FAILURE',
+          bucket: 'fail',
+          workflow: '',
+        },
+        {
+          id: 'status:status-4',
+          name: 'status-error',
+          state: 'ERROR',
+          bucket: 'fail',
+          workflow: '',
+        },
       ],
     });
+  });
+
+  it('deduplicates paginated commit status snapshots deterministically without hiding truncation', async () => {
+    const headSha = 'a'.repeat(40);
+    let includeAllStatuses = true;
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query CommitCheckEvidence')) return commitCheckResponse(headSha, []);
+        const first = { id: 11, node_id: 'status-b', state: 'success', context: 'zeta' };
+        return combinedStatusResponse(
+          headSha,
+          includeAllStatuses
+            ? [[first], [{ id: 10, node_id: 'status-a', state: 'pending', context: 'alpha' }, first]]
+            : [[first], [first]],
+          2,
+        );
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+
+    const expected = {
+      headSha,
+      exhaustive: true,
+      checks: [
+        { id: 'status:status-a', name: 'alpha', state: 'PENDING', bucket: 'pending', workflow: '' },
+        { id: 'status:status-b', name: 'zeta', state: 'SUCCESS', bucket: 'pass', workflow: '' },
+      ],
+    };
+    await expect(provider.getCheckRunsForHead({ repo: 'acme/api', number: 7 }, headSha)).resolves.toEqual(expected);
+    await expect(provider.getCheckRunsForHead({ repo: 'acme/api', number: 7 }, headSha)).resolves.toEqual(expected);
+
+    includeAllStatuses = false;
+    await expect(provider.getCheckRunsForHead({ repo: 'acme/api', number: 7 }, headSha)).resolves.toEqual({
+      headSha,
+      exhaustive: false,
+      checks: [{ id: 'status:status-b', name: 'zeta', state: 'SUCCESS', bucket: 'pass', workflow: '' }],
+    });
+  });
+
+  it('rejects commit status evidence resolved to a different SHA', async () => {
+    const headSha = 'a'.repeat(40);
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query CommitCheckEvidence')) return commitCheckResponse(headSha, []);
+        return combinedStatusResponse('b'.repeat(40), [[]], 0);
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+
+    await expect(provider.getCheckRunsForHead({ repo: 'acme/api', number: 7 }, headSha)).rejects.toThrow(
+      /expected exact head/,
+    );
   });
 
   it('posts an idempotent exact-head PR comment only after two safe state reads', async () => {
@@ -1076,6 +1191,9 @@ describe('async gh provider', () => {
               },
             },
           });
+        }
+        if (args.includes(`repos/acme/api/commits/${headSha}/status`)) {
+          return combinedStatusResponse(headSha, [[]], 0);
         }
         if (query.includes('query PullRequestMutationState')) {
           stateReads += 1;

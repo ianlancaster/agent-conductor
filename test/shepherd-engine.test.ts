@@ -197,6 +197,24 @@ function syncableFailedMergeGroupRemoval(overrides: Partial<MergeQueueRemoval> =
   };
 }
 
+function upstreamFailedMergeGroupRemoval(overrides: Partial<MergeQueueRemoval> = {}): MergeQueueRemoval {
+  const removal = syncableFailedMergeGroupRemoval();
+  if (removal.evidence === undefined) throw new Error('fixture requires merge-group evidence');
+  return {
+    ...removal,
+    evidence: {
+      ...removal.evidence,
+      queueStack: {
+        status: 'complete',
+        attribution: 'upstream-queued-pr',
+        currentPrNumber: 7,
+        mergeGroupPrNumber: 6,
+      },
+    },
+    ...overrides,
+  };
+}
+
 function config(input: Record<string, unknown> = {}): ShepherdConfig {
   return parseShepherdConfig({
     version: 2,
@@ -1065,7 +1083,11 @@ describe('Shepherd engine', () => {
         trackedPRs: { enabled: true, releaseGate: 'provider-action-ready' },
         staleThresholdHours: 24,
       },
-      automation: { autoMerge: 'execute', syncAfterReject: true },
+      automation: {
+        autoMerge: 'execute',
+        syncAfterReject: true,
+        syncAfterRejectValidation: { triggerComment: '/validate', requiredCheck: 'full-validation' },
+      },
     });
     await new TrackedPullRequestControl(resolved, github, store).claim({
       repo: 'acme/api',
@@ -1089,7 +1111,8 @@ describe('Shepherd engine', () => {
 
     now = new Date('2026-08-17T10:08:00Z');
     await engine.pollOnce();
-    expect(github.mutations).toHaveLength(2);
+    expect(github.mutations.at(-1)).toMatchObject({ type: 'post-pr-comment-exact-head', headSha: 'head-b' });
+    expect(github.mutations.filter((mutation) => mutation.type === 'enqueue-exact-head')).toHaveLength(0);
     github.details.set(
       'acme/api#7',
       approvedPr({
@@ -1098,6 +1121,9 @@ describe('Shepherd engine', () => {
         reviews: [{ ...approvedPr().reviews[0]!, commitSha: 'head-b' }],
       }),
     );
+    github.exactChecks.set('head-b', [
+      { id: 'proof-b', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+    ]);
     now = new Date('2026-08-17T10:10:00Z');
     await engine.pollOnce();
     expect(github.mutations.at(-1)).toEqual({
@@ -3145,7 +3171,7 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
-  it('triggers validation once after confirmed sync and requires new exact-head named proof before enqueue', async () => {
+  it('admits only a fresh successful exact-head commit status after the validation trigger', async () => {
     let now = new Date('2026-07-20T10:00:00Z');
     const github = new FakeGitHub();
     const oldApproval = {
@@ -3165,7 +3191,13 @@ describe('Shepherd engine', () => {
       }),
     );
     github.exactChecks.set('head-a', [
-      { id: 'old-proof', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+      {
+        id: 'status:old-head-proof',
+        name: 'full-validation',
+        state: 'SUCCESS',
+        bucket: 'pass',
+        workflow: '',
+      },
     ]);
     github.mutationHandler = async (mutation) => {
       github.mutations.push(mutation);
@@ -3214,6 +3246,10 @@ describe('Shepherd engine', () => {
 
     await engine.pollOnce();
     await engine.pollOnce();
+    expect(github.mutations).toEqual([
+      { type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha: 'head-a' },
+    ]);
+    expect(github.mutations.some((mutation) => mutation.type === 'post-pr-comment-exact-head')).toBe(false);
     github.queued = false;
     github.latestQueueRemoval = syncableFailedMergeGroupRemoval({ createdAt: '2026-07-20T10:05:00Z' });
     now = new Date('2026-07-20T10:05:00Z');
@@ -3221,7 +3257,13 @@ describe('Shepherd engine', () => {
     expect(github.mutations.map((mutation) => mutation.type)).toEqual(['enqueue-exact-head', 'sync-branch-exact-head']);
 
     github.exactChecks.set('head-b', [
-      { id: 'pre-trigger-proof', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+      {
+        id: 'status:pre-trigger-proof',
+        name: 'full-validation',
+        state: 'SUCCESS',
+        bucket: 'pass',
+        workflow: '',
+      },
     ]);
     now = new Date('2026-07-20T10:06:00Z');
     await engine.pollOnce();
@@ -3240,18 +3282,72 @@ describe('Shepherd engine', () => {
     await engine.pollOnce();
     expect(github.mutations).toHaveLength(3);
     github.exactChecks.set('head-b', [
-      { id: 'pre-trigger-proof', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+      {
+        id: 'status:pre-trigger-proof',
+        name: 'full-validation',
+        state: 'SUCCESS',
+        bucket: 'pass',
+        workflow: '',
+      },
       { id: 'unrelated', name: 'other-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
-      { id: 'new-proof', name: 'full-validation', state: 'IN_PROGRESS', bucket: 'pending', workflow: 'CI' },
+      {
+        id: 'status:failed-proof',
+        name: 'full-validation',
+        state: 'FAILURE',
+        bucket: 'fail',
+        workflow: '',
+      },
     ]);
     now = new Date('2026-07-20T10:08:00Z');
+    await engine.pollOnce();
+    expect(github.mutations).toHaveLength(3);
+
+    github.exactChecks.set('head-b', [
+      {
+        id: 'status:pre-trigger-proof',
+        name: 'full-validation',
+        state: 'SUCCESS',
+        bucket: 'pass',
+        workflow: '',
+      },
+      {
+        id: 'status:pending-proof',
+        name: 'full-validation',
+        state: 'PENDING',
+        bucket: 'pending',
+        workflow: '',
+      },
+    ]);
+    now = new Date('2026-07-20T10:08:30Z');
+    await engine.pollOnce();
+    expect(github.mutations).toHaveLength(3);
+
+    github.exactChecks.set('head-b', [
+      {
+        id: 'status:pre-trigger-proof',
+        name: 'full-validation',
+        state: 'SUCCESS',
+        bucket: 'pass',
+        workflow: '',
+      },
+      { id: 'status:error-proof', name: 'full-validation', state: 'ERROR', bucket: 'fail', workflow: '' },
+    ]);
+    now = new Date('2026-07-20T10:08:45Z');
     await engine.pollOnce();
     expect(github.mutations).toHaveLength(3);
 
     github.exactCheckSnapshotHandler = async (_pr, headSha) => ({
       headSha: headSha === 'head-b' ? 'wrong-head' : headSha,
       exhaustive: true,
-      checks: [{ id: 'new-proof', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+      checks: [
+        {
+          id: 'status:new-proof',
+          name: 'full-validation',
+          state: 'SUCCESS',
+          bucket: 'pass',
+          workflow: '',
+        },
+      ],
     });
     now = new Date('2026-07-20T10:09:00Z');
     expect((await engine.pollOnce()).warnings.join(' ')).toContain('expected head-b');
@@ -3259,8 +3355,14 @@ describe('Shepherd engine', () => {
 
     github.exactCheckSnapshotHandler = undefined;
     github.exactChecks.set('head-b', [
-      { id: 'pre-trigger-proof', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
-      { id: 'new-proof', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+      {
+        id: 'status:pre-trigger-proof',
+        name: 'full-validation',
+        state: 'SUCCESS',
+        bucket: 'pass',
+        workflow: '',
+      },
+      { id: 'status:new-proof', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: '' },
     ]);
     now = new Date('2026-07-20T10:10:00Z');
     await engine.pollOnce();
@@ -3347,10 +3449,16 @@ describe('Shepherd engine', () => {
     }
   });
 
-  it('does not trigger validation for an author head that supersedes the confirmed sync result', async () => {
+  it('rebinds the durable validation obligation across author heads before and after a trigger', async () => {
     let now = new Date('2026-07-20T10:00:00Z');
     const github = new FakeGitHub();
-    setDiscovery(github, 'authored', approvedPr());
+    setDiscovery(
+      github,
+      'authored',
+      approvedPr({
+        checks: [{ id: 'unit-a', name: 'unit', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+      }),
+    );
     github.mutationHandler = async (mutation) => {
       github.mutations.push(mutation);
       if (mutation.type === 'enqueue-exact-head') github.queued = true;
@@ -3361,6 +3469,7 @@ describe('Shepherd engine', () => {
           'authored',
           approvedPr({
             headSha: 'head-b',
+            checks: [{ id: 'unit-b', name: 'unit', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
             reviews: [{ ...approvedPr().reviews[0]!, id: 'approval-b', commitSha: 'head-b' }],
           }),
         );
@@ -3370,6 +3479,7 @@ describe('Shepherd engine', () => {
     const engine = new ShepherdEngine(
       config({
         github: { mode: 'merge-queue' },
+        checks: { required: ['unit'] },
         automation: {
           autoMerge: 'execute',
           syncAfterReject: true,
@@ -3392,6 +3502,7 @@ describe('Shepherd engine', () => {
       'authored',
       approvedPr({
         headSha: 'head-c',
+        checks: [{ id: 'unit-c', name: 'unit', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
         reviews: [{ ...approvedPr().reviews[0]!, id: 'approval-c', commitSha: 'head-c' }],
         commits: [
           { sha: 'head-b', committedAt: '2026-07-20T10:05:00Z', message: 'Merge branch main' },
@@ -3399,15 +3510,293 @@ describe('Shepherd engine', () => {
         ],
       }),
     );
+    github.exactChecks.set('head-c', [
+      { id: 'pre-trigger-c', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+    ]);
     now = new Date('2026-07-20T10:06:00Z');
     await engine.pollOnce();
 
-    expect(github.mutations.some((mutation) => mutation.type === 'post-pr-comment-exact-head')).toBe(false);
+    expect(github.mutations.filter((mutation) => mutation.type === 'sync-branch-exact-head')).toHaveLength(1);
+    expect(github.mutations.filter((mutation) => mutation.type === 'enqueue-exact-head')).toHaveLength(1);
+    expect(github.mutations.at(-1)).toMatchObject({ type: 'post-pr-comment-exact-head', headSha: 'head-c' });
+
+    github.exactChecks.set('head-c', [
+      { id: 'pre-trigger-c', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+      { id: 'proof-c', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+    ]);
+    setDiscovery(
+      github,
+      'authored',
+      approvedPr({
+        headSha: 'head-d',
+        checks: [{ id: 'unit-d', name: 'unit', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+        reviews: [{ ...approvedPr().reviews[0]!, id: 'approval-d', commitSha: 'head-d' }],
+        commits: [
+          { sha: 'head-b', committedAt: '2026-07-20T10:05:00Z', message: 'Merge branch main' },
+          { sha: 'head-c', committedAt: '2026-07-20T10:05:30Z', message: 'author follow-up' },
+          { sha: 'head-d', committedAt: '2026-07-20T10:06:30Z', message: 'second author follow-up' },
+        ],
+      }),
+    );
+    github.exactChecks.set('head-d', [
+      { id: 'pre-trigger-d', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+    ]);
+    github.queued = false;
+    now = new Date('2026-07-20T10:07:00Z');
+    await engine.pollOnce();
+
+    const comments = github.mutations.filter((mutation) => mutation.type === 'post-pr-comment-exact-head');
+    expect(comments).toHaveLength(2);
+    expect(comments.map((mutation) => mutation.headSha)).toEqual(['head-c', 'head-d']);
+    expect(github.mutations.filter((mutation) => mutation.type === 'sync-branch-exact-head')).toHaveLength(1);
+    expect(github.mutations.filter((mutation) => mutation.type === 'enqueue-exact-head')).toHaveLength(1);
+
+    github.exactChecks.set('head-d', [
+      { id: 'pre-trigger-d', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+      { id: 'proof-d', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+    ]);
+    now = new Date('2026-07-20T10:08:00Z');
+    await engine.pollOnce();
+
     expect(github.mutations.at(-1)).toEqual({
       type: 'enqueue-exact-head',
       pr: { repo: 'acme/api', number: 7 },
-      headSha: 'head-c',
+      headSha: 'head-d',
     });
+    expect(
+      store
+        .listEntities<{ mutation: GitHubMutation }>('action')
+        .filter((entity) => entity.value.mutation.type === 'post-pr-comment-exact-head'),
+    ).toHaveLength(2);
+    store.close();
+  });
+
+  it('rebinds an established validation obligation when the head returns to the rejected sha', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    const github = new FakeGitHub();
+    setDiscovery(
+      github,
+      'authored',
+      approvedPr({
+        checks: [{ id: 'unit-a', name: 'unit', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+        reviews: [{ ...approvedPr().reviews[0]!, id: 'approval-a', commitSha: 'head-a' }],
+      }),
+    );
+    github.exactChecks.set('head-a', [
+      { id: 'old-proof-a', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+    ]);
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-exact-head') github.queued = true;
+      if (mutation.type === 'sync-branch-exact-head') {
+        github.queued = false;
+        setDiscovery(
+          github,
+          'authored',
+          approvedPr({
+            headSha: 'head-b',
+            checks: [{ id: 'unit-b', name: 'unit', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+            reviews: [{ ...approvedPr().reviews[0]!, id: 'approval-b', commitSha: 'head-b' }],
+            commits: [
+              { sha: 'head-a', committedAt: '2026-07-20T09:00:00Z', message: 'initial' },
+              { sha: 'head-b', committedAt: '2026-07-20T10:05:00Z', message: 'Merge branch main' },
+            ],
+          }),
+        );
+      }
+    };
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-return-to-rejected-head-'));
+    const path = join(dir, 'shepherd.db');
+    const resolved = config({
+      github: { mode: 'merge-queue' },
+      checks: { required: ['unit'] },
+      automation: {
+        autoMerge: 'execute',
+        syncAfterReject: true,
+        syncAfterRejectValidation: { triggerComment: '/validate', requiredCheck: 'full-validation' },
+      },
+    });
+
+    try {
+      const initialStore = new SqliteShepherdStore(path);
+      const initial = new ShepherdEngine(resolved, github, initialStore, () => now);
+      await initial.pollOnce();
+      await initial.pollOnce();
+      github.queued = false;
+      github.latestQueueRemoval = syncableFailedMergeGroupRemoval({ createdAt: '2026-07-20T10:05:00Z' });
+      now = new Date('2026-07-20T10:05:00Z');
+      await initial.pollOnce();
+
+      github.exactChecks.set('head-b', [
+        { id: 'pre-trigger-b', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+      ]);
+      now = new Date('2026-07-20T10:06:00Z');
+      await initial.pollOnce();
+      github.exactChecks.set('head-b', [
+        { id: 'pre-trigger-b', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+        { id: 'old-proof-b', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+      ]);
+
+      setDiscovery(
+        github,
+        'authored',
+        approvedPr({
+          headSha: 'head-c',
+          checks: [{ id: 'unit-c', name: 'unit', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+          reviews: [{ ...approvedPr().reviews[0]!, id: 'approval-c', commitSha: 'head-c' }],
+          commits: [
+            { sha: 'head-a', committedAt: '2026-07-20T09:00:00Z', message: 'initial' },
+            { sha: 'head-b', committedAt: '2026-07-20T10:05:00Z', message: 'Merge branch main' },
+            { sha: 'head-c', committedAt: '2026-07-20T10:06:30Z', message: 'author follow-up' },
+          ],
+        }),
+      );
+      github.exactChecks.set('head-c', [
+        { id: 'pre-trigger-c', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+      ]);
+      now = new Date('2026-07-20T10:07:00Z');
+      await initial.pollOnce();
+      github.exactChecks.set('head-c', [
+        { id: 'pre-trigger-c', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+        { id: 'old-proof-c', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+      ]);
+      initialStore.close();
+
+      setDiscovery(
+        github,
+        'authored',
+        approvedPr({
+          headSha: 'head-a',
+          checks: [{ id: 'unit-a-return', name: 'unit', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+          reviews: [{ ...approvedPr().reviews[0]!, id: 'approval-a-return', commitSha: 'head-a' }],
+        }),
+      );
+      const returnedStore = new SqliteShepherdStore(path);
+      const returned = new ShepherdEngine(resolved, github, returnedStore, () => now);
+      now = new Date('2026-07-20T10:08:00Z');
+      await returned.pollOnce();
+
+      expect(github.mutations.filter((mutation) => mutation.type === 'sync-branch-exact-head')).toHaveLength(1);
+      expect(github.mutations.filter((mutation) => mutation.type === 'enqueue-exact-head')).toHaveLength(1);
+      expect(
+        github.mutations
+          .filter((mutation) => mutation.type === 'post-pr-comment-exact-head')
+          .map((mutation) => mutation.headSha),
+      ).toEqual(['head-b', 'head-c', 'head-a']);
+      returnedStore.close();
+
+      github.exactChecks.set('head-a', [
+        { id: 'old-proof-a', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+        { id: 'pending-proof-a', name: 'full-validation', state: 'PENDING', bucket: 'pending', workflow: 'CI' },
+      ]);
+      const restartedStore = new SqliteShepherdStore(path);
+      const restarted = new ShepherdEngine(resolved, github, restartedStore, () => now);
+      now = new Date('2026-07-20T10:09:00Z');
+      await restarted.pollOnce();
+      expect(github.mutations.filter((mutation) => mutation.type === 'sync-branch-exact-head')).toHaveLength(1);
+      expect(github.mutations.filter((mutation) => mutation.type === 'post-pr-comment-exact-head')).toHaveLength(3);
+      expect(github.mutations.filter((mutation) => mutation.type === 'enqueue-exact-head')).toHaveLength(1);
+
+      github.exactChecks.set('head-a', [
+        { id: 'old-proof-a', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+        { id: 'fresh-proof-a', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+      ]);
+      now = new Date('2026-07-20T10:10:00Z');
+      await restarted.pollOnce();
+      expect(github.mutations.filter((mutation) => mutation.type === 'sync-branch-exact-head')).toHaveLength(1);
+      expect(github.mutations.filter((mutation) => mutation.type === 'post-pr-comment-exact-head')).toHaveLength(3);
+      expect(github.mutations.at(-1)).toEqual({
+        type: 'enqueue-exact-head',
+        pr: { repo: 'acme/api', number: 7 },
+        headSha: 'head-a',
+      });
+      restartedStore.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('cancels an obsolete sync retry and validates an author-changed exact head without another sync', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    let syncCalls = 0;
+    const github = new FakeGitHub();
+    setDiscovery(
+      github,
+      'authored',
+      approvedPr({
+        checks: [{ id: 'unit-a', name: 'unit', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+      }),
+    );
+    github.mutationHandler = async (mutation) => {
+      if (mutation.type === 'sync-branch-exact-head') {
+        syncCalls += 1;
+        throw new Error('temporary sync failure');
+      }
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-exact-head') github.queued = true;
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({
+        github: { mode: 'merge-queue' },
+        checks: { required: ['unit'] },
+        automation: {
+          autoMerge: 'execute',
+          syncAfterReject: true,
+          syncAfterRejectValidation: { triggerComment: '/validate', requiredCheck: 'full-validation' },
+        },
+      }),
+      github,
+      store,
+      () => now,
+    );
+
+    await engine.pollOnce();
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = syncableFailedMergeGroupRemoval({ createdAt: '2026-07-20T10:05:00Z' });
+    now = new Date('2026-07-20T10:05:00Z');
+    await engine.pollOnce();
+    expect(syncCalls).toBe(1);
+
+    setDiscovery(
+      github,
+      'authored',
+      approvedPr({
+        headSha: 'head-b',
+        checks: [{ id: 'unit-b', name: 'unit', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' }],
+        reviews: [{ ...approvedPr().reviews[0]!, id: 'approval-b', commitSha: 'head-b' }],
+        commits: [
+          { sha: 'head-a', committedAt: '2026-07-20T09:00:00Z', message: 'initial' },
+          { sha: 'head-b', committedAt: '2026-07-20T10:05:01Z', message: 'author follow-up' },
+        ],
+      }),
+    );
+    github.exactChecks.set('head-b', []);
+    now = new Date('2026-07-20T10:05:02Z');
+    await engine.pollOnce();
+
+    expect(syncCalls).toBe(1);
+    expect(github.mutations.at(-1)).toMatchObject({ type: 'post-pr-comment-exact-head', headSha: 'head-b' });
+    expect(
+      store
+        .listEntities<{ status: string; mutation: GitHubMutation }>('action')
+        .find((entity) => entity.value.mutation.type === 'sync-branch-exact-head')?.value.status,
+    ).toBe('cancelled');
+    expect(github.mutations.filter((mutation) => mutation.type === 'enqueue-exact-head')).toHaveLength(1);
+
+    github.exactChecks.set('head-b', [
+      { id: 'proof-b', name: 'full-validation', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+    ]);
+    now = new Date('2026-07-20T10:06:00Z');
+    await engine.pollOnce();
+
+    expect(github.mutations.at(-1)).toEqual({
+      type: 'enqueue-exact-head',
+      pr: { repo: 'acme/api', number: 7 },
+      headSha: 'head-b',
+    });
+    expect(syncCalls).toBe(1);
     store.close();
   });
 
@@ -3538,6 +3927,7 @@ describe('Shepherd engine', () => {
   it.each([
     ['ambiguous', failedMergeGroupRemoval({ createdAt: '2026-07-20T10:05:00Z' })],
     ['stale', syncableFailedMergeGroupRemoval({ createdAt: '2026-07-19T09:00:00Z' })],
+    ['voluntary cancellation', { id: 'removed-voluntarily', createdAt: '2026-07-20T10:05:00Z', reason: 'cancelled' }],
   ])('fails %s rejection evidence closed to notification', async (_label, removal) => {
     let now = new Date('2026-07-19T08:55:00Z');
     const github = new FakeGitHub();
@@ -3548,7 +3938,14 @@ describe('Shepherd engine', () => {
     };
     const store = new SqliteShepherdStore(':memory:');
     const engine = new ShepherdEngine(
-      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute', syncAfterReject: true } }),
+      config({
+        github: { mode: 'merge-queue' },
+        automation: {
+          autoMerge: 'execute',
+          syncAfterReject: true,
+          syncAfterRejectValidation: { triggerComment: '/validate', requiredCheck: 'full-validation' },
+        },
+      }),
       github,
       store,
       () => now,
@@ -3561,7 +3958,69 @@ describe('Shepherd engine', () => {
     await engine.pollOnce();
 
     expect(github.mutations.some((mutation) => mutation.type === 'sync-branch-exact-head')).toBe(false);
+    expect(github.mutations.some((mutation) => mutation.type === 'post-pr-comment-exact-head')).toBe(false);
     expect(store.listEvents().some((event) => event.type === 'merge-queue-evicted')).toBe(true);
+    store.close();
+  });
+
+  it('fences an upstream queued PR failure without sync, validation, or a later conditional gate', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    const github = new FakeGitHub();
+    setDiscovery(github, 'authored', approvedPr());
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-exact-head') github.queued = true;
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({
+        github: { mode: 'merge-queue' },
+        automation: {
+          autoMerge: 'execute',
+          syncAfterReject: true,
+          syncAfterRejectValidation: { triggerComment: '/validate', requiredCheck: 'full-validation' },
+        },
+      }),
+      github,
+      store,
+      () => now,
+    );
+
+    await engine.pollOnce();
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = upstreamFailedMergeGroupRemoval({ createdAt: '2026-07-20T10:05:00Z' });
+    now = new Date('2026-07-20T10:05:00Z');
+    await engine.pollOnce();
+
+    expect(github.mutations).toHaveLength(1);
+    expect(store.listEvents().find((event) => event.type === 'merge-queue-evicted')?.source).toMatchObject({
+      retryEligibility: 'code-failure-fenced',
+      syncAfterReject: 'failure-belongs-to-upstream-queued-pr',
+    });
+
+    setDiscovery(
+      github,
+      'authored',
+      approvedPr({
+        headSha: 'head-b',
+        reviews: [{ ...approvedPr().reviews[0]!, id: 'approval-b', commitSha: 'head-b' }],
+        commits: [
+          { sha: 'head-a', committedAt: '2026-07-20T09:00:00Z', message: 'initial' },
+          { sha: 'head-b', committedAt: '2026-07-20T10:06:00Z', message: 'author follow-up' },
+        ],
+      }),
+    );
+    now = new Date('2026-07-20T10:06:00Z');
+    await engine.pollOnce();
+
+    expect(github.mutations.at(-1)).toEqual({
+      type: 'enqueue-exact-head',
+      pr: { repo: 'acme/api', number: 7 },
+      headSha: 'head-b',
+    });
+    expect(github.mutations.some((mutation) => mutation.type === 'sync-branch-exact-head')).toBe(false);
+    expect(github.mutations.some((mutation) => mutation.type === 'post-pr-comment-exact-head')).toBe(false);
     store.close();
   });
 
@@ -3575,7 +4034,14 @@ describe('Shepherd engine', () => {
     };
     const store = new SqliteShepherdStore(':memory:');
     const engine = new ShepherdEngine(
-      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute' } }),
+      config({
+        github: { mode: 'merge-queue' },
+        automation: {
+          autoMerge: 'execute',
+          syncAfterReject: true,
+          syncAfterRejectValidation: { triggerComment: '/validate', requiredCheck: 'full-validation' },
+        },
+      }),
       github,
       store,
       () => now,
@@ -3599,6 +4065,7 @@ describe('Shepherd engine', () => {
     }
 
     expect(github.mutations).toHaveLength(5);
+    expect(github.mutations.some((mutation) => mutation.type === 'post-pr-comment-exact-head')).toBe(false);
     expect(store.listEvents().filter((event) => event.type === 'merge-queue-evicted')).toHaveLength(5);
     expect(
       store.listEvents().find((event) => event.type === 'merge-queue-evicted' && event.source.attempt === 5)?.source
