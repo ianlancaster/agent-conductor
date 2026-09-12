@@ -23,6 +23,14 @@ events:
 # Trusted local executable modules. Only a trusted fleet owner may edit this
 # list. Validation checks paths but intentionally does not execute modules.
 # Never put secrets in options; module changes require a Conductor restart.
+# Trusted local runtime factories. Native codex and claude-code remain registered.
+# No module is imported by validate/doctor; foreground startup constructs these adapters.
+runtimeAdapters: []
+# runtimeAdapters:
+#   - name: custom-worker
+#     module: /absolute/path/to/runtime-factory.mjs
+#     options: {} # No secrets. Adapter-owned paths or environment-variable names only.
+
 integrations: []
 # integrations:
 #   - module: ./integrations/water-cooler/dist/index.js

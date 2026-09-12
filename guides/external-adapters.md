@@ -297,6 +297,68 @@ operator-facing alias for `claude-code`.
 The final registry validates the fleet default and every session reference. Registered names are
 also used by spawn, start, continue, MCP schemas, validation errors, and generated operator help.
 
+## Configured runtime adapters
+
+The stock CLI can register additional runtimes through `supervisor.yaml`:
+
+```yaml
+runtimeAdapters:
+  - name: custom-worker
+    module: /absolute/path/to/adapter.mjs
+    options:
+      profile: /absolute/path/to/profile.json
+```
+
+The list defaults to empty. Each entry has only `name`, `module`, and optional `options`.
+Names use lowercase letters, digits and dashes, starting with a letter. Duplicates and
+`codex`, `claude-code`, and `cc` are rejected; built-ins remain available. Direct Supervisor
+injection retains its existing deliberate override behavior and never loads YAML factories.
+
+Modules must be explicit local files: `./` paths stay inside the fleet root after symlink
+resolution; absolute paths are trusted-owner choices. URLs, bare package names, discovery,
+auto-install and hot reload are unsupported. Install adapter packages separately and point at
+their factory file. Adapter imports use normal Node dependency resolution, so install any
+peer dependencies alongside the adapter. Pin tested versions, especially during beta.
+
+An ESM factory exports `runtimeAdapterApiVersion = 1` and a synchronous default function:
+
+```ts
+import type { RuntimeAdapterFactory } from 'agent-conductor';
+export const runtimeAdapterApiVersion = 1;
+const create: RuntimeAdapterFactory = (context) => {
+  // Construct your public SessionRuntime implementation without launching work here.
+  return new ExampleRuntime(context.name, context.options);
+};
+export default create;
+```
+
+The context contains `apiVersion`, `conductorVersion`, declared `name`, resolved `fleetDir`,
+optional `protocolPath`, `sessionDataDir` (including named-instance placement), and a shallow-frozen
+copy of `options`. It supplies no environment, store, messaging or lifecycle handles. The module
+must return a matching runtime name, all required methods and valid capability booleans; mismatches
+fail startup before Supervisor construction. Optional interface methods are validated when present.
+
+Factories are **trusted in-process code, not sandboxed plugins**. Their imports can access process
+resources. Keep construction synchronous and free of side effects; Conductor cannot roll back
+arbitrary module side effects or isolate a malicious factory. Never put credential values in YAML
+options or shell-prefixed environment strings. Use owner-only files or secret-manager references
+inside the adapter, and keep error messages secret-free. Loader errors identify the adapter and
+failure stage without copying arbitrary module/factory exceptions.
+
+`validate`, `doctor`, and parent startup only validate schema and inspect filesystem paths. They
+never import a factory; a successful doctor therefore does not prove its runtime contract or model
+availability. Only foreground startup imports factories, checks API version 1 and validates the
+returned runtime objects. All paths are resolved before any import. A bad entry fails the new host
+startup rather than silently removing a runtime or starting a partial fleet.
+
+The resulting registry drives ordinary spawn/start/continue, MCP runtime choices and operator help.
+Models/effort still use the existing free-text contract. Provider qualification and worker guidance
+belong in adapter documentation and registered runbooks, not a core model registry.
+
+After a separately approved update, commit/push and rebuild/relink the CLI. Existing processes keep
+their loaded registry until an operator deliberately restarts them; build/link alone is insufficient.
+Rollback restores previous package/config references before that operator-managed transition.
+
 ## Verification
 
 An external adapter package should test:

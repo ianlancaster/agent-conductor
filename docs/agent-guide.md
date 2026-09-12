@@ -166,8 +166,8 @@ schedules: []
 Important rules:
 
 - Configuration is strict. Unknown or misspelled keys are errors.
-- `integrations` is the one executable-code exception in supervisor YAML. Keep it `[]` unless a
-  trusted fleet owner deliberately registers a local synchronous factory. Validation checks files
+- `integrations` and `runtimeAdapters` are explicit executable-code extensions in supervisor YAML. Keep both lists `[]` unless a
+  trusted fleet owner deliberately registers local synchronous factories. Validation checks files
   without executing them; only foreground startup imports them. Never put secrets in `options`.
 - `supervisor.maxTagLength` is the fleet-wide mechanical status-tag limit (default `50` Unicode
   characters). Supervisor settings require a restart. Reducing the limit clears incompatible
@@ -1086,7 +1086,14 @@ be added to Conductor core.
 External runtimes are registered with `new Supervisor(baseDir, { runtimes: [...] })`. The final
 registry controls fleet/session validation and the spawn, start, continue, MCP, and help surfaces.
 An injected runtime may deliberately replace a built-in by name; duplicate injected names fail
-construction, and `cc` remains reserved as the `claude-code` command alias. Runtime harness types
+construction, and `cc` remains reserved as the `claude-code` command alias. The stock CLI also supports explicit `runtimeAdapters` entries (name, local module, options).
+Only foreground startup imports version-1 synchronous factories; validate/doctor inspect files without
+executing them. Configured adapters cannot replace built-ins. Use the runtime names exposed by live
+spawn/start/continue schemas; a runbook alone does not register a runtime. Keep provider models and
+setup guidance in the adapter's runbook, and never put secrets in options. Relative factory files
+remain inside the fleet root after symlink resolution; absolute paths are owner-authorized local
+files. No URL/package discovery or hot reload occurs. A module/contract error fails the new host
+startup before sessions launch. Direct embedding remains injection-only. Runtime harness types
 are experimental during beta. See `guides/external-adapters.md` and
 `examples/embedding-host.mjs` for the complete contracts and a runnable package-root-only host.
 

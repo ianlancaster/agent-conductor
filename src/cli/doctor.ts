@@ -164,6 +164,15 @@ export async function runPreflight(
     // reliable checks that depend on the loaded fleet.
     return results;
   }
+  if (problems.length === 0 && loaded.supervisor.runtimeAdapters.length > 0) {
+    results.push(
+      result(
+        'pass',
+        'Configured runtime adapters',
+        `${String(loaded.supervisor.runtimeAdapters.length)} local factory file(s); contracts checked at foreground startup`,
+      ),
+    );
+  }
   const paths = resolvedInstance.paths;
   if (problems.length === 0) {
     results.push(result('pass', 'Fleet config', `${loaded.sessions.size} session(s); ${paths.supervisorFile}`));

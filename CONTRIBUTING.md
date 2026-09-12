@@ -277,3 +277,9 @@ Keep changes focused and explain both the user-visible outcome and the architect
 used. Call out migrations, public API changes, new dependencies, manual verification, and
 known limitations explicitly. Confirm that no private configuration, secrets, local paths,
 or organization-specific policy entered the diff.
+
+Configured runtime adapters follow the same trusted-owner executable-module boundary as background
+integrations. `runtimeAdapters` is empty by default and foreground-only; reuse the existing runtime
+registry, keep preflight non-executing, preserve native runtime names, and validate API version,
+methods and capabilities before Supervisor construction. Never put vendor logic or worker policy in
+the loader. See the configured-runtime section of `guides/external-adapters.md`.

@@ -10,6 +10,7 @@ export type {
 } from './core/attestation.js';
 export type {
   ConfiguredIntegration,
+  ConfiguredRuntimeAdapter,
   FederationConfig,
   RuntimeName,
   SessionConfig,
@@ -84,3 +85,6 @@ export type { SlackAdapterConfig, SlackAdapterOptions } from './channels/slack/i
 export { TelegramAdapter } from './channels/telegram/index.js';
 export type { TelegramAdapterConfig } from './channels/telegram/index.js';
 export * from './shepherd/index.js';
+
+export { RUNTIME_ADAPTER_API_VERSION } from './runtimes/configured.js';
+export type { RuntimeAdapterFactoryContext, RuntimeAdapterFactory } from './runtimes/configured.js';

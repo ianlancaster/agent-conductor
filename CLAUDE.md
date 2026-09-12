@@ -247,3 +247,8 @@ live under `test/manual/`.
 For an operator channel, cover four layers as applicable: pure inbound classification and
 outbound formatting; a scripted network/API double; `FakeChannel` integration through the
 real supervisor/command pipeline; and a documented manual shakedown for the real service.
+
+Stock CLI runtime construction: `runtimeAdapters` lists explicit trusted local factory files.
+`src/runtimes/configured.ts` provides non-executing path validation and foreground-only API-v1
+factory loading. Built-in names cannot be replaced through this YAML surface; the existing direct
+Supervisor injection semantics remain unchanged. No model/provider policy belongs in the loader.

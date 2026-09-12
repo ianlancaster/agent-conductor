@@ -75,6 +75,21 @@ export const configuredIntegrationSchema = z
   })
   .strict();
 
+export const configuredRuntimeAdapterSchema = z
+  .object({
+    name: z
+      .string()
+      .regex(/^[a-z][a-z0-9-]*$/)
+      .refine(
+        (value) => !['codex', 'claude-code', 'cc'].includes(value),
+        'built-in runtime names and aliases are reserved',
+      ),
+    module: z.string().trim().min(1),
+    options: z.record(z.unknown()).default({}),
+  })
+  .strict();
+export type ConfiguredRuntimeAdapter = z.infer<typeof configuredRuntimeAdapterSchema>;
+
 export const sessionClaimAdmissionSchema = z
   .object({
     /** Opt in to external, host-wide admission claims for every session registration and start. */
@@ -204,6 +219,14 @@ export const supervisorConfigSchema = z
       .default({}),
     /** Trusted local executable modules loaded only by the stock foreground CLI. */
     integrations: z.array(configuredIntegrationSchema).default([]),
+    /** Trusted local SessionRuntime factories; imported only by foreground startup. */
+    runtimeAdapters: z
+      .array(configuredRuntimeAdapterSchema)
+      .default([])
+      .refine(
+        (entries) => new Set(entries.map((entry) => entry.name)).size === entries.length,
+        'duplicate runtime adapter name',
+      ),
     admission: z
       .object({
         sessionClaims: sessionClaimAdmissionSchema.default({}),

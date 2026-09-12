@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, openSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
@@ -17,6 +17,7 @@ import { configuredRunbookRegistry } from '../runbooks/registry.js';
 import { initializeRunbook, validateRunbookPath } from '../runbooks/authoring.js';
 import { installDaemon, uninstallDaemon } from './daemon.js';
 import { formatPreflight, preflightFailures, runPreflight } from './doctor.js';
+import { loadConfiguredRuntimeAdapters } from '../runtimes/configured.js';
 import { loadConfiguredIntegrations } from '../integrations/configured.js';
 import { subscribeFeed } from './feed.js';
 import { killFleetConductor } from './kill.js';
@@ -246,8 +247,16 @@ async function runForeground(startAll: boolean): Promise<void> {
   // This is the single configured-code execution boundary. The non-foreground
   // parent performs only schema/stat preflight before spawning this process.
   const config = loadSupervisorConfig(resolvedInstance());
+  const runtimes = await loadConfiguredRuntimeAdapters(baseDir(), config.runtimeAdapters, {
+    conductorVersion: PACKAGE_VERSION,
+    protocolPath: [
+      join(baseDir(), 'prompts', 'conductor-protocol.md'),
+      join(PACKAGE_ROOT, 'prompts', 'conductor-protocol.md'),
+    ].find(existsSync),
+    sessionDataDir: join(resolveFleetDataDir(baseDir(), config.paths.dataDir), 'sessions'),
+  });
   const integrations = await loadConfiguredIntegrations(baseDir(), config.integrations);
-  const supervisor = new Supervisor(baseDir(), { integrations, instance: instanceName() });
+  const supervisor = new Supervisor(baseDir(), { runtimes, integrations, instance: instanceName() });
   await supervisor.start({ startAll });
 
   const shutdown = async (): Promise<void> => {

@@ -9,6 +9,7 @@ import { sessionConfigSchema, supervisorConfigSchema, type SessionConfig, type S
 import { configuredRunbookRegistry } from '../runbooks/registry.js';
 import { PACKAGE_VERSION } from '../version.js';
 import { resolveConfiguredIntegrations } from '../integrations/configured.js';
+import { resolveConfiguredRuntimeAdapters } from '../runtimes/configured.js';
 import { SessionClaimAdmission, type SessionAdmissionGate } from './admission.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
@@ -241,6 +242,7 @@ export function validateConfig(baseDir: string, options: ValidateConfigOptions =
   try {
     const supervisor = loadSupervisorConfig(resolvedInstance);
     defaultRuntime = supervisor.defaults.runtime;
+    resolveConfiguredRuntimeAdapters(baseDir, supervisor.runtimeAdapters);
     admission = new SessionClaimAdmission(
       supervisor.admission.sessionClaims,
       resolvedInstance.baseDir,

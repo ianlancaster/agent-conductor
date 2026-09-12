@@ -546,3 +546,12 @@ external consumer before release.
 ## License
 
 [MIT](LICENSE)
+
+### Additional coding runtimes
+
+The stock CLI supports an explicit `runtimeAdapters` list of trusted local factory files in
+`supervisor.yaml`. Native Codex and Claude Code remain registered. Preflight checks never execute
+adapter code; foreground startup validates versioned `SessionRuntime` factories before launching
+sessions. No discovery, automatic package installation, or hot reload is performed. See
+[configured runtime adapters](guides/external-adapters.md#configured-runtime-adapters) for the schema,
+factory contract, dependency/secret boundaries, failure recovery and rollout steps.
