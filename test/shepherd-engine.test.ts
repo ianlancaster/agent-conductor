@@ -2883,15 +2883,7 @@ describe('Shepherd engine', () => {
       });
       const reentered = new ShepherdEngine(unfiltered, github, restartedStore, clock);
       await reentered.pollOnce();
-      expect(
-        restartedStore
-          .listEvents()
-          .map((event) => event.type)
-          .sort(),
-      ).toEqual(['review-completed', 'scoped-re-review']);
-      const followUp = restartedStore.listEvents().find((event) => event.type === 'scoped-re-review');
-      expect(followUp?.source.triggeringReasons).toEqual(['head-changed']);
-      expect(followUp?.source.replyIds).toEqual([]);
+      expect(restartedStore.listEvents().map((event) => event.type)).toEqual(['review-completed']);
       restartedStore.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -4627,7 +4619,7 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
-  it('compares re-review heads without suppressing the first new commit', async () => {
+  it('does not emit scoped re-review solely for a changed head', async () => {
     const github = new FakeGitHub();
     const first = pr({
       reviews: [
@@ -4659,13 +4651,13 @@ describe('Shepherd engine', () => {
       commits: [...first.commits, { sha: 'head-b', committedAt: '2026-07-20T10:30:00Z', message: 'fix' }],
     });
     setDiscovery(github, 'review-follow-up', changed);
-    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
-    expect(store.listEvents()[0]?.type).toBe('scoped-re-review');
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEvents()).toEqual([]);
     expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
     store.close();
   });
 
-  it('keeps following changes requested when a later non-decisive review is posted', async () => {
+  it('keeps following changes requested without emitting for a non-decisive head-only update', async () => {
     const github = new FakeGitHub();
     const first = pr({
       reviews: [
@@ -4709,8 +4701,9 @@ describe('Shepherd engine', () => {
       }),
     );
 
-    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
-    expect(store.listEvents()[0]?.type).toBe('scoped-re-review');
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEvents()).toEqual([]);
+    expect(store.listEntities('review-follow-up')).toHaveLength(1);
     store.close();
   });
 
@@ -4756,11 +4749,11 @@ describe('Shepherd engine', () => {
       'PRR_global',
     ]);
     setDiscovery(github, 'review-follow-up', pr({ headSha: 'head-c', reviews: [currentReview] }));
-    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
     store.close();
   });
 
-  it('baselines actionable COMMENTED findings and emits once for each new head', async () => {
+  it('ignores head-only movement but emits an explicit scoped review request', async () => {
     const github = new FakeGitHub();
     const initial = pr({ reviews: [commentedReview], reviewThreads: [reviewThread()] });
     setDiscovery(github, 'review-follow-up', initial);
@@ -4780,31 +4773,36 @@ describe('Shepherd engine', () => {
 
     const headB = pr({ headSha: 'head-b', reviews: [commentedReview], reviewThreads: [reviewThread()] });
     setDiscovery(github, 'review-follow-up', headB);
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEvents()).toEqual([]);
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+
+    setDiscovery(
+      github,
+      'review-follow-up',
+      pr({
+        headSha: 'head-c',
+        reviews: [commentedReview],
+        reviewThreads: [reviewThread()],
+        requestedReviewers: [{ login: 'octocat' }],
+      }),
+    );
     expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
-    const first = store.listEvents()[0];
-    expect(first).toMatchObject({ type: 'scoped-re-review' });
-    expect(first?.source).toMatchObject({
-      triggeringReasons: ['head-changed'],
+    const event = store.listEvents()[0];
+    expect(event).toMatchObject({ type: 'scoped-re-review' });
+    expect(event?.source).toMatchObject({
+      triggeringReasons: ['review-requested'],
       activeReviewIds: ['review-comment'],
       reviewedHeadSha: 'head-a',
-      currentHeadSha: 'head-b',
+      currentHeadSha: 'head-c',
     });
-    expect(first?.source.affectedThreads).toEqual([
+    expect(event?.source.affectedThreads).toEqual([
       expect.objectContaining({
         threadId: 'thread-1',
         path: 'src/api.ts',
         rootFinding: 'Please preserve the API contract.',
       }),
     ]);
-    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
-
-    setDiscovery(
-      github,
-      'review-follow-up',
-      pr({ headSha: 'head-c', reviews: [commentedReview], reviewThreads: [reviewThread()] }),
-    );
-    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
-    expect(store.listEvents().filter((event) => event.type === 'scoped-re-review')).toHaveLength(2);
     store.close();
   });
 
@@ -4924,7 +4922,8 @@ describe('Shepherd engine', () => {
       }),
     );
     expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
-    expect(store.listEvents()[0]?.source).toMatchObject({
+    const repeatedRequest = store.listEvents().find((event) => event.source.reviewRequestCycle === 2);
+    expect(repeatedRequest?.source).toMatchObject({
       triggeringReasons: ['thread-resolved', 'review-requested'],
       reviewRequestCycle: 2,
     });
@@ -4994,7 +4993,8 @@ describe('Shepherd engine', () => {
         reviewThreads: [reviewThread(), laterThread],
       }),
     );
-    expect(await engine.pollOnce()).toMatchObject({ emitted: 1 });
+    expect(await engine.pollOnce()).toMatchObject({ emitted: 0 });
+    expect(store.listEntities('review-follow-up')).toHaveLength(1);
 
     const dismissed = { ...laterReview, state: 'DISMISSED' as const };
     setDiscovery(

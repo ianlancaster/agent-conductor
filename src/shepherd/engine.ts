@@ -137,7 +137,7 @@ interface FollowUpState {
   details: PullRequestDetails;
 }
 
-type FollowUpReason = 'head-changed' | 'thread-replied' | 'thread-outdated' | 'thread-resolved' | 'review-requested';
+type FollowUpReason = 'thread-replied' | 'thread-outdated' | 'thread-resolved' | 'review-requested';
 
 interface NudgeState {
   reviewer: string;
@@ -3216,13 +3216,11 @@ export class ShepherdEngine {
             };
           }
 
-          const headChanged = details.headSha !== reviewedHeadSha && previous?.notifiedHeadSha !== details.headSha;
           let reviewRequestCycle = sameLifecycle ? (previous.reviewRequestCycle ?? 0) : 0;
           const reviewRequestedTransition = sameLifecycle && previous.reviewRequested === false && requested;
           if (reviewRequestedTransition) reviewRequestCycle += 1;
 
           const reasons: FollowUpReason[] = [];
-          if (!baseline && headChanged) reasons.push('head-changed');
           if (!baseline && newReplies.size > 0) reasons.push('thread-replied');
           if (!baseline && outdatedTransitions.length > 0) reasons.push('thread-outdated');
           if (!baseline && resolvedTransitions.length > 0) reasons.push('thread-resolved');
@@ -3233,7 +3231,7 @@ export class ShepherdEngine {
             ...outdatedTransitions.map((transition) => transition.threadId),
             ...resolvedTransitions.map((transition) => transition.threadId),
           ]);
-          const includeAllThreads = reasons.includes('head-changed') || reasons.includes('review-requested');
+          const includeAllThreads = reasons.includes('review-requested');
           const affectedThreads = active.threads.filter(
             (thread) => includeAllThreads || transitionedThreadIds.has(thread.id),
           );
@@ -3246,7 +3244,6 @@ export class ShepherdEngine {
                   details,
                   {
                     reviewIds: trackedReviewIds,
-                    headSha: reasons.includes('head-changed') ? details.headSha : undefined,
                     replyIds: [...newReplies.values()]
                       .flat()
                       .map((reply) => reply.id)
@@ -3277,7 +3274,7 @@ export class ShepherdEngine {
           const state: FollowUpState = {
             trackedReviewIds,
             reviewedHeadSha,
-            notifiedHeadSha: headChanged ? details.headSha : sameLifecycle ? previous.notifiedHeadSha : null,
+            notifiedHeadSha: sameLifecycle ? previous.notifiedHeadSha : null,
             reviewRequested: requested,
             reviewRequestCycle,
             threads: nextThreads,

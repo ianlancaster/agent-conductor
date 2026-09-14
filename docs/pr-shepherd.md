@@ -552,12 +552,14 @@ earlier findings; inline findings submitted after the approval establish a fresh
 Dismissed findings are likewise removed when no later actionable review remains.
 
 After the lifecycle baseline, Shepherd emits one coalesced `scoped-re-review` event per poll when
-the reviewed head changes, another participant adds an inline-thread reply, a tracked thread
-becomes outdated or resolved, or GitHub explicitly requests the configured reviewer again. The
-reviewer's own replies and replies from `reviews.ignoredActors` advance the baseline without
+another participant adds an inline-thread reply, a tracked thread becomes outdated or resolved,
+or GitHub explicitly requests the configured reviewer again. A changed head alone updates the
+stored current state but does not manufacture reviewer work; the owning workflow decides whether
+the changed delta is material enough to request review. The reviewer's own replies and replies
+from `reviews.ignoredActors` advance the baseline without
 emitting work. Ordinary issue comments are not review-thread replies. Persistent heads, thread
-states, replies, and review requests do not repeat events; later heads, reply IDs, and state or
-request transitions remain independently recurrent.
+states, replies, and review requests do not repeat events; later reply IDs and state or request
+transitions remain independently recurrent.
 
 Each event names every triggering reason and active review ID, the reviewed and current heads, and
 the current explicit-request state. Affected-thread facts include the thread and root-comment IDs,

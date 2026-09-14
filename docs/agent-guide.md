@@ -949,9 +949,11 @@ instructions, not hard-coded into Shepherd.
 
 When review follow-up is enabled, `scoped-re-review` covers actionable `CHANGES_REQUESTED` reviews
 and inline findings submitted through non-blocking `COMMENTED` reviews. The event carries its head,
-reply, outdated, resolved, and explicit re-request reasons plus the affected thread context. Use
-that factual scope when dispatching a reviewer; do not treat an ordinary PR issue comment as an
-inline-thread reply or redo a full review unless fleet guidance explicitly asks for one.
+reply, outdated, resolved, and explicit re-request reasons plus the affected thread context. A
+changed head by itself does not emit this event or imply that review must repeat; the owning
+workflow can inspect the delta and explicitly request scoped review when it is materially new. Use
+the event's factual scope when dispatching a reviewer; do not treat an ordinary PR issue comment as
+an inline-thread reply or redo a full review unless fleet guidance explicitly asks for one.
 
 When multiple Shepherd profiles share a reviewer identity, use
 `features.reviewInbox.ignoredHeadPatterns` to divide assigned-review ownership by GitHub
