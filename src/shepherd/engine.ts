@@ -198,6 +198,7 @@ type MergeQueueActionContext = Pick<
 const MERGE_QUEUE_MAX_ATTEMPTS = 5;
 const MERGE_QUEUE_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000] as const;
 const RETRYABLE_QUEUE_REMOVAL_REASONS = new Set(['checks_timed_out', 'stack_invalidated']);
+const GITHUB_ACTIONS_ACTOR_LOGINS = new Set(['github-actions', 'github-actions[bot]']);
 const SYNC_AFTER_REJECT_RECENT_MS = 24 * 60 * 60_000;
 
 export interface PollSummary {
@@ -218,7 +219,7 @@ function normalizedQueueRemovalReason(reason: string | null): string {
 function mergeQueueRetryDisposition(removal: MergeQueueRemoval | undefined):
   | {
       retryable: true;
-      classification: 'provider-confirmed-transient';
+      classification: 'provider-confirmed-transient' | 'provider-confirmed-automation';
       fenceClassification: 'non-retryable-removal';
     }
   | {
@@ -265,6 +266,13 @@ function mergeQueueRetryDisposition(removal: MergeQueueRemoval | undefined):
     return {
       retryable: true,
       classification: 'provider-confirmed-transient',
+      fenceClassification: 'non-retryable-removal',
+    };
+  }
+  if (reason === 'manual' && GITHUB_ACTIONS_ACTOR_LOGINS.has(removal.actor?.login.trim().toLowerCase() ?? '')) {
+    return {
+      retryable: true,
+      classification: 'provider-confirmed-automation',
       fenceClassification: 'non-retryable-removal',
     };
   }
@@ -2601,6 +2609,10 @@ export class ShepherdEngine {
           attempts: retry.attempts,
           retryExhausted: exhausted,
           retryEligibility: disposition.classification,
+          providerInitiator: {
+            actor: removalAfterAttempt?.actor ?? null,
+            enqueuer: removalAfterAttempt?.enqueuer ?? null,
+          },
           syncAfterReject: syncDecision.reason,
           ...(removalAfterAttempt?.evidence === undefined ? {} : { providerEvidence: removalAfterAttempt.evidence }),
           ...(exhausted || mode !== 'execute' ? {} : { retryAt }),

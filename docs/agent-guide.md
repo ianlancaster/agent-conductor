@@ -898,12 +898,15 @@ exact-head-attested queue submission uses an exact-head precondition; provider-a
 intentionally leave head acceptance to GitHub. Shepherd observes current queue membership and
 GitHub's latest removal reason on every owned-PR poll; a same-head eviction emits
 `merge-queue-evicted`. Provider-confirmed transient removals use a durable retry sequence bounded to
-five submissions. A `failed_checks` removal backed by a failing `merge_group` workflow creates a
-durable exact-head fence instead; missing or ambiguous merge-group attribution also fails closed.
-The event carries bounded merge-group run, failed-job/step, log-link, and queue-stack evidence when
-GitHub exposes it. A new head clears the fence; restart, same-head re-attestation, or a replacement
-claim generation does not. `none` and `exact-head-attestation` keep their existing initial admission
-semantics, and `provider-action-ready` still treats Add to merge queue as the initial boundary.
+five submissions. A provider-reported `manual` removal joins that retry path only when its actor is
+the canonical GitHub Actions identity; human, other, missing, and unknown actors stay fenced. A
+`failed_checks` removal backed by a failing `merge_group` workflow creates a durable exact-head
+fence instead; missing or ambiguous merge-group attribution also fails closed. The event carries
+bounded actor/enqueuer identity plus merge-group run, failed-job/step, log-link, and queue-stack
+evidence when GitHub exposes it. A new head clears the fence; restart, same-head re-attestation, or
+a replacement claim generation does not. `none` and `exact-head-attestation` keep their existing
+initial admission semantics, and `provider-action-ready` still treats Add to merge queue as the
+initial boundary.
 `UNKNOWN` mergeability waits;
 `CONFLICTING` emits a conflict fact and requires coordinator/operator resolution on each transition
 into that state. Shepherd never pretends to resolve textual conflicts.

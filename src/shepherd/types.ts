@@ -145,7 +145,15 @@ export interface MergeQueueRemoval {
   id: string;
   createdAt: string;
   reason: string | null;
+  actor?: ProviderIdentity;
+  enqueuer?: ProviderIdentity;
   evidence?: MergeQueueRemovalEvidence;
+}
+
+/** Bounded provider-authored identity attached to an immutable provider fact. */
+export interface ProviderIdentity {
+  login: string;
+  type?: string;
 }
 
 export type MergeQueueEvidenceStatus = 'complete' | 'unavailable' | 'ambiguous' | 'truncated';

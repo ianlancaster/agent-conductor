@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { parseShepherdConfig } from '../src/shepherd/config.js';
 import { AsyncProcessExecutor, GhGitHubProvider, type ProcessExecutor } from '../src/shepherd/github.js';
 
+const REAL_SUBPROCESS_TEST_TIMEOUT_MS = 30_000;
+
 class ScriptedExecutor implements ProcessExecutor {
   readonly calls: string[][] = [];
 
@@ -94,23 +96,33 @@ function checkSuite(
 }
 
 describe('async gh provider', () => {
-  it('retains JSON output from explicitly accepted nonzero command statuses', async () => {
-    const executor = new AsyncProcessExecutor();
-    const script = "process.stdout.write(JSON.stringify([{bucket:'pending'}])); process.exit(8)";
-    await expect(executor.run(process.execPath, ['-e', script], 2_000, [0, 8])).resolves.toBe('[{"bucket":"pending"}]');
-    await expect(executor.run(process.execPath, ['-e', script], 2_000)).rejects.toMatchObject({ code: 8 });
-  });
+  it(
+    'retains JSON output from explicitly accepted nonzero command statuses',
+    async () => {
+      const executor = new AsyncProcessExecutor();
+      const script = "process.stdout.write(JSON.stringify([{bucket:'pending'}])); process.exit(8)";
+      await expect(executor.run(process.execPath, ['-e', script], 2_000, [0, 8])).resolves.toBe(
+        '[{"bucket":"pending"}]',
+      );
+      await expect(executor.run(process.execPath, ['-e', script], 2_000)).rejects.toMatchObject({ code: 8 });
+    },
+    REAL_SUBPROCESS_TEST_TIMEOUT_MS,
+  );
 
-  it('enforces process timeouts and rejects malformed GitHub JSON', async () => {
-    const executor = new AsyncProcessExecutor();
-    await expect(executor.run(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], 100)).rejects.toBeDefined();
+  it(
+    'enforces process timeouts and rejects malformed GitHub JSON',
+    async () => {
+      const executor = new AsyncProcessExecutor();
+      await expect(executor.run(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], 100)).rejects.toBeDefined();
 
-    const malformed: ProcessExecutor = { run: async () => '{not-json' };
-    const config = parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } });
-    await expect(new GhGitHubProvider(config, malformed).discover('authored', 'octocat')).rejects.toThrow(
-      'Malformed JSON from gh',
-    );
-  });
+      const malformed: ProcessExecutor = { run: async () => '{not-json' };
+      const config = parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } });
+      await expect(new GhGitHubProvider(config, malformed).discover('authored', 'octocat')).rejects.toThrow(
+        'Malformed JSON from gh',
+      );
+    },
+    REAL_SUBPROCESS_TEST_TIMEOUT_MS,
+  );
 
   it('paginates beyond 50 results and adds scope to the query', async () => {
     const config = parseShepherdConfig({
@@ -510,6 +522,8 @@ describe('async gh provider', () => {
       run: async (_file, args) => {
         const query = args.find((arg) => arg.startsWith('query=')) ?? '';
         expect(query).toContain('REMOVED_FROM_MERGE_QUEUE_EVENT');
+        expect(query).toContain('actor { __typename login }');
+        expect(query).toContain('enqueuer { __typename login }');
         return JSON.stringify({
           data: {
             repository: {
@@ -525,6 +539,8 @@ describe('async gh provider', () => {
                       id: 'removed-1',
                       createdAt: '2026-08-25T22:05:19Z',
                       reason: 'failed_checks',
+                      actor: { __typename: 'Bot', login: 'github-actions' },
+                      enqueuer: { __typename: 'User', login: 'github-actions[bot]' },
                       beforeCommit: null,
                     },
                   ],
@@ -555,6 +571,8 @@ describe('async gh provider', () => {
         id: 'removed-1',
         createdAt: '2026-08-25T22:05:19Z',
         reason: 'failed_checks',
+        actor: { type: 'Bot', login: 'github-actions' },
+        enqueuer: { type: 'User', login: 'github-actions[bot]' },
         evidence: {
           status: 'unavailable',
           workflowRuns: [],
@@ -569,6 +587,54 @@ describe('async gh provider', () => {
         },
       },
     });
+  });
+
+  it('bounds removal identities and keeps them JSON-safe', async () => {
+    const executor: ProcessExecutor = {
+      run: async () =>
+        JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                id: 'PR_node',
+                headRefOid: 'a'.repeat(40),
+                autoMergeRequest: null,
+                mergeQueueEntry: null,
+                timelineItems: {
+                  nodes: [
+                    {
+                      id: 'removed-manual',
+                      createdAt: '2026-09-16T19:05:49Z',
+                      reason: 'manual',
+                      actor: {
+                        __typename: `Bot\u0000${'x'.repeat(150)}`,
+                        login: ` github-actions\u0000${'é'.repeat(100)} `,
+                      },
+                      enqueuer: { __typename: 'User', login: 'github-actions[bot]' },
+                      beforeCommit: null,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        }),
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' }, github: { mode: 'merge-queue' } }),
+      executor,
+    );
+
+    const removal = (await provider.getMergeAutomationState({ repo: 'acme/api', number: 7 })).latestQueueRemoval;
+    expect(removal).toMatchObject({
+      reason: 'manual',
+      enqueuer: { type: 'User', login: 'github-actions[bot]' },
+    });
+    expect(removal?.actor?.login).not.toContain('\u0000');
+    expect(removal?.actor?.type).not.toContain('\u0000');
+    expect(Buffer.byteLength(removal?.actor?.login ?? '', 'utf8')).toBeLessThanOrEqual(100);
+    expect(Buffer.byteLength(removal?.actor?.type ?? '', 'utf8')).toBeLessThanOrEqual(100);
+    expect(JSON.parse(JSON.stringify(removal)) as unknown).toEqual(removal);
   });
 
   it('enriches failed-check eviction with complete merge_group job and queue-stack evidence', async () => {

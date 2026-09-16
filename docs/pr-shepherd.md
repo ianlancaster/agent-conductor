@@ -175,10 +175,11 @@ In `merge-queue` mode Shepherd observes the current queue entry and latest GitHu
 every owned-PR poll. A ready PR with no active queue entry or persistent auto-merge is submitted
 with GitHub's exact-head precondition. While the entry exists, repeated polls are inert. If GitHub
 later removes the same head, Shepherd emits `merge-queue-evicted` with the provider reason and a
-retry classification. Only provider-confirmed transient reasons are retried. Retry delays increase
-from one minute to five minutes, fifteen minutes, and one hour; Shepherd stops after five queue
-submissions for one head and release-attestation cycle. Provider mutation failures are also parked
-after five attempts.
+retry classification. Only provider-confirmed transient reasons and `manual` removals whose actor
+is the canonical GitHub Actions identity are retried. Human, other, missing, or unknown manual
+actors remain fenced. Retry delays increase from one minute to five minutes, fifteen minutes, and
+one hour; Shepherd stops after five queue submissions for one head and release-attestation cycle.
+Provider mutation failures are also parked after five attempts.
 
 For `failed_checks`, the built-in adapter follows the removal event's `beforeCommit` to the exact
 merge-group commit, then reads its check suites and the linked workflow run's `event`. A
@@ -199,11 +200,19 @@ bounded errors. Queue-stack attribution is one of `branch-local`, `current-main-
 head, the merge-group commit, and an upstream queue parent when GitHub exposes a parseable
 `gh-readonly-queue` ref; it never substitutes the aggregate PR rollup.
 
+Every eviction also carries `providerInitiator.actor` and `providerInitiator.enqueuer`, each as a
+`{ login, type? }` identity bounded to 100 UTF-8 bytes per field, or `null` when GitHub does not expose it. The retry
+classification and these identities let a coordinator distinguish confirmed GitHub Actions
+recovery from a deliberate human removal or unavailable evidence. The enqueuer alone never proves
+who performed a manual removal.
+
 | Provider removal evidence                                                                       | Same-head behavior           |
 | ----------------------------------------------------------------------------------------------- | ---------------------------- |
 | `failed_checks` + `merge_group` workflow `FAILURE`                                              | Fence; no retry              |
 | `failed_checks` + only `CANCELLED`, `STALE`, `STARTUP_FAILURE`, or `TIMED_OUT` merge-group runs | Bounded retry                |
 | `checks_timed_out` or `stack_invalidated`                                                       | Bounded retry                |
+| `manual` + provider actor `github-actions` or `github-actions[bot]`                             | Bounded retry                |
+| `manual` + human, other, missing, or unknown actor                                              | Fence; no retry              |
 | Missing removal event, missing/contradictory merge-group provenance, unknown/null reason        | Fence as ambiguous; no retry |
 | Any other explicit non-transient reason                                                         | Fence; no retry              |
 

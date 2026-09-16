@@ -18,6 +18,7 @@ import type {
   PullRequestDetails,
   PullRequestRef,
   PullRequestSummary,
+  ProviderIdentity,
   RequestedReviewer,
   Review,
   ReviewThread,
@@ -182,6 +183,8 @@ interface RawQueueRemoval {
   id: string;
   createdAt: string;
   reason: string | null;
+  actor?: { login?: unknown; __typename?: unknown } | null;
+  enqueuer?: { login?: unknown; __typename?: unknown } | null;
   beforeCommit: { oid: string; parents: { nodes: { oid: string }[] } } | null;
 }
 
@@ -297,6 +300,7 @@ const SEARCH_RESULT_CAP = 1_000;
 const GRAPHQL_PAGE_SIZE = 100;
 const MERGE_QUEUE_EVIDENCE_LIMIT = 100;
 const MERGE_QUEUE_ERROR_LIMIT = 500;
+const PROVIDER_IDENTITY_LIMIT = 100;
 
 const REVIEW_THREADS_QUERY = `
 query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
@@ -420,6 +424,8 @@ query PullRequestMutationState($owner: String!, $name: String!, $number: Int!) {
             id
             createdAt
             reason
+            actor { __typename login }
+            enqueuer { __typename login }
             beforeCommit { oid parents(first: 1) { nodes { oid } } }
           }
         }
@@ -443,6 +449,8 @@ query ProviderReadyMutationState($owner: String!, $name: String!, $number: Int!)
             id
             createdAt
             reason
+            actor { __typename login }
+            enqueuer { __typename login }
             beforeCommit { oid parents(first: 1) { nodes { oid } } }
           }
         }
@@ -746,12 +754,18 @@ export class GhGitHubProvider implements GitHubProvider {
     headSha: string,
     removal: RawQueueRemoval,
   ): Promise<MergeQueueRemoval> {
+    const actor = providerIdentity(removal.actor);
+    const enqueuer = providerIdentity(removal.enqueuer);
+    const identity = {
+      ...(actor === undefined ? {} : { actor }),
+      ...(enqueuer === undefined ? {} : { enqueuer }),
+    };
     if (normalizeQueueRemovalReason(removal.reason) !== 'failed_checks') {
-      return { id: removal.id, createdAt: removal.createdAt, reason: removal.reason };
+      return { id: removal.id, createdAt: removal.createdAt, reason: removal.reason, ...identity };
     }
     const cached = this.removalEvidenceCache.get(removal.id);
     if (cached !== undefined)
-      return { id: removal.id, createdAt: removal.createdAt, reason: removal.reason, evidence: cached };
+      return { id: removal.id, createdAt: removal.createdAt, reason: removal.reason, ...identity, evidence: cached };
 
     let evidence: MergeQueueRemovalEvidence;
     if (removal.beforeCommit === null) {
@@ -776,7 +790,7 @@ export class GhGitHubProvider implements GitHubProvider {
       const oldest = this.removalEvidenceCache.keys().next().value;
       if (oldest !== undefined) this.removalEvidenceCache.delete(oldest);
     }
-    return { id: removal.id, createdAt: removal.createdAt, reason: removal.reason, evidence };
+    return { id: removal.id, createdAt: removal.createdAt, reason: removal.reason, ...identity, evidence };
   }
 
   private async mergeQueueRemovalEvidence(
@@ -1555,4 +1569,12 @@ function boundedProviderText(value: string, maxBytes: number): string {
     bytes += size;
   }
   return `${result}${suffix}`;
+}
+
+function providerIdentity(raw: RawQueueRemoval['actor']): ProviderIdentity | undefined {
+  if (raw === null || raw === undefined || typeof raw.login !== 'string') return undefined;
+  const login = boundedProviderText(raw.login, PROVIDER_IDENTITY_LIMIT);
+  if (login === '') return undefined;
+  const type = typeof raw.__typename === 'string' ? boundedProviderText(raw.__typename, PROVIDER_IDENTITY_LIMIT) : '';
+  return { login, ...(type === '' ? {} : { type }) };
 }

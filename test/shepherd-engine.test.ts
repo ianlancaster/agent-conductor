@@ -24,6 +24,8 @@ import type {
   TrackedPullRequestSelector,
 } from '../src/shepherd/types.js';
 
+const REAL_FILESYSTEM_TEST_TIMEOUT_MS = 30_000;
+
 class FakeGitHub implements GitHubProvider {
   readonly discoveries = new Map<DiscoveryKind, DiscoveryResult<PullRequestSummary>>();
   selectorDiscovery: DiscoveryResult<TrackedPullRequestCandidate> = { items: [], exhaustive: true };
@@ -211,6 +213,17 @@ function upstreamFailedMergeGroupRemoval(overrides: Partial<MergeQueueRemoval> =
         mergeGroupPrNumber: 6,
       },
     },
+    ...overrides,
+  };
+}
+
+function automatedManualRemoval(overrides: Partial<MergeQueueRemoval> = {}): MergeQueueRemoval {
+  return {
+    id: 'removed-by-actions',
+    createdAt: '2026-07-20T10:05:00Z',
+    reason: 'manual',
+    actor: { login: 'github-actions', type: 'Bot' },
+    enqueuer: { login: 'github-actions[bot]', type: 'User' },
     ...overrides,
   };
 }
@@ -3022,6 +3035,8 @@ describe('Shepherd engine', () => {
       reason: 'stack_invalidated',
       attempts: 1,
       retryExhausted: false,
+      retryEligibility: 'provider-confirmed-transient',
+      providerInitiator: { actor: null, enqueuer: null },
     });
 
     now = new Date('2026-07-20T10:06:00Z');
@@ -3030,6 +3045,103 @@ describe('Shepherd engine', () => {
       { type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha: 'head-a' },
       { type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha: 'head-a' },
     ]);
+    store.close();
+  });
+
+  it('retries a GitHub Actions manual removal only after ordinary release readiness returns', async () => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    const github = new FakeGitHub();
+    setDiscovery(github, 'authored', approvedPr());
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-exact-head') github.queued = true;
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute' } }),
+      github,
+      store,
+      () => now,
+    );
+
+    await engine.pollOnce();
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = automatedManualRemoval();
+    setDiscovery(github, 'authored', approvedPr({ mergeable: 'UNKNOWN' }));
+    now = new Date('2026-07-20T10:05:00Z');
+    await engine.pollOnce();
+    expect(github.mutations).toHaveLength(1);
+    expect(store.listEvents().some((event) => event.type === 'merge-queue-evicted')).toBe(false);
+
+    setDiscovery(github, 'authored', approvedPr());
+    now = new Date('2026-07-20T10:06:00Z');
+    await engine.pollOnce();
+    expect(store.listEvents().find((event) => event.type === 'merge-queue-evicted')?.source).toMatchObject({
+      reason: 'manual',
+      retryEligibility: 'provider-confirmed-automation',
+      retryExhausted: false,
+      providerInitiator: {
+        actor: { login: 'github-actions', type: 'Bot' },
+        enqueuer: { login: 'github-actions[bot]', type: 'User' },
+      },
+    });
+    expect(github.mutations).toEqual([
+      { type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha: 'head-a' },
+      { type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha: 'head-a' },
+    ]);
+    store.close();
+  });
+
+  it.each([
+    { caseName: 'human actor', actor: { login: 'octocat', type: 'User' } },
+    { caseName: 'unknown automation actor', actor: { login: 'deployment-bot', type: 'Bot' } },
+    { caseName: 'missing actor', actor: undefined },
+  ])('fences a manual removal with $caseName', async ({ actor, caseName }) => {
+    let now = new Date('2026-07-20T10:00:00Z');
+    const github = new FakeGitHub();
+    setDiscovery(github, 'authored', approvedPr());
+    github.mutationHandler = async (mutation) => {
+      github.mutations.push(mutation);
+      if (mutation.type === 'enqueue-exact-head') github.queued = true;
+    };
+    const store = new SqliteShepherdStore(':memory:');
+    const engine = new ShepherdEngine(
+      config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute' } }),
+      github,
+      store,
+      () => now,
+    );
+
+    await engine.pollOnce();
+    await engine.pollOnce();
+    github.queued = false;
+    github.latestQueueRemoval = {
+      id: `removed-${caseName.replaceAll(' ', '-')}`,
+      createdAt: '2026-07-20T10:05:00Z',
+      reason: 'manual',
+      ...(actor === undefined ? {} : { actor }),
+      enqueuer: { login: 'github-actions[bot]', type: 'User' },
+    };
+    now = new Date('2026-07-20T10:05:00Z');
+    await engine.pollOnce();
+    now = new Date('2026-07-20T11:05:00Z');
+    await engine.pollOnce();
+
+    expect(github.mutations).toHaveLength(1);
+    expect(store.listEvents().find((event) => event.type === 'merge-queue-evicted')?.source).toMatchObject({
+      reason: 'manual',
+      retryEligibility: 'non-retryable-removal-fenced',
+      retryExhausted: true,
+      providerInitiator: {
+        actor: actor ?? null,
+        enqueuer: { login: 'github-actions[bot]', type: 'User' },
+      },
+    });
+    expect(
+      store.getEntity<{ mergeQueueRetry?: { fence?: { classification: string } } }>('authored:acme/api#7')?.value
+        .mergeQueueRetry?.fence,
+    ).toMatchObject({ classification: 'non-retryable-removal' });
     store.close();
   });
 
@@ -4135,52 +4247,103 @@ describe('Shepherd engine', () => {
     store.close();
   });
 
-  it('preserves a same-head failed-check fence across restart', async () => {
-    let now = new Date('2026-07-20T10:00:00Z');
-    const github = new FakeGitHub();
-    setDiscovery(github, 'authored', approvedPr());
-    github.mutationHandler = async (mutation) => {
-      github.mutations.push(mutation);
-      if (mutation.type === 'enqueue-exact-head') github.queued = true;
-    };
-    const dir = mkdtempSync(join(tmpdir(), 'shepherd-queue-retry-'));
-    const path = join(dir, 'shepherd.db');
-    const resolved = config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute' } });
-    try {
-      const firstStore = new SqliteShepherdStore(path);
-      const first = new ShepherdEngine(resolved, github, firstStore, () => now);
-      await first.pollOnce();
-      await first.pollOnce();
-      github.queued = false;
-      github.latestQueueRemoval = failedMergeGroupRemoval({ id: 'removed-restart', createdAt: now.toISOString() });
-      await first.pollOnce();
-      firstStore.close();
+  it(
+    'preserves a same-head failed-check fence across restart',
+    async () => {
+      let now = new Date('2026-07-20T10:00:00Z');
+      const github = new FakeGitHub();
+      setDiscovery(github, 'authored', approvedPr());
+      github.mutationHandler = async (mutation) => {
+        github.mutations.push(mutation);
+        if (mutation.type === 'enqueue-exact-head') github.queued = true;
+      };
+      const dir = mkdtempSync(join(tmpdir(), 'shepherd-queue-retry-'));
+      const path = join(dir, 'shepherd.db');
+      const resolved = config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute' } });
+      try {
+        const firstStore = new SqliteShepherdStore(path);
+        const first = new ShepherdEngine(resolved, github, firstStore, () => now);
+        await first.pollOnce();
+        await first.pollOnce();
+        github.queued = false;
+        github.latestQueueRemoval = failedMergeGroupRemoval({ id: 'removed-restart', createdAt: now.toISOString() });
+        await first.pollOnce();
+        firstStore.close();
 
-      const reopened = new SqliteShepherdStore(path);
-      const restarted = new ShepherdEngine(resolved, github, reopened, () => now);
-      now = new Date('2026-07-20T10:00:30Z');
-      expect(await restarted.pollOnce()).toMatchObject({ mutations: 0 });
-      now = new Date('2026-07-20T11:00:00Z');
-      expect(await restarted.pollOnce()).toMatchObject({ mutations: 0 });
-      expect(github.mutations).toHaveLength(1);
-      expect(
-        reopened.getEntity<{ mergeQueueRetry?: { fence?: { classification: string } } }>('authored:acme/api#7')?.value
-          .mergeQueueRetry?.fence,
-      ).toMatchObject({ classification: 'code-failure' });
-      const persistedEviction = reopened.listEvents().find((event) => event.type === 'merge-queue-evicted');
-      expect(persistedEviction?.source).toMatchObject({
-        providerEvidence: {
-          mergeGroupSha: '87743c6333',
-        },
-      });
-      const persistedEvidence = persistedEviction?.source.providerEvidence as MergeQueueRemovalEvidence | undefined;
-      expect(persistedEvidence?.workflowRuns[0]?.id).toBe('33448057090');
-      expect(persistedEvidence?.workflowRuns[0]?.failedJobs.map((job) => job.name)).toContain('lint');
-      reopened.close();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+        const reopened = new SqliteShepherdStore(path);
+        const restarted = new ShepherdEngine(resolved, github, reopened, () => now);
+        now = new Date('2026-07-20T10:00:30Z');
+        expect(await restarted.pollOnce()).toMatchObject({ mutations: 0 });
+        now = new Date('2026-07-20T11:00:00Z');
+        expect(await restarted.pollOnce()).toMatchObject({ mutations: 0 });
+        expect(github.mutations).toHaveLength(1);
+        expect(
+          reopened.getEntity<{ mergeQueueRetry?: { fence?: { classification: string } } }>('authored:acme/api#7')?.value
+            .mergeQueueRetry?.fence,
+        ).toMatchObject({ classification: 'code-failure' });
+        const persistedEviction = reopened.listEvents().find((event) => event.type === 'merge-queue-evicted');
+        expect(persistedEviction?.source).toMatchObject({
+          providerEvidence: {
+            mergeGroupSha: '87743c6333',
+          },
+        });
+        const persistedEvidence = persistedEviction?.source.providerEvidence as MergeQueueRemovalEvidence | undefined;
+        expect(persistedEvidence?.workflowRuns[0]?.id).toBe('33448057090');
+        expect(persistedEvidence?.workflowRuns[0]?.failedJobs.map((job) => job.name)).toContain('lint');
+        reopened.close();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    REAL_FILESYSTEM_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'preserves an automated-manual retry and its provider identity across restart',
+    async () => {
+      let now = new Date('2026-07-20T10:00:00Z');
+      const github = new FakeGitHub();
+      setDiscovery(github, 'authored', approvedPr());
+      github.mutationHandler = async (mutation) => {
+        github.mutations.push(mutation);
+        if (mutation.type === 'enqueue-exact-head') github.queued = true;
+      };
+      const dir = mkdtempSync(join(tmpdir(), 'shepherd-automated-manual-retry-'));
+      const path = join(dir, 'shepherd.db');
+      const resolved = config({ github: { mode: 'merge-queue' }, automation: { autoMerge: 'execute' } });
+      try {
+        const firstStore = new SqliteShepherdStore(path);
+        const first = new ShepherdEngine(resolved, github, firstStore, () => now);
+        await first.pollOnce();
+        await first.pollOnce();
+        github.queued = false;
+        github.latestQueueRemoval = automatedManualRemoval({ id: 'removed-before-restart' });
+        now = new Date('2026-07-20T10:05:00Z');
+        await first.pollOnce();
+        firstStore.close();
+
+        const reopened = new SqliteShepherdStore(path);
+        const restarted = new ShepherdEngine(resolved, github, reopened, () => now);
+        now = new Date('2026-07-20T10:06:00Z');
+        expect(await restarted.pollOnce()).toMatchObject({ mutations: 1 });
+        expect(github.mutations).toEqual([
+          { type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha: 'head-a' },
+          { type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha: 'head-a' },
+        ]);
+        expect(reopened.listEvents().find((event) => event.type === 'merge-queue-evicted')?.source).toMatchObject({
+          retryEligibility: 'provider-confirmed-automation',
+          providerInitiator: {
+            actor: { login: 'github-actions', type: 'Bot' },
+            enqueuer: { login: 'github-actions[bot]', type: 'User' },
+          },
+        });
+        reopened.close();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    REAL_FILESYSTEM_TEST_TIMEOUT_MS,
+  );
 
   it('reconciles a recent pre-option fence after the option is enabled', async () => {
     let now = new Date('2026-07-20T10:00:00Z');

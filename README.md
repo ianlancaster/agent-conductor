@@ -452,7 +452,8 @@ Case-insensitive review-inbox head patterns can exclude assigned-review PRs befo
 or delivery without affecting ownership through another profile's authored or tracked lane.
 Merge-queue mode observes queue membership, reports GitHub eviction reasons with bounded
 merge-group evidence, durably fences unchanged heads after provider-attributed code failures, and
-keeps bounded exact-head retries for provider-confirmed transient removals.
+keeps bounded exact-head retries for provider-confirmed transient removals and manual removals
+whose provider actor is GitHub Actions. Human and unverified manual removals remain fenced.
 An optional disabled-by-default `automation.syncAfterReject` recovery conditionally updates one
 recent, unchanged, conclusively attributed rejected head, then waits for exact-head PR readiness
 before normal queue re-entry. Repositories may additionally configure one head-bound PR comment
