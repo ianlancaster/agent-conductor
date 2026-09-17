@@ -128,6 +128,11 @@ describe('Messaging delivery receipts', () => {
     const sending = firstMessaging.sendToSession('alpha', 'beta', 'ambiguous once', 'stable-unknown');
     await writeStarted;
     expect(store.getMessage(1)?.status).toBe('uncertain');
+    expect(firstQueue.isDeliveryActive(1)).toBe(true);
+    expect(() =>
+      firstMessaging.reconcileUncertainMessage(1, 'abandoned', 'console:operator', 'attempt is still active'),
+    ).toThrow('retry reconciliation after it settles');
+    expect(store.getMessageReconciliation(1)).toBeUndefined();
     const concurrentDuplicate = firstMessaging.sendToSession(
       'alpha',
       'beta',
@@ -167,7 +172,102 @@ describe('Messaging delivery receipts', () => {
 
     expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] ambiguous once']);
     expect(uncertain).toEqual(['beta:1:submission-unconfirmed']);
+    expect(firstQueue.isDeliveryActive(1)).toBe(false);
+    expect(
+      restarted.reconcileUncertainMessage(1, 'abandoned', 'console:operator', 'settled draft was discarded'),
+    ).toMatchObject({ status: 'uncertain', reconciliation: { outcome: 'abandoned' } });
   }, 30_000);
+
+  it('refuses reconciliation while an immediate attempt can still settle as delivered', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const runtime = new FakeRuntime();
+    let releaseSubmit: (() => void) | undefined;
+    let markWriteStarted: (() => void) | undefined;
+    const writeStarted = new Promise<void>((resolve) => {
+      markWriteStarted = resolve;
+    });
+    const originalSubmit = backend.submitIfUnchanged.bind(backend);
+    backend.submitIfUnchanged = async (...args) => {
+      const accepted = await originalSubmit(...args);
+      markWriteStarted?.();
+      await new Promise<void>((resolve) => {
+        releaseSubmit = resolve;
+      });
+      return accepted;
+    };
+    const queue = makeQueue(runtime, pane.id);
+    const messaging = makeMessaging(queue);
+
+    const sending = messaging.sendToSession('alpha', 'beta', 'confirm after hold');
+    await writeStarted;
+    expect(store.getMessage(1)?.status).toBe('uncertain');
+    expect(queue.isDeliveryActive(1)).toBe(true);
+    expect(() =>
+      messaging.reconcileUncertainMessage(1, 'abandoned', 'console:operator', 'premature observation'),
+    ).toThrow('retry reconciliation after it settles');
+    expect(store.getMessageReconciliation(1)).toBeUndefined();
+
+    releaseSubmit?.();
+    await expect(sending).resolves.toMatchObject({ messageId: 1, status: 'delivered' });
+    expect(queue.isDeliveryActive(1)).toBe(false);
+    expect(store.getMessage(1)?.status).toBe('delivered');
+    expect(store.getMessageReconciliation(1)).toBeUndefined();
+    expect(() => messaging.reconcileUncertainMessage(1, 'abandoned', 'console:operator', 'too late')).toThrow(
+      'is delivered; only an uncertain receipt can be reconciled',
+    );
+  });
+
+  it('refuses reconciliation during a timer-driven attempt that settles back to pending', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const runtime = new FakeRuntime();
+    runtime.inputState = 'draft';
+    let releaseSubmit: (() => void) | undefined;
+    let markWriteStarted: (() => void) | undefined;
+    const writeStarted = new Promise<void>((resolve) => {
+      markWriteStarted = resolve;
+    });
+    backend.submitIfUnchanged = async () => {
+      markWriteStarted?.();
+      await new Promise<void>((resolve) => {
+        releaseSubmit = resolve;
+      });
+      return false;
+    };
+    const queue = makeQueue(runtime, pane.id, { queueDrainMs: 20, queueMaxAgeMs: 60_000 });
+    const messaging = makeMessaging(queue);
+
+    await expect(messaging.sendToSession('alpha', 'beta', 'compare will reject')).resolves.toMatchObject({
+      messageId: 1,
+      status: 'queued',
+    });
+    runtime.inputState = 'clear';
+    await writeStarted;
+    expect(store.getMessage(1)?.status).toBe('uncertain');
+    expect(queue.isDeliveryActive(1)).toBe(true);
+    expect(() =>
+      messaging.reconcileUncertainMessage(1, 'manually-submitted', 'console:operator', 'premature observation'),
+    ).toThrow('retry reconciliation after it settles');
+    expect(store.getMessageReconciliation(1)).toBeUndefined();
+
+    releaseSubmit?.();
+    await vi.waitFor(
+      () => {
+        expect(queue.isDeliveryActive(1)).toBe(false);
+        expect(store.getMessage(1)?.status).toBe('pending');
+      },
+      { timeout: 1_000, interval: 1 },
+    );
+    queue.stop();
+    expect(store.getMessageReconciliation(1)).toBeUndefined();
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    expect(() =>
+      messaging.reconcileUncertainMessage(1, 'manually-submitted', 'console:operator', 'compare rejected'),
+    ).toThrow('is pending; only an uncertain receipt can be reconciled');
+  });
 
   it('retains a failed owner notice until one surface accepts it, then never accepts it twice', async () => {
     const row = store.insertDirectMessage('alpha', 'beta', 'inspect me', 'notice-once').row;
@@ -825,13 +925,17 @@ describe('Messaging delivery receipts', () => {
     });
   });
 
-  function makeQueue(runtime: FakeRuntime, paneId: string): DeliveryQueue {
+  function makeQueue(
+    runtime: FakeRuntime,
+    paneId: string,
+    config: { queueDrainMs: number; queueMaxAgeMs: number } = CONFIG,
+  ): DeliveryQueue {
     const queue = new DeliveryQueue({
       backend,
       runtimeFor: () => runtime,
       getPane: (session) => (session === 'beta' ? { backend: 'fake', id: paneId } : undefined),
       isPaused: (session) => states.isPaused(session),
-      config: CONFIG,
+      config,
     });
     queues.push(queue);
     return queue;

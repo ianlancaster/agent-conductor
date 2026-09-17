@@ -334,7 +334,9 @@ Direct-message receipts are observable:
   `/reconcile-message <message-id> <manually-submitted|abandoned> <evidence>`. The first outcome,
   actor, timestamp, and evidence are durable; repeating that outcome is idempotent and a conflicting
   outcome is refused. Reconciliation preserves the `uncertain` transport receipt and makes no
-  terminal call.
+  terminal call. If the original terminal attempt is still active, reconciliation is refused until
+  that attempt settles; a confirmed delivery or compare rejection cannot coexist with manual
+  reconciliation evidence.
 - Reusing a sender-scoped `idempotencyKey` returns the original receipt.
 - Operator-originated receipts may include a `notice`; operator adapters render it after the
   acknowledgement, and Conductor prepends the same notice to the protected recipient envelope.
