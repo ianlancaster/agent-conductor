@@ -703,6 +703,13 @@ Behavior:
 - Legacy envelopes without `scheduled_at` and `timezone` remain recognizable cron input, but their
   source time is unavailable. Preserve the raw envelope or transport identity and fail closed when
   exact source time is required; never derive a nominal slot from handling, event, or receipt time.
+- Before entering per-session serialization, each occurrence is durably admitted with its exact
+  identity, rendered envelope, timezone, and wake/fresh-context policy. A process restart replays
+  only rows that remain `admitted`.
+- Immediately before terminal submission, the occurrence becomes `dispatching`. A delivery that
+  proves it wrote nothing may restore `admitted`; an interrupted or unconfirmed submission becomes
+  non-replayable `unknown` and emits an `uncertain` schedule outcome. This fail-closed boundary
+  avoids automatically duplicating input whose effect cannot be determined.
 - An active session receives the signed prompt through normal protected delivery.
 - An inactive session is skipped unless `wakeIfStopped: true`. This includes targets whose runtime
   exited or whose pane was closed; reconciliation checks process state before firing.

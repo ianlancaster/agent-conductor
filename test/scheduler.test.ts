@@ -4,9 +4,16 @@ import type { z } from 'zod';
 import type { SessionConfig } from '../src/config/schema.js';
 import { Scheduler } from '../src/core/scheduler.js';
 import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
+import type { DeliveryOptions, DeliveryResult } from '../src/core/delivery.js';
 
 function sessionWith(schedules: z.input<typeof sessionConfigSchema>['schedules']): SessionConfig {
   return sessionConfigSchema.parse({ codename: 'alpha', repo: '/tmp/alpha', schedules });
+}
+
+function confirmDelivery(options: Pick<DeliveryOptions, 'onSubmissionStarted' | 'onDelivered'>): DeliveryResult {
+  if (options.onSubmissionStarted?.() === false) return 'uncertain';
+  options.onDelivered?.();
+  return 'delivered';
 }
 
 let scheduler: Scheduler;
@@ -46,9 +53,9 @@ beforeEach(() => {
       active = false;
       return 'stopped';
     },
-    deliver: async (session, text) => {
+    deliver: async (session, text, options) => {
       delivered.push({ session, text });
-      return 'delivered';
+      return confirmDelivery(options);
     },
     events,
   });
@@ -109,6 +116,29 @@ describe('Scheduler', () => {
     expect(started).toEqual([]);
     expect(delivered).toEqual([]);
     expect(events.events[0]).toMatchObject({ outcome: 'deferred-paused' });
+  });
+
+  it('honors a pause boundary that closes after the final state check', async () => {
+    scheduler = new Scheduler({
+      sessions: () => sessions,
+      isActive: () => false,
+      isPaused: () => false,
+      startSession: async (session, opts) => {
+        started.push({ session, prompt: opts.prompt });
+        return 'started';
+      },
+      stopSession: async () => 'stopped',
+      acquireSubmissionLease: () => undefined,
+      deliver: async () => 'no-pane',
+      events,
+    });
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'held', wakeIfStopped: true }]));
+
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+
+    expect(started).toEqual([]);
+    expect(events.events).toContainEqual(expect.objectContaining({ outcome: 'deferred-paused' }));
   });
 
   it('honors explicit false after reloading an opted-in schedule', async () => {
@@ -235,8 +265,9 @@ describe('Scheduler', () => {
         return 'started';
       },
       stopSession: async () => 'stopped',
-      deliver: async (session, text) => {
+      deliver: async (session, text, options) => {
         delivered.push({ session, text });
+        return confirmDelivery(options);
       },
       events,
     });
@@ -346,8 +377,9 @@ describe('Scheduler', () => {
       isPaused: () => false,
       startSession: async () => 'started',
       stopSession: async () => 'stopped',
-      deliver: async (session, text) => {
+      deliver: async (session, text, options) => {
         delivered.push({ session, text });
+        return confirmDelivery(options);
       },
       events,
     });
@@ -388,8 +420,9 @@ describe('Scheduler', () => {
         isPaused: () => false,
         startSession: async () => 'started',
         stopSession: async () => 'stopped',
-        deliver: async (session, text) => {
+        deliver: async (session, text, options) => {
           delivered.push({ session, text });
+          return confirmDelivery(options);
         },
         events,
       });
@@ -422,8 +455,9 @@ describe('Scheduler', () => {
         isPaused: () => false,
         startSession: async () => 'started',
         stopSession: async () => 'stopped',
-        deliver: async (session, text) => {
+        deliver: async (session, text, options) => {
           delivered.push({ session, text });
+          return confirmDelivery(options);
         },
         events,
       });
@@ -457,8 +491,9 @@ describe('Scheduler', () => {
         return 'started';
       },
       stopSession: async () => 'stopped',
-      deliver: async (session, text) => {
+      deliver: async (session, text, options) => {
         delivered.push({ session, text });
+        return confirmDelivery(options);
       },
       events,
     });
@@ -473,7 +508,7 @@ describe('Scheduler', () => {
     expect(delivered).toEqual([]);
   });
 
-  it('emits a mechanical failed outcome without exposing the error text', async () => {
+  it('quarantines a thrown lifecycle submission as uncertain without exposing the error text', async () => {
     scheduler = new Scheduler({
       sessions: () => sessions,
       isActive: () => false,
@@ -482,7 +517,7 @@ describe('Scheduler', () => {
         throw new Error('secret provider detail');
       },
       stopSession: async () => 'stopped',
-      deliver: async () => undefined,
+      deliver: async () => 'no-pane',
       events,
     });
     sessions.set(
@@ -505,7 +540,7 @@ describe('Scheduler', () => {
       session: 'alpha',
       label: 'safe label',
       ...FIRST_SOURCE,
-      outcome: 'failed',
+      outcome: 'uncertain',
     });
     expect(JSON.stringify(events.events)).not.toContain('secret provider detail');
   });

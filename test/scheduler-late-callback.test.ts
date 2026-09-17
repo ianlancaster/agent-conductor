@@ -60,7 +60,12 @@ describe('Scheduler delayed timer callback', () => {
       isPaused: () => false,
       startSession: async () => 'started',
       stopSession: async () => 'stopped',
-      deliver: async (_session, text) => void delivered.push(text),
+      deliver: async (_session, text, options) => {
+        delivered.push(text);
+        if (options.onSubmissionStarted?.() === false) return 'uncertain';
+        options.onDelivered?.();
+        return 'delivered';
+      },
     });
     scheduler.rebuild();
     const selectedAt = selectedTargets[0];

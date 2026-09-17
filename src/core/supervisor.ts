@@ -53,12 +53,12 @@ import { IntegrationManager } from './integration-manager.js';
 import { SessionStatusAttestor } from './attestation.js';
 import { FederationRegistry } from '../federation/registry.js';
 import { FederationRouter } from '../federation/router.js';
+import { Scheduler } from './scheduler.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 const SENTINEL_WORKSPACE_KEY = 'sentinel.codename';
 const FLEET_WATCH_ENABLED_WORKSPACE_KEY = 'sentinel.fleetWatchEnabled';
 const LEGACY_FLEET_WATCHES_WORKSPACE_KEY = 'sentinel.fleetWatches';
-import { Scheduler } from './scheduler.js';
 
 export interface SupervisorStartOptions {
   startAll?: boolean;
@@ -552,7 +552,9 @@ export class Supervisor {
       isPaused: (session) => this.states.isPaused(session),
       startSession: (session, opts) => this.lifecycle.start(session, opts),
       stopSession: (session) => this.lifecycle.stop(session),
-      deliver: (session, text) => this.delivery.deliverOrQueue(session, text, { pausePolicy: 'hold' }),
+      acquireSubmissionLease: (session) => this.delivery.acquireSubmissionLease(session, 'hold'),
+      deliver: (session, text, options) => this.delivery.deliverOrQueue(session, text, options),
+      occurrences: this.store,
       events: this.eventBus,
     });
 

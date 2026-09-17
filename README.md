@@ -338,7 +338,10 @@ can also define Croner-compatible `schedules`; inactive sessions are skipped by 
 Every occurrence carries a
 `[Cron name="..." period="..." scheduled_at="..." timezone="..."]` signature so agents can
 distinguish recurring automation from direct operator input and retain its nominal source time
-across callback and delivery delays. Give every schedule a descriptive `label`;
+across callback and delivery delays. Conductor durably admits that complete signed occurrence
+before per-session queuing, replays only submissions that never crossed the terminal-effect
+boundary, and quarantines an interrupted or unconfirmed submission instead of risking duplicate
+input. Give every schedule a descriptive `label`;
 unlabeled legacy entries receive a positional `schedule-N` name.
 Only explicit `wakeIfStopped: true` allows a cron to start a stopped target; agents need the
 user's explicit authorization to enable that behavior. This safe default also applies to existing

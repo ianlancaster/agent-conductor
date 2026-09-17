@@ -97,7 +97,13 @@ export type ConductorEvent = ConductorEventEnvelope &
         /** IANA timezone in which the cron expression selected scheduledAt. */
         readonly timezone: string;
         readonly outcome:
-          'fired' | 'fired-fresh' | 'deferred-paused' | 'skipped-stopped' | 'skipped-cancelled' | 'failed';
+          | 'fired'
+          | 'fired-fresh'
+          | 'deferred-paused'
+          | 'skipped-stopped'
+          | 'skipped-cancelled'
+          | 'failed'
+          | 'uncertain';
       }
     | {
         readonly type: 'operator.request.created';

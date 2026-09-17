@@ -3,6 +3,13 @@ import type { RuntimeName } from '../config/schema.js';
 import type { Activity } from '../core/types.js';
 import type { ConductorEvent } from '../events/types.js';
 import type { RunbookSource } from '../runbooks/types.js';
+import type {
+  ScheduleOccurrenceAdmission,
+  ScheduleOccurrenceInsertResult,
+  ScheduleOccurrenceLedger,
+  ScheduleOccurrenceOutcome,
+  ScheduleOccurrenceRow,
+} from '../core/schedule-occurrences.js';
 import { applyMigrations, openSqliteDatabase, openSqliteDatabaseReadOnly, withTransaction } from './sqlite.js';
 import type { SqliteMigration } from './sqlite.js';
 
@@ -123,6 +130,24 @@ export interface NewRunbookAdoption {
   source: RunbookSource;
   topic: string;
   sessionRoles: readonly RunbookAdoptionSessionRole[];
+}
+
+interface ScheduleOccurrenceDbRow {
+  id: string;
+  session: string;
+  schedule_index: number;
+  label: string;
+  period: string;
+  scheduled_at: string;
+  timezone: string;
+  envelope: string;
+  wake_if_stopped: number;
+  fresh_context: number;
+  state: ScheduleOccurrenceRow['state'];
+  outcome: ScheduleOccurrenceOutcome | null;
+  admitted_at: string;
+  dispatch_started_at: string | null;
+  settled_at: string | null;
 }
 
 function normalizedActivity(value: string): Activity {
@@ -355,9 +380,36 @@ const MIGRATIONS: SqliteMigration[] = [
       )
     `);
   },
+  (db) => {
+    // Counter-rewind repair tests model beta databases whose schema can be
+    // ahead of user_version, so this append-only migration is presence-safe.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS schedule_occurrences (
+        id TEXT PRIMARY KEY,
+        session TEXT NOT NULL,
+        schedule_index INTEGER NOT NULL,
+        label TEXT NOT NULL,
+        period TEXT NOT NULL,
+        scheduled_at TEXT NOT NULL,
+        timezone TEXT NOT NULL,
+        envelope TEXT NOT NULL,
+        wake_if_stopped INTEGER NOT NULL CHECK (wake_if_stopped IN (0, 1)),
+        fresh_context INTEGER NOT NULL CHECK (fresh_context IN (0, 1)),
+        state TEXT NOT NULL DEFAULT 'admitted'
+          CHECK (state IN ('admitted', 'dispatching', 'settled', 'unknown')),
+        outcome TEXT CHECK (outcome IS NULL OR outcome IN
+          ('fired', 'fired-fresh', 'deferred-paused', 'skipped-stopped', 'skipped-cancelled', 'failed')),
+        admitted_at TEXT NOT NULL,
+        dispatch_started_at TEXT,
+        settled_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_schedule_occurrences_recovery
+        ON schedule_occurrences(state, admitted_at, id);
+    `);
+  },
 ];
 
-export class Store {
+export class Store implements ScheduleOccurrenceLedger {
   private readonly db: DatabaseSync;
 
   constructor(dbPath: string) {
@@ -372,6 +424,144 @@ export class Store {
 
   close(): void {
     this.db.close();
+  }
+
+  // ── scheduled occurrences ────────────────────────────────────────────────
+
+  admit(admission: ScheduleOccurrenceAdmission): ScheduleOccurrenceInsertResult {
+    const admittedAt = new Date().toISOString();
+    const inserted = this.db
+      .prepare(
+        'INSERT OR IGNORE INTO schedule_occurrences ' +
+          '(id, session, schedule_index, label, period, scheduled_at, timezone, envelope, ' +
+          'wake_if_stopped, fresh_context, admitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        admission.id,
+        admission.session,
+        admission.scheduleIndex,
+        admission.label,
+        admission.period,
+        admission.scheduledAt,
+        admission.timezone,
+        admission.envelope,
+        admission.wakeIfStopped ? 1 : 0,
+        admission.freshContext ? 1 : 0,
+        admittedAt,
+      );
+    const row = this.getScheduleOccurrence(admission.id);
+    if (row === undefined) throw new Error(`Schedule occurrence '${admission.id}' was not persisted.`);
+    if (!this.sameScheduleAdmission(row, admission)) {
+      throw new Error(`Schedule occurrence identity collision for '${admission.id}'.`);
+    }
+    return { row, deduplicated: inserted.changes === 0 };
+  }
+
+  getScheduleOccurrence(id: string): ScheduleOccurrenceRow | undefined {
+    const row = this.db.prepare('SELECT * FROM schedule_occurrences WHERE id = ?').get(id) as
+      ScheduleOccurrenceDbRow | undefined;
+    return row === undefined ? undefined : this.scheduleOccurrenceRow(row);
+  }
+
+  recoverAdmitted(): ScheduleOccurrenceRow[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM schedule_occurrences WHERE state = 'admitted' ORDER BY admitted_at, id")
+        .all() as unknown as ScheduleOccurrenceDbRow[]
+    ).map((row) => this.scheduleOccurrenceRow(row));
+  }
+
+  markDispatching(id: string): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE schedule_occurrences SET state = 'dispatching', dispatch_started_at = ? " +
+            "WHERE id = ? AND state = 'admitted'",
+        )
+        .run(new Date().toISOString(), id).changes === 1
+    );
+  }
+
+  restoreAdmitted(id: string): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE schedule_occurrences SET state = 'admitted', dispatch_started_at = NULL " +
+            "WHERE id = ? AND state = 'dispatching'",
+        )
+        .run(id).changes === 1
+    );
+  }
+
+  settle(id: string, from: 'admitted' | 'dispatching', outcome: ScheduleOccurrenceOutcome): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE schedule_occurrences SET state = 'settled', outcome = ?, settled_at = ? " +
+            'WHERE id = ? AND state = ?',
+        )
+        .run(outcome, new Date().toISOString(), id, from).changes === 1
+    );
+  }
+
+  markUnknown(id: string): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE schedule_occurrences SET state = 'unknown', settled_at = ? " +
+            "WHERE id = ? AND state = 'dispatching'",
+        )
+        .run(new Date().toISOString(), id).changes === 1
+    );
+  }
+
+  quarantineInterruptedDispatches(): ScheduleOccurrenceRow[] {
+    return withTransaction(this.db, () => {
+      const rows = (
+        this.db
+          .prepare("SELECT * FROM schedule_occurrences WHERE state = 'dispatching' ORDER BY admitted_at, id")
+          .all() as unknown as ScheduleOccurrenceDbRow[]
+      ).map((row) => this.scheduleOccurrenceRow(row));
+      const settledAt = new Date().toISOString();
+      this.db
+        .prepare("UPDATE schedule_occurrences SET state = 'unknown', settled_at = ? WHERE state = 'dispatching'")
+        .run(settledAt);
+      return rows.map((row) => ({ ...row, state: 'unknown', settledAt }));
+    });
+  }
+
+  private sameScheduleAdmission(row: ScheduleOccurrenceRow, admission: ScheduleOccurrenceAdmission): boolean {
+    return (
+      row.session === admission.session &&
+      row.scheduleIndex === admission.scheduleIndex &&
+      row.label === admission.label &&
+      row.period === admission.period &&
+      row.scheduledAt === admission.scheduledAt &&
+      row.timezone === admission.timezone &&
+      row.envelope === admission.envelope &&
+      row.wakeIfStopped === admission.wakeIfStopped &&
+      row.freshContext === admission.freshContext
+    );
+  }
+
+  private scheduleOccurrenceRow(row: ScheduleOccurrenceDbRow): ScheduleOccurrenceRow {
+    return {
+      id: row.id,
+      session: row.session,
+      scheduleIndex: row.schedule_index,
+      label: row.label,
+      period: row.period,
+      scheduledAt: row.scheduled_at,
+      timezone: row.timezone,
+      envelope: row.envelope,
+      wakeIfStopped: row.wake_if_stopped === 1,
+      freshContext: row.fresh_context === 1,
+      state: row.state,
+      outcome: row.outcome,
+      admittedAt: row.admitted_at,
+      dispatchStartedAt: row.dispatch_started_at,
+      settledAt: row.settled_at,
+    };
   }
 
   // ── runs ──────────────────────────────────────────────────────────────────
