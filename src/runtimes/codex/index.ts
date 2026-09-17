@@ -62,12 +62,12 @@ const CODEX_HOME_DIR = 'codex-home';
 
 /**
  * TUI chrome patterns (Codex CLI, ratatui-based). The composer prompt row
- * starts with `›`; below it Codex renders shortcut hints (`⏎ send`,
+ * starts with `›` or `»`; below it Codex renders shortcut hints (`⏎ send`,
  * `Ctrl+J newline`, …), a context meter (`NN% context left`), and while a
  * turn is running a spinner row (`• Working (3s • esc to interrupt)`).
  */
 const CHROME_PATTERNS: readonly RegExp[] = [
-  /^\s*›/u, // composer input row
+  /^\s*[›»]/u, // composer input row
   /esc to interrupt/iu, // working spinner / interrupt hint
   /\d+%\s+context\s+left/iu, // context meter
   /[⏎⌃↑↓⇧]/u, // shortcut hint rows (⏎ send, ⌃J newline, …)
@@ -277,7 +277,7 @@ function visibleInputBlock(capture: string): string | null {
   }
   if (end === 0) return null;
   let start = end - 1;
-  while (start >= 0 && !(lines[start]?.trimStart().startsWith('›') ?? false)) start -= 1;
+  while (start >= 0 && !/^[›»]/u.test(lines[start]?.trimStart() ?? '')) start -= 1;
   const promptVisible = start >= 0;
   // Delivery captures only the trailing pane rows. A long submitted message can
   // push its leading › outside that window, leaving only wrapped continuation
@@ -289,7 +289,7 @@ function visibleInputBlock(capture: string): string | null {
   const block = lines.slice(start, end);
   const first = block[0];
   if (first === undefined) return null;
-  if (promptVisible) block[0] = first.trimStart().slice('›'.length);
+  if (promptVisible) block[0] = first.trimStart().slice(1);
   const normalized = normalizeWrappedText(block.join('\n'));
   return normalized.length > 0 ? normalized : null;
 }
@@ -439,7 +439,7 @@ export class CodexRuntime implements SessionRuntime {
   }
 
   /**
-   * The composer is the `›` row sitting directly above the footer/hint chrome.
+   * The composer is the `›` or `»` row sitting directly above the footer/hint chrome.
    * Styled captures (tmux `-e`) make classification DETERMINISTIC — Codex's
    * own rendering distinguishes every case (verified against 0.144.x):
    *
@@ -472,11 +472,11 @@ export class CodexRuntime implements SessionRuntime {
       const { plain, chars } = parseStyledLine(raw);
       const trimmed = plain.trim();
       if (trimmed.length === 0) continue;
-      if (!trimmed.startsWith('›')) {
+      if (!/^[›»]/u.test(trimmed)) {
         if (BELOW_COMPOSER_CHROME.some((pattern) => pattern.test(trimmed))) continue;
         return null;
       }
-      const glyphIdx = chars.findIndex((c) => c.ch === '›');
+      const glyphIdx = chars.findIndex((c) => c.ch === '›' || c.ch === '»');
       const glyph = chars[glyphIdx];
       if (glyph === undefined) return null;
       if (glyph.dim) return null; // transcript echo — the composer is not on screen
@@ -492,11 +492,11 @@ export class CodexRuntime implements SessionRuntime {
     for (const line of capture.split('\n').reverse()) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
-      if (!trimmed.startsWith('›')) {
+      if (!/^[›»]/u.test(trimmed)) {
         if (BELOW_COMPOSER_CHROME.some((pattern) => pattern.test(trimmed))) continue;
         return null;
       }
-      const content = trimmed.slice('›'.length).trim();
+      const content = trimmed.slice(1).trim();
       if (content.length === 0) return 'clear';
       if (session !== undefined && PLAIN_GHOST_HINTS.some((pattern) => pattern.test(content))) return 'clear';
       return 'draft';
