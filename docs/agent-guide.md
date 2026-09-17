@@ -893,7 +893,7 @@ When asked to configure Shepherd, first call `get_conductor_docs` without a topi
 5. which automation policies remain `off`/`notify` during shadowing and which may later execute;
 6. headless operation (default) versus panel presentation (currently reported unsupported).
 
-Then inspect the generated profile, preserve unrelated comments, run `gh auth status`,
+Then inspect the generated profile, preserve unrelated comments, run `gh api user --silent`,
 `pr-shepherd -C <fleet> validate`, and one `poll --once` with baseline-only/stdout behavior. Only
 after the observed decisions are correct should you configure Conductor delivery and set
 `shepherd.enabled: true`. Supervisor/profile changes require a deliberate Conductor restart.

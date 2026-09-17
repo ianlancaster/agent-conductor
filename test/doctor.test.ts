@@ -180,4 +180,34 @@ describe('conductor doctor', () => {
       expect.arrayContaining(['GitHub CLI', 'PR Shepherd profile']),
     );
   });
+
+  it('checks authenticated API access without depending on gh auth status', async () => {
+    writeFileSync(
+      join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
+      'terminal:\n  backend: tmux\nshepherd:\n  enabled: true\n',
+    );
+    const ghCalls: string[][] = [];
+    const results = await runPreflight(
+      baseDir,
+      dependencies({
+        command: (name, args = []) => {
+          if (name === 'gh') {
+            ghCalls.push(args);
+            return { ok: args.join(' ') === 'api user --silent', stdout: '' };
+          }
+          return {
+            ok: ['claude', 'codex', 'git', 'curl', 'tmux'].includes(name),
+            stdout: name === 'tmux' ? 'tmux 3.4' : `${name} test`,
+          };
+        },
+      }),
+    );
+
+    expect(results.find((item) => item.label === 'GitHub CLI')).toEqual({
+      level: 'pass',
+      label: 'GitHub CLI',
+      detail: 'gh API authentication is active',
+    });
+    expect(ghCalls).toEqual([['api', 'user', '--silent']]);
+  });
 });

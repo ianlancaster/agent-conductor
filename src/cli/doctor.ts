@@ -258,11 +258,19 @@ export async function runPreflight(
   }
 
   if (loaded.supervisor.shepherd.enabled) {
-    const gh = deps.command('gh', ['auth', 'status']);
+    // `gh auth status` can fail when GitHub's GraphQL rate limit is exhausted even
+    // though the configured credential remains valid for REST requests. Startup
+    // should verify authentication, not make transient GraphQL availability a
+    // fleet-wide liveness dependency; Shepherd owns provider backoff at runtime.
+    const gh = deps.command('gh', ['api', 'user', '--silent']);
     results.push(
       gh.ok
-        ? result('pass', 'GitHub CLI', 'gh authentication is active')
-        : result('fail', 'GitHub CLI', 'PR Shepherd is enabled; install gh and run gh auth login'),
+        ? result('pass', 'GitHub CLI', 'gh API authentication is active')
+        : result(
+            'fail',
+            'GitHub CLI',
+            'PR Shepherd is enabled; install gh and authenticate with gh auth login or a valid GH_TOKEN/GITHUB_TOKEN',
+          ),
     );
     try {
       assertShepherdProfileReady(loaded.supervisor.shepherd.configPath);

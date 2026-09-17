@@ -12,7 +12,7 @@ concisely in fleet `/status`; companion failure never takes down Conductor.
 
 - Node.js 22.13 or newer (23.4 or newer on the non-LTS Node 23 line) and the Agent Conductor package installed or built
 - [GitHub CLI](https://cli.github.com/) available as `gh`
-- A successful `gh auth status` for the GitHub account that will poll repositories
+- Successful authenticated REST access (`gh api user --silent`) for the GitHub account that will poll repositories
 - Read access to the configured repositories; write access is required only for automation policies set to `execute`
 - A local Conductor process only when using `delivery.type: conductor`
 
@@ -54,7 +54,7 @@ installing the command does not enable it.
 3. Validate authentication and configuration:
 
    ```bash
-   gh auth status
+   gh api user --silent
    pr-shepherd -C /path/to/fleet validate
    ```
 
