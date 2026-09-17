@@ -98,49 +98,6 @@ describe('messages', () => {
     });
   });
 
-  it('persists uncertain notice and reconciliation audit across reopen', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'conductor-message-reconciliation-'));
-    const dbPath = join(dir, 'conductor.db');
-    try {
-      const durable = new Store(dbPath);
-      const submitted = durable.insertDirectMessage('alpha', 'beta', 'first').row;
-      const abandoned = durable.insertDirectMessage('alpha', 'beta', 'second').row;
-      durable.markMessageSubmissionStarted(submitted.id);
-      durable.markMessageSubmissionStarted(abandoned.id);
-      durable.markMessageUncertainNotified(submitted.id, '2026-09-17T04:00:00.000Z');
-      durable.reconcileUncertainMessage(
-        submitted.id,
-        'manually-submitted',
-        'console:operator',
-        'composer inspected and submitted once',
-        '2026-09-17T04:01:00.000Z',
-      );
-      durable.reconcileUncertainMessage(
-        abandoned.id,
-        'abandoned',
-        'console:operator',
-        'composer inspected and discarded',
-        '2026-09-17T04:02:00.000Z',
-      );
-      durable.close();
-
-      const reopened = new Store(dbPath);
-      expect(reopened.getMessage(submitted.id)?.uncertain_notified_at).toBe('2026-09-17T04:00:00.000Z');
-      expect(reopened.getMessageReconciliation(submitted.id)).toEqual({
-        messageId: submitted.id,
-        outcome: 'manually-submitted',
-        actor: 'console:operator',
-        evidence: 'composer inspected and submitted once',
-        reconciledAt: '2026-09-17T04:01:00.000Z',
-      });
-      expect(reopened.getMessageReconciliation(abandoned.id)?.outcome).toBe('abandoned');
-      expect(reopened.getUnnotifiedUncertainDeliveries()).toEqual([]);
-      reopened.close();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it('creates recipient-specific broadcast deliveries atomically in recipient order', () => {
     const rows = store.insertBroadcastDeliveries('alpha', ['beta', 'gamma'], 'notice', {
       policy: 'hold',

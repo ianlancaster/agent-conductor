@@ -4,16 +4,9 @@ import type { z } from 'zod';
 import type { SessionConfig } from '../src/config/schema.js';
 import { Scheduler } from '../src/core/scheduler.js';
 import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
-import type { DeliveryOptions, DeliveryResult } from '../src/core/delivery.js';
 
 function sessionWith(schedules: z.input<typeof sessionConfigSchema>['schedules']): SessionConfig {
   return sessionConfigSchema.parse({ codename: 'alpha', repo: '/tmp/alpha', schedules });
-}
-
-function confirmDelivery(options: Pick<DeliveryOptions, 'onSubmissionStarted' | 'onDelivered'>): DeliveryResult {
-  if (options.onSubmissionStarted?.() === false) return 'uncertain';
-  options.onDelivered?.();
-  return 'delivered';
 }
 
 let scheduler: Scheduler;
@@ -53,9 +46,9 @@ beforeEach(() => {
       active = false;
       return 'stopped';
     },
-    deliver: async (session, text, options) => {
+    deliver: async (session, text) => {
       delivered.push({ session, text });
-      return confirmDelivery(options);
+      return 'delivered';
     },
     events,
   });
@@ -69,13 +62,6 @@ afterEach(() => {
 // croner supports 6-field (seconds) patterns — every-second schedules keep the
 // fake-timer advances small.
 const EVERY_SECOND = '* * * * * *';
-const FIRST_SCHEDULED_AT = '2026-01-02T03:04:06.000Z';
-const SCHEDULING_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-const FIRST_SOURCE = { scheduledAt: FIRST_SCHEDULED_AT, timezone: SCHEDULING_TIMEZONE };
-
-function cronEnvelope(name: string, message: string, scheduledAt = FIRST_SCHEDULED_AT): string {
-  return `[Cron name=${JSON.stringify(name)} period=${JSON.stringify(EVERY_SECOND)} scheduled_at=${JSON.stringify(scheduledAt)} timezone=${JSON.stringify(SCHEDULING_TIMEZONE)}] ${message}`;
-}
 
 describe('Scheduler', () => {
   it.each([false, true])('does not wake an inactive target by default (freshContext=%s)', async (freshContext) => {
@@ -89,7 +75,6 @@ describe('Scheduler', () => {
       type: 'schedule',
       session: 'alpha',
       label: 'schedule-1',
-      ...FIRST_SOURCE,
       outcome: 'skipped-stopped',
     });
     active = true;
@@ -104,59 +89,9 @@ describe('Scheduler', () => {
     );
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
-    expect(started).toEqual([{ session: 'alpha', prompt: cronEnvelope('schedule-1', 'fresh') }]);
+    expect(started).toEqual([{ session: 'alpha', prompt: `[Cron name="schedule-1" period="${EVERY_SECOND}"] fresh` }]);
     expect(stopped).toEqual([]);
   });
-
-  it('settles a lifecycle rejection only after restoring the proved no-write checkpoint', async () => {
-    scheduler = new Scheduler({
-      sessions: () => sessions,
-      isActive: () => false,
-      isPaused: () => false,
-      startSession: async () => 'not-started',
-      stopSession: async () => 'stopped',
-      deliver: async () => 'no-pane',
-      events,
-    });
-    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'rejected', wakeIfStopped: true }]));
-
-    scheduler.rebuild();
-    await vi.advanceTimersByTimeAsync(1100);
-
-    expect(events.events).toContainEqual(expect.objectContaining({ outcome: 'failed' }));
-    expect(events.events).not.toContainEqual(expect.objectContaining({ outcome: 'uncertain' }));
-  });
-
-  it.each([
-    { freshContext: false, outcome: 'fired' as const },
-    { freshContext: true, outcome: 'fired-fresh' as const },
-  ])(
-    'delivers the retained envelope when another activation wins (freshContext=$freshContext)',
-    async ({ freshContext, outcome }) => {
-      scheduler = new Scheduler({
-        sessions: () => sessions,
-        isActive: () => false,
-        isPaused: () => false,
-        startSession: async () => 'active-without-prompt',
-        stopSession: async () => 'stopped',
-        deliver: async (session, text, options) => {
-          delivered.push({ session, text });
-          return confirmDelivery(options);
-        },
-        events,
-      });
-      sessions.set(
-        'alpha',
-        sessionWith([{ cron: EVERY_SECOND, prompt: 'preserved', wakeIfStopped: true, freshContext }]),
-      );
-
-      scheduler.rebuild();
-      await vi.advanceTimersByTimeAsync(1100);
-
-      expect(delivered).toEqual([{ session: 'alpha', text: cronEnvelope('schedule-1', 'preserved') }]);
-      expect(events.events).toContainEqual(expect.objectContaining({ outcome }));
-    },
-  );
 
   it.each([false, true])('pause overrides wake opt-in (freshContext=%s)', async (freshContext) => {
     sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'held', wakeIfStopped: true, freshContext }]));
@@ -166,29 +101,6 @@ describe('Scheduler', () => {
     expect(started).toEqual([]);
     expect(delivered).toEqual([]);
     expect(events.events[0]).toMatchObject({ outcome: 'deferred-paused' });
-  });
-
-  it('honors a pause boundary that closes after the final state check', async () => {
-    scheduler = new Scheduler({
-      sessions: () => sessions,
-      isActive: () => false,
-      isPaused: () => false,
-      startSession: async (session, opts) => {
-        started.push({ session, prompt: opts.prompt });
-        return 'started';
-      },
-      stopSession: async () => 'stopped',
-      acquireSubmissionLease: () => undefined,
-      deliver: async () => 'no-pane',
-      events,
-    });
-    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'held', wakeIfStopped: true }]));
-
-    scheduler.rebuild();
-    await vi.advanceTimersByTimeAsync(1100);
-
-    expect(started).toEqual([]);
-    expect(events.events).toContainEqual(expect.objectContaining({ outcome: 'deferred-paused' }));
   });
 
   it('honors explicit false after reloading an opted-in schedule', async () => {
@@ -222,7 +134,6 @@ describe('Scheduler', () => {
         type: 'schedule',
         session: 'alpha',
         label: 'schedule-1',
-        ...FIRST_SOURCE,
         outcome: 'skipped-cancelled',
       });
     },
@@ -238,14 +149,13 @@ describe('Scheduler', () => {
     await vi.advanceTimersByTimeAsync(1100);
     expect(delivered[0]).toEqual({
       session: 'alpha',
-      text: cronEnvelope('heartbeat', 'tick'),
+      text: `[Cron name="heartbeat" period="${EVERY_SECOND}"] tick`,
     });
     expect(started).toEqual([]);
     expect(events.events).toContainEqual({
       type: 'schedule',
       session: 'alpha',
       label: 'heartbeat',
-      ...FIRST_SOURCE,
       outcome: 'fired',
     });
   });
@@ -259,7 +169,7 @@ describe('Scheduler', () => {
     await vi.advanceTimersByTimeAsync(1100);
     expect(started[0]).toEqual({
       session: 'alpha',
-      prompt: cronEnvelope('schedule-1', 'wake up'),
+      prompt: `[Cron name="schedule-1" period="${EVERY_SECOND}"] wake up`,
     });
     expect(delivered).toEqual([]);
   });
@@ -274,13 +184,12 @@ describe('Scheduler', () => {
     await vi.advanceTimersByTimeAsync(3100); // settle period elapses
     expect(started[0]).toEqual({
       session: 'alpha',
-      prompt: cronEnvelope('schedule-1', 'nightly'),
+      prompt: `[Cron name="schedule-1" period="${EVERY_SECOND}"] nightly`,
     });
     expect(events.events).toContainEqual({
       type: 'schedule',
       session: 'alpha',
       label: 'schedule-1',
-      ...FIRST_SOURCE,
       outcome: 'fired-fresh',
     });
   });
@@ -296,7 +205,6 @@ describe('Scheduler', () => {
       type: 'schedule',
       session: 'alpha',
       label: 'schedule-1',
-      ...FIRST_SOURCE,
       outcome: 'deferred-paused',
     });
   });
@@ -315,9 +223,8 @@ describe('Scheduler', () => {
         return 'started';
       },
       stopSession: async () => 'stopped',
-      deliver: async (session, text, options) => {
+      deliver: async (session, text) => {
         delivered.push({ session, text });
-        return confirmDelivery(options);
       },
       events,
     });
@@ -334,7 +241,6 @@ describe('Scheduler', () => {
       type: 'schedule',
       session: 'alpha',
       label: 'schedule-1',
-      ...FIRST_SOURCE,
       outcome: 'deferred-paused',
     });
   });
@@ -354,7 +260,6 @@ describe('Scheduler', () => {
       type: 'schedule',
       session: 'alpha',
       label: 'schedule-1',
-      ...FIRST_SOURCE,
       outcome: 'deferred-paused',
     });
   });
@@ -379,7 +284,7 @@ describe('Scheduler', () => {
       scheduler.rebuild();
     }).not.toThrow();
     await vi.advanceTimersByTimeAsync(1100);
-    expect(started[0]?.prompt).toBe(cronEnvelope('schedule-2', 'still works'));
+    expect(started[0]?.prompt).toBe(`[Cron name="schedule-2" period="${EVERY_SECOND}"] still works`);
   });
 
   it('rebuild replaces jobs and stop() cancels them', async () => {
@@ -408,123 +313,8 @@ describe('Scheduler', () => {
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
 
-    expect(started).toEqual([{ session: 'alpha', prompt: cronEnvelope('schedule-1', 'first') }]);
-    expect(delivered).toEqual([{ session: 'alpha', text: cronEnvelope('schedule-2', 'second') }]);
-  });
-
-  it('retains each exact occurrence while same-session work waits behind an earlier run', async () => {
-    let finishInspection: ((active: boolean) => void) | undefined;
-    let inspections = 0;
-    scheduler = new Scheduler({
-      sessions: () => sessions,
-      isActive: () => {
-        inspections += 1;
-        if (inspections > 1) return true;
-        return new Promise<boolean>((resolve) => {
-          finishInspection = resolve;
-        });
-      },
-      isPaused: () => false,
-      startSession: async () => 'started',
-      stopSession: async () => 'stopped',
-      deliver: async (session, text, options) => {
-        delivered.push({ session, text });
-        return confirmDelivery(options);
-      },
-      events,
-    });
-    sessions.set(
-      'alpha',
-      sessionWith([
-        { cron: EVERY_SECOND, prompt: 'first', paused: false, freshContext: false },
-        { cron: EVERY_SECOND, prompt: 'second', paused: false, freshContext: false },
-      ]),
-    );
-    scheduler.rebuild();
-    await vi.advanceTimersByTimeAsync(4100);
-    expect(delivered).toEqual([]);
-
-    finishInspection?.(true);
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(delivered).toEqual([
-      { session: 'alpha', text: cronEnvelope('schedule-1', 'first') },
-      { session: 'alpha', text: cronEnvelope('schedule-2', 'second') },
-    ]);
-    expect(delivered.every(({ text }) => !text.includes('03:04:09'))).toBe(true);
-  });
-
-  it('records the IANA scheduling timezone while the UTC instant reflects a DST offset change', async () => {
-    const originalTimezone = process.env.TZ;
-    scheduler.stop();
-    process.env.TZ = 'America/Denver';
-    vi.setSystemTime(new Date('2026-03-07T16:00:00.500Z')); // 09:00:00.500 MST
-    try {
-      sessions.set(
-        'alpha',
-        sessionWith([{ cron: '0 0 9 * * *', prompt: 'after spring-forward', wakeIfStopped: true }]),
-      );
-      scheduler = new Scheduler({
-        sessions: () => sessions,
-        isActive: () => true,
-        isPaused: () => false,
-        startSession: async () => 'started',
-        stopSession: async () => 'stopped',
-        deliver: async (session, text, options) => {
-          delivered.push({ session, text });
-          return confirmDelivery(options);
-        },
-        events,
-      });
-      scheduler.rebuild();
-      await vi.advanceTimersByTimeAsync(82_800_000); // 23 hours to 09:00 MDT
-
-      expect(delivered).toEqual([
-        {
-          session: 'alpha',
-          text: '[Cron name="schedule-1" period="0 0 9 * * *" scheduled_at="2026-03-08T15:00:00.000Z" timezone="America/Denver"] after spring-forward',
-        },
-      ]);
-    } finally {
-      scheduler.stop();
-      if (originalTimezone === undefined) delete process.env.TZ;
-      else process.env.TZ = originalTimezone;
-    }
-  });
-
-  it('keeps a local-midnight occurrence unambiguous across its UTC offset', async () => {
-    const originalTimezone = process.env.TZ;
-    scheduler.stop();
-    process.env.TZ = 'America/Denver';
-    vi.setSystemTime(new Date('2026-03-08T06:59:59.500Z')); // 23:59:59.500 MST
-    try {
-      sessions.set('alpha', sessionWith([{ cron: '0 0 0 * * *', prompt: 'midnight', wakeIfStopped: true }]));
-      scheduler = new Scheduler({
-        sessions: () => sessions,
-        isActive: () => true,
-        isPaused: () => false,
-        startSession: async () => 'started',
-        stopSession: async () => 'stopped',
-        deliver: async (session, text, options) => {
-          delivered.push({ session, text });
-          return confirmDelivery(options);
-        },
-        events,
-      });
-      scheduler.rebuild();
-      await vi.advanceTimersByTimeAsync(1100);
-
-      expect(delivered).toEqual([
-        {
-          session: 'alpha',
-          text: '[Cron name="schedule-1" period="0 0 0 * * *" scheduled_at="2026-03-08T07:00:00.000Z" timezone="America/Denver"] midnight',
-        },
-      ]);
-    } finally {
-      scheduler.stop();
-      if (originalTimezone === undefined) delete process.env.TZ;
-      else process.env.TZ = originalTimezone;
-    }
+    expect(started).toEqual([{ session: 'alpha', prompt: `[Cron name="schedule-1" period="${EVERY_SECOND}"] first` }]);
+    expect(delivered).toEqual([{ session: 'alpha', text: `[Cron name="schedule-2" period="${EVERY_SECOND}"] second` }]);
   });
 
   it('uses an asynchronous authoritative activity check', async () => {
@@ -541,9 +331,8 @@ describe('Scheduler', () => {
         return 'started';
       },
       stopSession: async () => 'stopped',
-      deliver: async (session, text, options) => {
+      deliver: async (session, text) => {
         delivered.push({ session, text });
-        return confirmDelivery(options);
       },
       events,
     });
@@ -554,11 +343,11 @@ describe('Scheduler', () => {
     scheduler.rebuild();
     await vi.advanceTimersByTimeAsync(1100);
     expect(inspected).toBe(1);
-    expect(started[0]?.prompt).toBe(cronEnvelope('schedule-1', 'restart'));
+    expect(started[0]?.prompt).toBe(`[Cron name="schedule-1" period="${EVERY_SECOND}"] restart`);
     expect(delivered).toEqual([]);
   });
 
-  it('quarantines a thrown lifecycle submission as uncertain without exposing the error text', async () => {
+  it('emits a mechanical failed outcome without exposing the error text', async () => {
     scheduler = new Scheduler({
       sessions: () => sessions,
       isActive: () => false,
@@ -567,7 +356,7 @@ describe('Scheduler', () => {
         throw new Error('secret provider detail');
       },
       stopSession: async () => 'stopped',
-      deliver: async () => 'no-pane',
+      deliver: async () => undefined,
       events,
     });
     sessions.set(
@@ -589,8 +378,7 @@ describe('Scheduler', () => {
       type: 'schedule',
       session: 'alpha',
       label: 'safe label',
-      ...FIRST_SOURCE,
-      outcome: 'uncertain',
+      outcome: 'failed',
     });
     expect(JSON.stringify(events.events)).not.toContain('secret provider detail');
   });

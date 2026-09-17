@@ -25,7 +25,6 @@ let tools: McpToolDefinition[];
 let sentinel: StallSentinelRouter;
 let operations: ConductorOperations;
 let runtime: FakeRuntime;
-let backend: FakeTerminalBackend;
 
 function tool(name: string): McpToolDefinition {
   const found = tools.find((t) => t.name === name);
@@ -39,7 +38,7 @@ function sessionConfig(codename: string): SessionConfig {
 
 beforeEach(() => {
   store = new Store(':memory:');
-  backend = new FakeTerminalBackend();
+  const backend = new FakeTerminalBackend();
   runtime = new FakeRuntime();
   states = new SessionStateManager(store, false);
   sessions = new Map([
@@ -254,13 +253,11 @@ describe('surface contract', () => {
     expect(mcpNames).not.toContain('adopt_runbook');
     expect(mcpNames).not.toContain('supersede_runbook_adoption');
     expect(mcpNames).not.toContain('end_runbook_adoption');
-    expect(mcpNames).not.toContain('reconcile_message');
     expect(operatorNames).toContain('summon_session');
     expect(operatorNames).toContain('respond_to_operator_request');
     expect(operatorNames).toContain('adopt_runbook');
     expect(operatorNames).toContain('supersede_runbook_adoption');
     expect(operatorNames).toContain('end_runbook_adoption');
-    expect(operatorNames).toContain('reconcile_message');
     expect(operatorNames).not.toContain('whoami');
     expect(operatorNames).not.toContain('get_conductor_docs');
   });
@@ -404,34 +401,6 @@ describe('surface contract', () => {
       status: 'cancelled',
     });
     await expect(tool('cancel_message').handler({ messageId: 0 }, 'alpha')).rejects.toThrow(/at least 1/);
-  });
-
-  it('requires operator authority to reconcile an uncertain receipt and performs no terminal action', async () => {
-    const row = store.insertDirectMessage('alpha', 'beta', 'ambiguous', 'operator-reconcile').row;
-    expect(store.markMessageSubmissionStarted(row.id)).toBe(true);
-    const submit = vi.spyOn(backend, 'submitIfUnchanged');
-    const run = vi.spyOn(backend, 'run');
-
-    await expect(
-      operations.invoke(
-        'reconcile_message',
-        { messageId: row.id, outcome: 'manually-submitted', evidence: 'inspected composer' },
-        { audience: 'session', codename: 'alpha' },
-      ),
-    ).rejects.toThrow('not available to session callers');
-    await expect(
-      operations.invoke(
-        'reconcile_message',
-        { messageId: row.id, outcome: 'manually-submitted', evidence: 'inspected composer' },
-        { audience: 'operator', id: 'console:one' },
-      ),
-    ).resolves.toMatchObject({
-      messageId: row.id,
-      status: 'uncertain',
-      reconciliation: { outcome: 'manually-submitted', actor: 'console:one', evidence: 'inspected composer' },
-    });
-    expect(submit).not.toHaveBeenCalled();
-    expect(run).not.toHaveBeenCalled();
   });
 
   it('defines and enforces the idempotent message receipt contract', async () => {
@@ -665,7 +634,7 @@ describe('surface contract', () => {
       'identity is mechanical',
       '[Message from <sender>]',
       '[Broadcast from <sender>]',
-      '[Cron name="<name>" period="<expression>" scheduled_at="<instant>" timezone="<iana-zone>"]',
+      '[Cron name="<name>" period="<expression>"]',
       '[Sentinel] <text>',
       'operator authority',
       'Peer conversation is event-driven',

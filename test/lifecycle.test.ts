@@ -635,43 +635,6 @@ describe('lifecycle edges', () => {
     expect(lifecycle.getPane('alpha')).toBeDefined();
   });
 
-  it('reports which concurrent caller supplied the launched prompt', async () => {
-    let releaseLaunch: (() => void) | undefined;
-    const launchGate = new Promise<void>((resolve) => {
-      releaseLaunch = resolve;
-    });
-    const launch = backend.launch.bind(backend);
-    backend.launch = async (pane, command) => {
-      await launchGate;
-      await launch(pane, command);
-    };
-
-    const ordinary = lifecycle.startWithResult('alpha');
-    await vi.waitFor(() => expect(runtime.launches).toHaveLength(1));
-    const scheduled = lifecycle.startWithResult('alpha', { prompt: 'immutable cron envelope' });
-    releaseLaunch?.();
-
-    await expect(ordinary).resolves.toMatchObject({ optionsApplied: true, promptApplied: true });
-    await expect(scheduled).resolves.toEqual({
-      message: 'alpha started.',
-      optionsApplied: false,
-      promptApplied: false,
-    });
-    expect(runtime.launches[0]?.opts.prompt).toBeUndefined();
-  });
-
-  it('reports that a caller arriving after another launch did not apply its prompt', async () => {
-    await lifecycle.start('alpha');
-
-    await expect(lifecycle.startWithResult('alpha', { prompt: 'immutable cron envelope' })).resolves.toEqual({
-      message: 'alpha is already running.',
-      optionsApplied: false,
-      promptApplied: false,
-    });
-    expect(runtime.launches).toHaveLength(1);
-    expect(runtime.launches[0]?.opts.prompt).toBeUndefined();
-  });
-
   it('kills the pane if launch setup throws, leaving no orphan (M16)', async () => {
     backend.launch = () => Promise.reject(new Error('shell init failed'));
     await expect(lifecycle.start('alpha')).rejects.toThrow('shell init failed');

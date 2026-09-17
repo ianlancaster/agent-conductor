@@ -4,22 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Supervisor } from '../src/core/supervisor.js';
-import type { PaneRef } from '../src/core/types.js';
-import { FakeEventSubscriber } from './fakes/fake-subscriber.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 
 // Drive the real Supervisor scheduler deterministically without production clock waits.
+const { ticks } = vi.hoisted(() => ({ ticks: [] as (() => Promise<void>)[] }));
 vi.mock('croner', () => ({
   Cron: class {
-    private stopped = false;
-
-    nextRun(): Date | null {
-      return this.stopped ? null : new Date(Date.now() + 1000);
+    constructor(_pattern: string, _options: unknown, tick: () => Promise<void>) {
+      ticks.push(tick);
     }
-
     stop(): void {
-      this.stopped = true;
+      // No real timer was armed by this test double.
     }
   },
 }));
@@ -27,33 +23,7 @@ vi.mock('croner', () => ({
 let baseDir: string | undefined;
 let supervisor: Supervisor | undefined;
 
-class GatedLaunchTerminal extends FakeTerminalBackend {
-  private releaseLaunch!: () => void;
-  private markEntered!: () => void;
-  readonly entered = new Promise<void>((resolve) => {
-    this.markEntered = resolve;
-  });
-  private readonly launchGate = new Promise<void>((resolve) => {
-    this.releaseLaunch = resolve;
-  });
-
-  override async launch(pane: PaneRef, command: string): Promise<void> {
-    this.markEntered();
-    await this.launchGate;
-    await super.launch(pane, command);
-  }
-
-  release(): void {
-    this.releaseLaunch();
-  }
-}
-
-async function setup(
-  scheduleOptions = '',
-  options: { terminal?: FakeTerminalBackend; subscriber?: FakeEventSubscriber } = {},
-): Promise<FakeTerminalBackend> {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date('2026-09-17T15:59:59.000Z'));
+async function setup(scheduleOptions = ''): Promise<FakeTerminalBackend> {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -67,11 +37,10 @@ async function setup(
     join(baseDir, 'config', 'sessions', 'alpha.yaml'),
     `codename: alpha\nrepo: ${baseDir}\nschedules:\n  - cron: '0 9 * * *'\n    prompt: scheduled work\n${scheduleOptions}`,
   );
-  const terminal = options.terminal ?? new FakeTerminalBackend();
+  const terminal = new FakeTerminalBackend();
   supervisor = new Supervisor(baseDir, {
     terminalBackend: terminal,
     runtimes: [new FakeRuntime()],
-    eventSubscribers: options.subscriber === undefined ? undefined : [options.subscriber],
     includeConfiguredChannels: false,
     env: {},
   });
@@ -85,6 +54,7 @@ afterEach(async () => {
   supervisor = undefined;
   if (baseDir !== undefined) rmSync(baseDir, { recursive: true, force: true });
   baseDir = undefined;
+  ticks.length = 0;
 });
 
 describe('Supervisor schedule lifecycle policy', () => {
@@ -98,7 +68,8 @@ describe('Supervisor schedule lifecycle policy', () => {
         else terminal.paneFor('alpha')!.sessionActive = false;
       }
       const launchCount = [...terminal.panes.values()].reduce((sum, pane) => sum + pane.launched.length, 0);
-      await vi.advanceTimersByTimeAsync(2100);
+      await ticks[0]!();
+      await ticks[0]!();
       expect([...terminal.panes.values()].reduce((sum, pane) => sum + pane.launched.length, 0)).toBe(launchCount);
       expect([...terminal.panes.values()].flatMap((pane) => pane.received)).toEqual([]);
     },
@@ -106,53 +77,21 @@ describe('Supervisor schedule lifecycle policy', () => {
 
   it('starts an explicitly opted-in target through normal lifecycle', async () => {
     const terminal = await setup('    wakeIfStopped: true\n');
-    await vi.advanceTimersByTimeAsync(1100);
-    await vi.waitFor(() => expect(terminal.paneFor('alpha')?.sessionActive).toBe(true));
+    await ticks[0]!();
+    expect(terminal.paneFor('alpha')?.sessionActive).toBe(true);
     expect(terminal.paneFor('alpha')?.launched[0]).toContain('scheduled work');
-  });
-
-  it.each([
-    { name: 'ordinary', options: '    wakeIfStopped: true\n', outcome: 'fired' },
-    { name: 'fresh-context', options: '    wakeIfStopped: true\n    freshContext: true\n', outcome: 'fired-fresh' },
-  ])('retains a $name occurrence when a promptless start owns the concurrent launch', async ({ options, outcome }) => {
-    const terminal = new GatedLaunchTerminal();
-    const subscriber = new FakeEventSubscriber();
-    await setup(options, { terminal, subscriber });
-
-    const ordinaryStart = supervisor!.command('/start alpha');
-    await terminal.entered;
-    await vi.advanceTimersByTimeAsync(1100);
-    terminal.release();
-    expect(await ordinaryStart).toBe('alpha started.');
-
-    await vi.waitFor(() => expect(terminal.paneFor('alpha')?.received).toHaveLength(1));
-    const pane = terminal.paneFor('alpha')!;
-    expect(pane.launched).toHaveLength(1);
-    expect(pane.launched[0]).not.toContain('scheduled work');
-    expect(pane.received[0]).toBe(
-      '[Cron name="schedule-1" period="0 9 * * *" scheduled_at="2026-09-17T16:00:00.000Z" timezone="America/Denver"] scheduled work',
-    );
-    await vi.waitFor(() =>
-      expect(subscriber.events).toContainEqual(
-        expect.objectContaining({
-          type: 'schedule',
-          session: 'alpha',
-          scheduledAt: '2026-09-17T16:00:00.000Z',
-          timezone: 'America/Denver',
-          outcome,
-        }),
-      ),
-    );
   });
 
   it('stop all cancels a fresh-context restart already waiting in its settle delay', async () => {
     const terminal = await setup('    freshContext: true\n');
     await supervisor!.command('/start alpha');
-    await vi.advanceTimersByTimeAsync(1100);
+    vi.useFakeTimers();
+    const pending = ticks[0]!();
+    await vi.advanceTimersByTimeAsync(0);
     expect([...terminal.panes.values()].some((pane) => pane.alive)).toBe(false);
     await supervisor!.command('/stop all');
     await vi.advanceTimersByTimeAsync(3100);
-    await vi.advanceTimersByTimeAsync(0);
+    await pending;
     expect([...terminal.panes.values()].reduce((sum, pane) => sum + pane.launched.length, 0)).toBe(1);
     expect([...terminal.panes.values()].some((pane) => pane.alive)).toBe(false);
   });

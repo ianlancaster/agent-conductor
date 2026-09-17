@@ -12,6 +12,35 @@ afterEach(() => {
 });
 
 describe('beta migration version collision recovery', () => {
+  it('opens an already-upgraded store after rollback without deleting its records', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conductor-rollback-schema-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'conductor.db');
+    const seeded = new Store(dbPath);
+    const id = seeded.insertMessage('beta', 'alpha', 'message', 'Existing uncertain message');
+    seeded.close();
+    const upgraded = openSqliteDatabase(dbPath);
+    upgraded.prepare("UPDATE messages SET status = 'uncertain' WHERE id = ?").run(id);
+    upgraded
+      .prepare(
+        "INSERT INTO message_reconciliations VALUES (?, 'abandoned', 'operator', 'Preserved evidence', '2026-09-17T00:00:00Z')",
+      )
+      .run(id);
+    upgraded.close();
+    const reopened = new Store(dbPath);
+    expect(reopened.getMessage(id)).toMatchObject({ status: 'uncertain' });
+    const next = reopened.insertMessage('beta', 'alpha', 'message', 'Ordinary new message');
+    expect(reopened.getMessage(next)).toMatchObject({ status: 'pending' });
+    reopened.close();
+    const inspected = openSqliteDatabase(dbPath);
+    expect(inspected.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 17 });
+    expect(
+      inspected.prepare('SELECT evidence FROM message_reconciliations WHERE message_id = ?').get(id),
+    ).toMatchObject({ evidence: 'Preserved evidence' });
+    expect(inspected.prepare('PRAGMA integrity_check').get()).toMatchObject({ integrity_check: 'ok' });
+    inspected.close();
+  }, 30_000);
+
   it.each([13, 14])('repairs the rooms lineage at version %i without losing data', (version) => {
     const dir = mkdtempSync(join(tmpdir(), 'conductor-beta-schema-'));
     tempDirs.push(dir);

@@ -145,13 +145,7 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       expect(await backend.submitIfUnchanged(pane, 'must wait', stale.token)).toBe(false);
 
       const current = await backend.captureForDelivery(pane, 20);
-      const result = await backend.submitIfUnchanged(pane, ' delivered safely', current.token);
-      expect(result).not.toBe(false);
-      expect(result).not.toBe(true);
-      if (typeof result === 'object') {
-        expect(result.accepted).toBe(true);
-        expect(result.staged.content).toContain('delivered safely');
-      }
+      expect(await backend.submitIfUnchanged(pane, ' delivered safely', current.token)).toBe(true);
       await until(async () => (await backend.capture(pane, 20)).includes('operator draft delivered safely'));
     });
 
@@ -538,9 +532,8 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
 
       // Explicitly opted-in target: cron starts it with the signed scheduled prompt.
       // Active-session delivery is covered deterministically at the Scheduler seam.
-      const signedCronTick =
-        /PROMPT: \[Cron name="heartbeat" period="\*\/2 \* \* \* \* \*" scheduled_at="[^"]+" timezone="[^"]+"\] cron-tick/u;
-      await until(async () => signedCronTick.test(await tail()));
+      const signedCronTick = '[Cron name="heartbeat" period="*/2 * * * * *"] cron-tick';
+      await until(async () => (await tail()).includes(`PROMPT: ${signedCronTick}`));
 
       // Kill only the runtime, leaving its pane/shell. The next cron fire must
       // inspect process liveness and restart; typing into the shell would yield
@@ -564,11 +557,10 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
 
       // Automatic watcher reload replaces the old job rather than double-arming.
       writeFileSync(cronFile, scheduleConfig('cron-updated', true));
-      const signedCronUpdated =
-        /(?:PROMPT|GOT): \[Cron name="heartbeat" period="\*\/2 \* \* \* \* \*" scheduled_at="[^"]+" timezone="[^"]+"\] cron-updated/u;
+      const signedCronUpdated = '[Cron name="heartbeat" period="*/2 * * * * *"] cron-updated';
       await until(async () => {
         const output = await tail();
-        return signedCronUpdated.test(output);
+        return output.includes(`PROMPT: ${signedCronUpdated}`) || output.includes(`GOT: ${signedCronUpdated}`);
       });
 
       // Removing the schedule and rebuilding prevents any later delivery.

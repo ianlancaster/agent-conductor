@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionConfig } from '../src/config/schema.js';
 import { DeliveryQueue } from '../src/core/delivery.js';
-import { isMessageReceipt, Messaging, renderMessageReceipt } from '../src/core/messaging.js';
+import { Messaging } from '../src/core/messaging.js';
 import { SessionStateManager } from '../src/core/state.js';
 import { Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
@@ -33,13 +33,6 @@ describe('Messaging delivery receipts', () => {
     for (const queue of queues) queue.stop();
     queues.length = 0;
     store.close();
-  });
-
-  it('recognizes and renders an uncertain public receipt', () => {
-    const receipt = { messageId: 7, recipient: 'beta', status: 'uncertain', deduplicated: true } as const;
-
-    expect(isMessageReceipt(receipt)).toBe(true);
-    expect(renderMessageReceipt(receipt)).toBe('Submission of message #7 to beta is uncertain (deduplicated).');
   });
 
   it('does not replay a queued local message after a conductor restart', async () => {
@@ -96,247 +89,6 @@ describe('Messaging delivery receipts', () => {
     expect(first).toEqual({ messageId: 1, recipient: 'beta', status: 'delivered', deduplicated: false });
     expect(repeated).toEqual({ messageId: 1, recipient: 'beta', status: 'delivered', deduplicated: true });
     expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] once']);
-  });
-
-  it('persists unknown submission effect before acknowledgement and never replays it after restart or duplicate input', async () => {
-    const pane = await backend.createPane('beta', 'pane');
-    states.setSession('beta', pane.id);
-    states.setReady('beta');
-    const runtime = new FakeRuntime();
-    const uncertain: string[] = [];
-    let releaseSubmit: (() => void) | undefined;
-    let markWriteStarted: (() => void) | undefined;
-    const writeStarted = new Promise<void>((resolve) => {
-      markWriteStarted = resolve;
-    });
-    const originalSubmit = backend.submitIfUnchanged.bind(backend);
-    backend.submitIfUnchanged = async (...args) => {
-      const accepted = await originalSubmit(...args);
-      runtime.inputState = 'draft';
-      markWriteStarted?.();
-      await new Promise<void>((resolve) => {
-        releaseSubmit = resolve;
-      });
-      return accepted;
-    };
-    const firstQueue = makeQueue(runtime, pane.id);
-    const firstMessaging = makeMessaging(firstQueue, undefined, undefined, async (recipient, id, reason) => {
-      uncertain.push(`${recipient}:${String(id)}:${reason}`);
-      return true;
-    });
-
-    const sending = firstMessaging.sendToSession('alpha', 'beta', 'ambiguous once', 'stable-unknown');
-    await writeStarted;
-    expect(store.getMessage(1)?.status).toBe('uncertain');
-    expect(firstQueue.isDeliveryActive(1)).toBe(true);
-    expect(() =>
-      firstMessaging.reconcileUncertainMessage(1, 'abandoned', 'console:operator', 'attempt is still active'),
-    ).toThrow('retry reconciliation after it settles');
-    expect(store.getMessageReconciliation(1)).toBeUndefined();
-    const concurrentDuplicate = firstMessaging.sendToSession(
-      'alpha',
-      'beta',
-      'changed concurrent duplicate',
-      'stable-unknown',
-    );
-    releaseSubmit?.();
-    await expect(sending).resolves.toEqual({
-      messageId: 1,
-      recipient: 'beta',
-      status: 'uncertain',
-      deduplicated: false,
-    });
-    await expect(concurrentDuplicate).resolves.toEqual({
-      messageId: 1,
-      recipient: 'beta',
-      status: 'uncertain',
-      deduplicated: true,
-    });
-    expect(store.getPendingDeliveries('beta')).toEqual([]);
-    expect(await firstMessaging.cancelMessage(1, 'alpha')).toContain('cannot be cancelled or retried automatically');
-    await firstMessaging.notifyPendingUncertain('beta');
-    firstQueue.stop();
-
-    const restartedQueue = makeQueue(new FakeRuntime(), pane.id);
-    const restarted = makeMessaging(restartedQueue, undefined, undefined, async (recipient, id, reason) => {
-      uncertain.push(`${recipient}:${String(id)}:${reason}`);
-      return true;
-    });
-    await restarted.recoverPendingMessages('beta');
-    await expect(restarted.sendToSession('alpha', 'beta', 'changed duplicate', 'stable-unknown')).resolves.toEqual({
-      messageId: 1,
-      recipient: 'beta',
-      status: 'uncertain',
-      deduplicated: true,
-    });
-
-    expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] ambiguous once']);
-    expect(uncertain).toEqual(['beta:1:submission-unconfirmed']);
-    expect(firstQueue.isDeliveryActive(1)).toBe(false);
-    expect(
-      restarted.reconcileUncertainMessage(1, 'abandoned', 'console:operator', 'settled draft was discarded'),
-    ).toMatchObject({ status: 'uncertain', reconciliation: { outcome: 'abandoned' } });
-  }, 30_000);
-
-  it('refuses reconciliation while an immediate attempt can still settle as delivered', async () => {
-    const pane = await backend.createPane('beta', 'pane');
-    states.setSession('beta', pane.id);
-    states.setReady('beta');
-    const runtime = new FakeRuntime();
-    let releaseSubmit: (() => void) | undefined;
-    let markWriteStarted: (() => void) | undefined;
-    const writeStarted = new Promise<void>((resolve) => {
-      markWriteStarted = resolve;
-    });
-    const originalSubmit = backend.submitIfUnchanged.bind(backend);
-    backend.submitIfUnchanged = async (...args) => {
-      const accepted = await originalSubmit(...args);
-      markWriteStarted?.();
-      await new Promise<void>((resolve) => {
-        releaseSubmit = resolve;
-      });
-      return accepted;
-    };
-    const queue = makeQueue(runtime, pane.id);
-    const messaging = makeMessaging(queue);
-
-    const sending = messaging.sendToSession('alpha', 'beta', 'confirm after hold');
-    await writeStarted;
-    expect(store.getMessage(1)?.status).toBe('uncertain');
-    expect(queue.isDeliveryActive(1)).toBe(true);
-    expect(() =>
-      messaging.reconcileUncertainMessage(1, 'abandoned', 'console:operator', 'premature observation'),
-    ).toThrow('retry reconciliation after it settles');
-    expect(store.getMessageReconciliation(1)).toBeUndefined();
-
-    releaseSubmit?.();
-    await expect(sending).resolves.toMatchObject({ messageId: 1, status: 'delivered' });
-    expect(queue.isDeliveryActive(1)).toBe(false);
-    expect(store.getMessage(1)?.status).toBe('delivered');
-    expect(store.getMessageReconciliation(1)).toBeUndefined();
-    expect(() => messaging.reconcileUncertainMessage(1, 'abandoned', 'console:operator', 'too late')).toThrow(
-      'is delivered; only an uncertain receipt can be reconciled',
-    );
-  });
-
-  it('refuses reconciliation during a timer-driven attempt that settles back to pending', async () => {
-    const pane = await backend.createPane('beta', 'pane');
-    states.setSession('beta', pane.id);
-    states.setReady('beta');
-    const runtime = new FakeRuntime();
-    runtime.inputState = 'draft';
-    let releaseSubmit: (() => void) | undefined;
-    let markWriteStarted: (() => void) | undefined;
-    const writeStarted = new Promise<void>((resolve) => {
-      markWriteStarted = resolve;
-    });
-    backend.submitIfUnchanged = async () => {
-      markWriteStarted?.();
-      await new Promise<void>((resolve) => {
-        releaseSubmit = resolve;
-      });
-      return false;
-    };
-    const queue = makeQueue(runtime, pane.id, { queueDrainMs: 20, queueMaxAgeMs: 60_000 });
-    const messaging = makeMessaging(queue);
-
-    await expect(messaging.sendToSession('alpha', 'beta', 'compare will reject')).resolves.toMatchObject({
-      messageId: 1,
-      status: 'queued',
-    });
-    runtime.inputState = 'clear';
-    await writeStarted;
-    expect(store.getMessage(1)?.status).toBe('uncertain');
-    expect(queue.isDeliveryActive(1)).toBe(true);
-    expect(() =>
-      messaging.reconcileUncertainMessage(1, 'manually-submitted', 'console:operator', 'premature observation'),
-    ).toThrow('retry reconciliation after it settles');
-    expect(store.getMessageReconciliation(1)).toBeUndefined();
-
-    releaseSubmit?.();
-    await vi.waitFor(
-      () => {
-        expect(queue.isDeliveryActive(1)).toBe(false);
-        expect(store.getMessage(1)?.status).toBe('pending');
-      },
-      { timeout: 1_000, interval: 1 },
-    );
-    queue.stop();
-    expect(store.getMessageReconciliation(1)).toBeUndefined();
-    expect(backend.panes.get(pane.id)?.received).toEqual([]);
-    expect(() =>
-      messaging.reconcileUncertainMessage(1, 'manually-submitted', 'console:operator', 'compare rejected'),
-    ).toThrow('is pending; only an uncertain receipt can be reconciled');
-  });
-
-  it('retains a failed owner notice until one surface accepts it, then never accepts it twice', async () => {
-    const row = store.insertDirectMessage('alpha', 'beta', 'inspect me', 'notice-once').row;
-    expect(store.markMessageSubmissionStarted(row.id)).toBe(true);
-    const attempts: number[] = [];
-    const messaging = makeMessaging(makeQueue(new FakeRuntime(), 'unused'), undefined, undefined, async () => {
-      attempts.push(attempts.length + 1);
-      return attempts.length > 1;
-    });
-
-    await messaging.notifyPendingUncertain();
-    expect(store.getMessage(row.id)?.uncertain_notified_at).toBeNull();
-    await messaging.notifyPendingUncertain();
-    expect(store.getMessage(row.id)?.uncertain_notified_at).toBeTypeOf('string');
-    await messaging.notifyPendingUncertain();
-
-    expect(attempts).toEqual([1, 2]);
-    messaging.stop();
-  });
-
-  it('reconciles both human outcomes idempotently without making any terminal call', async () => {
-    const submit = vi.spyOn(backend, 'submitIfUnchanged');
-    const run = vi.spyOn(backend, 'run');
-    const first = store.insertDirectMessage('alpha', 'beta', 'ambiguous', 'reconcile-key').row;
-    expect(store.markMessageSubmissionStarted(first.id)).toBe(true);
-    const second = store.insertDirectMessage('alpha', 'beta', 'abandon this').row;
-    expect(store.markMessageSubmissionStarted(second.id)).toBe(true);
-    const messaging = makeMessaging(makeQueue(new FakeRuntime(), 'unused'));
-
-    const submitted = messaging.reconcileUncertainMessage(
-      first.id,
-      'manually-submitted',
-      'console:operator',
-      'operator inspected alpha and pressed Enter once',
-    );
-    expect(submitted).toMatchObject({
-      messageId: first.id,
-      status: 'uncertain',
-      deduplicated: false,
-      reconciliation: {
-        outcome: 'manually-submitted',
-        actor: 'console:operator',
-        evidence: 'operator inspected alpha and pressed Enter once',
-      },
-    });
-    expect(
-      messaging.reconcileUncertainMessage(
-        first.id,
-        'manually-submitted',
-        'another-console',
-        'later duplicate evidence must not replace the original audit',
-      ),
-    ).toMatchObject({ deduplicated: true, reconciliation: submitted.reconciliation });
-    expect(() =>
-      messaging.reconcileUncertainMessage(first.id, 'abandoned', 'console:operator', 'conflicting decision'),
-    ).toThrow('already reconciled as manually-submitted');
-    expect(
-      messaging.reconcileUncertainMessage(second.id, 'abandoned', 'console:operator', 'draft was discarded'),
-    ).toMatchObject({ reconciliation: { outcome: 'abandoned' } });
-
-    await expect(messaging.sendToSession('alpha', 'beta', 'must not replay', 'reconcile-key')).resolves.toMatchObject({
-      messageId: first.id,
-      status: 'uncertain',
-      deduplicated: true,
-      reconciliation: submitted.reconciliation,
-    });
-    expect(submit).not.toHaveBeenCalled();
-    expect(run).not.toHaveBeenCalled();
-    messaging.stop();
   });
 
   it('holds peer messages while paused and drains them after ordinary resume', async () => {
@@ -925,17 +677,13 @@ describe('Messaging delivery receipts', () => {
     });
   });
 
-  function makeQueue(
-    runtime: FakeRuntime,
-    paneId: string,
-    config: { queueDrainMs: number; queueMaxAgeMs: number } = CONFIG,
-  ): DeliveryQueue {
+  function makeQueue(runtime: FakeRuntime, paneId: string): DeliveryQueue {
     const queue = new DeliveryQueue({
       backend,
       runtimeFor: () => runtime,
       getPane: (session) => (session === 'beta' ? { backend: 'fake', id: paneId } : undefined),
       isPaused: (session) => states.isPaused(session),
-      config,
+      config: CONFIG,
     });
     queues.push(queue);
     return queue;
@@ -945,7 +693,6 @@ describe('Messaging delivery receipts', () => {
     delivery: DeliveryQueue,
     events?: FakeEventPublisher,
     pausedNotice?: (codename: string) => string | undefined,
-    onDeliveryUncertain?: (recipient: string, deliveryId: number, reason: string) => Promise<boolean>,
   ): Messaging {
     return new Messaging({
       store,
@@ -954,7 +701,6 @@ describe('Messaging delivery receipts', () => {
       sessions: () => sessions,
       startSession: async () => 'started',
       pausedNotice,
-      onDeliveryUncertain,
       events,
     });
   }

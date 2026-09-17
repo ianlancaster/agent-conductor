@@ -92,18 +92,8 @@ export type ConductorEvent = ConductorEventEnvelope &
         readonly type: 'schedule';
         readonly session: string;
         readonly label: string;
-        /** Immutable nominal occurrence, distinct from envelope occurredAt and delivery time. */
-        readonly scheduledAt: string;
-        /** IANA timezone in which the cron expression selected scheduledAt. */
-        readonly timezone: string;
         readonly outcome:
-          | 'fired'
-          | 'fired-fresh'
-          | 'deferred-paused'
-          | 'skipped-stopped'
-          | 'skipped-cancelled'
-          | 'failed'
-          | 'uncertain';
+          'fired' | 'fired-fresh' | 'deferred-paused' | 'skipped-stopped' | 'skipped-cancelled' | 'failed';
       }
     | {
         readonly type: 'operator.request.created';

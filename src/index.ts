@@ -1,7 +1,6 @@
 export { Supervisor } from './core/supervisor.js';
 export type { SupervisorOptions } from './core/supervisor.js';
 export type { MessageReceipt } from './core/messaging.js';
-export type { MessageReconciliation, MessageReconciliationOutcome } from './store/index.js';
 export type { SessionAdmissionClaim, SessionAdmissionGate } from './config/admission.js';
 export { verifySessionStatusReceipt } from './core/attestation.js';
 export type {
@@ -51,7 +50,6 @@ export type {
   RunbookVariant,
 } from './runbooks/types.js';
 export type {
-  AcceptedDeliverySubmission,
   CreatePaneOptions,
   DeliveryCapture,
   DeliveryCaptureOptions,

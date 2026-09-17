@@ -310,27 +310,6 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       },
     },
     {
-      command: 'reconcile-message',
-      operations: ['reconcile_message'],
-      group: 'Conversation',
-      usage: '/reconcile-message <message-id> <manually-submitted|abandoned> <evidence>',
-      description: operationDescription(operations, 'reconcile_message'),
-      invoke: (args, actor) => {
-        const messageId = Number(args[0]);
-        const outcome = args[1];
-        const evidence = args.slice(2).join(' ');
-        if (
-          !Number.isInteger(messageId) ||
-          messageId < 1 ||
-          (outcome !== 'manually-submitted' && outcome !== 'abandoned') ||
-          evidence.length === 0
-        ) {
-          usage('/reconcile-message <message-id> <manually-submitted|abandoned> <evidence>');
-        }
-        return invoke('reconcile_message', { messageId, outcome, evidence }, actor);
-      },
-    },
-    {
       command: 'auto',
       operations: ['toggle_auto'],
       group: 'Modes',

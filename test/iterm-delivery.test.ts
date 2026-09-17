@@ -90,12 +90,4 @@ describe('iTerm delivery submit keystroke', () => {
     await backend().run(PANE, 'status update, please');
     expectSingleSubmitCarriageReturn(deliveryScript());
   });
-
-  it('returns the delivery-bound composer staged immediately before submit', async () => {
-    await expect(backend().submitIfUnchanged(PANE, 'protected message', 'previous pane snapshot')).resolves.toEqual({
-      accepted: true,
-      staged: { content: '~/repos ❯', token: '~/repos ❯' },
-    });
-    expect(deliveryScript()).toContain('set conductorStagedContents to contents as string');
-  });
 });

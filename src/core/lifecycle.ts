@@ -30,13 +30,6 @@ export interface StartOptions {
   headless?: boolean;
 }
 
-/** Internal evidence describing whether this caller's launch options reached the runtime command. */
-export interface StartResult {
-  message: string;
-  optionsApplied: boolean;
-  promptApplied: boolean;
-}
-
 export interface ProcessObservation {
   /** Foreground agent runtime truth; null means terminal-backend inspection failed. */
   active: boolean | null;
@@ -117,7 +110,7 @@ export class Lifecycle {
   private readonly panes = new Map<string, PaneRef>();
   private readonly sessions = new Map<string, string>();
   /** In-flight start per codename — serializes concurrent starts so we never open two panes for one session. */
-  private readonly starting = new Map<string, { promise: Promise<string>; prompt: string | undefined }>();
+  private readonly starting = new Map<string, Promise<string>>();
   private readonly processObservations = new Map<string, ProcessObservation>();
 
   constructor(private readonly deps: LifecycleDeps) {}
@@ -263,35 +256,16 @@ export class Lifecycle {
   }
 
   start(codename: string, opts: StartOptions = {}): Promise<string> {
-    return this.startWithResult(codename, opts).then((result) => result.message);
-  }
-
-  /**
-   * Start while retaining per-caller ownership evidence. Concurrent callers
-   * may share one launch promise, but only the winning caller's options were
-   * necessarily used to build the runtime command.
-   */
-  async startWithResult(codename: string, opts: StartOptions = {}): Promise<StartResult> {
     // Serialize starts for one codename: a cron fire racing an operator /start
     // (or an auto-start via sendToSession) must not both pass the liveness check
     // and open two panes for a single identity.
     const inFlight = this.starting.get(codename);
-    if (inFlight !== undefined) {
-      const message = await inFlight.promise;
-      const launched = message === `${codename} started.` || message === `${codename} continued.`;
-      return {
-        message,
-        optionsApplied: false,
-        promptApplied: launched && inFlight.prompt === opts.prompt,
-      };
-    }
+    if (inFlight !== undefined) return inFlight;
     const promise = this.startInner(codename, opts).finally(() => {
       this.starting.delete(codename);
     });
-    this.starting.set(codename, { promise, prompt: opts.prompt });
-    const message = await promise;
-    const launched = message === `${codename} started.` || message === `${codename} continued.`;
-    return { message, optionsApplied: launched, promptApplied: launched };
+    this.starting.set(codename, promise);
+    return promise;
   }
 
   private async startInner(codename: string, opts: StartOptions): Promise<string> {

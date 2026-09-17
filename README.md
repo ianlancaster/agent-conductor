@@ -139,12 +139,7 @@ different: it writes raw terminal input for prompts and slash commands, bypasses
 protected delivery queue, and can overwrite operator typing. Use it only for deliberate
 terminal control. Every queued receipt records why it could not run, including when it is waiting
 behind an earlier FIFO message, and recipient activation prompts an immediate retry in addition to
-the periodic drain. A receipt becomes `uncertain` when a terminal accepts the write but bounded
-runtime-owned composer observations cannot prove submission. Conductor does not replay that
-message. It sends one durable owner notice independently of automatic stall handling. After
-inspecting the recipient composer, the operator records either `manually-submitted` or `abandoned`
-with `/reconcile-message <message-id> <outcome> <evidence>`; reconciliation records evidence and
-never writes to the terminal.
+the periodic drain.
 
 ## Status and observability
 
@@ -335,13 +330,8 @@ registration cleanup. A later `/spawn <same-name> --session-id <id>` can therefo
 disposable workspace and resume that conversation without an intervening fresh launch. Session YAML
 can also define Croner-compatible `schedules`; inactive sessions are skipped by default
 (`wakeIfStopped: false`), while active sessions receive prompts through protected delivery.
-Every occurrence carries a
-`[Cron name="..." period="..." scheduled_at="..." timezone="..."]` signature so agents can
-distinguish recurring automation from direct operator input and retain its nominal source time
-across callback and delivery delays. Conductor durably admits that complete signed occurrence
-before per-session queuing, replays only submissions that never crossed the terminal-effect
-boundary, and quarantines an interrupted or unconfirmed submission instead of risking duplicate
-input. Give every schedule a descriptive `label`;
+Every occurrence carries a `[Cron name="..." period="..."]` signature so agents can distinguish
+recurring automation from direct operator input. Give every schedule a descriptive `label`;
 unlabeled legacy entries receive a positional `schedule-N` name.
 Only explicit `wakeIfStopped: true` allows a cron to start a stopped target; agents need the
 user's explicit authorization to enable that behavior. This safe default also applies to existing

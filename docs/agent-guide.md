@@ -309,16 +309,8 @@ unanswered and diagnosis is necessary.
 Direct-message receipts are observable:
 
 - `queued` means Conductor durably retained the recipient delivery for a later safe submission.
-- `delivered` means backend acceptance was followed by bounded, runtime-owned evidence that the
-  composer cleared and the protected pane changed from its exact pre-write observation.
-- `uncertain` means the terminal write may have happened, but Conductor could not prove submission.
-  This state is checkpointed before the write, survives restart, and is never replayed
-  automatically. Inspect the recipient composer before manually submitting or editing it. A draft
-  may be the original delivery, operator input, or a mixture; Conductor deliberately does not infer
-  ownership or press Enter again. Conductor retains an owner notice until an operator console or
-  channel accepts it; pause, auto mode, and sentinel availability do not suppress this notice.
-- Conductor reconstructs only `pending` direct messages and per-recipient broadcast deliveries
-  after restart. `uncertain` receipts remain held at the explicit no-replay boundary.
+- `delivered` means protected pane submission completed.
+- Conductor reconstructs pending direct messages and per-recipient broadcast deliveries after restart. A crash after terminal submission but before the durable completion update can replay that one message, so this boundary is at-least-once rather than transactionally exactly once.
 - `get_message_status` reports `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`, so a
   sender can distinguish occupied input, missing runtime chrome, and
   `waiting-behind-earlier-message`. Every current-run queued receipt receives an attempt timestamp;
@@ -329,14 +321,6 @@ Direct-message receipts are observable:
   not-found/not-visible response for a guessed ID cannot be used as a fleet ledger-gap check.
   The operator command can inspect any receipt.
 - `cancel_message` can cancel a pending receipt before its pane write starts.
-- `cancel_message` refuses an `uncertain` receipt because its terminal effect is already ambiguous.
-- After manual inspection, an operator may use
-  `/reconcile-message <message-id> <manually-submitted|abandoned> <evidence>`. The first outcome,
-  actor, timestamp, and evidence are durable; repeating that outcome is idempotent and a conflicting
-  outcome is refused. Reconciliation preserves the `uncertain` transport receipt and makes no
-  terminal call. If the original terminal attempt is still active, reconciliation is refused until
-  that attempt settles; a confirmed delivery or compare rejection cannot coexist with manual
-  reconciliation evidence.
 - Reusing a sender-scoped `idempotencyKey` returns the original receipt.
 - Operator-originated receipts may include a `notice`; operator adapters render it after the
   acknowledgement, and Conductor prepends the same notice to the protected recipient envelope.
@@ -696,22 +680,9 @@ The cron expression uses the Conductor process's local timezone. Each entry has:
 
 Behavior:
 
-- Every occurrence is delivered with a visible automation signature containing its name, exact
-  cron expression, immutable nominal time, and the IANA timezone in which the expression was
-  evaluated, for example
-  `[Cron name="weekday review" period="0 9 * * 1-5" scheduled_at="2026-09-17T15:00:00.000Z" timezone="America/Denver"]`.
-  The UTC instant remains unchanged across callback, serialization, and delivery delays. It is
-  never presented as direct operator input.
-- Legacy envelopes without `scheduled_at` and `timezone` remain recognizable cron input, but their
-  source time is unavailable. Preserve the raw envelope or transport identity and fail closed when
-  exact source time is required; never derive a nominal slot from handling, event, or receipt time.
-- Before entering per-session serialization, each occurrence is durably admitted with its exact
-  identity, rendered envelope, timezone, and wake/fresh-context policy. A process restart replays
-  only rows that remain `admitted`.
-- Immediately before terminal submission, the occurrence becomes `dispatching`. A delivery that
-  proves it wrote nothing may restore `admitted`; an interrupted or unconfirmed submission becomes
-  non-replayable `unknown` and emits an `uncertain` schedule outcome. This fail-closed boundary
-  avoids automatically duplicating input whose effect cannot be determined.
+- Every occurrence is delivered with a visible automation signature containing its name and exact
+  cron expression, for example `[Cron name="weekday review" period="0 9 * * 1-5"]`. It is never
+  presented as direct operator input.
 - An active session receives the signed prompt through normal protected delivery.
 - An inactive session is skipped unless `wakeIfStopped: true`. This includes targets whose runtime
   exited or whose pane was closed; reconciliation checks process state before firing.
@@ -732,10 +703,10 @@ waking stopped agents. A request for recurring work alone is not permission to s
 `wakeIfStopped: true`. Schedules are configured in session YAML; there is no separate cron-creation
 MCP tool or operator command.
 
-Upgrade note: existing schedule entries that omit `wakeIfStopped` leave stopped agents stopped. To
-preserve intentional unattended wake-ups, the operator must explicitly opt those entries in. New
-scheduler behavior requires restarting the Conductor process; configuration hot-reload does not
-replace the code already running in an older daemon.
+Upgrade note: existing schedule entries that omit `wakeIfStopped` now leave stopped agents stopped.
+To preserve intentional unattended wake-ups, the operator must explicitly opt those entries in.
+No database migration is needed. New scheduler behavior requires restarting the Conductor process;
+configuration hot-reload does not replace the code already running in an older daemon.
 
 Use schedules for genuinely time-driven work: periodic inbox triage, daily status synthesis, or a
 maintenance check. Do not use them to poll peers during conversation; direct replies already wake
@@ -1351,14 +1322,6 @@ raw terminal control is explicitly intended. `waiting-behind-earlier-message` me
 scheduled but FIFO safety is holding it behind an older receipt; inspect that older known receipt
 instead of treating the later one as a dead queue. Raw recipient activation and runtime turn events
 both trigger a fresh protected-delivery pass.
-
-`submission-unconfirmed` means the protected write crossed its durable no-replay checkpoint but
-bounded composer observations did not prove that Enter took effect. The receipt is `uncertain`, not
-queued or delivered. Conductor sends one owner notice independently of ordinary stall automation
-without changing runtime activity, and it will not press Enter, clear the composer, repaste, or
-replay the message after restart. Inspect the pane, then use `/reconcile-message` to record either a
-manual submission or abandonment with evidence. This closes the manual workflow without changing
-the preserved transport receipt.
 
 `recipient-paused` means a peer delivery is durably held until ordinary resume. Operator messages intentionally bypass the pause and may pass older held peer traffic; held traffic retains its own FIFO order. A stopped paused recipient is not started merely to drain the queue.
 

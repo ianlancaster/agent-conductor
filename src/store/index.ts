@@ -3,13 +3,6 @@ import type { RuntimeName } from '../config/schema.js';
 import type { Activity } from '../core/types.js';
 import type { ConductorEvent } from '../events/types.js';
 import type { RunbookSource } from '../runbooks/types.js';
-import type {
-  ScheduleOccurrenceAdmission,
-  ScheduleOccurrenceInsertResult,
-  ScheduleOccurrenceLedger,
-  ScheduleOccurrenceOutcome,
-  ScheduleOccurrenceRow,
-} from '../core/schedule-occurrences.js';
 import { applyMigrations, openSqliteDatabase, openSqliteDatabaseReadOnly, withTransaction } from './sqlite.js';
 import type { SqliteMigration } from './sqlite.js';
 
@@ -30,7 +23,7 @@ export interface MessageRow {
   recipient: string;
   type: 'message' | 'broadcast';
   content: string;
-  status: 'pending' | 'uncertain' | 'delivered' | 'cancelled';
+  status: 'pending' | 'delivered' | 'cancelled';
   idempotency_key: string | null;
   created_at: string;
   delivered_at: string | null;
@@ -39,22 +32,6 @@ export interface MessageRow {
   cancelled_at: string | null;
   delivery_policy: DeliveryPausePolicy;
   delivery_envelope: string | null;
-  uncertain_notified_at: string | null;
-}
-
-export type MessageReconciliationOutcome = 'manually-submitted' | 'abandoned';
-
-export interface MessageReconciliation {
-  messageId: number;
-  outcome: MessageReconciliationOutcome;
-  actor: string;
-  evidence: string;
-  reconciledAt: string;
-}
-
-export interface MessageReconciliationResult {
-  reconciliation: MessageReconciliation;
-  deduplicated: boolean;
 }
 
 export type DeliveryPausePolicy = 'hold' | 'bypass';
@@ -130,24 +107,6 @@ export interface NewRunbookAdoption {
   source: RunbookSource;
   topic: string;
   sessionRoles: readonly RunbookAdoptionSessionRole[];
-}
-
-interface ScheduleOccurrenceDbRow {
-  id: string;
-  session: string;
-  schedule_index: number;
-  label: string;
-  period: string;
-  scheduled_at: string;
-  timezone: string;
-  envelope: string;
-  wake_if_stopped: number;
-  fresh_context: number;
-  state: ScheduleOccurrenceRow['state'];
-  outcome: ScheduleOccurrenceOutcome | null;
-  admitted_at: string;
-  dispatch_started_at: string | null;
-  settled_at: string | null;
 }
 
 function normalizedActivity(value: string): Activity {
@@ -365,6 +324,8 @@ const MIGRATIONS: SqliteMigration[] = [
       db.exec('ALTER TABLE messages ADD COLUMN delivery_envelope TEXT');
     }
   },
+  // Retain applied migrations 16/17 for database compatibility only.
+  // Their delivery/reconciliation/scheduling behavior has been reverted.
   (db) => {
     const messageColumns = db.prepare('PRAGMA table_info(messages)').all() as { name: string }[];
     if (!messageColumns.some((column) => column.name === 'uncertain_notified_at')) {
@@ -409,7 +370,7 @@ const MIGRATIONS: SqliteMigration[] = [
   },
 ];
 
-export class Store implements ScheduleOccurrenceLedger {
+export class Store {
   private readonly db: DatabaseSync;
 
   constructor(dbPath: string) {
@@ -424,144 +385,6 @@ export class Store implements ScheduleOccurrenceLedger {
 
   close(): void {
     this.db.close();
-  }
-
-  // ── scheduled occurrences ────────────────────────────────────────────────
-
-  admit(admission: ScheduleOccurrenceAdmission): ScheduleOccurrenceInsertResult {
-    const admittedAt = new Date().toISOString();
-    const inserted = this.db
-      .prepare(
-        'INSERT OR IGNORE INTO schedule_occurrences ' +
-          '(id, session, schedule_index, label, period, scheduled_at, timezone, envelope, ' +
-          'wake_if_stopped, fresh_context, admitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      )
-      .run(
-        admission.id,
-        admission.session,
-        admission.scheduleIndex,
-        admission.label,
-        admission.period,
-        admission.scheduledAt,
-        admission.timezone,
-        admission.envelope,
-        admission.wakeIfStopped ? 1 : 0,
-        admission.freshContext ? 1 : 0,
-        admittedAt,
-      );
-    const row = this.getScheduleOccurrence(admission.id);
-    if (row === undefined) throw new Error(`Schedule occurrence '${admission.id}' was not persisted.`);
-    if (!this.sameScheduleAdmission(row, admission)) {
-      throw new Error(`Schedule occurrence identity collision for '${admission.id}'.`);
-    }
-    return { row, deduplicated: inserted.changes === 0 };
-  }
-
-  getScheduleOccurrence(id: string): ScheduleOccurrenceRow | undefined {
-    const row = this.db.prepare('SELECT * FROM schedule_occurrences WHERE id = ?').get(id) as
-      ScheduleOccurrenceDbRow | undefined;
-    return row === undefined ? undefined : this.scheduleOccurrenceRow(row);
-  }
-
-  recoverAdmitted(): ScheduleOccurrenceRow[] {
-    return (
-      this.db
-        .prepare("SELECT * FROM schedule_occurrences WHERE state = 'admitted' ORDER BY admitted_at, id")
-        .all() as unknown as ScheduleOccurrenceDbRow[]
-    ).map((row) => this.scheduleOccurrenceRow(row));
-  }
-
-  markDispatching(id: string): boolean {
-    return (
-      this.db
-        .prepare(
-          "UPDATE schedule_occurrences SET state = 'dispatching', dispatch_started_at = ? " +
-            "WHERE id = ? AND state = 'admitted'",
-        )
-        .run(new Date().toISOString(), id).changes === 1
-    );
-  }
-
-  restoreAdmitted(id: string): boolean {
-    return (
-      this.db
-        .prepare(
-          "UPDATE schedule_occurrences SET state = 'admitted', dispatch_started_at = NULL " +
-            "WHERE id = ? AND state = 'dispatching'",
-        )
-        .run(id).changes === 1
-    );
-  }
-
-  settle(id: string, from: 'admitted' | 'dispatching', outcome: ScheduleOccurrenceOutcome): boolean {
-    return (
-      this.db
-        .prepare(
-          "UPDATE schedule_occurrences SET state = 'settled', outcome = ?, settled_at = ? " +
-            'WHERE id = ? AND state = ?',
-        )
-        .run(outcome, new Date().toISOString(), id, from).changes === 1
-    );
-  }
-
-  markUnknown(id: string): boolean {
-    return (
-      this.db
-        .prepare(
-          "UPDATE schedule_occurrences SET state = 'unknown', settled_at = ? " +
-            "WHERE id = ? AND state = 'dispatching'",
-        )
-        .run(new Date().toISOString(), id).changes === 1
-    );
-  }
-
-  quarantineInterruptedDispatches(): ScheduleOccurrenceRow[] {
-    return withTransaction(this.db, () => {
-      const rows = (
-        this.db
-          .prepare("SELECT * FROM schedule_occurrences WHERE state = 'dispatching' ORDER BY admitted_at, id")
-          .all() as unknown as ScheduleOccurrenceDbRow[]
-      ).map((row) => this.scheduleOccurrenceRow(row));
-      const settledAt = new Date().toISOString();
-      this.db
-        .prepare("UPDATE schedule_occurrences SET state = 'unknown', settled_at = ? WHERE state = 'dispatching'")
-        .run(settledAt);
-      return rows.map((row) => ({ ...row, state: 'unknown', settledAt }));
-    });
-  }
-
-  private sameScheduleAdmission(row: ScheduleOccurrenceRow, admission: ScheduleOccurrenceAdmission): boolean {
-    return (
-      row.session === admission.session &&
-      row.scheduleIndex === admission.scheduleIndex &&
-      row.label === admission.label &&
-      row.period === admission.period &&
-      row.scheduledAt === admission.scheduledAt &&
-      row.timezone === admission.timezone &&
-      row.envelope === admission.envelope &&
-      row.wakeIfStopped === admission.wakeIfStopped &&
-      row.freshContext === admission.freshContext
-    );
-  }
-
-  private scheduleOccurrenceRow(row: ScheduleOccurrenceDbRow): ScheduleOccurrenceRow {
-    return {
-      id: row.id,
-      session: row.session,
-      scheduleIndex: row.schedule_index,
-      label: row.label,
-      period: row.period,
-      scheduledAt: row.scheduled_at,
-      timezone: row.timezone,
-      envelope: row.envelope,
-      wakeIfStopped: row.wake_if_stopped === 1,
-      freshContext: row.fresh_context === 1,
-      state: row.state,
-      outcome: row.outcome,
-      admittedAt: row.admitted_at,
-      dispatchStartedAt: row.dispatch_started_at,
-      settledAt: row.settled_at,
-    };
   }
 
   // ── runs ──────────────────────────────────────────────────────────────────
@@ -694,8 +517,7 @@ export class Store implements ScheduleOccurrenceLedger {
       this.db
         .prepare(
           "UPDATE messages SET status = 'delivered', delivered_at = datetime('now'), " +
-            "last_flush_attempt_at = datetime('now'), flush_skip_reason = NULL " +
-            "WHERE id = ? AND status IN ('pending', 'uncertain')",
+            "last_flush_attempt_at = datetime('now'), flush_skip_reason = NULL WHERE id = ? AND status = 'pending'",
         )
         .run(id).changes === 1
     );
@@ -705,33 +527,9 @@ export class Store implements ScheduleOccurrenceLedger {
     this.db
       .prepare(
         "UPDATE messages SET last_flush_attempt_at = datetime('now'), flush_skip_reason = ? " +
-          "WHERE id = ? AND status IN ('pending', 'uncertain')",
+          "WHERE id = ? AND status = 'pending'",
       )
       .run(skipReason, id);
-  }
-
-  /** Checkpoint the no-replay boundary before a terminal write can have an unknown effect. */
-  markMessageSubmissionStarted(id: number): boolean {
-    return (
-      this.db
-        .prepare(
-          "UPDATE messages SET status = 'uncertain', last_flush_attempt_at = datetime('now'), " +
-            "flush_skip_reason = 'submission-unconfirmed' WHERE id = ? AND status = 'pending'",
-        )
-        .run(id).changes === 1
-    );
-  }
-
-  /** A rejected compare-and-submit proves no bytes were written, so retry remains safe. */
-  markMessageSubmissionRejected(id: number): boolean {
-    return (
-      this.db
-        .prepare(
-          "UPDATE messages SET status = 'pending', last_flush_attempt_at = datetime('now'), " +
-            "flush_skip_reason = 'pane-changed' WHERE id = ? AND status = 'uncertain'",
-        )
-        .run(id).changes === 1
-    );
   }
 
   markMessageCancelled(id: number): boolean {
@@ -894,101 +692,6 @@ export class Store implements ScheduleOccurrenceLedger {
     return this.db
       .prepare("SELECT * FROM messages WHERE recipient != '*' AND status = 'pending' ORDER BY recipient, id")
       .all() as unknown as MessageRow[];
-  }
-
-  getUncertainDeliveries(recipient?: string): MessageRow[] {
-    if (recipient !== undefined) {
-      return this.db
-        .prepare("SELECT * FROM messages WHERE recipient = ? AND status = 'uncertain' ORDER BY id")
-        .all(recipient) as unknown as MessageRow[];
-    }
-    return this.db
-      .prepare("SELECT * FROM messages WHERE recipient != '*' AND status = 'uncertain' ORDER BY recipient, id")
-      .all() as unknown as MessageRow[];
-  }
-
-  /** Unknown-effect receipts whose owner notice has not yet reached any supported surface. */
-  getUnnotifiedUncertainDeliveries(recipient?: string): MessageRow[] {
-    const suffix =
-      "status = 'uncertain' AND uncertain_notified_at IS NULL " +
-      'AND NOT EXISTS (SELECT 1 FROM message_reconciliations r WHERE r.message_id = messages.id)';
-    if (recipient !== undefined) {
-      return this.db
-        .prepare(`SELECT * FROM messages WHERE recipient = ? AND ${suffix} ORDER BY id`)
-        .all(recipient) as unknown as MessageRow[];
-    }
-    return this.db
-      .prepare(`SELECT * FROM messages WHERE recipient != '*' AND ${suffix} ORDER BY recipient, id`)
-      .all() as unknown as MessageRow[];
-  }
-
-  markMessageUncertainNotified(id: number, notifiedAt = new Date().toISOString()): boolean {
-    return (
-      this.db
-        .prepare(
-          "UPDATE messages SET uncertain_notified_at = ? WHERE id = ? AND status = 'uncertain' " +
-            'AND uncertain_notified_at IS NULL',
-        )
-        .run(notifiedAt, id).changes === 1
-    );
-  }
-
-  getMessageReconciliation(messageId: number): MessageReconciliation | undefined {
-    const row = this.db
-      .prepare(
-        'SELECT message_id, outcome, actor, evidence, reconciled_at FROM message_reconciliations WHERE message_id = ?',
-      )
-      .get(messageId) as
-      { message_id: number; outcome: string; actor: string; evidence: string; reconciled_at: string } | undefined;
-    if (row === undefined) return undefined;
-    if (row.outcome !== 'manually-submitted' && row.outcome !== 'abandoned') {
-      throw new Error(`Message #${String(messageId)} has an invalid reconciliation outcome.`);
-    }
-    return {
-      messageId: row.message_id,
-      outcome: row.outcome,
-      actor: row.actor,
-      evidence: row.evidence,
-      reconciledAt: row.reconciled_at,
-    };
-  }
-
-  /** Record the first human disposition of an uncertain receipt without rewriting transport history. */
-  reconcileUncertainMessage(
-    messageId: number,
-    outcome: MessageReconciliationOutcome,
-    actor: string,
-    evidence: string,
-    reconciledAt = new Date().toISOString(),
-  ): MessageReconciliationResult {
-    return withTransaction(this.db, () => {
-      const existing = this.getMessageReconciliation(messageId);
-      if (existing !== undefined) {
-        if (existing.outcome !== outcome) {
-          throw new Error(
-            `Message #${String(messageId)} was already reconciled as ${existing.outcome}; ` +
-              `it cannot be changed to ${outcome}.`,
-          );
-        }
-        return { reconciliation: existing, deduplicated: true };
-      }
-      const message = this.getMessage(messageId);
-      if (message === undefined) throw new Error(`Message #${String(messageId)} was not found.`);
-      if (message.status !== 'uncertain') {
-        throw new Error(
-          `Message #${String(messageId)} is ${message.status}; only an uncertain receipt can be reconciled.`,
-        );
-      }
-      this.db
-        .prepare(
-          'INSERT INTO message_reconciliations (message_id, outcome, actor, evidence, reconciled_at) ' +
-            'VALUES (?, ?, ?, ?, ?)',
-        )
-        .run(messageId, outcome, actor, evidence, reconciledAt);
-      const reconciliation = this.getMessageReconciliation(messageId);
-      if (reconciliation === undefined) throw new Error('Message reconciliation was not persisted.');
-      return { reconciliation, deduplicated: false };
-    });
   }
 
   /** Recent direct-message metadata involving one session; message content is deliberately excluded. */

@@ -216,57 +216,6 @@ describe('Shepherd-to-Conductor compatibility contract', () => {
     await expect(sink.send(item)).rejects.toThrow('no valid persisted-message receipt');
   });
 
-  it('preserves an uncertain Conductor receipt as a valid non-delivered result', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          result: {
-            structuredContent: { messageId: 9, recipient: 'coordinator', status: 'uncertain', deduplicated: true },
-          },
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
-    const sink = new ConductorCoordinatorSink(`http://127.0.0.1:${String(PORT)}`);
-
-    await expect(sink.send(item)).resolves.toEqual({
-      messageId: 9,
-      recipient: 'coordinator',
-      status: 'uncertain',
-      deduplicated: true,
-    });
-  });
-
-  it('reads durable operator reconciliation from a parked Conductor receipt without resending', async () => {
-    const row = store.insertDirectMessage('pr-shepherd', 'coordinator', 'ambiguous', 'parked').row;
-    store.markMessageSubmissionStarted(row.id);
-    store.reconcileUncertainMessage(
-      row.id,
-      'abandoned',
-      'console:operator',
-      'operator inspected and discarded the composer draft',
-      '2026-09-17T04:30:00.000Z',
-    );
-    const sink = new ConductorCoordinatorSink(`http://127.0.0.1:${String(PORT)}`);
-
-    await expect(sink.getReceipt(row.id, 'coordinator')).resolves.toEqual({
-      messageId: row.id,
-      recipient: 'coordinator',
-      status: 'uncertain',
-      deduplicated: true,
-      reconciliation: {
-        messageId: row.id,
-        outcome: 'abandoned',
-        actor: 'console:operator',
-        evidence: 'operator inspected and discarded the composer draft',
-        reconciledAt: '2026-09-17T04:30:00.000Z',
-      },
-    });
-    expect(backend.paneFor('coordinator')).toBeUndefined();
-  });
-
   it('retries internal Conductor errors instead of parking them as invalid input', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32603, message: 'delivery failed' } }), {

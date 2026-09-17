@@ -53,12 +53,12 @@ import { IntegrationManager } from './integration-manager.js';
 import { SessionStatusAttestor } from './attestation.js';
 import { FederationRegistry } from '../federation/registry.js';
 import { FederationRouter } from '../federation/router.js';
-import { Scheduler } from './scheduler.js';
 
 const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 const SENTINEL_WORKSPACE_KEY = 'sentinel.codename';
 const FLEET_WATCH_ENABLED_WORKSPACE_KEY = 'sentinel.fleetWatchEnabled';
 const LEGACY_FLEET_WATCHES_WORKSPACE_KEY = 'sentinel.fleetWatches';
+import { Scheduler } from './scheduler.js';
 
 export interface SupervisorStartOptions {
   startAll?: boolean;
@@ -301,7 +301,9 @@ export class Supervisor {
       onSubmitting: (session) => {
         const boundary = this.health.captureTurnBoundary();
         return () => {
-          this.health.noteSubmission(session, boundary);
+          if (!this.health.markTurnActive(session, boundary)) return;
+          if (this.states.get(session)?.running === true) this.states.setActivity(session, 'working');
+          this.sentinel.noteWorking(session);
         };
       },
       config: this.config.messaging,
@@ -362,14 +364,6 @@ export class Supervisor {
       sessions: () => this.sessions,
       startSession: (codename, opts) => this.lifecycle.start(codename, opts),
       pausedNotice: (codename) => this.pausedAutomationNotice(codename),
-      onDeliveryUncertain: (recipient, deliveryId, reason) =>
-        this.channelSend({
-          text:
-            `⚠️ Delivery uncertainty: message #${String(deliveryId)} to ${recipient} has an unknown submission ` +
-            `outcome (${reason}). Inspect the recipient composer before acting; Conductor will not retry it. ` +
-            `After inspection, use /reconcile-message ${String(deliveryId)} manually-submitted <evidence> or ` +
-            `/reconcile-message ${String(deliveryId)} abandoned <evidence>.`,
-        }),
       events: this.eventBus,
     });
     this.integrations = new IntegrationManager({
@@ -438,7 +432,7 @@ export class Supervisor {
       onStall: (session, kind, info) => {
         // A stall kind is causal evidence for the sentinel, not a separate
         // mechanical activity state. A live runtime that is not working is idle.
-        if (info.preserveActivity !== true) this.states.setActivity(session, 'idle');
+        this.states.setActivity(session, 'idle');
         void this.sentinel.handleStall(session, kind, info);
       },
       onWorking: (session) => {
@@ -550,15 +544,9 @@ export class Supervisor {
         return this.states.get(session)?.running === true;
       },
       isPaused: (session) => this.states.isPaused(session),
-      startSession: async (session, opts) => {
-        const result = await this.lifecycle.startWithResult(session, opts);
-        if (result.promptApplied) return 'started';
-        return this.states.get(session)?.running === true ? 'active-without-prompt' : 'not-started';
-      },
+      startSession: (session, opts) => this.lifecycle.start(session, opts),
       stopSession: (session) => this.lifecycle.stop(session),
-      acquireSubmissionLease: (session) => this.delivery.acquireSubmissionLease(session, 'hold'),
-      deliver: (session, text, options) => this.delivery.deliverOrQueue(session, text, options),
-      occurrences: this.store,
+      deliver: (session, text) => this.delivery.deliverOrQueue(session, text, { pausePolicy: 'hold' }),
       events: this.eventBus,
     });
 
@@ -730,9 +718,8 @@ export class Supervisor {
     if (channelStartup === undefined) {
       this.sentinel.activateFleetWatch();
     } else {
-      void channelStartup.then(async () => {
+      void channelStartup.then(() => {
         if (!this.channelsStopping && this.channelStartup === channelStartup) {
-          await this.messaging.notifyPendingUncertain();
           this.sentinel.activateFleetWatch();
         }
       });

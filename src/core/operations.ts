@@ -238,8 +238,7 @@ export class ConductorOperations {
       {
         name: 'send_to_session',
         description: "Send a message to another session's pane, starting it if needed.",
-        resultDescription:
-          'Returns a structured receipt with the message id and delivered, queued, or uncertain status.',
+        resultDescription: 'Returns a structured receipt with the message id and delivered or queued status.',
         audiences: BOTH,
         federation: 'routable',
         signedIdentity: true,
@@ -509,8 +508,7 @@ export class ConductorOperations {
       },
       {
         name: 'cancel_message',
-        description:
-          'Cancel a pending direct message by receipt id before it begins writing to the recipient pane. Unknown-effect submissions cannot be cancelled or retried automatically.',
+        description: 'Cancel a pending direct message by receipt id before it begins writing to the recipient pane.',
         resultDescription: 'Returns the updated receipt as formatted JSON.',
         audiences: BOTH,
         federation: 'routable',
@@ -525,48 +523,6 @@ export class ConductorOperations {
           return this.deps.messaging.cancelMessage(
             messageId,
             actor.audience === 'session' ? actor.codename : undefined,
-          );
-        },
-      },
-      {
-        name: 'reconcile_message',
-        description:
-          'Record an operator-attested outcome for an uncertain receipt after manual composer inspection. This records evidence only and performs no terminal action.',
-        resultDescription: 'Returns the preserved uncertain receipt with its durable reconciliation.',
-        audiences: OPERATOR_ONLY,
-        federation: 'local-only',
-        inputSchema: schema(
-          {
-            messageId: { type: 'number', minimum: 1, description: 'Uncertain message receipt id' },
-            outcome: {
-              type: 'string',
-              enum: ['manually-submitted', 'abandoned'],
-              description: 'Observed manual disposition; never inferred by Conductor',
-            },
-            evidence: {
-              type: 'string',
-              minLength: 1,
-              maxLength: 2_000,
-              description: 'Bounded operator evidence from manual inspection',
-            },
-          },
-          ['messageId', 'outcome', 'evidence'],
-        ),
-        handler: async (args, actor) => {
-          const messageId = args.messageId;
-          if (typeof messageId !== 'number' || !Number.isInteger(messageId) || messageId < 1) {
-            throw new InvalidRequestError("'messageId' is required and must be a positive integer");
-          }
-          const outcome = requireString(args, 'outcome');
-          if (outcome !== 'manually-submitted' && outcome !== 'abandoned') {
-            throw new InvalidRequestError("'outcome' must be 'manually-submitted' or 'abandoned'");
-          }
-          if (actor.audience !== 'operator') throw new InvalidRequestError('Operator authority is required.');
-          return this.deps.messaging.reconcileUncertainMessage(
-            messageId,
-            outcome,
-            actor.id,
-            requireString(args, 'evidence'),
           );
         },
       },
