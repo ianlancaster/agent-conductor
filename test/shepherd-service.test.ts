@@ -80,6 +80,33 @@ describe('Shepherd outbox delivery', () => {
     store.close();
   });
 
+  it('parks an uncertain Conductor receipt without retrying or completing it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-20T00:00:00Z'));
+    const store = new SqliteShepherdStore(':memory:');
+    seed(store);
+    const keys: string[] = [];
+    const worker = service(store, {
+      send: (item) => {
+        keys.push(item.idempotencyKey);
+        return Promise.resolve({
+          messageId: 9,
+          recipient: item.recipient,
+          status: 'uncertain',
+          deduplicated: keys.length > 1,
+        });
+      },
+    });
+
+    await worker.drainOutbox();
+    expect(store.listOutbox()).toHaveLength(1);
+    vi.advanceTimersByTime(1_000);
+    await worker.drainOutbox();
+    expect(keys).toEqual([keys[0]]);
+    expect(store.listOutbox()).toHaveLength(1);
+    store.close();
+  });
+
   it('parks permanent recipient validation failures instead of consuming retries', async () => {
     const store = new SqliteShepherdStore(':memory:');
     seed(store);

@@ -261,7 +261,7 @@ export interface OutboxItem {
 export interface CoordinatorReceipt {
   messageId: number;
   recipient: string;
-  status: 'delivered' | 'queued';
+  status: 'delivered' | 'queued' | 'uncertain';
   deduplicated: boolean;
 }
 

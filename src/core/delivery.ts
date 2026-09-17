@@ -1,11 +1,11 @@
 import { log } from '../logger.js';
 import type { InputState, SessionRuntime } from '../runtimes/types.js';
-import type { TerminalBackend } from '../terminals/types.js';
+import type { DeliveryCapture, TerminalBackend } from '../terminals/types.js';
 import { observeLiveness } from '../terminals/liveness.js';
 import type { PaneRef } from './types.js';
 import type { DeliveryPausePolicy } from '../store/index.js';
 
-export type DeliveryResult = 'delivered' | 'queued' | 'cancelled' | 'no-pane';
+export type DeliveryResult = 'delivered' | 'uncertain' | 'queued' | 'cancelled' | 'no-pane';
 
 export type DeliverySkipReason =
   | 'no-pane'
@@ -17,6 +17,7 @@ export type DeliverySkipReason =
   | 'waiting-behind-earlier-message'
   | 'recipient-paused'
   | 'pane-changed'
+  | 'submission-unconfirmed'
   | 'write-failed';
 
 export type CancellationResult = 'cancelled' | 'in-flight' | 'not-found';
@@ -43,8 +44,18 @@ interface QueuedMessage {
   pausePolicy: DeliveryPausePolicy;
   deliveryId?: number;
   onAttempt?: (skipReason: DeliverySkipReason | null) => void;
+  onSubmissionStarted?: () => boolean;
+  onSubmissionRejected?: () => boolean;
+  onUncertain?: (reason: string) => void;
   onDelivered?: () => void;
 }
+
+type SubmissionOutcome =
+  | { status: 'confirmed' }
+  | { status: 'not-written'; reason: DeliverySkipReason }
+  | { status: 'uncertain'; reason: 'submission-unconfirmed' | 'write-failed' };
+
+const SUBMISSION_CONFIRMATION_DELAYS_MS = [0, 100, 250] as const;
 
 export interface DeliveryOptions {
   /** Held deliveries wait while the recipient is paused; bypass is reserved for trusted operator input. */
@@ -53,7 +64,13 @@ export interface DeliveryOptions {
   deliveryId?: number;
   /** Receipt callback invoked for every classification/write attempt. */
   onAttempt?: (skipReason: DeliverySkipReason | null) => void;
-  /** Receipt callback invoked exactly once, after the pane write succeeds. */
+  /** Durable checkpoint taken before a terminal write can have an unknown effect. */
+  onSubmissionStarted?: () => boolean;
+  /** Restore a durable checkpoint only when the backend proves it wrote nothing. */
+  onSubmissionRejected?: () => boolean;
+  /** Called once when bounded observation cannot prove whether submission took effect. */
+  onUncertain?: (reason: string) => void;
+  /** Receipt callback invoked exactly once, after submission is positively confirmed. */
   onDelivered?: () => void;
 }
 
@@ -83,6 +100,8 @@ export interface DeliveryDeps {
   onSubmitting?(session: string): (() => void) | undefined;
   /** Called only after text has actually been submitted to a live runtime pane. */
   onDelivered?(session: string): void;
+  /** Called once when a write may have happened but bounded composer evidence cannot confirm submission. */
+  onSubmissionUncertain?(session: string, deliveryId: number | undefined, reason: string): void;
   config: {
     queueDrainMs: number;
   };
@@ -146,16 +165,22 @@ export class DeliveryQueue {
         this.delivering.add(options.deliveryId);
       }
       try {
-        const writeSkipReason = await this.submitIfStillClear(
+        const outcome = await this.submitIfStillClear(
           session,
           pane,
           text,
           classification,
           options.pausePolicy ?? 'bypass',
+          options,
         );
-        if (writeSkipReason !== null) {
-          this.recordAttempt(session, options.onAttempt, writeSkipReason);
+        if (outcome.status === 'not-written') {
+          this.recordAttempt(session, options.onAttempt, outcome.reason);
           return this.enqueue(session, text, options, existing);
+        }
+        if (outcome.status === 'uncertain') {
+          this.recordAttempt(session, options.onAttempt, outcome.reason);
+          this.recordUncertain(session, options.deliveryId, outcome.reason, options.onUncertain);
+          return 'uncertain';
         }
         this.recordAttempt(session, options.onAttempt, null);
         this.recordDelivered(session, options.onDelivered);
@@ -356,15 +381,24 @@ export class DeliveryQueue {
         // processed before the next one is typed.
         try {
           if (oldest.deliveryId !== undefined) this.delivering.add(oldest.deliveryId);
-          const writeSkipReason = await this.submitIfStillClear(
+          const outcome = await this.submitIfStillClear(
             session,
             pane,
             oldest.text,
             classification,
             oldest.pausePolicy,
+            oldest,
           );
-          if (writeSkipReason !== null) {
-            this.recordAttempt(session, oldest.onAttempt, writeSkipReason);
+          if (outcome.status === 'not-written') {
+            this.recordAttempt(session, oldest.onAttempt, outcome.reason);
+            continue;
+          }
+          if (outcome.status === 'uncertain') {
+            this.recordAttempt(session, oldest.onAttempt, outcome.reason);
+            queue.splice(oldestIndex, 1);
+            this.recordUncertain(session, oldest.deliveryId, outcome.reason, oldest.onUncertain);
+            if (queue.length === 0) this.queues.delete(session);
+            else this.ensureTimer();
             continue;
           }
           this.recordAttempt(session, oldest.onAttempt, null);
@@ -420,6 +454,9 @@ export class DeliveryQueue {
       pausePolicy: options.pausePolicy ?? 'bypass',
       ...(options.deliveryId !== undefined ? { deliveryId: options.deliveryId } : {}),
       ...(options.onAttempt !== undefined ? { onAttempt: options.onAttempt } : {}),
+      ...(options.onSubmissionStarted !== undefined ? { onSubmissionStarted: options.onSubmissionStarted } : {}),
+      ...(options.onSubmissionRejected !== undefined ? { onSubmissionRejected: options.onSubmissionRejected } : {}),
+      ...(options.onUncertain !== undefined ? { onUncertain: options.onUncertain } : {}),
       ...(options.onDelivered !== undefined ? { onDelivered: options.onDelivered } : {}),
     });
     this.queues.set(session, queue);
@@ -450,29 +487,8 @@ export class DeliveryQueue {
       } else {
         capture = await this.deps.backend.capture(pane, 10);
       }
-      let selectedRuntime = runtime;
-      let state = runtime.parseInputState(capture, session);
-      if (state === null) {
-        const alternatives = (this.deps.runtimeCandidates?.(session) ?? [])
-          .filter((candidate) => candidate.name !== runtime.name)
-          .map((candidate) => ({ candidate, state: candidate.parseInputState(capture, session) }))
-          .filter((result) => result.state !== null);
-        // One distinctive alternate composer is enough to repair stale
-        // active-runtime metadata. Ambiguous recognition remains blocked.
-        if (alternatives.length === 1) {
-          const recognized = alternatives[0];
-          if (recognized !== undefined) {
-            selectedRuntime = recognized.candidate;
-            state = recognized.state;
-            this.deps.onRuntimeDetected?.(session, selectedRuntime.name);
-          }
-        }
-      }
-      if (state !== 'clear' && selectedRuntime.resolveInputState !== undefined) {
-        state = await selectedRuntime.resolveInputState(capture, session, state);
-      }
+      const state = await this.inputStateFromCapture(session, capture, runtime);
       if (state === null) return { state: 'blocked', inputState: null, skipReason: 'composer-not-visible' };
-      this.deps.onRuntimeObserved?.(session);
       if (state === 'clear') {
         return { state: 'clear', inputState: 'clear', skipReason: null, ...(token !== undefined ? { token } : {}) };
       }
@@ -480,6 +496,38 @@ export class DeliveryQueue {
     } catch {
       return { state: 'blocked', skipReason: 'capture-failed' };
     }
+  }
+
+  private async inputStateFromCapture(
+    session: string,
+    capture: string,
+    runtime = this.deps.runtimeFor(session),
+    resolveAmbiguity = true,
+  ): Promise<InputState> {
+    if (runtime === undefined) return null;
+    let selectedRuntime = runtime;
+    let state = runtime.parseInputState(capture, session);
+    if (state === null) {
+      const alternatives = (this.deps.runtimeCandidates?.(session) ?? [])
+        .filter((candidate) => candidate.name !== runtime.name)
+        .map((candidate) => ({ candidate, state: candidate.parseInputState(capture, session) }))
+        .filter((result) => result.state !== null);
+      // One distinctive alternate composer is enough to repair stale
+      // active-runtime metadata. Ambiguous recognition remains blocked.
+      if (alternatives.length === 1) {
+        const recognized = alternatives[0];
+        if (recognized !== undefined) {
+          selectedRuntime = recognized.candidate;
+          state = recognized.state;
+          this.deps.onRuntimeDetected?.(session, selectedRuntime.name);
+        }
+      }
+    }
+    if (resolveAmbiguity && state !== 'clear' && selectedRuntime.resolveInputState !== undefined) {
+      state = await selectedRuntime.resolveInputState(capture, session, state);
+    }
+    if (state !== null) this.deps.onRuntimeObserved?.(session);
+    return state;
   }
 
   /**
@@ -494,33 +542,124 @@ export class DeliveryQueue {
     text: string,
     observation: TypingObservation,
     pausePolicy: DeliveryPausePolicy,
-  ): Promise<DeliverySkipReason | null> {
-    if (this.deliveryPaused(session, pausePolicy)) return 'recipient-paused';
+    callbacks: Pick<DeliveryOptions, 'onSubmissionStarted' | 'onSubmissionRejected'>,
+  ): Promise<SubmissionOutcome> {
+    if (this.deliveryPaused(session, pausePolicy)) return { status: 'not-written', reason: 'recipient-paused' };
     if (observation.token !== undefined && this.deps.backend.submitIfUnchanged !== undefined) {
       const release = this.acquireSubmissionLease(session, pausePolicy);
-      if (release === undefined) return 'recipient-paused';
+      if (release === undefined) return { status: 'not-written', reason: 'recipient-paused' };
       const confirmSubmission = this.prepareSubmission(session);
       try {
-        if (!(await this.deps.backend.submitIfUnchanged(pane, text, observation.token))) return 'pane-changed';
+        if (!this.beginSubmission(callbacks.onSubmissionStarted)) {
+          return { status: 'uncertain', reason: 'submission-unconfirmed' };
+        }
+        let accepted: boolean;
+        let staged: DeliveryCapture | undefined;
+        try {
+          const attempt = await this.deps.backend.submitIfUnchanged(pane, text, observation.token);
+          accepted = attempt === true || (attempt !== false && attempt.accepted);
+          staged = typeof attempt === 'object' ? attempt.staged : undefined;
+        } catch {
+          return { status: 'uncertain', reason: 'write-failed' };
+        }
+        if (!accepted) {
+          if (!this.rejectSubmission(callbacks.onSubmissionRejected)) {
+            return { status: 'uncertain', reason: 'submission-unconfirmed' };
+          }
+          return { status: 'not-written', reason: 'pane-changed' };
+        }
+        // This observation is captured synchronously between inserting this
+        // delivery and pressing Enter. Classify the visible composer itself;
+        // asynchronous runtime history may already contain the just-submitted
+        // text and must not rewrite this pre-submit observation.
+        if (
+          staged !== undefined &&
+          (await this.inputStateFromCapture(session, staged.content, undefined, false)) !== 'draft'
+        ) {
+          return { status: 'uncertain', reason: 'submission-unconfirmed' };
+        }
+        if (!(await this.confirmSubmissionEvidence(session, pane, staged?.token ?? observation.token))) {
+          return { status: 'uncertain', reason: 'submission-unconfirmed' };
+        }
         this.confirmSubmission(session, confirmSubmission);
-        return null;
+        return { status: 'confirmed' };
       } finally {
         release();
       }
     }
 
     const confirmation = await this.typingState(session, pane);
-    if (confirmation.state !== 'clear') return confirmation.skipReason ?? 'pane-changed';
+    if (confirmation.state !== 'clear') {
+      return { status: 'not-written', reason: confirmation.skipReason ?? 'pane-changed' };
+    }
     const release = this.acquireSubmissionLease(session, pausePolicy);
-    if (release === undefined) return 'recipient-paused';
+    if (release === undefined) return { status: 'not-written', reason: 'recipient-paused' };
     const confirmSubmission = this.prepareSubmission(session);
     try {
-      await this.deps.backend.run(pane, text);
+      if (!this.beginSubmission(callbacks.onSubmissionStarted)) {
+        return { status: 'uncertain', reason: 'submission-unconfirmed' };
+      }
+      try {
+        await this.deps.backend.run(pane, text);
+      } catch {
+        return { status: 'uncertain', reason: 'write-failed' };
+      }
+      if (!(await this.confirmSubmissionEvidence(session, pane, confirmation.token))) {
+        return { status: 'uncertain', reason: 'submission-unconfirmed' };
+      }
       this.confirmSubmission(session, confirmSubmission);
-      return null;
+      return { status: 'confirmed' };
     } finally {
       release();
     }
+  }
+
+  private beginSubmission(checkpoint: (() => boolean) | undefined): boolean {
+    if (checkpoint === undefined) return true;
+    try {
+      return checkpoint();
+    } catch (err) {
+      log().error('delivery', `submission checkpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  private rejectSubmission(rollback: (() => boolean) | undefined): boolean {
+    if (rollback === undefined) return true;
+    try {
+      return rollback();
+    } catch (err) {
+      log().error(
+        'delivery',
+        `submission checkpoint rollback failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Backend acceptance proves only that the write request completed. A
+   * submission is confirmed when the runtime-owned composer parser observes
+   * the input clear after the pane has changed from the protected pre-write
+   * snapshot. Draft, unchanged, and failed observations remain ambiguous.
+   */
+  private async confirmSubmissionEvidence(
+    session: string,
+    pane: PaneRef,
+    referenceToken: string | undefined,
+  ): Promise<boolean> {
+    for (const delayMs of SUBMISSION_CONFIRMATION_DELAYS_MS) {
+      if (delayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      const observation = await this.typingState(session, pane);
+      if (observation.state !== 'clear') continue;
+      // Legacy injected backends without revision tokens can still preserve
+      // their historical success contract. Built-in backends must prove that
+      // the post-submit pane differs from the exact pre-write observation.
+      if (referenceToken === undefined || (observation.token !== undefined && observation.token !== referenceToken)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private deliveryPaused(session: string, policy: DeliveryPausePolicy): boolean {
@@ -567,6 +706,32 @@ export class DeliveryQueue {
       log().error(
         'delivery',
         `${session}: delivered but receipt update failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private recordUncertain(
+    session: string,
+    deliveryId: number | undefined,
+    reason: string,
+    receipt?: (reason: string) => void,
+  ): void {
+    if (receipt !== undefined) {
+      try {
+        receipt(reason);
+      } catch (err) {
+        log().error(
+          'delivery',
+          `${session}: uncertain receipt update failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    try {
+      this.deps.onSubmissionUncertain?.(session, deliveryId, reason);
+    } catch (err) {
+      log().error(
+        'delivery',
+        `${session}: uncertain-submission observer failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

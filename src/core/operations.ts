@@ -238,7 +238,8 @@ export class ConductorOperations {
       {
         name: 'send_to_session',
         description: "Send a message to another session's pane, starting it if needed.",
-        resultDescription: 'Returns a structured receipt with the message id and delivered or queued status.',
+        resultDescription:
+          'Returns a structured receipt with the message id and delivered, queued, or uncertain status.',
         audiences: BOTH,
         federation: 'routable',
         signedIdentity: true,
@@ -508,7 +509,8 @@ export class ConductorOperations {
       },
       {
         name: 'cancel_message',
-        description: 'Cancel a pending direct message by receipt id before it begins writing to the recipient pane.',
+        description:
+          'Cancel a pending direct message by receipt id before it begins writing to the recipient pane. Unknown-effect submissions cannot be cancelled or retried automatically.',
         resultDescription: 'Returns the updated receipt as formatted JSON.',
         audiences: BOTH,
         federation: 'routable',

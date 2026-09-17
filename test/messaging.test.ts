@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionConfig } from '../src/config/schema.js';
 import { DeliveryQueue } from '../src/core/delivery.js';
-import { Messaging } from '../src/core/messaging.js';
+import { isMessageReceipt, Messaging, renderMessageReceipt } from '../src/core/messaging.js';
 import { SessionStateManager } from '../src/core/state.js';
 import { Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
@@ -33,6 +33,13 @@ describe('Messaging delivery receipts', () => {
     for (const queue of queues) queue.stop();
     queues.length = 0;
     store.close();
+  });
+
+  it('recognizes and renders an uncertain public receipt', () => {
+    const receipt = { messageId: 7, recipient: 'beta', status: 'uncertain', deduplicated: true } as const;
+
+    expect(isMessageReceipt(receipt)).toBe(true);
+    expect(renderMessageReceipt(receipt)).toBe('Submission of message #7 to beta is uncertain (deduplicated).');
   });
 
   it('does not replay a queued local message after a conductor restart', async () => {
@@ -90,6 +97,74 @@ describe('Messaging delivery receipts', () => {
     expect(repeated).toEqual({ messageId: 1, recipient: 'beta', status: 'delivered', deduplicated: true });
     expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] once']);
   });
+
+  it('persists unknown submission effect before acknowledgement and never replays it after restart or duplicate input', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    const runtime = new FakeRuntime();
+    const uncertain: string[] = [];
+    let releaseSubmit: (() => void) | undefined;
+    let markWriteStarted: (() => void) | undefined;
+    const writeStarted = new Promise<void>((resolve) => {
+      markWriteStarted = resolve;
+    });
+    const originalSubmit = backend.submitIfUnchanged.bind(backend);
+    backend.submitIfUnchanged = async (...args) => {
+      const accepted = await originalSubmit(...args);
+      runtime.inputState = 'draft';
+      markWriteStarted?.();
+      await new Promise<void>((resolve) => {
+        releaseSubmit = resolve;
+      });
+      return accepted;
+    };
+    const firstQueue = makeQueue(runtime, pane.id);
+    const firstMessaging = makeMessaging(firstQueue, undefined, undefined, (recipient, id, reason) => {
+      uncertain.push(`${recipient}:${String(id)}:${reason}`);
+    });
+
+    const sending = firstMessaging.sendToSession('alpha', 'beta', 'ambiguous once', 'stable-unknown');
+    await writeStarted;
+    expect(store.getMessage(1)?.status).toBe('uncertain');
+    const concurrentDuplicate = firstMessaging.sendToSession(
+      'alpha',
+      'beta',
+      'changed concurrent duplicate',
+      'stable-unknown',
+    );
+    releaseSubmit?.();
+    await expect(sending).resolves.toEqual({
+      messageId: 1,
+      recipient: 'beta',
+      status: 'uncertain',
+      deduplicated: false,
+    });
+    await expect(concurrentDuplicate).resolves.toEqual({
+      messageId: 1,
+      recipient: 'beta',
+      status: 'uncertain',
+      deduplicated: true,
+    });
+    expect(store.getPendingDeliveries('beta')).toEqual([]);
+    expect(await firstMessaging.cancelMessage(1, 'alpha')).toContain('cannot be cancelled or retried automatically');
+    firstQueue.stop();
+
+    const restartedQueue = makeQueue(new FakeRuntime(), pane.id);
+    const restarted = makeMessaging(restartedQueue, undefined, undefined, (recipient, id, reason) => {
+      uncertain.push(`${recipient}:${String(id)}:${reason}`);
+    });
+    await restarted.recoverPendingMessages('beta');
+    await expect(restarted.sendToSession('alpha', 'beta', 'changed duplicate', 'stable-unknown')).resolves.toEqual({
+      messageId: 1,
+      recipient: 'beta',
+      status: 'uncertain',
+      deduplicated: true,
+    });
+
+    expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] ambiguous once']);
+    expect(uncertain).toEqual(['beta:1:submission-unconfirmed', 'beta:1:submission-unconfirmed']);
+  }, 30_000);
 
   it('holds peer messages while paused and drains them after ordinary resume', async () => {
     const pane = await backend.createPane('beta', 'pane');
@@ -693,6 +768,7 @@ describe('Messaging delivery receipts', () => {
     delivery: DeliveryQueue,
     events?: FakeEventPublisher,
     pausedNotice?: (codename: string) => string | undefined,
+    onDeliveryUncertain?: (recipient: string, deliveryId: number, reason: string) => void,
   ): Messaging {
     return new Messaging({
       store,
@@ -701,6 +777,7 @@ describe('Messaging delivery receipts', () => {
       sessions: () => sessions,
       startSession: async () => 'started',
       pausedNotice,
+      onDeliveryUncertain,
       events,
     });
   }

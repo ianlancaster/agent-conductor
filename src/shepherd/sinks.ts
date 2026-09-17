@@ -17,7 +17,7 @@ function receipt(value: unknown, expectedRecipient: string): CoordinatorReceipt 
     !Number.isSafeInteger(record.messageId) ||
     record.messageId <= 0 ||
     record.recipient !== expectedRecipient ||
-    (record.status !== 'delivered' && record.status !== 'queued') ||
+    (record.status !== 'delivered' && record.status !== 'queued' && record.status !== 'uncertain') ||
     typeof record.deduplicated !== 'boolean'
   )
     return undefined;

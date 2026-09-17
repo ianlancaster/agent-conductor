@@ -20,6 +20,12 @@ export interface DeliveryCaptureOptions {
   styled: boolean;
 }
 
+/** Delivery-bound evidence captured after inserting text and before pressing Enter. */
+export interface AcceptedDeliverySubmission {
+  accepted: true;
+  staged: DeliveryCapture;
+}
+
 export interface CreatePaneOptions {
   /**
    * Create the pane in the detached fleet session instead of the operator's
@@ -87,9 +93,12 @@ export interface TerminalBackend {
    * Optional compare-and-submit path for autonomous delivery. The capture and
    * token must describe the same pane observation. submitIfUnchanged returns
    * false without writing when the pane changed after that observation.
+   * Built-in backends return the staged composer observation captured after
+   * inserting this delivery and before pressing Enter. Boolean true remains
+   * supported for backwards compatibility with injected backends.
    */
   captureForDelivery?(pane: PaneRef, lines: number, options?: DeliveryCaptureOptions): Promise<DeliveryCapture>;
-  submitIfUnchanged?(pane: PaneRef, text: string, token: string): Promise<boolean>;
+  submitIfUnchanged?(pane: PaneRef, text: string, token: string): Promise<boolean | AcceptedDeliverySubmission>;
 
   /** Trailing `lines` of pane content. */
   capture(pane: PaneRef, lines: number): Promise<string>;

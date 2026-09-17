@@ -301,10 +301,11 @@ export class Supervisor {
       onSubmitting: (session) => {
         const boundary = this.health.captureTurnBoundary();
         return () => {
-          if (!this.health.markTurnActive(session, boundary)) return;
-          if (this.states.get(session)?.running === true) this.states.setActivity(session, 'working');
-          this.sentinel.noteWorking(session);
+          this.health.noteSubmission(session, boundary);
         };
+      },
+      onSubmissionUncertain: (session, deliveryId, reason) => {
+        this.health.reportDeliveryUncertain(session, deliveryId, reason);
       },
       config: this.config.messaging,
     });
@@ -364,6 +365,9 @@ export class Supervisor {
       sessions: () => this.sessions,
       startSession: (codename, opts) => this.lifecycle.start(codename, opts),
       pausedNotice: (codename) => this.pausedAutomationNotice(codename),
+      onDeliveryUncertain: (recipient, deliveryId, reason) => {
+        this.health.reportDeliveryUncertain(recipient, deliveryId, reason);
+      },
       events: this.eventBus,
     });
     this.integrations = new IntegrationManager({
@@ -432,7 +436,7 @@ export class Supervisor {
       onStall: (session, kind, info) => {
         // A stall kind is causal evidence for the sentinel, not a separate
         // mechanical activity state. A live runtime that is not working is idle.
-        this.states.setActivity(session, 'idle');
+        if (info.preserveActivity !== true) this.states.setActivity(session, 'idle');
         void this.sentinel.handleStall(session, kind, info);
       },
       onWorking: (session) => {

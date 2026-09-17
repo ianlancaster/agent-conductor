@@ -216,6 +216,29 @@ describe('Shepherd-to-Conductor compatibility contract', () => {
     await expect(sink.send(item)).rejects.toThrow('no valid persisted-message receipt');
   });
 
+  it('preserves an uncertain Conductor receipt as a valid non-delivered result', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: {
+            structuredContent: { messageId: 9, recipient: 'coordinator', status: 'uncertain', deduplicated: true },
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    const sink = new ConductorCoordinatorSink(`http://127.0.0.1:${String(PORT)}`);
+
+    await expect(sink.send(item)).resolves.toEqual({
+      messageId: 9,
+      recipient: 'coordinator',
+      status: 'uncertain',
+      deduplicated: true,
+    });
+  });
+
   it('retries internal Conductor errors instead of parking them as invalid input', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32603, message: 'delivery failed' } }), {

@@ -145,7 +145,13 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       expect(await backend.submitIfUnchanged(pane, 'must wait', stale.token)).toBe(false);
 
       const current = await backend.captureForDelivery(pane, 20);
-      expect(await backend.submitIfUnchanged(pane, ' delivered safely', current.token)).toBe(true);
+      const result = await backend.submitIfUnchanged(pane, ' delivered safely', current.token);
+      expect(result).not.toBe(false);
+      expect(result).not.toBe(true);
+      if (typeof result === 'object') {
+        expect(result.accepted).toBe(true);
+        expect(result.staged.content).toContain('delivered safely');
+      }
       await until(async () => (await backend.capture(pane, 20)).includes('operator draft delivered safely'));
     });
 

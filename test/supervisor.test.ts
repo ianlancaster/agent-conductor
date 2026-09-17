@@ -980,6 +980,32 @@ describe('Supervisor construction', () => {
     expect(await supervisor.command('/status alpha')).toContain('"activity": "working"');
   });
 
+  it('keeps independent runtime activity working when delivery submission becomes uncertain', async () => {
+    const runtime = new FakeRuntime('claude-code');
+    const terminal = new FakeTerminalBackend();
+    writeConfig('', {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+    });
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      runtimes: [runtime],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.command('/start alpha');
+    const submit = terminal.submitIfUnchanged.bind(terminal);
+    terminal.submitIfUnchanged = async (...args) => {
+      const accepted = await submit(...args);
+      runtime.inputState = 'draft';
+      return accepted;
+    };
+
+    await expect(supervisor.command('/tell alpha ambiguous delivery')).resolves.toContain(
+      'Submission of message #1 to alpha is uncertain.',
+    );
+    expect(supervisor.statusReport('alpha')).toContain('"activity": "working"');
+  }, 30_000);
+
   it('routes operator commands through the shared router', async () => {
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43393\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,

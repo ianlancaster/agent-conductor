@@ -309,8 +309,15 @@ unanswered and diagnosis is necessary.
 Direct-message receipts are observable:
 
 - `queued` means Conductor durably retained the recipient delivery for a later safe submission.
-- `delivered` means protected pane submission completed.
-- Conductor reconstructs pending direct messages and per-recipient broadcast deliveries after restart. A crash after terminal submission but before the durable completion update can replay that one message, so this boundary is at-least-once rather than transactionally exactly once.
+- `delivered` means backend acceptance was followed by bounded, runtime-owned evidence that the
+  composer cleared and the protected pane changed from its exact pre-write observation.
+- `uncertain` means the terminal write may have happened, but Conductor could not prove submission.
+  This state is checkpointed before the write, survives restart, and is never replayed
+  automatically. Inspect the recipient composer before manually submitting or editing it. A draft
+  may be the original delivery, operator input, or a mixture; Conductor deliberately does not infer
+  ownership or press Enter again.
+- Conductor reconstructs only `pending` direct messages and per-recipient broadcast deliveries
+  after restart. `uncertain` receipts remain held at the explicit no-replay boundary.
 - `get_message_status` reports `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`, so a
   sender can distinguish occupied input, missing runtime chrome, and
   `waiting-behind-earlier-message`. Every current-run queued receipt receives an attempt timestamp;
@@ -321,6 +328,7 @@ Direct-message receipts are observable:
   not-found/not-visible response for a guessed ID cannot be used as a fleet ledger-gap check.
   The operator command can inspect any receipt.
 - `cancel_message` can cancel a pending receipt before its pane write starts.
+- `cancel_message` refuses an `uncertain` receipt because its terminal effect is already ambiguous.
 - Reusing a sender-scoped `idempotencyKey` returns the original receipt.
 - Operator-originated receipts may include a `notice`; operator adapters render it after the
   acknowledgement, and Conductor prepends the same notice to the protected recipient envelope.
@@ -1322,6 +1330,12 @@ raw terminal control is explicitly intended. `waiting-behind-earlier-message` me
 scheduled but FIFO safety is holding it behind an older receipt; inspect that older known receipt
 instead of treating the later one as a dead queue. Raw recipient activation and runtime turn events
 both trigger a fresh protected-delivery pass.
+
+`submission-unconfirmed` means the protected write crossed its durable no-replay checkpoint but
+bounded composer observations did not prove that Enter took effect. The receipt is `uncertain`, not
+queued or delivered. Conductor routes one blocked-delivery health signal without changing
+independent runtime activity, and it will not press Enter, clear the composer, repaste, or replay the
+message after restart. Inspect the pane and coordinate recovery with the operator.
 
 `recipient-paused` means a peer delivery is durably held until ordinary resume. Operator messages intentionally bypass the pause and may pass older held peer traffic; held traffic retains its own FIFO order. A stopped paused recipient is not started merely to drain the queue.
 

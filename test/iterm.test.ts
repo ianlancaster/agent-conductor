@@ -142,6 +142,14 @@ describe('buildDeliveryOperations', () => {
     expect(ops.indexOf(guard)).toBe(0);
     expect(ops.indexOf(guard)).toBeLessThan(ops.indexOf('write contents of file'));
   });
+
+  it('can bind confirmation to the composer staged immediately before Enter', () => {
+    const ops = buildDeliveryOperations('/tmp/msg.txt', true, '', true);
+    expect(ops).toContain('set conductorStagedContents to contents as string');
+    expect(ops.indexOf('set conductorStagedContents')).toBeLessThan(
+      ops.indexOf('write text (ASCII character 13) newline false'),
+    );
+  });
 });
 
 describe('buildUnchangedContentsGuard', () => {

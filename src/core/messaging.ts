@@ -16,6 +16,8 @@ export interface MessagingDeps {
   /** High-visibility notice prepended to operator input while automation is paused. */
   pausedNotice?(codename: string): string | undefined;
   events?: ConductorEventPublisher;
+  /** Route durable unknown-effect deliveries through the existing health/escalation path. */
+  onDeliveryUncertain?(recipient: string, deliveryId: number, reason: string): void;
 }
 
 export interface MessageReceipt {
@@ -23,7 +25,7 @@ export interface MessageReceipt {
   recipient: string;
   /** Destination fleet for a remotely routed receipt; absent for local delivery. */
   fleet?: string;
-  status: 'delivered' | 'queued' | 'cancelled';
+  status: 'delivered' | 'uncertain' | 'queued' | 'cancelled';
   deduplicated: boolean;
   /** Operator-visible warning associated with this delivery, when applicable. */
   notice?: string;
@@ -35,17 +37,22 @@ export function isMessageReceipt(value: unknown): value is MessageReceipt {
   return (
     typeof receipt.messageId === 'number' &&
     typeof receipt.recipient === 'string' &&
-    (receipt.status === 'delivered' || receipt.status === 'queued' || receipt.status === 'cancelled') &&
+    (receipt.status === 'delivered' ||
+      receipt.status === 'uncertain' ||
+      receipt.status === 'queued' ||
+      receipt.status === 'cancelled') &&
     typeof receipt.deduplicated === 'boolean' &&
     (receipt.notice === undefined || typeof receipt.notice === 'string')
   );
 }
 
 export function renderMessageReceipt(receipt: MessageReceipt): string {
-  const action = receipt.status === 'delivered' ? 'Delivered' : receipt.status === 'cancelled' ? 'Cancelled' : 'Queued';
   const duplicate = receipt.deduplicated ? ' (deduplicated)' : '';
   const destination = receipt.fleet === undefined ? receipt.recipient : `${receipt.recipient}@${receipt.fleet}`;
-  const acknowledgement = `${action} message #${String(receipt.messageId)} for ${destination}${duplicate}.`;
+  const acknowledgement =
+    receipt.status === 'uncertain'
+      ? `Submission of message #${String(receipt.messageId)} to ${destination} is uncertain${duplicate}.`
+      : `${receipt.status === 'delivered' ? 'Delivered' : receipt.status === 'cancelled' ? 'Cancelled' : 'Queued'} message #${String(receipt.messageId)} for ${destination}${duplicate}.`;
   return receipt.notice === undefined ? acknowledgement : `${acknowledgement}\n${receipt.notice}`;
 }
 
@@ -59,6 +66,8 @@ export class Messaging {
   private readonly retryStartDeliveries = new Map<string, Set<number>>();
   /** Serializes database admission, initial prompt selection, and cancellation for each recipient. */
   private readonly recipientAdmissions = new Map<string, Promise<void>>();
+  /** One health escalation per unknown-effect receipt for this process. */
+  private readonly reportedUncertain = new Set<number>();
   private recoveryTimer: NodeJS.Timeout | undefined;
   private stopped = false;
 
@@ -123,7 +132,16 @@ export class Messaging {
         !(existing.status === 'cancelled' && existing.flush_skip_reason === 'conductor-restarted')
       ) {
         if (existing.status === 'pending') await this.admitOrRetain(existing.recipient, existing.id);
-        return this.receipt(this.deps.store.getMessage(existing.id) ?? existing, true, notice);
+        else if (existing.status === 'uncertain' && this.scheduled.has(existing.id)) {
+          // A duplicate can arrive after the durable no-replay checkpoint but
+          // before the original admission finishes. Join that recipient's
+          // serializer so the duplicate observes the settled receipt rather
+          // than publishing a transient uncertain result.
+          await this.withRecipient(existing.recipient, () => Promise.resolve());
+        }
+        const current = this.deps.store.getMessage(existing.id) ?? existing;
+        if (current.status === 'uncertain') this.reportUncertain(current);
+        return this.receipt(current, true, notice);
       }
     }
     if (!this.deps.sessions().has(target)) throw new InvalidRequestError(`Unknown session: ${target}`);
@@ -154,6 +172,7 @@ export class Messaging {
 
   /** Recover pending rows without starting stopped recipients merely to empty a queue. */
   async recoverPendingMessages(recipient?: string): Promise<void> {
+    for (const row of this.deps.store.getUncertainDeliveries(recipient)) this.reportUncertain(row);
     const recipients =
       recipient === undefined
         ? [...new Set(this.deps.store.getPendingDeliveries().map((row) => row.recipient))]
@@ -215,6 +234,9 @@ export class Messaging {
         return `Message #${String(id)} was not found.`;
       }
       if (row.status === 'delivered') return `Message #${String(id)} was already delivered and cannot be cancelled.`;
+      if (row.status === 'uncertain') {
+        return `Message #${String(id)} has an uncertain submission outcome and cannot be cancelled or retried automatically.`;
+      }
       if (row.status === 'cancelled') return `Message #${String(id)} is already cancelled.`;
       if (this.startingDelivery.has(id)) {
         return `Message #${String(id)} is already being written and can no longer be cancelled.`;
@@ -269,11 +291,15 @@ export class Messaging {
     if (retainedForRecovery > 0) this.ensureRecoveryTimer();
     const current = rows.map((row) => this.deps.store.getMessage(row.id) ?? row);
     const delivered = current.filter((row) => row.status === 'delivered').length;
+    const uncertain = current.filter((row) => row.status === 'uncertain').length;
     const queued = current.filter((row) => row.status === 'pending').length - retainedForRecovery;
-    if (queued === 0 && retainedForRecovery === 0) return `Broadcast delivered to ${String(delivered)} session(s).`;
+    if (queued === 0 && retainedForRecovery === 0 && uncertain === 0) {
+      return `Broadcast delivered to ${String(delivered)} session(s).`;
+    }
     return (
       `Broadcast accepted for ${String(rows.length)} session(s): ${String(delivered)} delivered, ` +
-      `${String(Math.max(0, queued))} queued, ${String(retainedForRecovery)} retained for recovery.`
+      `${String(uncertain)} uncertain, ${String(Math.max(0, queued))} queued, ` +
+      `${String(retainedForRecovery)} retained for recovery.`
     );
   }
 
@@ -345,6 +371,13 @@ export class Messaging {
       onAttempt: (skipReason) => {
         this.deps.store.recordMessageFlushAttempt(row.id, skipReason);
       },
+      onSubmissionStarted: () => this.deps.store.markMessageSubmissionStarted(row.id),
+      onSubmissionRejected: () => this.deps.store.markMessageSubmissionRejected(row.id),
+      onUncertain: () => {
+        this.scheduled.delete(row.id);
+        const current = this.deps.store.getMessage(row.id);
+        if (current !== undefined) this.reportUncertain(current);
+      },
       onDelivered: () => {
         this.markDelivered(row.id);
         this.scheduled.delete(row.id);
@@ -378,10 +411,23 @@ export class Messaging {
     return {
       messageId: row.id,
       recipient: row.recipient,
-      status: row.status === 'delivered' ? 'delivered' : row.status === 'cancelled' ? 'cancelled' : 'queued',
+      status:
+        row.status === 'delivered'
+          ? 'delivered'
+          : row.status === 'uncertain'
+            ? 'uncertain'
+            : row.status === 'cancelled'
+              ? 'cancelled'
+              : 'queued',
       deduplicated,
       ...(notice === undefined ? {} : { notice }),
     };
+  }
+
+  private reportUncertain(row: MessageRow): void {
+    if (this.reportedUncertain.has(row.id)) return;
+    this.reportedUncertain.add(row.id);
+    this.deps.onDeliveryUncertain?.(row.recipient, row.id, row.flush_skip_reason ?? 'submission-unconfirmed');
   }
 
   private withRecipient<T>(recipient: string, operation: () => Promise<T>): Promise<T> {

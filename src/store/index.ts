@@ -23,7 +23,7 @@ export interface MessageRow {
   recipient: string;
   type: 'message' | 'broadcast';
   content: string;
-  status: 'pending' | 'delivered' | 'cancelled';
+  status: 'pending' | 'uncertain' | 'delivered' | 'cancelled';
   idempotency_key: string | null;
   created_at: string;
   delivered_at: string | null;
@@ -473,7 +473,8 @@ export class Store {
       this.db
         .prepare(
           "UPDATE messages SET status = 'delivered', delivered_at = datetime('now'), " +
-            "last_flush_attempt_at = datetime('now'), flush_skip_reason = NULL WHERE id = ? AND status = 'pending'",
+            "last_flush_attempt_at = datetime('now'), flush_skip_reason = NULL " +
+            "WHERE id = ? AND status IN ('pending', 'uncertain')",
         )
         .run(id).changes === 1
     );
@@ -483,9 +484,33 @@ export class Store {
     this.db
       .prepare(
         "UPDATE messages SET last_flush_attempt_at = datetime('now'), flush_skip_reason = ? " +
-          "WHERE id = ? AND status = 'pending'",
+          "WHERE id = ? AND status IN ('pending', 'uncertain')",
       )
       .run(skipReason, id);
+  }
+
+  /** Checkpoint the no-replay boundary before a terminal write can have an unknown effect. */
+  markMessageSubmissionStarted(id: number): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE messages SET status = 'uncertain', last_flush_attempt_at = datetime('now'), " +
+            "flush_skip_reason = 'submission-unconfirmed' WHERE id = ? AND status = 'pending'",
+        )
+        .run(id).changes === 1
+    );
+  }
+
+  /** A rejected compare-and-submit proves no bytes were written, so retry remains safe. */
+  markMessageSubmissionRejected(id: number): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE messages SET status = 'pending', last_flush_attempt_at = datetime('now'), " +
+            "flush_skip_reason = 'pane-changed' WHERE id = ? AND status = 'uncertain'",
+        )
+        .run(id).changes === 1
+    );
   }
 
   markMessageCancelled(id: number): boolean {
@@ -647,6 +672,17 @@ export class Store {
     }
     return this.db
       .prepare("SELECT * FROM messages WHERE recipient != '*' AND status = 'pending' ORDER BY recipient, id")
+      .all() as unknown as MessageRow[];
+  }
+
+  getUncertainDeliveries(recipient?: string): MessageRow[] {
+    if (recipient !== undefined) {
+      return this.db
+        .prepare("SELECT * FROM messages WHERE recipient = ? AND status = 'uncertain' ORDER BY id")
+        .all(recipient) as unknown as MessageRow[];
+    }
+    return this.db
+      .prepare("SELECT * FROM messages WHERE recipient != '*' AND status = 'uncertain' ORDER BY recipient, id")
       .all() as unknown as MessageRow[];
   }
 

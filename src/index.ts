@@ -50,6 +50,7 @@ export type {
   RunbookVariant,
 } from './runbooks/types.js';
 export type {
+  AcceptedDeliverySubmission,
   CreatePaneOptions,
   DeliveryCapture,
   DeliveryCaptureOptions,

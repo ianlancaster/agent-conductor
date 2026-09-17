@@ -68,6 +68,13 @@ export class ShepherdService {
     for (const item of batch) {
       try {
         const receipt = await this.sink.send(item);
+        if (receipt?.status === 'uncertain') {
+          this.store.parkOutbox(
+            item.id,
+            'Conductor could not confirm submission; inspect the recipient composer before manual recovery.',
+          );
+          continue;
+        }
         if (receipt?.status === 'queued') {
           throw new Error('Conductor queued the message for this run; awaiting a delivered receipt.');
         }

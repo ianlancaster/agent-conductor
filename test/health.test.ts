@@ -11,6 +11,7 @@ interface Recorded {
   session: string;
   kind: StallKind;
   reason?: string;
+  preserveActivity?: boolean;
 }
 
 let backend: FakeTerminalBackend;
@@ -49,7 +50,12 @@ beforeEach(async () => {
     observeActivity: async () => paneActivity,
     observeInputState: async () => runtime.inputState,
     onStall: (session, kind, info) => {
-      stalls.push({ session, kind, reason: info.reason });
+      stalls.push({
+        session,
+        kind,
+        reason: info.reason,
+        ...(info.preserveActivity === undefined ? {} : { preserveActivity: info.preserveActivity }),
+      });
       if (info.detectedAt !== undefined) stallDetections.push(info.detectedAt);
     },
     onWorking: (session) => working.push(session),
@@ -140,6 +146,14 @@ describe('event-driven signals', () => {
     expect(working).toEqual(['alpha']);
   });
 
+  it('records confirmed submission without inventing recipient turn start', () => {
+    const boundary = monitor.captureTurnBoundary();
+
+    expect(monitor.noteSubmission('alpha', boundary)).toBe(true);
+    expect(working).toEqual([]);
+    expect(stalls).toEqual([]);
+  });
+
   it('marks direct operator input as working and cancels a stale idle transition', () => {
     event('stop');
     vi.advanceTimersByTime(CONFIG.idleConfirmMs / 2);
@@ -179,6 +193,21 @@ describe('event-driven signals', () => {
   it('raises blocked stalls immediately on notification events', () => {
     event('notification', 'needs permission');
     expect(stalls).toEqual([{ session: 'alpha', kind: 'blocked', reason: 'needs permission' }]);
+  });
+
+  it('reports each uncertain delivery once without reclassifying runtime activity', () => {
+    monitor.reportDeliveryUncertain('alpha', 42, 'submission-unconfirmed');
+    monitor.reportDeliveryUncertain('alpha', 42, 'submission-unconfirmed');
+
+    expect(stalls).toEqual([
+      {
+        session: 'alpha',
+        kind: 'blocked',
+        reason:
+          'message #42 has an unknown submission outcome (submission-unconfirmed); inspect the recipient composer before manually submitting or editing it. Conductor will not retry it automatically.',
+        preserveActivity: true,
+      },
+    ]);
   });
 
   it('returns an interrupted authoritative turn to working when pane output resumes', async () => {

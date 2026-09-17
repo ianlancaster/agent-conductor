@@ -139,7 +139,9 @@ different: it writes raw terminal input for prompts and slash commands, bypasses
 protected delivery queue, and can overwrite operator typing. Use it only for deliberate
 terminal control. Every queued receipt records why it could not run, including when it is waiting
 behind an earlier FIFO message, and recipient activation prompts an immediate retry in addition to
-the periodic drain.
+the periodic drain. A receipt becomes `uncertain` when a terminal accepts the write but bounded
+runtime-owned composer observations cannot prove submission. Conductor does not replay that
+message: inspect the recipient composer before manually submitting or editing it.
 
 ## Status and observability
 
