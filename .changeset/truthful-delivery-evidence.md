@@ -9,3 +9,4 @@ never replayed automatically across retries or restarts, and retain one owner no
 or channel accepts it without overwriting independent runtime activity. Operators can durably record
 an inspected receipt as `manually-submitted` or `abandoned`; this preserves the uncertain transport
 receipt, reconciles parked Shepherd delivery from evidence, and performs no terminal action.
+Reconciliation waits until the original terminal attempt has fully settled.

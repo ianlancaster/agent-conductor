@@ -312,6 +312,11 @@ export class Messaging {
     actor: string,
     evidence: string,
   ): MessageReceipt {
+    if (this.deps.delivery.isDeliveryActive(id)) {
+      throw new InvalidRequestError(
+        `Message #${String(id)} still has an active delivery attempt; retry reconciliation after it settles.`,
+      );
+    }
     const result = this.deps.store.reconcileUncertainMessage(id, outcome, actor, evidence);
     const row = this.deps.store.getMessage(id);
     if (row === undefined) throw new Error(`Message #${String(id)} was not found after reconciliation.`);

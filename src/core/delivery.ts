@@ -212,6 +212,11 @@ export class DeliveryQueue {
     return this.queues.get(session)?.length ?? 0;
   }
 
+  /** True while this process still has an authorized terminal attempt for the durable receipt. */
+  isDeliveryActive(deliveryId: number): boolean {
+    return this.delivering.has(deliveryId);
+  }
+
   queueDrainMs(): number {
     return this.deps.config.queueDrainMs;
   }
