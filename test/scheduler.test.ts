@@ -108,6 +108,25 @@ describe('Scheduler', () => {
     expect(stopped).toEqual([]);
   });
 
+  it('settles a lifecycle rejection only after restoring the proved no-write checkpoint', async () => {
+    scheduler = new Scheduler({
+      sessions: () => sessions,
+      isActive: () => false,
+      isPaused: () => false,
+      startSession: async () => 'not-started',
+      stopSession: async () => 'stopped',
+      deliver: async () => 'no-pane',
+      events,
+    });
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'rejected', wakeIfStopped: true }]));
+
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+
+    expect(events.events).toContainEqual(expect.objectContaining({ outcome: 'failed' }));
+    expect(events.events).not.toContainEqual(expect.objectContaining({ outcome: 'uncertain' }));
+  });
+
   it.each([false, true])('pause overrides wake opt-in (freshContext=%s)', async (freshContext) => {
     sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'held', wakeIfStopped: true, freshContext }]));
     paused = true;

@@ -38,7 +38,7 @@ class OccurrenceTimer {
     timezone: string,
     private readonly callback: (source: ScheduleSource) => Promise<void>,
   ) {
-    this.calculator = new Cron(pattern);
+    this.calculator = new Cron(pattern, { timezone });
     this.armNext(timezone);
   }
 
@@ -94,7 +94,7 @@ export interface SchedulerDeps {
   sessions(): Map<string, SessionConfig>;
   isActive(session: string): boolean | Promise<boolean>;
   isPaused(session: string): boolean;
-  startSession(session: string, opts: { prompt?: string }): Promise<string>;
+  startSession(session: string, opts: { prompt?: string }): Promise<'started' | 'not-started'>;
   stopSession(session: string): Promise<string>;
   /** Share DeliveryQueue's pause boundary with stopped-session initial prompts. */
   acquireSubmissionLease?(session: string): (() => void) | undefined;
@@ -255,7 +255,12 @@ export class Scheduler {
         try {
           submissionStarted = this.occurrences.markDispatching(occurrence.id);
           if (!submissionStarted) return;
-          await this.deps.startSession(codename, { prompt: occurrence.envelope });
+          const startResult = await this.deps.startSession(codename, { prompt: occurrence.envelope });
+          if (startResult === 'not-started') {
+            if (this.occurrences.restoreAdmitted(occurrence.id)) submissionStarted = false;
+            this.finish(occurrence, 'admitted', 'failed');
+            return;
+          }
           log().info('scheduler', `${codename}: '${label}' fired (fresh session)`);
           this.finish(occurrence, 'dispatching', 'fired-fresh');
         } finally {
@@ -293,7 +298,12 @@ export class Scheduler {
         try {
           submissionStarted = this.occurrences.markDispatching(occurrence.id);
           if (!submissionStarted) return;
-          await this.deps.startSession(codename, { prompt: occurrence.envelope });
+          const startResult = await this.deps.startSession(codename, { prompt: occurrence.envelope });
+          if (startResult === 'not-started') {
+            if (this.occurrences.restoreAdmitted(occurrence.id)) submissionStarted = false;
+            this.finish(occurrence, 'admitted', 'failed');
+            return;
+          }
           log().info('scheduler', `${codename}: '${label}' fired`);
           this.finish(occurrence, 'dispatching', 'fired');
         } finally {

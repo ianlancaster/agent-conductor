@@ -550,7 +550,8 @@ export class Supervisor {
         return this.states.get(session)?.running === true;
       },
       isPaused: (session) => this.states.isPaused(session),
-      startSession: (session, opts) => this.lifecycle.start(session, opts),
+      startSession: async (session, opts) =>
+        (await this.lifecycle.start(session, opts)) === `${session} started.` ? 'started' : 'not-started',
       stopSession: (session) => this.lifecycle.stop(session),
       acquireSubmissionLease: (session) => this.delivery.acquireSubmissionLease(session, 'hold'),
       deliver: (session, text, options) => this.delivery.deliverOrQueue(session, text, options),
