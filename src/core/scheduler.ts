@@ -250,7 +250,7 @@ export class Scheduler {
       if (result === 'no-pane') this.finish(occurrence, 'admitted', 'failed');
       else if (result === 'cancelled') this.finish(occurrence, 'admitted', 'skipped-cancelled');
     };
-    const restoreForProtectedDelivery = (): boolean => {
+    const restoreAdmitted = (): boolean => {
       if (this.occurrences.restoreAdmitted(occurrence.id)) {
         submissionStarted = false;
         return true;
@@ -293,11 +293,11 @@ export class Scheduler {
           if (!submissionStarted) return;
           const startResult = await this.deps.startSession(codename, { prompt: occurrence.envelope });
           if (startResult === 'active-without-prompt') {
-            if (restoreForProtectedDelivery()) await deliverToActive('fired-fresh');
+            if (restoreAdmitted() && canRun()) await deliverToActive('fired-fresh');
             return;
           }
           if (startResult === 'not-started') {
-            if (restoreForProtectedDelivery()) this.finish(occurrence, 'admitted', 'failed');
+            if (restoreAdmitted() && canRun()) this.finish(occurrence, 'admitted', 'failed');
             return;
           }
           log().info('scheduler', `${codename}: '${label}' fired (fresh session)`);
@@ -321,11 +321,11 @@ export class Scheduler {
           if (!submissionStarted) return;
           const startResult = await this.deps.startSession(codename, { prompt: occurrence.envelope });
           if (startResult === 'active-without-prompt') {
-            if (restoreForProtectedDelivery()) await deliverToActive('fired');
+            if (restoreAdmitted() && canRun()) await deliverToActive('fired');
             return;
           }
           if (startResult === 'not-started') {
-            if (restoreForProtectedDelivery()) this.finish(occurrence, 'admitted', 'failed');
+            if (restoreAdmitted() && canRun()) this.finish(occurrence, 'admitted', 'failed');
             return;
           }
           log().info('scheduler', `${codename}: '${label}' fired`);

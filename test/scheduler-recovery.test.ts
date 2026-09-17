@@ -151,4 +151,53 @@ describe('Scheduler durable occurrence recovery', () => {
     ]);
     expect(JSON.stringify(events.events)).not.toContain('inspect');
   });
+
+  it.each([
+    { action: 'cancelSession' as const, startResult: 'active-without-prompt' as const, freshContext: false },
+    { action: 'rebuild' as const, startResult: 'not-started' as const, freshContext: true },
+    { action: 'stop' as const, startResult: 'not-started' as const, freshContext: false },
+  ])(
+    'honors $action while recovered start resolves $startResult (freshContext=$freshContext)',
+    async ({ action, startResult, freshContext }) => {
+      const store = new Store(':memory:');
+      stores.push(store);
+      store.admit({ ...admission(), wakeIfStopped: true, freshContext });
+      let finishStart!: (result: 'active-without-prompt' | 'not-started') => void;
+      const pendingStart = new Promise<'active-without-prompt' | 'not-started'>((resolve) => {
+        finishStart = resolve;
+      });
+      const startSession = vi.fn(() => pendingStart);
+      const deliver = vi.fn(async () => 'delivered' as const);
+      const events = new FakeEventPublisher();
+      const scheduler = new Scheduler({
+        sessions: () => new Map(),
+        isActive: () => false,
+        isPaused: () => false,
+        startSession,
+        stopSession: async () => 'stopped',
+        deliver,
+        occurrences: store,
+        events,
+      });
+      schedulers.push(scheduler);
+
+      scheduler.rebuild();
+      await vi.waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+      expect(store.getScheduleOccurrence(admission().id)?.state).toBe('dispatching');
+      if (action === 'cancelSession') scheduler.cancelSession('alpha');
+      else scheduler[action]();
+      finishStart(startResult);
+
+      await vi.waitFor(() =>
+        expect(store.getScheduleOccurrence(admission().id)).toMatchObject({
+          state: 'settled',
+          outcome: 'skipped-cancelled',
+        }),
+      );
+      expect(deliver).not.toHaveBeenCalled();
+      expect(events.events).toContainEqual(expect.objectContaining({ outcome: 'skipped-cancelled' }));
+      expect(events.events).not.toContainEqual(expect.objectContaining({ outcome: 'fired' }));
+      expect(events.events).not.toContainEqual(expect.objectContaining({ outcome: 'failed' }));
+    },
+  );
 });
