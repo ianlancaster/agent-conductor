@@ -73,7 +73,6 @@ export class HealthMonitor {
   private readonly stillBeats = new Map<string, number>();
   private readonly silentNotified = new Set<string>();
   private readonly pendingCompactions = new Map<string, StallInfo>();
-  private readonly reportedUncertainDeliveries = new Set<string>();
   private heartbeatInFlight = false;
 
   constructor(private readonly deps: HealthDeps) {}
@@ -306,20 +305,6 @@ export class HealthMonitor {
     this.clearIdleTimer(session);
     this.bumpEventSequence(session);
     return true;
-  }
-
-  /** Route one actionable blocked signal for a delivery whose terminal effect is unknown. */
-  reportDeliveryUncertain(session: string, deliveryId: number | undefined, reason: string): void {
-    const key = `${session}:${deliveryId === undefined ? 'ephemeral' : String(deliveryId)}`;
-    if (this.reportedUncertainDeliveries.has(key)) return;
-    this.reportedUncertainDeliveries.add(key);
-    const receipt = deliveryId === undefined ? 'a protected delivery' : `message #${String(deliveryId)}`;
-    this.reportStall(session, 'blocked', {
-      reason:
-        `${receipt} has an unknown submission outcome (${reason}); inspect the recipient composer before ` +
-        'manually submitting or editing it. Conductor will not retry it automatically.',
-      preserveActivity: true,
-    });
   }
 
   /**

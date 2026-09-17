@@ -304,9 +304,6 @@ export class Supervisor {
           this.health.noteSubmission(session, boundary);
         };
       },
-      onSubmissionUncertain: (session, deliveryId, reason) => {
-        this.health.reportDeliveryUncertain(session, deliveryId, reason);
-      },
       config: this.config.messaging,
     });
 
@@ -365,9 +362,14 @@ export class Supervisor {
       sessions: () => this.sessions,
       startSession: (codename, opts) => this.lifecycle.start(codename, opts),
       pausedNotice: (codename) => this.pausedAutomationNotice(codename),
-      onDeliveryUncertain: (recipient, deliveryId, reason) => {
-        this.health.reportDeliveryUncertain(recipient, deliveryId, reason);
-      },
+      onDeliveryUncertain: (recipient, deliveryId, reason) =>
+        this.channelSend({
+          text:
+            `⚠️ Delivery uncertainty: message #${String(deliveryId)} to ${recipient} has an unknown submission ` +
+            `outcome (${reason}). Inspect the recipient composer before acting; Conductor will not retry it. ` +
+            `After inspection, use /reconcile-message ${String(deliveryId)} manually-submitted <evidence> or ` +
+            `/reconcile-message ${String(deliveryId)} abandoned <evidence>.`,
+        }),
       events: this.eventBus,
     });
     this.integrations = new IntegrationManager({
@@ -722,8 +724,9 @@ export class Supervisor {
     if (channelStartup === undefined) {
       this.sentinel.activateFleetWatch();
     } else {
-      void channelStartup.then(() => {
+      void channelStartup.then(async () => {
         if (!this.channelsStopping && this.channelStartup === channelStartup) {
+          await this.messaging.notifyPendingUncertain();
           this.sentinel.activateFleetWatch();
         }
       });

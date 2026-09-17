@@ -403,6 +403,26 @@ describe('conversation commands', () => {
     });
   });
 
+  it('records an uncertain receipt inspection through the operator command', async () => {
+    const row = store.insertDirectMessage('alpha', 'beta', 'ambiguous').row;
+    store.markMessageSubmissionStarted(row.id);
+
+    await expect(
+      router.route(`/reconcile-message ${String(row.id)} abandoned "operator inspected and discarded draft"`),
+    ).resolves.toContain('Reconciled as abandoned by operator');
+    expect(JSON.parse(await router.route(`/message-status ${String(row.id)}`))).toMatchObject({
+      status: 'uncertain',
+      reconciliation: {
+        outcome: 'abandoned',
+        actor: 'operator',
+        evidence: 'operator inspected and discarded draft',
+      },
+    });
+    expect(await router.route(`/reconcile-message ${String(row.id)} manually-submitted conflict`)).toContain(
+      'already reconciled as abandoned',
+    );
+  });
+
   it('talk + free text routes to the talk target', async () => {
     await router.route('/start alpha');
     expect(await router.route('/talk alpha')).toContain('Talking to alpha');

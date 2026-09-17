@@ -195,21 +195,6 @@ describe('event-driven signals', () => {
     expect(stalls).toEqual([{ session: 'alpha', kind: 'blocked', reason: 'needs permission' }]);
   });
 
-  it('reports each uncertain delivery once without reclassifying runtime activity', () => {
-    monitor.reportDeliveryUncertain('alpha', 42, 'submission-unconfirmed');
-    monitor.reportDeliveryUncertain('alpha', 42, 'submission-unconfirmed');
-
-    expect(stalls).toEqual([
-      {
-        session: 'alpha',
-        kind: 'blocked',
-        reason:
-          'message #42 has an unknown submission outcome (submission-unconfirmed); inspect the recipient composer before manually submitting or editing it. Conductor will not retry it automatically.',
-        preserveActivity: true,
-      },
-    ]);
-  });
-
   it('returns an interrupted authoritative turn to working when pane output resumes', async () => {
     backend.setPaneContent(paneId, 'permission prompt');
     await monitor.heartbeat();

@@ -141,7 +141,10 @@ terminal control. Every queued receipt records why it could not run, including w
 behind an earlier FIFO message, and recipient activation prompts an immediate retry in addition to
 the periodic drain. A receipt becomes `uncertain` when a terminal accepts the write but bounded
 runtime-owned composer observations cannot prove submission. Conductor does not replay that
-message: inspect the recipient composer before manually submitting or editing it.
+message. It sends one durable owner notice independently of automatic stall handling. After
+inspecting the recipient composer, the operator records either `manually-submitted` or `abandoned`
+with `/reconcile-message <message-id> <outcome> <evidence>`; reconciliation records evidence and
+never writes to the terminal.
 
 ## Status and observability
 

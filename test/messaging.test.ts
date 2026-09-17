@@ -120,8 +120,9 @@ describe('Messaging delivery receipts', () => {
       return accepted;
     };
     const firstQueue = makeQueue(runtime, pane.id);
-    const firstMessaging = makeMessaging(firstQueue, undefined, undefined, (recipient, id, reason) => {
+    const firstMessaging = makeMessaging(firstQueue, undefined, undefined, async (recipient, id, reason) => {
       uncertain.push(`${recipient}:${String(id)}:${reason}`);
+      return true;
     });
 
     const sending = firstMessaging.sendToSession('alpha', 'beta', 'ambiguous once', 'stable-unknown');
@@ -148,11 +149,13 @@ describe('Messaging delivery receipts', () => {
     });
     expect(store.getPendingDeliveries('beta')).toEqual([]);
     expect(await firstMessaging.cancelMessage(1, 'alpha')).toContain('cannot be cancelled or retried automatically');
+    await firstMessaging.notifyPendingUncertain('beta');
     firstQueue.stop();
 
     const restartedQueue = makeQueue(new FakeRuntime(), pane.id);
-    const restarted = makeMessaging(restartedQueue, undefined, undefined, (recipient, id, reason) => {
+    const restarted = makeMessaging(restartedQueue, undefined, undefined, async (recipient, id, reason) => {
       uncertain.push(`${recipient}:${String(id)}:${reason}`);
+      return true;
     });
     await restarted.recoverPendingMessages('beta');
     await expect(restarted.sendToSession('alpha', 'beta', 'changed duplicate', 'stable-unknown')).resolves.toEqual({
@@ -163,8 +166,78 @@ describe('Messaging delivery receipts', () => {
     });
 
     expect(backend.panes.get(pane.id)?.received).toEqual(['[Message from alpha] ambiguous once']);
-    expect(uncertain).toEqual(['beta:1:submission-unconfirmed', 'beta:1:submission-unconfirmed']);
+    expect(uncertain).toEqual(['beta:1:submission-unconfirmed']);
   }, 30_000);
+
+  it('retains a failed owner notice until one surface accepts it, then never accepts it twice', async () => {
+    const row = store.insertDirectMessage('alpha', 'beta', 'inspect me', 'notice-once').row;
+    expect(store.markMessageSubmissionStarted(row.id)).toBe(true);
+    const attempts: number[] = [];
+    const messaging = makeMessaging(makeQueue(new FakeRuntime(), 'unused'), undefined, undefined, async () => {
+      attempts.push(attempts.length + 1);
+      return attempts.length > 1;
+    });
+
+    await messaging.notifyPendingUncertain();
+    expect(store.getMessage(row.id)?.uncertain_notified_at).toBeNull();
+    await messaging.notifyPendingUncertain();
+    expect(store.getMessage(row.id)?.uncertain_notified_at).toBeTypeOf('string');
+    await messaging.notifyPendingUncertain();
+
+    expect(attempts).toEqual([1, 2]);
+    messaging.stop();
+  });
+
+  it('reconciles both human outcomes idempotently without making any terminal call', async () => {
+    const submit = vi.spyOn(backend, 'submitIfUnchanged');
+    const run = vi.spyOn(backend, 'run');
+    const first = store.insertDirectMessage('alpha', 'beta', 'ambiguous', 'reconcile-key').row;
+    expect(store.markMessageSubmissionStarted(first.id)).toBe(true);
+    const second = store.insertDirectMessage('alpha', 'beta', 'abandon this').row;
+    expect(store.markMessageSubmissionStarted(second.id)).toBe(true);
+    const messaging = makeMessaging(makeQueue(new FakeRuntime(), 'unused'));
+
+    const submitted = messaging.reconcileUncertainMessage(
+      first.id,
+      'manually-submitted',
+      'console:operator',
+      'operator inspected alpha and pressed Enter once',
+    );
+    expect(submitted).toMatchObject({
+      messageId: first.id,
+      status: 'uncertain',
+      deduplicated: false,
+      reconciliation: {
+        outcome: 'manually-submitted',
+        actor: 'console:operator',
+        evidence: 'operator inspected alpha and pressed Enter once',
+      },
+    });
+    expect(
+      messaging.reconcileUncertainMessage(
+        first.id,
+        'manually-submitted',
+        'another-console',
+        'later duplicate evidence must not replace the original audit',
+      ),
+    ).toMatchObject({ deduplicated: true, reconciliation: submitted.reconciliation });
+    expect(() =>
+      messaging.reconcileUncertainMessage(first.id, 'abandoned', 'console:operator', 'conflicting decision'),
+    ).toThrow('already reconciled as manually-submitted');
+    expect(
+      messaging.reconcileUncertainMessage(second.id, 'abandoned', 'console:operator', 'draft was discarded'),
+    ).toMatchObject({ reconciliation: { outcome: 'abandoned' } });
+
+    await expect(messaging.sendToSession('alpha', 'beta', 'must not replay', 'reconcile-key')).resolves.toMatchObject({
+      messageId: first.id,
+      status: 'uncertain',
+      deduplicated: true,
+      reconciliation: submitted.reconciliation,
+    });
+    expect(submit).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    messaging.stop();
+  });
 
   it('holds peer messages while paused and drains them after ordinary resume', async () => {
     const pane = await backend.createPane('beta', 'pane');
@@ -768,7 +841,7 @@ describe('Messaging delivery receipts', () => {
     delivery: DeliveryQueue,
     events?: FakeEventPublisher,
     pausedNotice?: (codename: string) => string | undefined,
-    onDeliveryUncertain?: (recipient: string, deliveryId: number, reason: string) => void,
+    onDeliveryUncertain?: (recipient: string, deliveryId: number, reason: string) => Promise<boolean>,
   ): Messaging {
     return new Messaging({
       store,

@@ -1,5 +1,11 @@
 import { log } from '../logger.js';
-import type { DeliveryPausePolicy, MessageRow, Store } from '../store/index.js';
+import type {
+  DeliveryPausePolicy,
+  MessageReconciliation,
+  MessageReconciliationOutcome,
+  MessageRow,
+  Store,
+} from '../store/index.js';
 import type { SessionConfig } from '../config/schema.js';
 import type { DeliveryQueue } from './delivery.js';
 import type { SessionStateManager } from './state.js';
@@ -16,8 +22,8 @@ export interface MessagingDeps {
   /** High-visibility notice prepended to operator input while automation is paused. */
   pausedNotice?(codename: string): string | undefined;
   events?: ConductorEventPublisher;
-  /** Route durable unknown-effect deliveries through the existing health/escalation path. */
-  onDeliveryUncertain?(recipient: string, deliveryId: number, reason: string): void;
+  /** Notify an owner surface directly; true means at least one surface accepted the notice. */
+  onDeliveryUncertain?(recipient: string, deliveryId: number, reason: string): Promise<boolean>;
 }
 
 export interface MessageReceipt {
@@ -29,6 +35,8 @@ export interface MessageReceipt {
   deduplicated: boolean;
   /** Operator-visible warning associated with this delivery, when applicable. */
   notice?: string;
+  /** Human attestation recorded after inspecting an uncertain delivery. */
+  reconciliation?: MessageReconciliation;
 }
 
 export function isMessageReceipt(value: unknown): value is MessageReceipt {
@@ -42,7 +50,20 @@ export function isMessageReceipt(value: unknown): value is MessageReceipt {
       receipt.status === 'queued' ||
       receipt.status === 'cancelled') &&
     typeof receipt.deduplicated === 'boolean' &&
-    (receipt.notice === undefined || typeof receipt.notice === 'string')
+    (receipt.notice === undefined || typeof receipt.notice === 'string') &&
+    (receipt.reconciliation === undefined || isMessageReconciliation(receipt.reconciliation))
+  );
+}
+
+function isMessageReconciliation(value: unknown): value is MessageReconciliation {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Partial<MessageReconciliation>;
+  return (
+    typeof record.messageId === 'number' &&
+    (record.outcome === 'manually-submitted' || record.outcome === 'abandoned') &&
+    typeof record.actor === 'string' &&
+    typeof record.evidence === 'string' &&
+    typeof record.reconciledAt === 'string'
   );
 }
 
@@ -53,7 +74,12 @@ export function renderMessageReceipt(receipt: MessageReceipt): string {
     receipt.status === 'uncertain'
       ? `Submission of message #${String(receipt.messageId)} to ${destination} is uncertain${duplicate}.`
       : `${receipt.status === 'delivered' ? 'Delivered' : receipt.status === 'cancelled' ? 'Cancelled' : 'Queued'} message #${String(receipt.messageId)} for ${destination}${duplicate}.`;
-  return receipt.notice === undefined ? acknowledgement : `${acknowledgement}\n${receipt.notice}`;
+  const reconciliation =
+    receipt.reconciliation === undefined
+      ? ''
+      : ` Reconciled as ${receipt.reconciliation.outcome} by ${receipt.reconciliation.actor} at ${receipt.reconciliation.reconciledAt}.`;
+  const rendered = `${acknowledgement}${reconciliation}`;
+  return receipt.notice === undefined ? rendered : `${rendered}\n${receipt.notice}`;
 }
 
 /** Durable inter-session and operator-to-session messaging behind the canonical tools. */
@@ -66,8 +92,8 @@ export class Messaging {
   private readonly retryStartDeliveries = new Map<string, Set<number>>();
   /** Serializes database admission, initial prompt selection, and cancellation for each recipient. */
   private readonly recipientAdmissions = new Map<string, Promise<void>>();
-  /** One health escalation per unknown-effect receipt for this process. */
-  private readonly reportedUncertain = new Set<number>();
+  /** Prevent concurrent owner-notice attempts; durable acceptance lives in SQLite. */
+  private readonly notifyingUncertain = new Set<number>();
   private recoveryTimer: NodeJS.Timeout | undefined;
   private stopped = false;
 
@@ -140,7 +166,7 @@ export class Messaging {
           await this.withRecipient(existing.recipient, () => Promise.resolve());
         }
         const current = this.deps.store.getMessage(existing.id) ?? existing;
-        if (current.status === 'uncertain') this.reportUncertain(current);
+        if (current.status === 'uncertain') await this.notifyUncertain(current);
         return this.receipt(current, true, notice);
       }
     }
@@ -172,7 +198,7 @@ export class Messaging {
 
   /** Recover pending rows without starting stopped recipients merely to empty a queue. */
   async recoverPendingMessages(recipient?: string): Promise<void> {
-    for (const row of this.deps.store.getUncertainDeliveries(recipient)) this.reportUncertain(row);
+    await this.notifyPendingUncertain(recipient);
     const recipients =
       recipient === undefined
         ? [...new Set(this.deps.store.getPendingDeliveries().map((row) => row.recipient))]
@@ -181,6 +207,15 @@ export class Messaging {
       await this.admitRecipient(target);
     }
     await this.deps.delivery.drainNow();
+  }
+
+  /** Retry durable owner notices without involving the stall/sentinel policy path. */
+  async notifyPendingUncertain(recipient?: string): Promise<void> {
+    if (this.deps.onDeliveryUncertain === undefined) return;
+    for (const row of this.deps.store.getUnnotifiedUncertainDeliveries(recipient)) {
+      await this.notifyUncertain(row);
+    }
+    if (this.deps.store.getUnnotifiedUncertainDeliveries(recipient).length > 0) this.ensureRecoveryTimer();
   }
 
   /** Startup rollback forgets only in-memory admission; SQLite remains authoritative. */
@@ -210,6 +245,7 @@ export class Messaging {
         ? `Message #${String(id)} was not found.`
         : `Message #${String(id)} was not found or is not part of your conversation. Receipt ids are fleet-wide; this response does not indicate a ledger gap.`;
     }
+    const reconciliation = this.deps.store.getMessageReconciliation(id);
     return JSON.stringify({
       id: row.id,
       sender: row.sender,
@@ -221,6 +257,7 @@ export class Messaging {
       lastFlushAttempt: row.last_flush_attempt_at,
       flushSkipReason: row.flush_skip_reason,
       cancelledAt: row.cancelled_at,
+      reconciliation: reconciliation ?? null,
       inMemoryPendingForRecipient: this.deps.delivery.pendingCount(row.recipient),
     });
   }
@@ -235,7 +272,10 @@ export class Messaging {
       }
       if (row.status === 'delivered') return `Message #${String(id)} was already delivered and cannot be cancelled.`;
       if (row.status === 'uncertain') {
-        return `Message #${String(id)} has an uncertain submission outcome and cannot be cancelled or retried automatically.`;
+        return (
+          `Message #${String(id)} has an uncertain submission outcome and cannot be cancelled or retried automatically. ` +
+          'An operator may reconcile it after inspecting the recipient composer.'
+        );
       }
       if (row.status === 'cancelled') return `Message #${String(id)} is already cancelled.`;
       if (this.startingDelivery.has(id)) {
@@ -263,6 +303,19 @@ export class Messaging {
       });
       return `Message #${String(id)} cancelled.`;
     });
+  }
+
+  /** Persist an operator's inspection result without touching the recipient terminal. */
+  reconcileUncertainMessage(
+    id: number,
+    outcome: MessageReconciliationOutcome,
+    actor: string,
+    evidence: string,
+  ): MessageReceipt {
+    const result = this.deps.store.reconcileUncertainMessage(id, outcome, actor, evidence);
+    const row = this.deps.store.getMessage(id);
+    if (row === undefined) throw new Error(`Message #${String(id)} was not found after reconciliation.`);
+    return this.receipt(row, result.deduplicated);
   }
 
   async broadcast(
@@ -376,7 +429,7 @@ export class Messaging {
       onUncertain: () => {
         this.scheduled.delete(row.id);
         const current = this.deps.store.getMessage(row.id);
-        if (current !== undefined) this.reportUncertain(current);
+        if (current !== undefined) void this.notifyUncertain(current);
       },
       onDelivered: () => {
         this.markDelivered(row.id);
@@ -408,6 +461,7 @@ export class Messaging {
   }
 
   private receipt(row: MessageRow, deduplicated: boolean, notice?: string): MessageReceipt {
+    const reconciliation = this.deps.store.getMessageReconciliation(row.id);
     return {
       messageId: row.id,
       recipient: row.recipient,
@@ -421,13 +475,37 @@ export class Messaging {
               : 'queued',
       deduplicated,
       ...(notice === undefined ? {} : { notice }),
+      ...(reconciliation === undefined ? {} : { reconciliation }),
     };
   }
 
-  private reportUncertain(row: MessageRow): void {
-    if (this.reportedUncertain.has(row.id)) return;
-    this.reportedUncertain.add(row.id);
-    this.deps.onDeliveryUncertain?.(row.recipient, row.id, row.flush_skip_reason ?? 'submission-unconfirmed');
+  private async notifyUncertain(row: MessageRow): Promise<void> {
+    if (
+      this.deps.onDeliveryUncertain === undefined ||
+      row.uncertain_notified_at !== null ||
+      this.deps.store.getMessageReconciliation(row.id) !== undefined ||
+      this.notifyingUncertain.has(row.id)
+    ) {
+      return;
+    }
+    this.notifyingUncertain.add(row.id);
+    let accepted = false;
+    try {
+      accepted = await this.deps.onDeliveryUncertain(
+        row.recipient,
+        row.id,
+        row.flush_skip_reason ?? 'submission-unconfirmed',
+      );
+      if (accepted) this.deps.store.markMessageUncertainNotified(row.id);
+    } catch (error) {
+      log().warn(
+        'messaging',
+        `owner notice for uncertain message #${String(row.id)} failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      this.notifyingUncertain.delete(row.id);
+    }
+    if (!accepted) this.ensureRecoveryTimer();
   }
 
   private withRecipient<T>(recipient: string, operation: () => Promise<T>): Promise<T> {
@@ -461,6 +539,7 @@ export class Messaging {
         this.retryStartDeliveries.delete(recipient);
       }
       await this.deps.delivery.drainNow();
+      await this.notifyPendingUncertain();
       const pending = this.deps.store.getPendingDeliveries();
       if (
         pending.some(

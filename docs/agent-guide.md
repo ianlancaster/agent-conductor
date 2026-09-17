@@ -315,7 +315,8 @@ Direct-message receipts are observable:
   This state is checkpointed before the write, survives restart, and is never replayed
   automatically. Inspect the recipient composer before manually submitting or editing it. A draft
   may be the original delivery, operator input, or a mixture; Conductor deliberately does not infer
-  ownership or press Enter again.
+  ownership or press Enter again. Conductor retains an owner notice until an operator console or
+  channel accepts it; pause, auto mode, and sentinel availability do not suppress this notice.
 - Conductor reconstructs only `pending` direct messages and per-recipient broadcast deliveries
   after restart. `uncertain` receipts remain held at the explicit no-replay boundary.
 - `get_message_status` reports `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`, so a
@@ -329,6 +330,11 @@ Direct-message receipts are observable:
   The operator command can inspect any receipt.
 - `cancel_message` can cancel a pending receipt before its pane write starts.
 - `cancel_message` refuses an `uncertain` receipt because its terminal effect is already ambiguous.
+- After manual inspection, an operator may use
+  `/reconcile-message <message-id> <manually-submitted|abandoned> <evidence>`. The first outcome,
+  actor, timestamp, and evidence are durable; repeating that outcome is idempotent and a conflicting
+  outcome is refused. Reconciliation preserves the `uncertain` transport receipt and makes no
+  terminal call.
 - Reusing a sender-scoped `idempotencyKey` returns the original receipt.
 - Operator-originated receipts may include a `notice`; operator adapters render it after the
   acknowledgement, and Conductor prepends the same notice to the protected recipient envelope.
@@ -1333,9 +1339,11 @@ both trigger a fresh protected-delivery pass.
 
 `submission-unconfirmed` means the protected write crossed its durable no-replay checkpoint but
 bounded composer observations did not prove that Enter took effect. The receipt is `uncertain`, not
-queued or delivered. Conductor routes one blocked-delivery health signal without changing
-independent runtime activity, and it will not press Enter, clear the composer, repaste, or replay the
-message after restart. Inspect the pane and coordinate recovery with the operator.
+queued or delivered. Conductor sends one owner notice independently of ordinary stall automation
+without changing runtime activity, and it will not press Enter, clear the composer, repaste, or
+replay the message after restart. Inspect the pane, then use `/reconcile-message` to record either a
+manual submission or abandonment with evidence. This closes the manual workflow without changing
+the preserved transport receipt.
 
 `recipient-paused` means a peer delivery is durably held until ordinary resume. Operator messages intentionally bypass the pause and may pass older held peer traffic; held traffic retains its own FIFO order. A stopped paused recipient is not started merely to drain the queue.
 

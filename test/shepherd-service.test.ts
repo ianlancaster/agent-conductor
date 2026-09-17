@@ -80,32 +80,69 @@ describe('Shepherd outbox delivery', () => {
     store.close();
   });
 
-  it('parks an uncertain Conductor receipt without retrying or completing it', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-07-20T00:00:00Z'));
-    const store = new SqliteShepherdStore(':memory:');
-    seed(store);
-    const keys: string[] = [];
-    const worker = service(store, {
-      send: (item) => {
-        keys.push(item.idempotencyKey);
-        return Promise.resolve({
-          messageId: 9,
-          recipient: item.recipient,
-          status: 'uncertain',
-          deduplicated: keys.length > 1,
-        });
-      },
-    });
+  it.each(['manually-submitted', 'abandoned'] as const)(
+    'parks an uncertain Conductor receipt and closes it from durable %s evidence without replay',
+    async (outcome) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-20T00:00:00Z'));
+      const store = new SqliteShepherdStore(':memory:');
+      seed(store);
+      const keys: string[] = [];
+      let inspections = 0;
+      let current:
+        | {
+            messageId: number;
+            recipient: string;
+            status: 'uncertain';
+            deduplicated: boolean;
+            reconciliation?: {
+              messageId: number;
+              outcome: 'manually-submitted' | 'abandoned';
+              actor: string;
+              evidence: string;
+              reconciledAt: string;
+            };
+          }
+        | undefined;
+      const worker = service(store, {
+        send: (item) => {
+          keys.push(item.idempotencyKey);
+          current = {
+            messageId: 9,
+            recipient: item.recipient,
+            status: 'uncertain',
+            deduplicated: keys.length > 1,
+          };
+          return Promise.resolve(current);
+        },
+        getReceipt: () => {
+          inspections += 1;
+          return Promise.resolve(current);
+        },
+      });
 
-    await worker.drainOutbox();
-    expect(store.listOutbox()).toHaveLength(1);
-    vi.advanceTimersByTime(1_000);
-    await worker.drainOutbox();
-    expect(keys).toEqual([keys[0]]);
-    expect(store.listOutbox()).toHaveLength(1);
-    store.close();
-  });
+      await worker.drainOutbox();
+      expect(store.listParkedOutbox()[0]?.receipt).toEqual(current);
+      current = {
+        ...current!,
+        reconciliation: {
+          messageId: 9,
+          outcome,
+          actor: 'console:operator',
+          evidence: 'operator inspected the coordinator composer',
+          reconciledAt: '2026-07-20T00:01:00.000Z',
+        },
+      };
+      vi.advanceTimersByTime(1_000);
+      await worker.drainOutbox();
+      expect(keys).toEqual([keys[0]]);
+      expect(store.listOutbox()).toEqual([]);
+      expect(store.getOutboxReceipt(1)).toEqual(current);
+      await worker.drainOutbox();
+      expect(inspections).toBe(1);
+      store.close();
+    },
+  );
 
   it('parks permanent recipient validation failures instead of consuming retries', async () => {
     const store = new SqliteShepherdStore(':memory:');

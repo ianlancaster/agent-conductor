@@ -8,6 +8,7 @@ import type {
   EntityUpdate,
   GitHubMutation,
   OutboxItem,
+  ParkedOutboxItem,
   PullRequestDetails,
   PullRequestRef,
   ReleaseControlRequest,
@@ -54,6 +55,8 @@ interface OutboxRow {
   message: string;
   attempts: number;
   next_attempt_at: string;
+  status?: string;
+  receipt_json?: string | null;
 }
 
 interface TrackedPullRequestRow {
@@ -297,6 +300,21 @@ function outboxFromRow(row: OutboxRow): OutboxItem {
     attempts: row.attempts,
     nextAttemptAt: row.next_attempt_at,
   };
+}
+
+function coordinatorReceipt(raw: string, label: string): CoordinatorReceipt {
+  const parsed = parseJson<unknown>(raw, label);
+  if (typeof parsed !== 'object' || parsed === null) throw new Error(`Corrupt Shepherd ${label}.`);
+  const receipt = parsed as Partial<CoordinatorReceipt>;
+  if (
+    typeof receipt.messageId !== 'number' ||
+    typeof receipt.recipient !== 'string' ||
+    (receipt.status !== 'delivered' && receipt.status !== 'queued' && receipt.status !== 'uncertain') ||
+    typeof receipt.deduplicated !== 'boolean'
+  ) {
+    throw new Error(`Corrupt Shepherd ${label}.`);
+  }
+  return receipt as CoordinatorReceipt;
 }
 
 function trackedFromRow(row: TrackedPullRequestRow): TrackedPullRequest {
@@ -1221,13 +1239,60 @@ export class SqliteShepherdStore implements TrackedClaimHandoffStore {
       .run(nextAttemptAt.toISOString(), error, id);
   }
 
-  parkOutbox(id: number, error: string): void {
+  parkOutbox(id: number, error: string, receipt?: CoordinatorReceipt): void {
     this.db
       .prepare(
-        "UPDATE shepherd_outbox SET status = 'parked', attempts = attempts + 1, claimed_at = NULL, last_error = ? WHERE id = ? AND status = 'sending'",
+        "UPDATE shepherd_outbox SET status = 'parked', attempts = attempts + 1, claimed_at = NULL, " +
+          "last_error = ?, receipt_json = COALESCE(?, receipt_json) WHERE id = ? AND status = 'sending'",
       )
-      .run(error, id);
+      .run(error, receipt === undefined ? null : JSON.stringify(receipt), id);
     this.logHealth('outbox-parked', `outbox=${String(id)} ${error}`);
+  }
+
+  listParkedOutbox(): ParkedOutboxItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, event_id, recipient, idempotency_key, message, attempts, next_attempt_at, status, receipt_json
+         FROM shepherd_outbox WHERE status = 'parked' AND receipt_json IS NOT NULL ORDER BY id`,
+      )
+      .all() as unknown as OutboxRow[];
+    return rows.map((row) => {
+      if (row.receipt_json === undefined || row.receipt_json === null) {
+        throw new Error(`Parked Shepherd outbox #${String(row.id)} has no receipt.`);
+      }
+      return {
+        ...outboxFromRow(row),
+        receipt: coordinatorReceipt(row.receipt_json, `outbox ${String(row.id)} receipt`),
+      };
+    });
+  }
+
+  reconcileOutbox(id: number, receipt: CoordinatorReceipt): void {
+    if (receipt.reconciliation === undefined) {
+      throw new Error(`Cannot reconcile Shepherd outbox #${String(id)} without Conductor reconciliation evidence.`);
+    }
+    const detail =
+      `outbox=${String(id)} message=${String(receipt.messageId)} outcome=${receipt.reconciliation.outcome} ` +
+      `actor=${receipt.reconciliation.actor} at=${receipt.reconciliation.reconciledAt}`;
+    const changed = this.db
+      .prepare(
+        "UPDATE shepherd_outbox SET status = 'completed', completed_at = ?, claimed_at = NULL, receipt_json = ?, " +
+          "last_error = ? WHERE id = ? AND status = 'parked'",
+      )
+      .run(
+        new Date().toISOString(),
+        JSON.stringify(receipt),
+        `Manually reconciled as ${receipt.reconciliation.outcome}.`,
+        id,
+      ).changes;
+    if (changed === 1) this.logHealth('outbox-reconciled', detail);
+  }
+
+  getOutboxReceipt(id: number): CoordinatorReceipt | undefined {
+    const row = this.db.prepare('SELECT receipt_json FROM shepherd_outbox WHERE id = ?').get(id) as
+      { receipt_json: string | null } | undefined;
+    if (row?.receipt_json === null || row?.receipt_json === undefined) return undefined;
+    return coordinatorReceipt(row.receipt_json, `outbox ${String(id)} receipt`);
   }
 
   recoverInFlight(): void {

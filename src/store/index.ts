@@ -32,6 +32,22 @@ export interface MessageRow {
   cancelled_at: string | null;
   delivery_policy: DeliveryPausePolicy;
   delivery_envelope: string | null;
+  uncertain_notified_at: string | null;
+}
+
+export type MessageReconciliationOutcome = 'manually-submitted' | 'abandoned';
+
+export interface MessageReconciliation {
+  messageId: number;
+  outcome: MessageReconciliationOutcome;
+  actor: string;
+  evidence: string;
+  reconciledAt: string;
+}
+
+export interface MessageReconciliationResult {
+  reconciliation: MessageReconciliation;
+  deduplicated: boolean;
 }
 
 export type DeliveryPausePolicy = 'hold' | 'bypass';
@@ -323,6 +339,21 @@ const MIGRATIONS: SqliteMigration[] = [
     if (!messageColumns.some((column) => column.name === 'delivery_envelope')) {
       db.exec('ALTER TABLE messages ADD COLUMN delivery_envelope TEXT');
     }
+  },
+  (db) => {
+    const messageColumns = db.prepare('PRAGMA table_info(messages)').all() as { name: string }[];
+    if (!messageColumns.some((column) => column.name === 'uncertain_notified_at')) {
+      db.exec('ALTER TABLE messages ADD COLUMN uncertain_notified_at TEXT');
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS message_reconciliations (
+        message_id INTEGER PRIMARY KEY REFERENCES messages(id),
+        outcome TEXT NOT NULL CHECK (outcome IN ('manually-submitted', 'abandoned')),
+        actor TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        reconciled_at TEXT NOT NULL
+      )
+    `);
   },
 ];
 
@@ -684,6 +715,90 @@ export class Store {
     return this.db
       .prepare("SELECT * FROM messages WHERE recipient != '*' AND status = 'uncertain' ORDER BY recipient, id")
       .all() as unknown as MessageRow[];
+  }
+
+  /** Unknown-effect receipts whose owner notice has not yet reached any supported surface. */
+  getUnnotifiedUncertainDeliveries(recipient?: string): MessageRow[] {
+    const suffix =
+      "status = 'uncertain' AND uncertain_notified_at IS NULL " +
+      'AND NOT EXISTS (SELECT 1 FROM message_reconciliations r WHERE r.message_id = messages.id)';
+    if (recipient !== undefined) {
+      return this.db
+        .prepare(`SELECT * FROM messages WHERE recipient = ? AND ${suffix} ORDER BY id`)
+        .all(recipient) as unknown as MessageRow[];
+    }
+    return this.db
+      .prepare(`SELECT * FROM messages WHERE recipient != '*' AND ${suffix} ORDER BY recipient, id`)
+      .all() as unknown as MessageRow[];
+  }
+
+  markMessageUncertainNotified(id: number, notifiedAt = new Date().toISOString()): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE messages SET uncertain_notified_at = ? WHERE id = ? AND status = 'uncertain' " +
+            'AND uncertain_notified_at IS NULL',
+        )
+        .run(notifiedAt, id).changes === 1
+    );
+  }
+
+  getMessageReconciliation(messageId: number): MessageReconciliation | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT message_id, outcome, actor, evidence, reconciled_at FROM message_reconciliations WHERE message_id = ?',
+      )
+      .get(messageId) as
+      { message_id: number; outcome: string; actor: string; evidence: string; reconciled_at: string } | undefined;
+    if (row === undefined) return undefined;
+    if (row.outcome !== 'manually-submitted' && row.outcome !== 'abandoned') {
+      throw new Error(`Message #${String(messageId)} has an invalid reconciliation outcome.`);
+    }
+    return {
+      messageId: row.message_id,
+      outcome: row.outcome,
+      actor: row.actor,
+      evidence: row.evidence,
+      reconciledAt: row.reconciled_at,
+    };
+  }
+
+  /** Record the first human disposition of an uncertain receipt without rewriting transport history. */
+  reconcileUncertainMessage(
+    messageId: number,
+    outcome: MessageReconciliationOutcome,
+    actor: string,
+    evidence: string,
+    reconciledAt = new Date().toISOString(),
+  ): MessageReconciliationResult {
+    return withTransaction(this.db, () => {
+      const existing = this.getMessageReconciliation(messageId);
+      if (existing !== undefined) {
+        if (existing.outcome !== outcome) {
+          throw new Error(
+            `Message #${String(messageId)} was already reconciled as ${existing.outcome}; ` +
+              `it cannot be changed to ${outcome}.`,
+          );
+        }
+        return { reconciliation: existing, deduplicated: true };
+      }
+      const message = this.getMessage(messageId);
+      if (message === undefined) throw new Error(`Message #${String(messageId)} was not found.`);
+      if (message.status !== 'uncertain') {
+        throw new Error(
+          `Message #${String(messageId)} is ${message.status}; only an uncertain receipt can be reconciled.`,
+        );
+      }
+      this.db
+        .prepare(
+          'INSERT INTO message_reconciliations (message_id, outcome, actor, evidence, reconciled_at) ' +
+            'VALUES (?, ?, ?, ?, ?)',
+        )
+        .run(messageId, outcome, actor, evidence, reconciledAt);
+      const reconciliation = this.getMessageReconciliation(messageId);
+      if (reconciliation === undefined) throw new Error('Message reconciliation was not persisted.');
+      return { reconciliation, deduplicated: false };
+    });
   }
 
   /** Recent direct-message metadata involving one session; message content is deliberately excluded. */

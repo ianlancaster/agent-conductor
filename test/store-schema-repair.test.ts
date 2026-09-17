@@ -79,7 +79,7 @@ describe('beta migration version collision recovery', () => {
     expect(reopened.getMessage(operator.row.id)).toEqual(operator.row);
     reopened.close();
     const inspected = openSqliteDatabase(dbPath);
-    expect(inspected.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 15 });
+    expect(inspected.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 16 });
     expect(inspected.prepare('SELECT room, kind, member FROM room_members').all()).toEqual([
       { room: 'review', kind: 'session', member: 'alpha' },
     ]);
