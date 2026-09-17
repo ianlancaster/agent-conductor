@@ -94,10 +94,16 @@ export function bracketedPastePayload(text: string): string {
  * paste-burst window and turns it into a blank newline sitting in its
  * composer on every start and resume.
  */
-export function buildDeliveryOperations(contentPath: string, bracketed: boolean, guard = ''): string {
+export function buildDeliveryOperations(
+  contentPath: string,
+  bracketed: boolean,
+  guard = '',
+  captureStaged = false,
+): string {
   return `${guard}
          write contents of file "${escapeAppleScript(contentPath)}" newline false
          delay ${bracketed ? 0.1 : 0.2}
+         ${captureStaged ? 'set conductorStagedContents to contents as string' : ''}
          write text (ASCII character 13) newline false`;
 }
 

@@ -2,6 +2,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import type { PaneRef, Placement } from '../../core/types.js';
 import type {
+  AcceptedDeliverySubmission,
   CreatePaneOptions,
   DeliveryCapture,
   DeliveryCaptureOptions,
@@ -339,7 +340,7 @@ export class TmuxBackend implements TerminalBackend {
    * Writable clients attached to the target session are read-only only for
    * the recapture + send-keys window, then restored in a finally block.
    */
-  async submitIfUnchanged(pane: PaneRef, text: string, token: string): Promise<boolean> {
+  async submitIfUnchanged(pane: PaneRef, text: string, token: string): Promise<boolean | AcceptedDeliverySubmission> {
     this.assertRef(pane);
     return this.withDeliveryLock(pane.id, async () => {
       let observation: { version: number; lines: number; styled: boolean; content: string };
@@ -371,8 +372,13 @@ export class TmuxBackend implements TerminalBackend {
           ? await this.captureStyled(pane, observation.lines)
           : await this.capture(pane, observation.lines);
         if (current !== observation.content) return false;
-        await this.run(pane, text);
-        return true;
+        const commands = buildDeliveryCommands(pane.id, text);
+        const submit = commands.at(-1);
+        if (submit === undefined) throw new Error('tmux delivery produced no submit command');
+        for (const command of commands.slice(0, -1)) await tmux(command);
+        const staged = await this.captureForDelivery(pane, 500, { styled: observation.styled });
+        await tmux(submit);
+        return { accepted: true, staged };
       } finally {
         const restored = await Promise.allSettled(
           locked.map((client) => tmux(['refresh-client', '-t', client, '-f', '!read-only'])),

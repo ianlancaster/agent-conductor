@@ -64,10 +64,19 @@ export class ShepherdService {
 
   async drainOutbox(): Promise<void> {
     this.recoverInFlightOnce();
+    await this.reconcileParkedOutbox();
     const batch = this.store.claimOutbox(new Date());
     for (const item of batch) {
       try {
         const receipt = await this.sink.send(item);
+        if (receipt?.status === 'uncertain') {
+          this.store.parkOutbox(
+            item.id,
+            'Conductor could not confirm submission; inspect the recipient composer before manual recovery.',
+            receipt,
+          );
+          continue;
+        }
         if (receipt?.status === 'queued') {
           throw new Error('Conductor queued the message for this run; awaiting a delivered receipt.');
         }
@@ -81,6 +90,21 @@ export class ShepherdService {
         const exponent = Math.min(item.attempts, 8);
         const delayMs = Math.min(300_000, 1_000 * 2 ** exponent);
         this.store.retryOutbox(item.id, new Date(Date.now() + delayMs), message);
+      }
+    }
+  }
+
+  private async reconcileParkedOutbox(): Promise<void> {
+    if (this.sink.getReceipt === undefined) return;
+    for (const item of this.store.listParkedOutbox()) {
+      try {
+        const current = await this.sink.getReceipt(item.receipt.messageId, item.recipient);
+        if (current?.reconciliation !== undefined) this.store.reconcileOutbox(item.id, current);
+      } catch (error) {
+        this.store.logHealth(
+          'outbox-reconciliation-failed',
+          `outbox=${String(item.id)} ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
   }

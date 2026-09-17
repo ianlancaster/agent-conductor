@@ -258,11 +258,24 @@ export interface OutboxItem {
   nextAttemptAt: string;
 }
 
+export interface ParkedOutboxItem extends OutboxItem {
+  receipt: CoordinatorReceipt;
+}
+
+export interface CoordinatorReconciliation {
+  messageId: number;
+  outcome: 'manually-submitted' | 'abandoned';
+  actor: string;
+  evidence: string;
+  reconciledAt: string;
+}
+
 export interface CoordinatorReceipt {
   messageId: number;
   recipient: string;
-  status: 'delivered' | 'queued';
+  status: 'delivered' | 'queued' | 'uncertain';
   deduplicated: boolean;
+  reconciliation?: CoordinatorReconciliation;
 }
 
 export class PermanentDeliveryError extends Error {}
@@ -270,6 +283,8 @@ export class IdempotencyConflictError extends Error {}
 
 export interface CoordinatorSink {
   send(item: OutboxItem): Promise<CoordinatorReceipt | undefined>;
+  /** Inspect a receipt already parked as uncertain; never resends its payload. */
+  getReceipt?(messageId: number, recipient: string): Promise<CoordinatorReceipt | undefined>;
 }
 
 export interface StoredEntity<T = unknown> {
@@ -420,7 +435,10 @@ export interface ShepherdStore {
   claimOutbox(now: Date, limit?: number): OutboxItem[];
   completeOutbox(id: number, receipt?: CoordinatorReceipt): void;
   retryOutbox(id: number, nextAttemptAt: Date, error: string): void;
-  parkOutbox(id: number, error: string): void;
+  parkOutbox(id: number, error: string, receipt?: CoordinatorReceipt): void;
+  listParkedOutbox(): ParkedOutboxItem[];
+  reconcileOutbox(id: number, receipt: CoordinatorReceipt): void;
+  getOutboxReceipt(id: number): CoordinatorReceipt | undefined;
   recoverInFlight(): void;
   listEvents(limit?: number): ShepherdEvent[];
   listOutbox(includeCompleted?: boolean): OutboxItem[];

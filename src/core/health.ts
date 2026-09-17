@@ -10,6 +10,8 @@ export interface StallInfo {
   transcriptPath?: string;
   /** ISO-8601 instant when Conductor mechanically classified the stall. */
   detectedAt?: string;
+  /** Transport uncertainty must not overwrite independent runtime activity evidence. */
+  preserveActivity?: boolean;
 }
 
 export interface HealthDeps {
@@ -286,6 +288,22 @@ export class HealthMonitor {
     }
     this.bumpEventSequence(session);
     this.recordWorking(session);
+    return true;
+  }
+
+  /**
+   * Record confirmed input submission without claiming that the recipient has
+   * started executing it. Runtime events or activity parsing own that fact.
+   */
+  noteSubmission(session: string, submissionBoundary: number): boolean {
+    if ((this.latestCompletionSequence.get(session) ?? Number.NEGATIVE_INFINITY) > submissionBoundary) {
+      return false;
+    }
+    // Do not create a pending runtime turn here. A visible composer can accept
+    // steering or queued input while another turn owns the pane, so confirmed
+    // submission does not prove which runtime turn (if any) consumed it.
+    this.clearIdleTimer(session);
+    this.bumpEventSequence(session);
     return true;
   }
 

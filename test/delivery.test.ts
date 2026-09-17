@@ -72,6 +72,55 @@ describe('DeliveryQueue', () => {
     expect(order).toEqual(['submitting', 'backend-submit', 'submitted', 'delivered']);
   });
 
+  it('does not report delivery when the backend accepts the write but submit leaves a draft', async () => {
+    backend.submitIfUnchanged = async (target, text, token) => {
+      if ((await backend.captureForDelivery(target, 10)).token !== token) return false;
+      await backend.run(target, text);
+      runtime.inputState = 'draft';
+      return true;
+    };
+
+    const delivery = queue.deliverOrQueue('alpha', 'still in composer');
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(delivery).resolves.toBe('uncertain');
+    expect(queue.pendingCount('alpha')).toBe(0);
+    expect(deliveryEvents).toEqual([]);
+  });
+
+  it('requires built-in staged evidence instead of accepting unrelated pane changes', async () => {
+    runtime.parseInputState = (capture: string) => (capture.includes('own staged payload') ? 'draft' : 'clear');
+    backend.submitIfUnchanged = async (target, _text, token) => {
+      if ((await backend.captureForDelivery(target, 10)).token !== token) return false;
+      backend.setPaneContent(pane.id, 'unrelated active-turn redraw');
+      return {
+        accepted: true,
+        staged: { content: 'unrelated active-turn chrome', token: 'unrelated active-turn chrome' },
+      };
+    };
+
+    const delivery = queue.deliverOrQueue('alpha', 'own staged payload');
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(delivery).resolves.toBe('uncertain');
+    expect(deliveryEvents).toEqual([]);
+  });
+
+  it('confirms submission when a delivery-bound staged draft clears', async () => {
+    runtime.parseInputState = (capture: string) => (capture.includes('own staged payload') ? 'draft' : 'clear');
+    backend.submitIfUnchanged = async (target, text, token) => {
+      if ((await backend.captureForDelivery(target, 10)).token !== token) return false;
+      backend.panes.get(pane.id)?.received.push(text);
+      backend.setPaneContent(pane.id, 'runtime accepted protected input');
+      return {
+        accepted: true,
+        staged: { content: '❯ own staged payload', token: 'staged revision' },
+      };
+    };
+
+    await expect(queue.deliverOrQueue('alpha', 'own staged payload')).resolves.toBe('delivered');
+    expect(deliveryEvents).toEqual(['alpha']);
+  });
+
   it("delivers to Codex's plain-text idle placeholder on iTerm", async () => {
     runtime.parseInputState = (capture: string, session?: string) =>
       new CodexRuntime({ config: { binary: 'codex', toolTimeoutSec: 600 }, baseDir: '/tmp' }).parseInputState(
@@ -79,6 +128,14 @@ describe('DeliveryQueue', () => {
         session,
       );
     backend.setPaneContent(pane.id, "finished previous turn\n\n› What's on your mind?\n  gpt-5.6 medium · /repo");
+    const submit = backend.submitIfUnchanged.bind(backend);
+    backend.submitIfUnchanged = async (...args) => {
+      const accepted = await submit(...args);
+      if (accepted) {
+        backend.setPaneContent(pane.id, "status update, please\n\n› What's on your mind?\n  gpt-5.6 medium · /repo");
+      }
+      return accepted;
+    };
 
     await expect(queue.deliverOrQueue('alpha', 'the stalled envelope')).resolves.toBe('delivered');
     expect(backend.panes.get(pane.id)?.received).toEqual(['the stalled envelope']);
@@ -91,14 +148,18 @@ describe('DeliveryQueue', () => {
       config: { binary: 'codex', toolTimeoutSec: 600 },
       baseDir: '/tmp',
     });
+    let activeRuntime = recordedClaude;
     const detected: string[] = [];
     queue.stop();
     queue = new DeliveryQueue({
       backend,
-      runtimeFor: () => recordedClaude,
+      runtimeFor: () => activeRuntime,
       runtimeCandidates: () => [recordedClaude, liveCodex],
       getPane: () => pane,
-      onRuntimeDetected: (session, runtimeName) => detected.push(`${session}:${runtimeName}`),
+      onRuntimeDetected: (session, runtimeName) => {
+        activeRuntime = liveCodex;
+        detected.push(`${session}:${runtimeName}`);
+      },
       config: CONFIG,
     });
     backend.setPaneContent(
@@ -111,6 +172,17 @@ describe('DeliveryQueue', () => {
         'gpt-5.6-sol high · Context 41% used · 251K used · ians-cc-assistant · main',
       ].join('\n'),
     );
+    const submit = backend.submitIfUnchanged.bind(backend);
+    backend.submitIfUnchanged = async (...args) => {
+      const accepted = await submit(...args);
+      if (accepted) {
+        backend.setPaneContent(
+          pane.id,
+          "protected message accepted\n\n› What's on your mind?\n  gpt-5.6-sol high · /repo",
+        );
+      }
+      return accepted;
+    };
 
     await expect(queue.deliverOrQueue('alpha', 'the protected Shepherd envelope')).resolves.toBe('delivered');
     expect(detected).toEqual(['alpha:codex']);
@@ -296,6 +368,59 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['[Stall] incoming']);
   });
 
+  it('accepts delayed clear-composer evidence after backend write acceptance', async () => {
+    const capture = backend.captureForDelivery.bind(backend);
+    let captureCount = 0;
+    backend.captureForDelivery = async (...args) => {
+      captureCount += 1;
+      if (captureCount === 2) runtime.inputState = 'draft';
+      if (captureCount >= 3) runtime.inputState = 'clear';
+      return capture(...args);
+    };
+
+    const delivery = queue.deliverOrQueue('alpha', 'delayed redraw');
+    await vi.advanceTimersByTimeAsync(100);
+
+    await expect(delivery).resolves.toBe('delivered');
+    expect(deliveryEvents).toEqual(['alpha']);
+  });
+
+  it('preserves an operator edit made during bounded post-submit observation', async () => {
+    const capture = backend.captureForDelivery.bind(backend);
+    let captureCount = 0;
+    backend.captureForDelivery = async (...args) => {
+      captureCount += 1;
+      if (captureCount >= 2) {
+        backend.setPaneContent(pane.id, '❯ operator edit after attempted submit');
+        runtime.inputState = 'draft';
+      }
+      return capture(...args);
+    };
+
+    const delivery = queue.deliverOrQueue('alpha', 'ambiguous payload');
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(delivery).resolves.toBe('uncertain');
+    expect(backend.panes.get(pane.id)?.lines).toEqual(['❯ operator edit after attempted submit']);
+    expect(deliveryEvents).toEqual([]);
+  });
+
+  it('keeps a successful write uncertain when every confirmation capture fails', async () => {
+    const capture = backend.captureForDelivery.bind(backend);
+    let initialCaptureComplete = false;
+    backend.captureForDelivery = async (...args) => {
+      if (initialCaptureComplete) throw new Error('capture unavailable after write');
+      initialCaptureComplete = true;
+      return capture(...args);
+    };
+
+    const delivery = queue.deliverOrQueue('alpha', 'capture becomes unavailable');
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(delivery).resolves.toBe('uncertain');
+    expect(deliveryEvents).toEqual([]);
+  });
+
   it('reports why a flush was skipped and clears the reason on delivery', async () => {
     const attempts: (string | null)[] = [];
     runtime.inputState = 'draft';
@@ -351,14 +476,20 @@ describe('DeliveryQueue', () => {
 
   it('refuses cancellation once a pane write has begun', async () => {
     let releaseWrite: (() => void) | undefined;
-    backend.run = async () => {
+    let writeStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      writeStarted = resolve;
+    });
+    const submit = backend.submitIfUnchanged.bind(backend);
+    backend.submitIfUnchanged = async (...args) => {
+      writeStarted?.();
       await new Promise<void>((resolve) => {
         releaseWrite = resolve;
       });
+      return submit(...args);
     };
     const delivery = queue.deliverOrQueue('alpha', 'already going', { deliveryId: 42 });
-    await Promise.resolve();
-    await Promise.resolve();
+    await started;
     expect(releaseWrite).toBeDefined();
     expect(queue.cancel('alpha', 42)).toBe('in-flight');
     releaseWrite?.();
@@ -521,6 +652,14 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual([]);
 
     backend.setPaneContent(pane.id, sample.clearCapture);
+    if (sample.runtimeName === 'Codex') {
+      const submit = backend.submitIfUnchanged.bind(backend);
+      backend.submitIfUnchanged = async (...args) => {
+        const accepted = await submit(...args);
+        if (accepted) backend.setPaneContent(pane.id, `submitted\n${sample.clearCapture}`);
+        return accepted;
+      };
+    }
     await queue.drainNow();
     expect(backend.panes.get(pane.id)?.received).toEqual(['incoming peer message']);
   });
@@ -546,7 +685,7 @@ describe('DeliveryQueue', () => {
     // Codex sends no start event — a visible, empty input line must unblock delivery.
     runtime.inputState = 'clear';
     expect(await queue.deliverOrQueue('alpha', 'go')).toBe('delivered');
-    expect(runtimeObservations).toEqual(['alpha']);
+    expect(runtimeObservations).toEqual(['alpha', 'alpha']);
   });
 
   it('queues on capture failure and releases only after a clear capture', async () => {
@@ -561,7 +700,7 @@ describe('DeliveryQueue', () => {
     expect(backend.panes.get(pane.id)?.received).toEqual(['resilient']);
   });
 
-  it('queues instead of rejecting when the direct write throws (H1)', async () => {
+  it('does not retry when a terminal error has an unknown write effect', async () => {
     let failNext = true;
     backend.run = (pane, text) => {
       if (failNext) {
@@ -570,13 +709,13 @@ describe('DeliveryQueue', () => {
       }
       return FakeTerminalBackend.prototype.run.call(backend, pane, text);
     };
-    // The direct path throws; instead of an unhandled rejection it queues.
-    expect(await queue.deliverOrQueue('alpha', 'important')).toBe('queued');
+    // A terminal error can happen after bytes reached the pane, so replay is unsafe.
+    expect(await queue.deliverOrQueue('alpha', 'important')).toBe('uncertain');
     await queue.drainNow();
-    expect(backend.panes.get(pane.id)?.received).toEqual(['important']);
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
   });
 
-  it('retains a queued item when its drain write throws, then retries it', async () => {
+  it('removes a queued item from automatic retry when its write effect is unknown', async () => {
     runtime.inputState = 'draft';
     const receipts: string[] = [];
     await queue.deliverOrQueue('alpha', 'important', { onDelivered: () => receipts.push('done') });
@@ -592,11 +731,11 @@ describe('DeliveryQueue', () => {
     };
 
     await queue.drainNow();
-    expect(queue.pendingCount('alpha')).toBe(1);
+    expect(queue.pendingCount('alpha')).toBe(0);
     expect(receipts).toEqual([]);
     await queue.drainNow();
     expect(queue.pendingCount('alpha')).toBe(0);
-    expect(backend.panes.get(pane.id)?.received).toEqual(['important']);
-    expect(receipts).toEqual(['done']);
+    expect(backend.panes.get(pane.id)?.received).toEqual([]);
+    expect(receipts).toEqual([]);
   });
 });

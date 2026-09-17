@@ -7,6 +7,7 @@ import { sleep } from '../../core/utils.js';
 import { log } from '../../logger.js';
 import type { Store } from '../../store/index.js';
 import type {
+  AcceptedDeliverySubmission,
   DeliveryCapture,
   TerminalBackend,
   TerminalCapabilities,
@@ -249,8 +250,8 @@ export class ITermBackend implements TerminalBackend {
     return { content: tailLines(contents, lines), token: contents };
   }
 
-  async submitIfUnchanged(pane: PaneRef, text: string, token: string): Promise<boolean> {
-    return this.deliver(pane.id, text, true, token);
+  async submitIfUnchanged(pane: PaneRef, text: string, token: string): Promise<boolean | AcceptedDeliverySubmission> {
+    return this.deliver(pane.id, text, true, token, true);
   }
 
   async capture(pane: PaneRef, lines: number): Promise<string> {
@@ -598,7 +599,8 @@ export class ITermBackend implements TerminalBackend {
     text: string,
     alwaysBracketed: boolean,
     expectedContents?: string,
-  ): Promise<boolean> {
+    captureStaged = false,
+  ): Promise<boolean | AcceptedDeliverySubmission> {
     const bracketed = alwaysBracketed || shouldUseBracketedPaste(text, this.config.bracketedPasteThreshold);
     // A trailing newline inside bracketed paste is inert content; the separate
     // CR below is the sole submit. This is the known-good cc-conductor path.
@@ -607,8 +609,10 @@ export class ITermBackend implements TerminalBackend {
     const expectedPath = expectedContents !== undefined ? await this.writeTempContent(expectedContents) : undefined;
     try {
       const guard = expectedPath === undefined ? '' : buildUnchangedContentsGuard(expectedPath, PANE_CHANGED_RESULT);
-      const result = await this.inSession(sessionId, buildDeliveryOperations(path, bracketed, guard));
-      return result.trim() !== PANE_CHANGED_RESULT;
+      const operations = buildDeliveryOperations(path, bracketed, guard, captureStaged);
+      const result = await this.inSession(sessionId, operations, captureStaged ? 'conductorStagedContents' : '"OK"');
+      if (result.trim() === PANE_CHANGED_RESULT) return false;
+      return captureStaged ? { accepted: true, staged: { content: result, token: result } } : true;
     } finally {
       await unlink(path).catch(() => undefined);
       if (expectedPath !== undefined) await unlink(expectedPath).catch(() => undefined);

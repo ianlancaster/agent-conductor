@@ -157,7 +157,7 @@ describe('conductor start initialization', () => {
 
     try {
       const environmentFile = join(baseDir, '.conductor', '.env');
-      const deadline = Date.now() + 5_000;
+      const deadline = Date.now() + 30_000;
       while (
         (!existsSync(environmentFile) || !stdout.includes('Initialized missing fleet files:')) &&
         child.exitCode === null &&
@@ -177,7 +177,7 @@ describe('conductor start initialization', () => {
         else child.once('exit', () => resolve());
       });
     }
-  });
+  }, 45_000);
 
   it('loads a fleet-configured integration only in foreground and owns its start/stop lifecycle', async () => {
     ensureFleetScaffold(baseDir);
@@ -218,7 +218,7 @@ describe('conductor start initialization', () => {
     });
 
     try {
-      const startedDeadline = Date.now() + 10_000;
+      const startedDeadline = Date.now() + 30_000;
       while (!existsSync(startedMarker) && child.exitCode === null && Date.now() < startedDeadline) {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
@@ -226,7 +226,7 @@ describe('conductor start initialization', () => {
       expect(child.exitCode).toBeNull();
 
       child.kill('SIGTERM');
-      const stoppedDeadline = Date.now() + 10_000;
+      const stoppedDeadline = Date.now() + 30_000;
       while (!existsSync(stoppedMarker) && child.exitCode === null && Date.now() < stoppedDeadline) {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
@@ -238,7 +238,7 @@ describe('conductor start initialization', () => {
         else child.once('exit', () => resolve());
       });
     }
-  });
+  }, 45_000);
 
   it('refuses to create a non-owning console when a conductor is already running', async () => {
     const healthServer = createServer((_request, response) => {

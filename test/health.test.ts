@@ -11,6 +11,7 @@ interface Recorded {
   session: string;
   kind: StallKind;
   reason?: string;
+  preserveActivity?: boolean;
 }
 
 let backend: FakeTerminalBackend;
@@ -49,7 +50,12 @@ beforeEach(async () => {
     observeActivity: async () => paneActivity,
     observeInputState: async () => runtime.inputState,
     onStall: (session, kind, info) => {
-      stalls.push({ session, kind, reason: info.reason });
+      stalls.push({
+        session,
+        kind,
+        reason: info.reason,
+        ...(info.preserveActivity === undefined ? {} : { preserveActivity: info.preserveActivity }),
+      });
       if (info.detectedAt !== undefined) stallDetections.push(info.detectedAt);
     },
     onWorking: (session) => working.push(session),
@@ -138,6 +144,14 @@ describe('event-driven signals', () => {
     await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
     expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'fast turn done' }]);
     expect(working).toEqual(['alpha']);
+  });
+
+  it('records confirmed submission without inventing recipient turn start', () => {
+    const boundary = monitor.captureTurnBoundary();
+
+    expect(monitor.noteSubmission('alpha', boundary)).toBe(true);
+    expect(working).toEqual([]);
+    expect(stalls).toEqual([]);
   });
 
   it('marks direct operator input as working and cancels a stale idle transition', () => {
