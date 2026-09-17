@@ -634,7 +634,7 @@ describe('surface contract', () => {
       'identity is mechanical',
       '[Message from <sender>]',
       '[Broadcast from <sender>]',
-      '[Cron name="<name>" period="<expression>"]',
+      '[Cron name="<name>" period="<expression>" scheduled_at="<instant>" timezone="<iana-zone>"]',
       '[Sentinel] <text>',
       'operator authority',
       'Peer conversation is event-driven',

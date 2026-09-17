@@ -8,14 +8,16 @@ import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 
 // Drive the real Supervisor scheduler deterministically without production clock waits.
-const { ticks } = vi.hoisted(() => ({ ticks: [] as (() => Promise<void>)[] }));
 vi.mock('croner', () => ({
   Cron: class {
-    constructor(_pattern: string, _options: unknown, tick: () => Promise<void>) {
-      ticks.push(tick);
+    private stopped = false;
+
+    nextRun(): Date | null {
+      return this.stopped ? null : new Date(Date.now() + 1000);
     }
+
     stop(): void {
-      // No real timer was armed by this test double.
+      this.stopped = true;
     }
   },
 }));
@@ -24,6 +26,8 @@ let baseDir: string | undefined;
 let supervisor: Supervisor | undefined;
 
 async function setup(scheduleOptions = ''): Promise<FakeTerminalBackend> {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-09-17T15:59:59.000Z'));
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -54,7 +58,6 @@ afterEach(async () => {
   supervisor = undefined;
   if (baseDir !== undefined) rmSync(baseDir, { recursive: true, force: true });
   baseDir = undefined;
-  ticks.length = 0;
 });
 
 describe('Supervisor schedule lifecycle policy', () => {
@@ -68,8 +71,7 @@ describe('Supervisor schedule lifecycle policy', () => {
         else terminal.paneFor('alpha')!.sessionActive = false;
       }
       const launchCount = [...terminal.panes.values()].reduce((sum, pane) => sum + pane.launched.length, 0);
-      await ticks[0]!();
-      await ticks[0]!();
+      await vi.advanceTimersByTimeAsync(2100);
       expect([...terminal.panes.values()].reduce((sum, pane) => sum + pane.launched.length, 0)).toBe(launchCount);
       expect([...terminal.panes.values()].flatMap((pane) => pane.received)).toEqual([]);
     },
@@ -77,21 +79,19 @@ describe('Supervisor schedule lifecycle policy', () => {
 
   it('starts an explicitly opted-in target through normal lifecycle', async () => {
     const terminal = await setup('    wakeIfStopped: true\n');
-    await ticks[0]!();
-    expect(terminal.paneFor('alpha')?.sessionActive).toBe(true);
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.waitFor(() => expect(terminal.paneFor('alpha')?.sessionActive).toBe(true));
     expect(terminal.paneFor('alpha')?.launched[0]).toContain('scheduled work');
   });
 
   it('stop all cancels a fresh-context restart already waiting in its settle delay', async () => {
     const terminal = await setup('    freshContext: true\n');
     await supervisor!.command('/start alpha');
-    vi.useFakeTimers();
-    const pending = ticks[0]!();
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1100);
     expect([...terminal.panes.values()].some((pane) => pane.alive)).toBe(false);
     await supervisor!.command('/stop all');
     await vi.advanceTimersByTimeAsync(3100);
-    await pending;
+    await vi.advanceTimersByTimeAsync(0);
     expect([...terminal.panes.values()].reduce((sum, pane) => sum + pane.launched.length, 0)).toBe(1);
     expect([...terminal.panes.values()].some((pane) => pane.alive)).toBe(false);
   });

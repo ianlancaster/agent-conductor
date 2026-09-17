@@ -532,8 +532,9 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
 
       // Explicitly opted-in target: cron starts it with the signed scheduled prompt.
       // Active-session delivery is covered deterministically at the Scheduler seam.
-      const signedCronTick = '[Cron name="heartbeat" period="*/2 * * * * *"] cron-tick';
-      await until(async () => (await tail()).includes(`PROMPT: ${signedCronTick}`));
+      const signedCronTick =
+        /PROMPT: \[Cron name="heartbeat" period="\*\/2 \* \* \* \* \*" scheduled_at="[^"]+" timezone="[^"]+"\] cron-tick/u;
+      await until(async () => signedCronTick.test(await tail()));
 
       // Kill only the runtime, leaving its pane/shell. The next cron fire must
       // inspect process liveness and restart; typing into the shell would yield
@@ -557,10 +558,11 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
 
       // Automatic watcher reload replaces the old job rather than double-arming.
       writeFileSync(cronFile, scheduleConfig('cron-updated', true));
-      const signedCronUpdated = '[Cron name="heartbeat" period="*/2 * * * * *"] cron-updated';
+      const signedCronUpdated =
+        /(?:PROMPT|GOT): \[Cron name="heartbeat" period="\*\/2 \* \* \* \* \*" scheduled_at="[^"]+" timezone="[^"]+"\] cron-updated/u;
       await until(async () => {
         const output = await tail();
-        return output.includes(`PROMPT: ${signedCronUpdated}`) || output.includes(`GOT: ${signedCronUpdated}`);
+        return signedCronUpdated.test(output);
       });
 
       // Removing the schedule and rebuilding prevents any later delivery.

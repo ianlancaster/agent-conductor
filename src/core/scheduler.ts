@@ -2,9 +2,85 @@ import { Cron } from 'croner';
 import { log } from '../logger.js';
 import type { SessionConfig, ScheduleEntry } from '../config/schema.js';
 import { scheduleEnvelope, sleep } from './utils.js';
+import type { ScheduleSource } from './utils.js';
 import type { ConductorEventPublisher } from '../events/types.js';
 
 const FRESH_SESSION_SETTLE_MS = 3000;
+// Like Croner, recheck long waits so wall-clock changes cannot strand a job behind
+// Node's maximum timer delay. The retained occurrence itself never changes.
+const MAX_TIMER_MS = 30_000;
+
+function localTimezone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
+
+/**
+ * Croner intentionally exposes execution time through currentRun(), not the due
+ * target passed to its private timer. Drive its public nextRun() calculator here
+ * so the nominal occurrence is retained before any event-loop or session delay.
+ */
+class OccurrenceTimer {
+  private readonly calculator: Cron;
+  private timer: NodeJS.Timeout | undefined;
+  private stopped = false;
+  private running = false;
+
+  constructor(
+    pattern: string,
+    timezone: string,
+    private readonly callback: (source: ScheduleSource) => Promise<void>,
+  ) {
+    this.calculator = new Cron(pattern);
+    this.armNext(timezone);
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.timer !== undefined) clearTimeout(this.timer);
+    this.timer = undefined;
+    this.calculator.stop();
+  }
+
+  private armNext(timezone: string): void {
+    if (this.stopped) return;
+    const scheduledAt = this.calculator.nextRun();
+    if (scheduledAt === null) return;
+    const source = { scheduledAt: scheduledAt.toISOString(), timezone };
+    this.armRetained(scheduledAt, source, timezone);
+  }
+
+  private armRetained(scheduledAt: Date, source: ScheduleSource, timezone: string): void {
+    const delay = Math.max(0, scheduledAt.getTime() - Date.now());
+    this.timer = setTimeout(
+      () => {
+        this.timer = undefined;
+        if (this.stopped) return;
+        if (Date.now() < scheduledAt.getTime()) {
+          this.armRetained(scheduledAt, source, timezone);
+          return;
+        }
+
+        // Compute from the handling clock only to select the *future* target. The
+        // occurrence handed to the callback remains the previously retained one,
+        // so a late callback never relabels itself or creates catch-up work.
+        this.armNext(timezone);
+        if (this.running) return;
+        this.running = true;
+        void this.callback(source)
+          .catch((error: unknown) => {
+            log().error(
+              'scheduler',
+              `Occurrence callback failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          })
+          .finally(() => {
+            this.running = false;
+          });
+      },
+      Math.min(delay, MAX_TIMER_MS),
+    );
+  }
+}
 
 export interface SchedulerDeps {
   sessions(): Map<string, SessionConfig>;
@@ -18,7 +94,7 @@ export interface SchedulerDeps {
 
 /** Cron scheduling of session prompts, on croner. Rebuilt whenever configs reload. */
 export class Scheduler {
-  private jobs: Cron[] = [];
+  private jobs: OccurrenceTimer[] = [];
   /** Serialize all schedules targeting one session, not merely each Cron job. */
   private readonly sessionRuns = new Map<string, Promise<void>>();
   private generation = 0;
@@ -36,11 +112,8 @@ export class Scheduler {
         const name =
           configuredName !== undefined && configuredName.length > 0 ? configuredName : `schedule-${index + 1}`;
         try {
-          // The callback must be async (not a sync fn that voids a promise) or
-          // croner's `protect` clears the moment the sync fn returns and overlap
-          // protection never engages.
-          const job = new Cron(entry.cron, { catch: true, protect: true }, async () => {
-            await this.enqueue(codename, entry, name);
+          const job = new OccurrenceTimer(entry.cron, localTimezone(), async (source) => {
+            await this.enqueue(codename, entry, name, source);
           });
           this.jobs.push(job);
         } catch (err) {
@@ -54,15 +127,15 @@ export class Scheduler {
     log().debug('scheduler', `${this.jobs.length} schedule(s) armed`);
   }
 
-  private enqueue(codename: string, entry: ScheduleEntry, name: string): Promise<void> {
+  private enqueue(codename: string, entry: ScheduleEntry, name: string, source: ScheduleSource): Promise<void> {
     const generation = this.generation;
     const cancellation = this.cancellations.get(codename);
     const isCurrent = (): boolean =>
       generation === this.generation && cancellation === this.cancellations.get(codename);
     const previous = this.sessionRuns.get(codename) ?? Promise.resolve();
     const run = previous.then(
-      () => this.fire(codename, entry, name, isCurrent),
-      () => this.fire(codename, entry, name, isCurrent),
+      () => this.fire(codename, entry, name, source, isCurrent),
+      () => this.fire(codename, entry, name, source, isCurrent),
     );
     this.sessionRuns.set(codename, run);
     return run.finally(() => {
@@ -81,15 +154,21 @@ export class Scheduler {
     this.cancellations.set(codename, (this.cancellations.get(codename) ?? 0) + 1);
   }
 
-  private async fire(codename: string, entry: ScheduleEntry, name: string, isCurrent: () => boolean): Promise<void> {
+  private async fire(
+    codename: string,
+    entry: ScheduleEntry,
+    name: string,
+    source: ScheduleSource,
+    isCurrent: () => boolean,
+  ): Promise<void> {
     const label = name;
-    const prompt = scheduleEnvelope(name, entry.cron, entry.prompt);
+    const prompt = scheduleEnvelope(name, entry.cron, entry.prompt, source);
     const canRun = (): boolean => {
       if (!isCurrent()) {
-        this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'skipped-cancelled' });
+        this.deps.events?.emit({ type: 'schedule', session: codename, label, ...source, outcome: 'skipped-cancelled' });
         return false;
       }
-      return !this.deferPaused(codename, label);
+      return !this.deferPaused(codename, label, source);
     };
     try {
       if (!canRun()) return;
@@ -99,7 +178,7 @@ export class Scheduler {
       // Exact true also keeps older direct callers that omit the field fail-closed.
       if (!active && entry.wakeIfStopped !== true) {
         log().info('scheduler', `${codename}: '${label}' skipped (session is stopped)`);
-        this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'skipped-stopped' });
+        this.deps.events?.emit({ type: 'schedule', session: codename, label, ...source, outcome: 'skipped-stopped' });
         return;
       }
       if (entry.freshContext) {
@@ -110,7 +189,7 @@ export class Scheduler {
         if (!canRun()) return;
         await this.deps.startSession(codename, { prompt });
         log().info('scheduler', `${codename}: '${label}' fired (fresh session)`);
-        this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'fired-fresh' });
+        this.deps.events?.emit({ type: 'schedule', session: codename, label, ...source, outcome: 'fired-fresh' });
         return;
       }
       if (active) {
@@ -119,17 +198,17 @@ export class Scheduler {
         await this.deps.startSession(codename, { prompt });
       }
       log().info('scheduler', `${codename}: '${label}' fired`);
-      this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'fired' });
+      this.deps.events?.emit({ type: 'schedule', session: codename, label, ...source, outcome: 'fired' });
     } catch (err) {
       log().error('scheduler', `${codename}: '${label}' failed: ${err instanceof Error ? err.message : String(err)}`);
-      this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'failed' });
+      this.deps.events?.emit({ type: 'schedule', session: codename, label, ...source, outcome: 'failed' });
     }
   }
 
-  private deferPaused(codename: string, label: string): boolean {
+  private deferPaused(codename: string, label: string, source: ScheduleSource): boolean {
     if (!this.deps.isPaused(codename)) return false;
     log().info('scheduler', `${codename}: '${label}' deferred (session is paused)`);
-    this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'deferred-paused' });
+    this.deps.events?.emit({ type: 'schedule', session: codename, label, ...source, outcome: 'deferred-paused' });
     return true;
   }
 }

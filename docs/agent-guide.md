@@ -680,9 +680,15 @@ The cron expression uses the Conductor process's local timezone. Each entry has:
 
 Behavior:
 
-- Every occurrence is delivered with a visible automation signature containing its name and exact
-  cron expression, for example `[Cron name="weekday review" period="0 9 * * 1-5"]`. It is never
-  presented as direct operator input.
+- Every occurrence is delivered with a visible automation signature containing its name, exact
+  cron expression, immutable nominal time, and the IANA timezone in which the expression was
+  evaluated, for example
+  `[Cron name="weekday review" period="0 9 * * 1-5" scheduled_at="2026-09-17T15:00:00.000Z" timezone="America/Denver"]`.
+  The UTC instant remains unchanged across callback, serialization, and delivery delays. It is
+  never presented as direct operator input.
+- Legacy envelopes without `scheduled_at` and `timezone` remain recognizable cron input, but their
+  source time is unavailable. Preserve the raw envelope or transport identity and fail closed when
+  exact source time is required; never derive a nominal slot from handling, event, or receipt time.
 - An active session receives the signed prompt through normal protected delivery.
 - An inactive session is skipped unless `wakeIfStopped: true`. This includes targets whose runtime
   exited or whose pane was closed; reconciliation checks process state before firing.
@@ -703,10 +709,10 @@ waking stopped agents. A request for recurring work alone is not permission to s
 `wakeIfStopped: true`. Schedules are configured in session YAML; there is no separate cron-creation
 MCP tool or operator command.
 
-Upgrade note: existing schedule entries that omit `wakeIfStopped` now leave stopped agents stopped.
-To preserve intentional unattended wake-ups, the operator must explicitly opt those entries in.
-No database migration is needed. New scheduler behavior requires restarting the Conductor process;
-configuration hot-reload does not replace the code already running in an older daemon.
+Upgrade note: existing schedule entries that omit `wakeIfStopped` leave stopped agents stopped. To
+preserve intentional unattended wake-ups, the operator must explicitly opt those entries in. New
+scheduler behavior requires restarting the Conductor process; configuration hot-reload does not
+replace the code already running in an older daemon.
 
 Use schedules for genuinely time-driven work: periodic inbox triage, daily status synthesis, or a
 maintenance check. Do not use them to poll peers during conversation; direct replies already wake

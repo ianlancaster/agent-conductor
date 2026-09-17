@@ -4,6 +4,7 @@ import {
   contentSimilarity,
   forEachConcurrent,
   messageEnvelope,
+  scheduleEnvelope,
   truncate,
 } from '../src/core/utils.js';
 
@@ -34,6 +35,21 @@ describe('envelopes', () => {
   it('formats message and broadcast envelopes', () => {
     expect(messageEnvelope('alpha', 'hi')).toBe('[Message from alpha] hi');
     expect(broadcastEnvelope('beta', 'yo')).toBe('[Broadcast from beta] yo');
+  });
+
+  it('includes immutable source time and scheduling timezone in cron envelopes', () => {
+    expect(
+      scheduleEnvelope('weekday review', '0 9 * * 1-5', 'review', {
+        scheduledAt: '2026-09-17T15:00:00.000Z',
+        timezone: 'America/Denver',
+      }),
+    ).toBe(
+      '[Cron name="weekday review" period="0 9 * * 1-5" scheduled_at="2026-09-17T15:00:00.000Z" timezone="America/Denver"] review',
+    );
+  });
+
+  it('preserves legacy cron envelopes without inventing unavailable source time', () => {
+    expect(scheduleEnvelope('legacy', '0 9 * * *', 'review')).toBe('[Cron name="legacy" period="0 9 * * *"] review');
   });
 });
 

@@ -37,9 +37,20 @@ export function conductorEnvelope(message: string): string {
   return `[Message from conductor] ${message}`;
 }
 
+export interface ScheduleSource {
+  /** Exact nominal occurrence selected by the scheduler, as an unambiguous ISO-8601 instant. */
+  scheduledAt: string;
+  /** IANA timezone in which the cron expression was evaluated. */
+  timezone: string;
+}
+
 /** Identify recurring automation without allowing it to resemble direct operator input. */
-export function scheduleEnvelope(name: string, period: string, message: string): string {
-  return `[Cron name=${JSON.stringify(name)} period=${JSON.stringify(period)}] ${message}`;
+export function scheduleEnvelope(name: string, period: string, message: string, source?: ScheduleSource): string {
+  const sourceFields =
+    source === undefined
+      ? ''
+      : ` scheduled_at=${JSON.stringify(source.scheduledAt)} timezone=${JSON.stringify(source.timezone)}`;
+  return `[Cron name=${JSON.stringify(name)} period=${JSON.stringify(period)}${sourceFields}] ${message}`;
 }
 
 export function stallEnvelope(session: string, kind: string, detectedAt: string, detail: string): string {
