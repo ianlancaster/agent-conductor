@@ -94,7 +94,10 @@ export interface SchedulerDeps {
   sessions(): Map<string, SessionConfig>;
   isActive(session: string): boolean | Promise<boolean>;
   isPaused(session: string): boolean;
-  startSession(session: string, opts: { prompt?: string }): Promise<'started' | 'not-started'>;
+  startSession(
+    session: string,
+    opts: { prompt?: string },
+  ): Promise<'started' | 'active-without-prompt' | 'not-started'>;
   stopSession(session: string): Promise<string>;
   /** Share DeliveryQueue's pause boundary with stopped-session initial prompts. */
   acquireSubmissionLease?(session: string): (() => void) | undefined;
@@ -135,6 +138,7 @@ export class Scheduler {
           'scheduler',
           `${String(unknown.length)} interrupted schedule submission(s) quarantined as unknown; none will replay automatically`,
         );
+        for (const occurrence of unknown) this.emit(occurrence, 'uncertain');
       }
       for (const row of this.occurrences.recoverAdmitted()) void this.enqueueRow(row);
       this.recovered = true;
@@ -222,6 +226,38 @@ export class Scheduler {
   private async fire(occurrence: ScheduleOccurrenceRow, isCurrent: () => boolean): Promise<void> {
     const { session: codename, label } = occurrence;
     let submissionStarted = false;
+    const deliverToActive = async (outcome: 'fired' | 'fired-fresh'): Promise<void> => {
+      const result = await this.deps.deliver(codename, occurrence.envelope, {
+        pausePolicy: 'hold',
+        onSubmissionStarted: () => {
+          submissionStarted = this.occurrences.markDispatching(occurrence.id);
+          return submissionStarted;
+        },
+        onSubmissionRejected: () => {
+          const restored = this.occurrences.restoreAdmitted(occurrence.id);
+          if (restored) submissionStarted = false;
+          return restored;
+        },
+        onUncertain: () => this.unknown(occurrence),
+        onDelivered: () => {
+          log().info(
+            'scheduler',
+            `${codename}: '${label}' fired${outcome === 'fired-fresh' ? ' (fresh session)' : ''}`,
+          );
+          this.finish(occurrence, 'dispatching', outcome);
+        },
+      });
+      if (result === 'no-pane') this.finish(occurrence, 'admitted', 'failed');
+      else if (result === 'cancelled') this.finish(occurrence, 'admitted', 'skipped-cancelled');
+    };
+    const restoreForProtectedDelivery = (): boolean => {
+      if (this.occurrences.restoreAdmitted(occurrence.id)) {
+        submissionStarted = false;
+        return true;
+      }
+      this.unknown(occurrence);
+      return false;
+    };
     const canRun = (): boolean => {
       if (!isCurrent()) {
         this.finish(occurrence, 'admitted', 'skipped-cancelled');
@@ -256,9 +292,12 @@ export class Scheduler {
           submissionStarted = this.occurrences.markDispatching(occurrence.id);
           if (!submissionStarted) return;
           const startResult = await this.deps.startSession(codename, { prompt: occurrence.envelope });
+          if (startResult === 'active-without-prompt') {
+            if (restoreForProtectedDelivery()) await deliverToActive('fired-fresh');
+            return;
+          }
           if (startResult === 'not-started') {
-            if (this.occurrences.restoreAdmitted(occurrence.id)) submissionStarted = false;
-            this.finish(occurrence, 'admitted', 'failed');
+            if (restoreForProtectedDelivery()) this.finish(occurrence, 'admitted', 'failed');
             return;
           }
           log().info('scheduler', `${codename}: '${label}' fired (fresh session)`);
@@ -269,25 +308,7 @@ export class Scheduler {
         return;
       }
       if (active) {
-        const result = await this.deps.deliver(codename, occurrence.envelope, {
-          pausePolicy: 'hold',
-          onSubmissionStarted: () => {
-            submissionStarted = this.occurrences.markDispatching(occurrence.id);
-            return submissionStarted;
-          },
-          onSubmissionRejected: () => {
-            const restored = this.occurrences.restoreAdmitted(occurrence.id);
-            if (restored) submissionStarted = false;
-            return restored;
-          },
-          onUncertain: () => this.unknown(occurrence),
-          onDelivered: () => {
-            log().info('scheduler', `${codename}: '${label}' fired`);
-            this.finish(occurrence, 'dispatching', 'fired');
-          },
-        });
-        if (result === 'no-pane') this.finish(occurrence, 'admitted', 'failed');
-        else if (result === 'cancelled') this.finish(occurrence, 'admitted', 'skipped-cancelled');
+        await deliverToActive('fired');
       } else {
         const release = this.deps.acquireSubmissionLease?.(codename);
         if (this.deps.acquireSubmissionLease !== undefined && release === undefined) {
@@ -299,9 +320,12 @@ export class Scheduler {
           submissionStarted = this.occurrences.markDispatching(occurrence.id);
           if (!submissionStarted) return;
           const startResult = await this.deps.startSession(codename, { prompt: occurrence.envelope });
+          if (startResult === 'active-without-prompt') {
+            if (restoreForProtectedDelivery()) await deliverToActive('fired');
+            return;
+          }
           if (startResult === 'not-started') {
-            if (this.occurrences.restoreAdmitted(occurrence.id)) submissionStarted = false;
-            this.finish(occurrence, 'admitted', 'failed');
+            if (restoreForProtectedDelivery()) this.finish(occurrence, 'admitted', 'failed');
             return;
           }
           log().info('scheduler', `${codename}: '${label}' fired`);
@@ -331,6 +355,20 @@ export class Scheduler {
   ): boolean {
     if (!this.occurrences.settle(occurrence.id, from, outcome)) return false;
     this.pendingOccurrences.delete(occurrence.id);
+    this.emit(occurrence, outcome);
+    return true;
+  }
+
+  private unknown(occurrence: ScheduleOccurrenceRow): void {
+    if (!this.occurrences.markUnknown(occurrence.id)) return;
+    this.pendingOccurrences.delete(occurrence.id);
+    this.emit(occurrence, 'uncertain');
+  }
+
+  private emit(
+    occurrence: Pick<ScheduleOccurrenceRow, 'session' | 'label' | 'scheduledAt' | 'timezone'>,
+    outcome: ScheduleOccurrenceOutcome | 'uncertain',
+  ): void {
     this.deps.events?.emit({
       type: 'schedule',
       session: occurrence.session,
@@ -338,20 +376,6 @@ export class Scheduler {
       scheduledAt: occurrence.scheduledAt,
       timezone: occurrence.timezone,
       outcome,
-    });
-    return true;
-  }
-
-  private unknown(occurrence: ScheduleOccurrenceRow): void {
-    if (!this.occurrences.markUnknown(occurrence.id)) return;
-    this.pendingOccurrences.delete(occurrence.id);
-    this.deps.events?.emit({
-      type: 'schedule',
-      session: occurrence.session,
-      label: occurrence.label,
-      scheduledAt: occurrence.scheduledAt,
-      timezone: occurrence.timezone,
-      outcome: 'uncertain',
     });
   }
 }

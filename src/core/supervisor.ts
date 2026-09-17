@@ -550,8 +550,11 @@ export class Supervisor {
         return this.states.get(session)?.running === true;
       },
       isPaused: (session) => this.states.isPaused(session),
-      startSession: async (session, opts) =>
-        (await this.lifecycle.start(session, opts)) === `${session} started.` ? 'started' : 'not-started',
+      startSession: async (session, opts) => {
+        const result = await this.lifecycle.startWithResult(session, opts);
+        if (result.promptApplied) return 'started';
+        return this.states.get(session)?.running === true ? 'active-without-prompt' : 'not-started';
+      },
       stopSession: (session) => this.lifecycle.stop(session),
       acquireSubmissionLease: (session) => this.delivery.acquireSubmissionLease(session, 'hold'),
       deliver: (session, text, options) => this.delivery.deliverOrQueue(session, text, options),

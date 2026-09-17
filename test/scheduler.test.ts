@@ -127,6 +127,37 @@ describe('Scheduler', () => {
     expect(events.events).not.toContainEqual(expect.objectContaining({ outcome: 'uncertain' }));
   });
 
+  it.each([
+    { freshContext: false, outcome: 'fired' as const },
+    { freshContext: true, outcome: 'fired-fresh' as const },
+  ])(
+    'delivers the retained envelope when another activation wins (freshContext=$freshContext)',
+    async ({ freshContext, outcome }) => {
+      scheduler = new Scheduler({
+        sessions: () => sessions,
+        isActive: () => false,
+        isPaused: () => false,
+        startSession: async () => 'active-without-prompt',
+        stopSession: async () => 'stopped',
+        deliver: async (session, text, options) => {
+          delivered.push({ session, text });
+          return confirmDelivery(options);
+        },
+        events,
+      });
+      sessions.set(
+        'alpha',
+        sessionWith([{ cron: EVERY_SECOND, prompt: 'preserved', wakeIfStopped: true, freshContext }]),
+      );
+
+      scheduler.rebuild();
+      await vi.advanceTimersByTimeAsync(1100);
+
+      expect(delivered).toEqual([{ session: 'alpha', text: cronEnvelope('schedule-1', 'preserved') }]);
+      expect(events.events).toContainEqual(expect.objectContaining({ outcome }));
+    },
+  );
+
   it.each([false, true])('pause overrides wake opt-in (freshContext=%s)', async (freshContext) => {
     sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'held', wakeIfStopped: true, freshContext }]));
     paused = true;

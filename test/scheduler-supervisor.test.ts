@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Supervisor } from '../src/core/supervisor.js';
+import type { PaneRef } from '../src/core/types.js';
+import { FakeEventSubscriber } from './fakes/fake-subscriber.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 
@@ -25,7 +27,31 @@ vi.mock('croner', () => ({
 let baseDir: string | undefined;
 let supervisor: Supervisor | undefined;
 
-async function setup(scheduleOptions = ''): Promise<FakeTerminalBackend> {
+class GatedLaunchTerminal extends FakeTerminalBackend {
+  private releaseLaunch!: () => void;
+  private markEntered!: () => void;
+  readonly entered = new Promise<void>((resolve) => {
+    this.markEntered = resolve;
+  });
+  private readonly launchGate = new Promise<void>((resolve) => {
+    this.releaseLaunch = resolve;
+  });
+
+  override async launch(pane: PaneRef, command: string): Promise<void> {
+    this.markEntered();
+    await this.launchGate;
+    await super.launch(pane, command);
+  }
+
+  release(): void {
+    this.releaseLaunch();
+  }
+}
+
+async function setup(
+  scheduleOptions = '',
+  options: { terminal?: FakeTerminalBackend; subscriber?: FakeEventSubscriber } = {},
+): Promise<FakeTerminalBackend> {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-09-17T15:59:59.000Z'));
   const server = createServer();
@@ -41,10 +67,11 @@ async function setup(scheduleOptions = ''): Promise<FakeTerminalBackend> {
     join(baseDir, 'config', 'sessions', 'alpha.yaml'),
     `codename: alpha\nrepo: ${baseDir}\nschedules:\n  - cron: '0 9 * * *'\n    prompt: scheduled work\n${scheduleOptions}`,
   );
-  const terminal = new FakeTerminalBackend();
+  const terminal = options.terminal ?? new FakeTerminalBackend();
   supervisor = new Supervisor(baseDir, {
     terminalBackend: terminal,
     runtimes: [new FakeRuntime()],
+    eventSubscribers: options.subscriber === undefined ? undefined : [options.subscriber],
     includeConfiguredChannels: false,
     env: {},
   });
@@ -82,6 +109,40 @@ describe('Supervisor schedule lifecycle policy', () => {
     await vi.advanceTimersByTimeAsync(1100);
     await vi.waitFor(() => expect(terminal.paneFor('alpha')?.sessionActive).toBe(true));
     expect(terminal.paneFor('alpha')?.launched[0]).toContain('scheduled work');
+  });
+
+  it.each([
+    { name: 'ordinary', options: '    wakeIfStopped: true\n', outcome: 'fired' },
+    { name: 'fresh-context', options: '    wakeIfStopped: true\n    freshContext: true\n', outcome: 'fired-fresh' },
+  ])('retains a $name occurrence when a promptless start owns the concurrent launch', async ({ options, outcome }) => {
+    const terminal = new GatedLaunchTerminal();
+    const subscriber = new FakeEventSubscriber();
+    await setup(options, { terminal, subscriber });
+
+    const ordinaryStart = supervisor!.command('/start alpha');
+    await terminal.entered;
+    await vi.advanceTimersByTimeAsync(1100);
+    terminal.release();
+    expect(await ordinaryStart).toBe('alpha started.');
+
+    await vi.waitFor(() => expect(terminal.paneFor('alpha')?.received).toHaveLength(1));
+    const pane = terminal.paneFor('alpha')!;
+    expect(pane.launched).toHaveLength(1);
+    expect(pane.launched[0]).not.toContain('scheduled work');
+    expect(pane.received[0]).toBe(
+      '[Cron name="schedule-1" period="0 9 * * *" scheduled_at="2026-09-17T16:00:00.000Z" timezone="America/Denver"] scheduled work',
+    );
+    await vi.waitFor(() =>
+      expect(subscriber.events).toContainEqual(
+        expect.objectContaining({
+          type: 'schedule',
+          session: 'alpha',
+          scheduledAt: '2026-09-17T16:00:00.000Z',
+          timezone: 'America/Denver',
+          outcome,
+        }),
+      ),
+    );
   });
 
   it('stop all cancels a fresh-context restart already waiting in its settle delay', async () => {

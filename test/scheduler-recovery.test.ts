@@ -121,17 +121,34 @@ describe('Scheduler durable occurrence recovery', () => {
   });
 
   it('never replays a dispatching row left by an interrupted process', async () => {
-    const store = new Store(':memory:');
+    const dir = mkdtempSync(join(tmpdir(), 'conductor-schedule-quarantine-'));
+    dirs.push(dir);
+    const dbPath = join(dir, 'conductor.db');
+    const interrupted = new Store(dbPath);
+    interrupted.admit(admission());
+    interrupted.markDispatching(admission().id);
+    interrupted.close();
+
+    const store = new Store(dbPath);
     stores.push(store);
-    store.admit(admission());
-    store.markDispatching(admission().id);
     const deliver = vi.fn(async () => 'delivered' as const);
-    const { scheduler } = makeScheduler(store, deliver);
+    const { scheduler, events } = makeScheduler(store, deliver);
 
     scheduler.rebuild();
     await Promise.resolve();
 
     expect(deliver).not.toHaveBeenCalled();
     expect(store.getScheduleOccurrence(admission().id)).toMatchObject({ state: 'unknown', outcome: null });
+    expect(events.events).toEqual([
+      {
+        type: 'schedule',
+        session: 'alpha',
+        label: 'review',
+        scheduledAt: '2026-09-17T15:00:00.000Z',
+        timezone: 'America/Denver',
+        outcome: 'uncertain',
+      },
+    ]);
+    expect(JSON.stringify(events.events)).not.toContain('inspect');
   });
 });
