@@ -361,6 +361,7 @@ export class Supervisor {
       store: this.store,
       delivery: this.delivery,
       states: this.states,
+      maxPendingMessagesPerRecipient: this.config.messaging.maxPendingMessagesPerRecipient,
       sessions: () => this.sessions,
       startSession: (codename, opts) => this.lifecycle.start(codename, opts),
       pausedNotice: (codename) => this.pausedAutomationNotice(codename),

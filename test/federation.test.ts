@@ -301,6 +301,38 @@ describe('local Conductor federation', () => {
     });
     expect(cancelledStatus.result?.content?.[0]?.text).toContain('"status":"cancelled"');
 
+    for (let index = 1; index <= 5; index += 1) {
+      const accepted = await call(frontendPort, 'alpha', 'send_to_session', {
+        fleet: 'backend',
+        codename: 'beta',
+        message: `remote pending ${String(index)}`,
+      });
+      expect(accepted.result?.structuredContent).toMatchObject({ fleet: 'backend', status: 'queued' });
+    }
+    const remoteFull = await call(frontendPort, 'alpha', 'send_to_session', {
+      fleet: 'backend',
+      codename: 'beta',
+      message: 'must not be accepted remotely',
+    });
+    expect(remoteFull.result?.structuredContent).toEqual({
+      classification: 'queue_full',
+      recipient: 'beta',
+      fleet: 'backend',
+      capacity: 5,
+      pendingCount: 5,
+      message:
+        'Message queue for beta is full: 5 pending messages at capacity 5. Capacity must be released by delivery or cancellation before a new send can be accepted.',
+    });
+    const fullStore = new Store(join(backendDir, 'data', 'conductor.db'));
+    expect(fullStore.getPendingDeliveries('beta').map((row) => row.content)).toEqual([
+      'remote pending 1',
+      'remote pending 2',
+      'remote pending 3',
+      'remote pending 4',
+      'remote pending 5',
+    ]);
+    fullStore.close();
+
     const baseRequest = {
       protocol: FEDERATION_PROTOCOL_VERSION,
       operation: 'list_sessions',

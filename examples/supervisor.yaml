@@ -121,6 +121,7 @@ health:
   eventSilenceMs: 120000 # pane-silence fallback delay for runtimes without authoritative completion
 
 messaging:
+  maxPendingMessagesPerRecipient: 5 # durable pending direct/broadcast deliveries accepted per recipient
   queueDrainMs: 2000 # how often held messages retry; also the release latency after input clears
   # Safety valve for a conductor delivery stuck unsubmitted in a composer.
   # Applies ONLY to the conductor's own drafts — text the OPERATOR is typing

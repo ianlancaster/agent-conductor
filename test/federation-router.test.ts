@@ -121,3 +121,48 @@ describe('FederationRouter whole-federation control', () => {
     ).rejects.toThrow("The 'federation' target can only originate in the caller's local fleet.");
   });
 });
+
+describe('FederationRouter message backpressure', () => {
+  it('preserves a remote queue_full result and qualifies its destination fleet', async () => {
+    const registry = {
+      peer: async () => ({
+        name: 'backend',
+        host: '127.0.0.1',
+        port: 4001,
+        pid: process.pid,
+        protocol: FEDERATION_PROTOCOL_VERSION,
+        sessions: ['beta'],
+      }),
+    } as unknown as FederationRegistry;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            result: {
+              classification: 'queue_full',
+              recipient: 'beta',
+              capacity: 5,
+              pendingCount: 5,
+              message:
+                'Message queue for beta is full: 5 pending messages at capacity 5. Capacity must be released by delivery or cancellation before a new send can be accepted.',
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const router = new FederationRouter('frontend', registry, operations());
+
+    await expect(
+      router.invokeFromSession('send_to_session', { fleet: 'backend', codename: 'beta', message: 'blocked' }, 'alpha'),
+    ).resolves.toMatchObject({
+      classification: 'queue_full',
+      recipient: 'beta',
+      fleet: 'backend',
+      capacity: 5,
+      pendingCount: 5,
+    });
+  });
+});

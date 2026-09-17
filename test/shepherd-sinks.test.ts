@@ -94,6 +94,7 @@ beforeEach(async () => {
     store,
     delivery,
     states,
+    maxPendingMessagesPerRecipient: 5,
     sessions: () => sessions,
     startSession: (codename, options) => lifecycle.start(codename, options),
   });

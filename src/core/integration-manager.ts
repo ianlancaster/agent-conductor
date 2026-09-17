@@ -9,7 +9,7 @@ import type {
 } from '../integrations/types.js';
 import { INTEGRATION_NAME_PATTERN } from '../integrations/types.js';
 import { log } from '../logger.js';
-import type { MessageReceipt } from './messaging.js';
+import type { MessageSendResult } from './messaging.js';
 
 const DEFAULT_LIFECYCLE_TIMEOUT_MS = 5_000;
 const MAX_STATUS_DETAIL_LENGTH = 240;
@@ -36,7 +36,7 @@ export interface IntegrationManagerOptions {
     codename: string,
     message: string,
     idempotencyKey: string,
-  ) => Promise<MessageReceipt>;
+  ) => Promise<MessageSendResult>;
   readonly startTimeoutMs?: number;
   readonly stopTimeoutMs?: number;
   readonly now?: () => Date;

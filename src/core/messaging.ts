@@ -1,5 +1,5 @@
 import { log } from '../logger.js';
-import type { DeliveryPausePolicy, MessageRow, Store } from '../store/index.js';
+import type { DeliveryPausePolicy, MessageQueueFullAdmission, MessageRow, Store } from '../store/index.js';
 import type { SessionConfig } from '../config/schema.js';
 import type { DeliveryQueue } from './delivery.js';
 import type { SessionStateManager } from './state.js';
@@ -11,6 +11,7 @@ export interface MessagingDeps {
   store: Store;
   delivery: DeliveryQueue;
   states: SessionStateManager;
+  maxPendingMessagesPerRecipient: number;
   sessions(): Map<string, SessionConfig>;
   startSession(codename: string, opts: { prompt?: string }): Promise<string>;
   /** High-visibility notice prepended to operator input while automation is paused. */
@@ -29,6 +30,18 @@ export interface MessageReceipt {
   notice?: string;
 }
 
+export interface MessageQueueFullResult {
+  classification: 'queue_full';
+  recipient: string;
+  /** Destination fleet for a remotely routed result; absent for local delivery. */
+  fleet?: string;
+  capacity: number;
+  pendingCount: number;
+  message: string;
+}
+
+export type MessageSendResult = MessageReceipt | MessageQueueFullResult;
+
 export function isMessageReceipt(value: unknown): value is MessageReceipt {
   if (typeof value !== 'object' || value === null) return false;
   const receipt = value as Partial<MessageReceipt>;
@@ -41,12 +54,32 @@ export function isMessageReceipt(value: unknown): value is MessageReceipt {
   );
 }
 
+export function isMessageQueueFullResult(value: unknown): value is MessageQueueFullResult {
+  if (typeof value !== 'object' || value === null) return false;
+  const result = value as Partial<MessageQueueFullResult>;
+  return (
+    result.classification === 'queue_full' &&
+    typeof result.recipient === 'string' &&
+    typeof result.capacity === 'number' &&
+    typeof result.pendingCount === 'number' &&
+    typeof result.message === 'string'
+  );
+}
+
+export function isMessageSendResult(value: unknown): value is MessageSendResult {
+  return isMessageReceipt(value) || isMessageQueueFullResult(value);
+}
+
 export function renderMessageReceipt(receipt: MessageReceipt): string {
   const action = receipt.status === 'delivered' ? 'Delivered' : receipt.status === 'cancelled' ? 'Cancelled' : 'Queued';
   const duplicate = receipt.deduplicated ? ' (deduplicated)' : '';
   const destination = receipt.fleet === undefined ? receipt.recipient : `${receipt.recipient}@${receipt.fleet}`;
   const acknowledgement = `${action} message #${String(receipt.messageId)} for ${destination}${duplicate}.`;
   return receipt.notice === undefined ? acknowledgement : `${acknowledgement}\n${receipt.notice}`;
+}
+
+export function renderMessageSendResult(result: MessageSendResult): string {
+  return isMessageReceipt(result) ? renderMessageReceipt(result) : result.message;
 }
 
 /** Durable inter-session and operator-to-session messaging behind the canonical tools. */
@@ -70,7 +103,7 @@ export class Messaging {
     message: string,
     idempotencyKey?: string,
     pausePolicy: DeliveryPausePolicy = 'hold',
-  ): Promise<MessageReceipt> {
+  ): Promise<MessageSendResult> {
     const notice = pausePolicy === 'bypass' ? this.deps.pausedNotice?.(target) : undefined;
     return this.sendProtected(
       from,
@@ -93,7 +126,7 @@ export class Messaging {
     target: string,
     message: string,
     idempotencyKey: string,
-  ): Promise<MessageReceipt> {
+  ): Promise<MessageSendResult> {
     return this.sendProtected(
       `integration:${integrationName}`,
       target,
@@ -115,7 +148,7 @@ export class Messaging {
     idempotencyKey?: string,
     notice?: string,
     rejectWhilePaused = false,
-  ): Promise<MessageReceipt> {
+  ): Promise<MessageSendResult> {
     if (idempotencyKey !== undefined) {
       const existing = this.deps.store.getDirectMessageByIdempotencyKey(from, idempotencyKey);
       if (
@@ -133,10 +166,18 @@ export class Messaging {
     }
 
     const envelope = envelopeFor(message);
-    const inserted = this.deps.store.insertDirectMessage(from, target, message, idempotencyKey, {
-      policy: pausePolicy,
-      envelope,
-    });
+    const inserted = this.deps.store.admitDirectMessage(
+      from,
+      target,
+      message,
+      this.deps.maxPendingMessagesPerRecipient,
+      idempotencyKey,
+      {
+        policy: pausePolicy,
+        envelope,
+      },
+    );
+    if (!inserted.accepted) return this.queueFull(inserted);
     const id = inserted.row.id;
     if (!inserted.deduplicated) {
       this.deps.events?.emit({
@@ -250,31 +291,48 @@ export class Messaging {
     pausePolicy: DeliveryPausePolicy = 'hold',
   ): Promise<string> {
     const recipients = this.deps.states.activeSessions().filter((codename) => allowed(codename) && codename !== from);
-    const rows = this.deps.store.insertBroadcastDeliveries(from, recipients, message, (recipient) => {
-      const notice = pausePolicy === 'bypass' ? this.deps.pausedNotice?.(recipient) : undefined;
-      const envelope = broadcastEnvelope(from, message);
-      return { policy: pausePolicy, envelope: notice === undefined ? envelope : `${notice}\n\n${envelope}` };
-    });
+    const admission = this.deps.store.admitBroadcastDeliveries(
+      from,
+      recipients,
+      message,
+      this.deps.maxPendingMessagesPerRecipient,
+      (recipient) => {
+        const notice = pausePolicy === 'bypass' ? this.deps.pausedNotice?.(recipient) : undefined;
+        const envelope = broadcastEnvelope(from, message);
+        return { policy: pausePolicy, envelope: notice === undefined ? envelope : `${notice}\n\n${envelope}` };
+      },
+    );
+    const { rows } = admission;
+    const acceptedRecipients = rows.map((row) => row.recipient);
 
     let retainedForRecovery = 0;
-    const results = await Promise.allSettled(recipients.map((recipient) => this.admitRecipient(recipient)));
+    const results = await Promise.allSettled(acceptedRecipients.map((recipient) => this.admitRecipient(recipient)));
     for (const [index, result] of results.entries()) {
       if (result.status === 'fulfilled') continue;
-      retainedForRecovery += rows.filter((row) => row.recipient === recipients[index]).length;
+      retainedForRecovery += rows.filter((row) => row.recipient === acceptedRecipients[index]).length;
       log().warn(
         'messaging',
-        `broadcast to ${recipients[index] ?? 'unknown'} retained for recovery: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+        `broadcast to ${acceptedRecipients[index] ?? 'unknown'} retained for recovery: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
       );
     }
     if (retainedForRecovery > 0) this.ensureRecoveryTimer();
     const current = rows.map((row) => this.deps.store.getMessage(row.id) ?? row);
     const delivered = current.filter((row) => row.status === 'delivered').length;
     const queued = current.filter((row) => row.status === 'pending').length - retainedForRecovery;
-    if (queued === 0 && retainedForRecovery === 0) return `Broadcast delivered to ${String(delivered)} session(s).`;
-    return (
-      `Broadcast accepted for ${String(rows.length)} session(s): ${String(delivered)} delivered, ` +
-      `${String(Math.max(0, queued))} queued, ${String(retainedForRecovery)} retained for recovery.`
-    );
+    const acceptedSummary =
+      queued === 0 && retainedForRecovery === 0
+        ? `Broadcast delivered to ${String(delivered)} session(s).`
+        : `Broadcast accepted for ${String(rows.length)} session(s): ${String(delivered)} delivered, ${String(Math.max(0, queued))} queued, ${String(retainedForRecovery)} retained for recovery.`;
+    if (admission.rejected.length === 0) return acceptedSummary;
+    const full = [...admission.rejected]
+      .sort((left, right) => left.recipient.localeCompare(right.recipient))
+      .map(
+        (rejected) => `${rejected.recipient} (${String(rejected.pendingCount)}/${String(rejected.capacity)} pending)`,
+      )
+      .join(', ');
+    const prefix =
+      rows.length === 0 ? `Broadcast accepted for 0 of ${String(recipients.length)} session(s).` : acceptedSummary;
+    return `${prefix} queue_full for ${String(admission.rejected.length)} recipient(s): ${full}. Capacity must be released by delivery or cancellation before a new send can be accepted.`;
   }
 
   private async admitOrRetain(recipient: string, startDeliveryId: number): Promise<void> {
@@ -381,6 +439,16 @@ export class Messaging {
       status: row.status === 'delivered' ? 'delivered' : row.status === 'cancelled' ? 'cancelled' : 'queued',
       deduplicated,
       ...(notice === undefined ? {} : { notice }),
+    };
+  }
+
+  private queueFull(admission: MessageQueueFullAdmission): MessageQueueFullResult {
+    return {
+      classification: 'queue_full',
+      recipient: admission.recipient,
+      capacity: admission.capacity,
+      pendingCount: admission.pendingCount,
+      message: `Message queue for ${admission.recipient} is full: ${String(admission.pendingCount)} pending messages at capacity ${String(admission.capacity)}. Capacity must be released by delivery or cancellation before a new send can be accepted.`,
     };
   }
 

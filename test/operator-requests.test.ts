@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ChannelMessage } from '../src/channels/types.js';
+import type { MessageSendResult } from '../src/core/messaging.js';
 import { OperatorRequests } from '../src/core/operator-requests.js';
 import { Store } from '../src/store/index.js';
 import { FakeEventPublisher } from './fakes/fake-event-publisher.js';
 
-function setup(options: { delivered?: boolean; delivery?: () => Promise<string> } = {}): {
+function setup(options: { delivered?: boolean; delivery?: () => Promise<string | MessageSendResult> } = {}): {
   store: Store;
   requests: OperatorRequests;
   outbound: ChannelMessage[];
@@ -131,6 +132,25 @@ describe('OperatorRequests', () => {
     await expect(requests.respond(1, 1)).rejects.toThrow('pane write failed');
     expect(store.getOperatorRequest(1)?.status).toBe('pending');
     await expect(requests.respond(1, 1)).resolves.toContain('Response recorded: one');
+    store.close();
+  });
+
+  it('releases a claim when the recipient queue is full so the operator can retry after capacity is released', async () => {
+    const { store, requests, events } = setup({
+      delivery: async () => ({
+        classification: 'queue_full',
+        recipient: 'alpha',
+        capacity: 5,
+        pendingCount: 5,
+        message:
+          'Message queue for alpha is full: 5 pending messages at capacity 5. Capacity must be released by delivery or cancellation before a new send can be accepted.',
+      }),
+    });
+    await requests.send('alpha', 'Choose', ['one']);
+
+    await expect(requests.respond(1, 1)).resolves.toContain('Message queue for alpha is full');
+    expect(store.getOperatorRequest(1)?.status).toBe('pending');
+    expect(events.events).not.toContainEqual(expect.objectContaining({ type: 'operator.request.resolved' }));
     store.close();
   });
 

@@ -1,6 +1,6 @@
 import type { ChannelAction, ChannelMessage } from '../channels/types.js';
 import type { Store } from '../store/index.js';
-import { renderMessageReceipt, type Messaging } from './messaging.js';
+import { isMessageQueueFullResult, renderMessageSendResult, type Messaging } from './messaging.js';
 import { messageEnvelope } from './utils.js';
 import type { ConductorEventPublisher } from '../events/types.js';
 
@@ -77,6 +77,10 @@ export class OperatorRequests {
         undefined,
         'bypass',
       );
+      if (isMessageQueueFullResult(delivery)) {
+        this.deps.store.releaseOperatorRequest(requestId);
+        return renderMessageSendResult(delivery);
+      }
       if (!this.deps.store.finalizeOperatorRequest(requestId, selectedIndex)) {
         throw new Error(`Operator request #${String(requestId)} could not be finalized.`);
       }
@@ -86,7 +90,7 @@ export class OperatorRequests {
         requestId,
         selectedOption: option,
       });
-      const renderedDelivery = typeof delivery === 'string' ? delivery : renderMessageReceipt(delivery);
+      const renderedDelivery = typeof delivery === 'string' ? delivery : renderMessageSendResult(delivery);
       return `${renderedDelivery} Response recorded: ${selected}`;
     } catch (error) {
       this.deps.store.releaseOperatorRequest(requestId);

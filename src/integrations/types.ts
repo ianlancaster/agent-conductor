@@ -1,4 +1,4 @@
-import type { MessageReceipt } from '../core/messaging.js';
+import type { MessageSendResult } from '../core/messaging.js';
 import type { ConductorEvent } from '../events/types.js';
 
 export const INTEGRATION_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
@@ -38,9 +38,10 @@ export interface ConductorIntegrationContext {
   readonly stateDir: string;
   /**
    * Protected session delivery with a mechanically assigned integration identity.
-   * New logical deliveries reject as retryable while the target session is paused.
+   * New logical deliveries reject as retryable while the target session is paused and
+   * return queue_full when the recipient has no pending-message capacity.
    */
-  sendToSession(codename: string, message: string, options: IntegrationDeliveryOptions): Promise<MessageReceipt>;
+  sendToSession(codename: string, message: string, options: IntegrationDeliveryOptions): Promise<MessageSendResult>;
   /** Publish bounded, operator-safe health without exposing Conductor internals. */
   reportHealth(update: IntegrationHealthUpdate): void;
 }

@@ -46,6 +46,24 @@ export interface MessageInsertResult {
   deduplicated: boolean;
 }
 
+export interface MessageQueueFullAdmission {
+  accepted: false;
+  recipient: string;
+  capacity: number;
+  pendingCount: number;
+}
+
+export interface AcceptedMessageAdmission extends MessageInsertResult {
+  accepted: true;
+}
+
+export type MessageAdmissionResult = AcceptedMessageAdmission | MessageQueueFullAdmission;
+
+export interface BroadcastAdmissionResult {
+  rows: MessageRow[];
+  rejected: MessageQueueFullAdmission[];
+}
+
 /** Content-free direct-message fact used by stall diagnostics. */
 export type RecentMessageActivity = Pick<
   MessageRow,
@@ -454,16 +472,42 @@ export class Store {
     idempotencyKey?: string,
     delivery?: ProtectedDelivery,
   ): MessageInsertResult {
+    const result = this.admitDirectMessage(
+      sender,
+      recipient,
+      content,
+      Number.MAX_SAFE_INTEGER,
+      idempotencyKey,
+      delivery,
+    );
+    if (!result.accepted) throw new Error(`Message queue for ${recipient} exceeded the storage limit.`);
+    return { row: result.row, deduplicated: result.deduplicated };
+  }
+
+  admitDirectMessage(
+    sender: string,
+    recipient: string,
+    content: string,
+    capacity: number,
+    idempotencyKey?: string,
+    delivery?: ProtectedDelivery,
+  ): MessageAdmissionResult {
     return withTransaction(this.db, () => {
-      if (idempotencyKey === undefined) {
-        const id = this.insertMessage(sender, recipient, 'message', content, undefined, delivery);
-        const row = this.getMessage(id);
-        if (row === undefined) throw new Error(`Message #${String(id)} was not persisted.`);
-        return { row, deduplicated: false };
+      const existing =
+        idempotencyKey === undefined ? undefined : this.getDirectMessageByIdempotencyKey(sender, idempotencyKey);
+      if (
+        existing !== undefined &&
+        !(existing.status === 'cancelled' && existing.flush_skip_reason === 'conductor-restarted')
+      ) {
+        return { accepted: true, row: existing, deduplicated: true };
       }
 
-      const existing = this.getDirectMessageByIdempotencyKey(sender, idempotencyKey);
-      if (existing?.status === 'cancelled' && existing.flush_skip_reason === 'conductor-restarted') {
+      const pendingCount = this.pendingDeliveryCount(recipient);
+      if (pendingCount >= capacity) {
+        return { accepted: false, recipient, capacity, pendingCount };
+      }
+
+      if (existing !== undefined) {
         this.db
           .prepare(
             "UPDATE messages SET content = ?, delivery_policy = ?, delivery_envelope = ?, status = 'pending', created_at = datetime('now'), " +
@@ -473,9 +517,15 @@ export class Store {
           .run(content, delivery?.policy ?? 'hold', delivery?.envelope ?? null, existing.id);
         const revived = this.getMessage(existing.id);
         if (revived === undefined) throw new Error(`Message #${String(existing.id)} was not revived.`);
-        return { row: revived, deduplicated: false };
+        return { accepted: true, row: revived, deduplicated: false };
       }
 
+      if (idempotencyKey === undefined) {
+        const id = this.insertMessage(sender, recipient, 'message', content, undefined, delivery);
+        const row = this.getMessage(id);
+        if (row === undefined) throw new Error(`Message #${String(id)} was not persisted.`);
+        return { accepted: true, row, deduplicated: false };
+      }
       const inserted = this.db
         .prepare(
           `INSERT OR IGNORE INTO messages
@@ -485,7 +535,7 @@ export class Store {
         .run(sender, recipient, content, idempotencyKey, delivery?.policy ?? 'hold', delivery?.envelope ?? null);
       const row = this.getDirectMessageByIdempotencyKey(sender, idempotencyKey);
       if (row === undefined) throw new Error('Idempotent message was not persisted.');
-      return { row, deduplicated: inserted.changes === 0 };
+      return { accepted: true, row, deduplicated: inserted.changes === 0 };
     });
   }
 
@@ -495,15 +545,40 @@ export class Store {
     content: string,
     deliveryFor: ProtectedDelivery | ((recipient: string) => ProtectedDelivery),
   ): MessageRow[] {
-    return withTransaction(this.db, () =>
-      recipients.map((recipient) => {
+    return this.admitBroadcastDeliveries(sender, recipients, content, Number.MAX_SAFE_INTEGER, deliveryFor).rows;
+  }
+
+  admitBroadcastDeliveries(
+    sender: string,
+    recipients: readonly string[],
+    content: string,
+    capacity: number,
+    deliveryFor: ProtectedDelivery | ((recipient: string) => ProtectedDelivery),
+  ): BroadcastAdmissionResult {
+    return withTransaction(this.db, () => {
+      const rows: MessageRow[] = [];
+      const rejected: MessageQueueFullAdmission[] = [];
+      for (const recipient of recipients) {
+        const pendingCount = this.pendingDeliveryCount(recipient);
+        if (pendingCount >= capacity) {
+          rejected.push({ accepted: false, recipient, capacity, pendingCount });
+          continue;
+        }
         const delivery = typeof deliveryFor === 'function' ? deliveryFor(recipient) : deliveryFor;
         const id = this.insertMessage(sender, recipient, 'broadcast', content, undefined, delivery);
         const row = this.getMessage(id);
         if (row === undefined) throw new Error(`Broadcast delivery #${String(id)} was not persisted.`);
-        return row;
-      }),
-    );
+        rows.push(row);
+      }
+      return { rows, rejected };
+    });
+  }
+
+  private pendingDeliveryCount(recipient: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS count FROM messages WHERE recipient = ? AND status = 'pending'")
+      .get(recipient) as { count: number };
+    return row.count;
   }
 
   getDirectMessageByIdempotencyKey(sender: string, idempotencyKey: string): MessageRow | undefined {

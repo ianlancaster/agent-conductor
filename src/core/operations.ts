@@ -1,7 +1,7 @@
 import type { SessionConfig } from '../config/schema.js';
 import type { Lifecycle } from './lifecycle.js';
 import type { Messaging } from './messaging.js';
-import type { MessageReceipt } from './messaging.js';
+import type { MessageSendResult } from './messaging.js';
 import type { OperatorRequests } from './operator-requests.js';
 import type { StallSentinelRouter } from './sentinel.js';
 import type { SessionStateManager } from './state.js';
@@ -42,7 +42,10 @@ export interface OperationDefinition {
   inputSchema: OperationInputSchema;
   /** The actor's identity is applied mechanically to messages made by this operation. */
   signedIdentity?: boolean;
-  handler(args: Record<string, unknown>, actor: OperationActor): Promise<string | MessageReceipt | FederationListing>;
+  handler(
+    args: Record<string, unknown>,
+    actor: OperationActor,
+  ): Promise<string | MessageSendResult | FederationListing>;
 }
 
 export interface ConductorOperationDeps {
@@ -191,7 +194,7 @@ export class ConductorOperations {
     name: string,
     args: Record<string, unknown>,
     actor: OperationActor,
-  ): Promise<string | MessageReceipt | FederationListing> {
+  ): Promise<string | MessageSendResult | FederationListing> {
     const definition = this.byName.get(name);
     if (definition === undefined) throw new Error(`Unknown operation: ${name}`);
     if (!definition.audiences.includes(actor.audience)) {
@@ -238,7 +241,8 @@ export class ConductorOperations {
       {
         name: 'send_to_session',
         description: "Send a message to another session's pane, starting it if needed.",
-        resultDescription: 'Returns a structured receipt with the message id and delivered or queued status.',
+        resultDescription:
+          'Returns a structured receipt when accepted, or a queue_full result with recipient capacity facts when the recipient cannot accept another pending message.',
         audiences: BOTH,
         federation: 'routable',
         signedIdentity: true,

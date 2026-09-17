@@ -43,7 +43,7 @@ import type {
   ConductorEvent,
   ConductorIntegration,
   ConductorIntegrationContext,
-  MessageReceipt,
+  MessageSendResult,
 } from 'agent-conductor';
 
 export class RepositoryWatcher implements ConductorIntegration {
@@ -83,9 +83,14 @@ export class RepositoryWatcher implements ConductorIntegration {
         context.reportHealth({ state: 'healthy' });
         return;
       }
-      const receipt: MessageReceipt = await context.sendToSession('assistant', change.prompt, {
+      const result: MessageSendResult = await context.sendToSession('assistant', change.prompt, {
         idempotencyKey: change.immutableIdentity,
       });
+      if ('classification' in result) {
+        context.reportHealth({ state: 'degraded', detail: result.message });
+        return;
+      }
+      const receipt = result;
       if (receipt.status === 'delivered') {
         await this.commitCursorAtomically(context.stateDir, change.nextCursor);
       }
@@ -126,6 +131,11 @@ that as retryable: retain the provider cursor and retry the same immutable idemp
 resume. An automated delivery already waiting in Conductor's protected queue when pause begins is
 held for the full pause interval and may drain only after resume. Human-authored messages remain
 available while the session is paused.
+
+When the recipient has reached `messaging.maxPendingMessagesPerRecipient`, `sendToSession` resolves
+to a typed `queue_full` result instead of a `MessageReceipt`. It reports the recipient, configured
+capacity, and pending count without exposing queued content. Retain the provider cursor, but do not
+spin, poll, or automatically retry: capacity must first be released by delivery or cancellation.
 
 Integration names are lowercase alphanumeric identifiers with internal dashes. Conductor derives
 the sender mechanically as `integration:<name>` and renders `[Integration: <name>]`; the

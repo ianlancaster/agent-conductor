@@ -310,6 +310,13 @@ Direct-message receipts are observable:
 
 - `queued` means Conductor durably retained the recipient delivery for a later safe submission.
 - `delivered` means protected pane submission completed.
+- `queue_full` is a rejected send result, not a receipt. It includes `recipient`, `capacity`, and
+  `pendingCount`, but never queued content or a message ID. The rejected text was not persisted or
+  written to the pane. Capacity must be released by delivery or cancellation before a new send can
+  be accepted; do not poll or automatically retry.
+- `messaging.maxPendingMessagesPerRecipient` is a fleet/instance-wide positive integer and defaults
+  to `5`. Every durable pending direct, operator-to-session, integration, federated, and
+  per-recipient broadcast delivery consumes one slot. Delivered and cancelled rows do not.
 - Conductor reconstructs pending direct messages and per-recipient broadcast deliveries after restart. A crash after terminal submission but before the durable completion update can replay that one message, so this boundary is at-least-once rather than transactionally exactly once.
 - `get_message_status` reports `deliveredAt`, `lastFlushAttempt`, and `flushSkipReason`, so a
   sender can distinguish occupied input, missing runtime chrome, and
@@ -331,7 +338,9 @@ a message is queued. `type_in_pane` exists for deliberate terminal control such 
 runtime prompt or entering a slash command; it can clobber operator input.
 
 Use `broadcast` only when every active session genuinely needs the same information. Prefer direct
-messages for assignments, answers, and coordination.
+messages for assignments, answers, and coordination. Broadcast admission is per recipient: accepted
+recipients retain FIFO order while a deterministic summary reports any `queue_full` recipients and
+their non-sensitive counts. A full recipient gets no broadcast row or receipt.
 
 Use `send_to_operator` when a decision, credential, approval, policy choice, or human-only action is
 required:
@@ -1306,6 +1315,14 @@ Do not use `kill` as a daemon lifecycle command. launchd and systemd may restart
 design; use `conductor daemon uninstall` when the fleet is service-managed.
 
 ### A message remains queued
+
+If a send returns `queue_full`, it was not queued. The result identifies the recipient, configured
+capacity, and current pending count. Delivery or cancellation of accepted work must release a slot
+before another send can be accepted. Do not poll, automatically retry, use raw pane input to evade
+the limit, or infer message contents from the count. An idempotent replay of an already accepted
+send still returns its original receipt. On restart, Conductor preserves legacy queues that exceed
+the configured capacity and blocks only new admissions until the durable pending count is below the
+limit.
 
 If a protected send fails with `table messages has no column named delivery_policy`, inspect
 the receiving fleet's database, including for federated sends. A retired beta rooms build

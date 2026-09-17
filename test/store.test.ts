@@ -86,6 +86,40 @@ describe('messages', () => {
     expect(otherSender.row.id).not.toBe(first.row.id);
   });
 
+  it('atomically admits direct messages up to recipient capacity and preserves idempotent replay', () => {
+    const first = store.admitDirectMessage('alpha', 'beta', 'first', 2, 'first-key');
+    const second = store.admitDirectMessage('watch', 'beta', 'second', 2);
+    const rejected = store.admitDirectMessage('gamma', 'beta', 'third', 2);
+    const replay = store.admitDirectMessage('alpha', 'beta', 'changed', 2, 'first-key');
+
+    expect(first).toMatchObject({ accepted: true, deduplicated: false });
+    expect(second).toMatchObject({ accepted: true, deduplicated: false });
+    expect(rejected).toEqual({ accepted: false, recipient: 'beta', capacity: 2, pendingCount: 2 });
+    expect(replay).toMatchObject({ accepted: true, deduplicated: true });
+    expect(store.getPendingDeliveries('beta').map((row) => row.content)).toEqual(['first', 'second']);
+  });
+
+  it('releases capacity only after a durable terminal transition', () => {
+    const first = store.admitDirectMessage('alpha', 'beta', 'first', 1);
+    expect(first.accepted).toBe(true);
+    expect(store.admitDirectMessage('watch', 'beta', 'blocked', 1)).toMatchObject({ accepted: false });
+    if (!first.accepted) throw new Error('Expected the first admission to succeed.');
+
+    expect(store.markMessageCancelled(first.row.id)).toBe(true);
+    const replacement = store.admitDirectMessage('watch', 'beta', 'replacement', 1);
+    expect(replacement).toMatchObject({
+      accepted: true,
+      deduplicated: false,
+    });
+    if (!replacement.accepted) throw new Error('Expected replacement admission to succeed.');
+
+    expect(store.markMessageDelivered(replacement.row.id)).toBe(true);
+    expect(store.admitDirectMessage('gamma', 'beta', 'after delivery', 1)).toMatchObject({
+      accepted: true,
+      deduplicated: false,
+    });
+  });
+
   it('persists replay policy and exact protected presentation', () => {
     const inserted = store.insertDirectMessage('alpha', 'beta', 'hello', 'stable', {
       policy: 'bypass',
@@ -110,6 +144,22 @@ describe('messages', () => {
     ]);
     expect(store.getPendingDeliveries().map((row) => row.id)).toEqual(rows.map((row) => row.id));
     expect(store.getPendingMessages()).toEqual([]);
+  });
+
+  it('partially admits broadcasts without evicting a full recipient queue', () => {
+    store.insertDirectMessage('source', 'beta', 'beta-first');
+    store.insertDirectMessage('source', 'gamma', 'gamma-first');
+    store.insertDirectMessage('source', 'beta', 'beta-second');
+
+    const result = store.admitBroadcastDeliveries('alpha', ['beta', 'gamma'], 'notice', 2, {
+      policy: 'hold',
+      envelope: '[Broadcast from alpha] notice',
+    });
+
+    expect(result.rejected).toEqual([{ accepted: false, recipient: 'beta', capacity: 2, pendingCount: 2 }]);
+    expect(result.rows.map((row) => row.recipient)).toEqual(['gamma']);
+    expect(store.getPendingDeliveries('beta').map((row) => row.content)).toEqual(['beta-first', 'beta-second']);
+    expect(store.getPendingDeliveries('gamma').map((row) => row.content)).toEqual(['gamma-first', 'notice']);
   });
 
   it('lists recent direct-message metadata without content or broadcasts', () => {

@@ -1,6 +1,6 @@
 import { CODENAME_PATTERN, FEDERATION_NAME_PATTERN } from '../config/schema.js';
 import { InvalidRequestError } from '../core/errors.js';
-import { isMessageReceipt } from '../core/messaging.js';
+import { isMessageSendResult } from '../core/messaging.js';
 import type { ConductorOperations, OperationActor } from '../core/operations.js';
 import { FEDERATION_PROTOCOL_VERSION, type FederationPeerRecord, type FederationRegistry } from './registry.js';
 import type { FederationListing } from './types.js';
@@ -80,7 +80,7 @@ export class FederationRouter {
       originFleet: this.localFleet,
       originSession: caller,
     });
-    return isMessageReceipt(result) ? { ...result, fleet } : result;
+    return isMessageSendResult(result) ? { ...result, fleet } : result;
   }
 
   async invokeFederationWide(

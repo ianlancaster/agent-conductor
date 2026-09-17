@@ -534,6 +534,44 @@ describe('Supervisor construction', () => {
     persisted.close();
   });
 
+  it('preserves a legacy over-cap queue on startup and rejects only new operator admission', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\n`,
+      beta: `codename: beta\nrepo: ${baseDir}\n`,
+    });
+    const seed = new Store(join(baseDir, 'data', 'conductor.db'));
+    for (let index = 1; index <= 6; index += 1) {
+      seed.insertDirectMessage('alpha', 'beta', `legacy-${String(index)}`);
+    }
+    seed.close();
+    const terminal = new FakeTerminalBackend();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      includeConfiguredChannels: false,
+      env: {},
+    });
+
+    await supervisor.start();
+    await expect(supervisor.command('/tell beta new')).resolves.toBe(
+      'Message queue for beta is full: 6 pending messages at capacity 5. Capacity must be released by delivery or cancellation before a new send can be accepted.',
+    );
+    expect(terminal.paneFor('beta')).toBeUndefined();
+    await supervisor.stop();
+    supervisor = undefined;
+
+    const persisted = new Store(join(baseDir, 'data', 'conductor.db'));
+    expect(persisted.getPendingDeliveries('beta').map((row) => row.content)).toEqual([
+      'legacy-1',
+      'legacy-2',
+      'legacy-3',
+      'legacy-4',
+      'legacy-5',
+      'legacy-6',
+    ]);
+    persisted.close();
+  });
+
   it('recovers paused direct and broadcast rows into a surviving pane exactly once after resume', async () => {
     const port = await freePort();
     writeConfig(`mcp:\n  port: ${String(port)}\nmessaging:\n  queueDrainMs: 5\n`, {

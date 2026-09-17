@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionConfig } from '../src/config/schema.js';
 import { DeliveryQueue } from '../src/core/delivery.js';
-import { Messaging } from '../src/core/messaging.js';
+import { isMessageReceipt, Messaging } from '../src/core/messaging.js';
 import { SessionStateManager } from '../src/core/state.js';
 import { Store } from '../src/store/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
@@ -109,6 +109,128 @@ describe('Messaging delivery receipts', () => {
     expect(store.getMessage(1)?.status).toBe('delivered');
   });
 
+  it('accepts five pending messages by default and returns an actionable queue_full result for the next send', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    states.pause('beta');
+    const events = new FakeEventPublisher();
+    const messaging = makeMessaging(makeQueue(new FakeRuntime(), pane.id), events);
+
+    for (let index = 1; index <= 5; index += 1) {
+      await expect(
+        messaging.sendToSession('alpha', 'beta', `accepted-${String(index)}`, index === 1 ? 'stable' : undefined),
+      ).resolves.toMatchObject({ status: 'queued' });
+    }
+    await expect(messaging.sendToSession('alpha', 'beta', 'rejected')).resolves.toEqual({
+      classification: 'queue_full',
+      recipient: 'beta',
+      capacity: 5,
+      pendingCount: 5,
+      message:
+        'Message queue for beta is full: 5 pending messages at capacity 5. Capacity must be released by delivery or cancellation before a new send can be accepted.',
+    });
+    await expect(messaging.sendToSession('alpha', 'beta', 'changed', 'stable')).resolves.toMatchObject({
+      messageId: 1,
+      status: 'queued',
+      deduplicated: true,
+    });
+
+    expect(store.getPendingDeliveries('beta').map((row) => row.content)).toEqual([
+      'accepted-1',
+      'accepted-2',
+      'accepted-3',
+      'accepted-4',
+      'accepted-5',
+    ]);
+    expect(events.events.filter((event) => event.type === 'message.created')).toHaveLength(5);
+  });
+
+  it('honors an override, releases cancelled capacity, and serializes concurrent admission', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    states.pause('beta');
+    const queue = makeQueue(new FakeRuntime(), pane.id);
+    const capacityOne = makeMessaging(queue, undefined, undefined, 1);
+
+    await expect(capacityOne.sendToSession('alpha', 'beta', 'first')).resolves.toMatchObject({ status: 'queued' });
+    await expect(capacityOne.sendToSession('alpha', 'beta', 'blocked')).resolves.toMatchObject({
+      classification: 'queue_full',
+      pendingCount: 1,
+      capacity: 1,
+    });
+    expect(await capacityOne.cancelMessage(1, 'alpha')).toBe('Message #1 cancelled.');
+    await expect(capacityOne.sendToSession('alpha', 'beta', 'replacement')).resolves.toMatchObject({
+      status: 'queued',
+    });
+
+    expect(await capacityOne.cancelMessage(2, 'alpha')).toBe('Message #2 cancelled.');
+    const capacityTwo = makeMessaging(queue, undefined, undefined, 2);
+    const concurrent = await Promise.all(
+      ['one', 'two', 'three', 'four'].map((message) =>
+        capacityTwo.sendToSession('alpha', 'beta', `concurrent-${message}`),
+      ),
+    );
+    expect(
+      concurrent.filter((result) => 'classification' in result && result.classification === 'queue_full'),
+    ).toHaveLength(2);
+    expect(store.getPendingDeliveries('beta').map((row) => row.content)).toEqual(['concurrent-one', 'concurrent-two']);
+  });
+
+  it('preserves a legacy over-cap queue during recovery and blocks only new admission', async () => {
+    const pane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', pane.id);
+    states.setReady('beta');
+    states.pause('beta');
+    for (let index = 1; index <= 6; index += 1) {
+      store.insertDirectMessage('source', 'beta', `legacy-${String(index)}`);
+    }
+    const messaging = makeMessaging(makeQueue(new FakeRuntime(), pane.id));
+
+    await messaging.recoverPendingMessages('beta');
+    await expect(messaging.sendToSession('alpha', 'beta', 'new')).resolves.toMatchObject({
+      classification: 'queue_full',
+      capacity: 5,
+      pendingCount: 6,
+    });
+    expect(store.getPendingDeliveries('beta').map((row) => row.content)).toEqual([
+      'legacy-1',
+      'legacy-2',
+      'legacy-3',
+      'legacy-4',
+      'legacy-5',
+      'legacy-6',
+    ]);
+  });
+
+  it('partially admits a broadcast and identifies full recipients without creating rejected rows', async () => {
+    const betaPane = await backend.createPane('beta', 'pane');
+    states.setSession('beta', betaPane.id);
+    states.setReady('beta');
+    states.pause('beta');
+    sessions.set('gamma', {
+      codename: 'gamma',
+      repo: '/tmp/gamma',
+      runtime: 'codex',
+      additionalDirs: [],
+      schedules: [],
+    });
+    states.register('gamma', false);
+    const gammaPane = await backend.createPane('gamma', 'pane');
+    states.setSession('gamma', gammaPane.id);
+    states.setReady('gamma');
+    states.pause('gamma');
+    store.insertDirectMessage('source', 'beta', 'already full');
+    const messaging = makeMessaging(makeQueue(new FakeRuntime(), betaPane.id), undefined, undefined, 1);
+
+    await expect(messaging.broadcast('alpha', 'fan out')).resolves.toBe(
+      'Broadcast accepted for 1 session(s): 0 delivered, 1 queued, 0 retained for recovery. queue_full for 1 recipient(s): beta (1/1 pending). Capacity must be released by delivery or cancellation before a new send can be accepted.',
+    );
+    expect(store.getPendingDeliveries('beta').map((row) => row.content)).toEqual(['already full']);
+    expect(store.getPendingDeliveries('gamma').map((row) => row.content)).toEqual(['fan out']);
+  });
+
   it('reconstructs the exact persisted envelope after a messaging restart', async () => {
     const pane = await backend.createPane('beta', 'pane');
     states.setSession('beta', pane.id);
@@ -162,6 +284,7 @@ describe('Messaging delivery receipts', () => {
 
     const integration = await messaging.sendIntegrationToSession('water-cooler', 'beta', 'changed', 'commit-a');
     const ordinary = await messaging.sendToSession('integration:spoof', 'beta', 'ordinary', 'commit-b');
+    if (!isMessageReceipt(integration)) throw new Error('Expected integration delivery to be accepted.');
 
     expect(integration).toMatchObject({ status: 'delivered', deduplicated: false });
     expect(ordinary).toMatchObject({ status: 'delivered', deduplicated: false });
@@ -218,6 +341,7 @@ describe('Messaging delivery receipts', () => {
     const messaging = makeMessaging(makeQueue(new FakeRuntime(), pane.id), undefined, () => notice);
 
     const receipt = await messaging.sendToSession('operator', 'beta', 'Did CI arrive?', undefined, 'bypass');
+    if (!isMessageReceipt(receipt)) throw new Error('Expected operator delivery to be accepted.');
 
     expect(receipt).toMatchObject({ status: 'delivered', notice });
     expect(backend.panes.get(pane.id)?.received).toEqual([`${notice}\n\n[Message from operator] Did CI arrive?`]);
@@ -251,6 +375,7 @@ describe('Messaging delivery receipts', () => {
       store,
       delivery: queue,
       states,
+      maxPendingMessagesPerRecipient: 5,
       sessions: () => sessions,
       startSession: async (_codename, options) => {
         starts.push(options.prompt ?? '');
@@ -367,6 +492,7 @@ describe('Messaging delivery receipts', () => {
       store,
       delivery,
       states,
+      maxPendingMessagesPerRecipient: 5,
       sessions: () => sessions,
       startSession: async () => {
         starts += 1;
@@ -400,6 +526,7 @@ describe('Messaging delivery receipts', () => {
       store,
       delivery,
       states,
+      maxPendingMessagesPerRecipient: 5,
       sessions: () => sessions,
       startSession: async () => {
         starts += 1;
@@ -409,6 +536,7 @@ describe('Messaging delivery receipts', () => {
     });
 
     const trigger = await messaging.sendToSession('alpha', 'beta', 'start trigger');
+    if (!isMessageReceipt(trigger)) throw new Error('Expected start trigger to be accepted.');
     expect(trigger).toMatchObject({ messageId: 2, status: 'queued' });
     expect(await messaging.cancelMessage(trigger.messageId, 'alpha')).toBe('Message #2 cancelled.');
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -442,6 +570,7 @@ describe('Messaging delivery receipts', () => {
       store,
       delivery,
       states,
+      maxPendingMessagesPerRecipient: 5,
       sessions: () => sessions,
       startSession: async () => {
         starts += 1;
@@ -455,6 +584,7 @@ describe('Messaging delivery receipts', () => {
     });
 
     const trigger = await messaging.sendToSession('alpha', 'beta', 'start trigger', 'trigger-key');
+    if (!isMessageReceipt(trigger)) throw new Error('Expected start trigger to be accepted.');
     const duplicate = messaging.sendToSession('alpha', 'beta', 'duplicate', 'trigger-key');
     await secondStarted;
     const cancellation = messaging.cancelMessage(trigger.messageId, 'alpha');
@@ -493,6 +623,7 @@ describe('Messaging delivery receipts', () => {
       store,
       delivery,
       states,
+      maxPendingMessagesPerRecipient: 5,
       sessions: () => sessions,
       startSession: async () => {
         starts += 1;
@@ -506,6 +637,7 @@ describe('Messaging delivery receipts', () => {
     });
 
     const trigger = await messaging.sendToSession('alpha', 'beta', 'start trigger', 'trigger-key');
+    if (!isMessageReceipt(trigger)) throw new Error('Expected start trigger to be accepted.');
     const firstDuplicate = messaging.sendToSession('alpha', 'beta', 'first duplicate', 'trigger-key');
     await secondStarted;
     const cancellation = messaging.cancelMessage(trigger.messageId, 'alpha');
@@ -693,11 +825,13 @@ describe('Messaging delivery receipts', () => {
     delivery: DeliveryQueue,
     events?: FakeEventPublisher,
     pausedNotice?: (codename: string) => string | undefined,
+    maxPendingMessagesPerRecipient = 5,
   ): Messaging {
     return new Messaging({
       store,
       delivery,
       states,
+      maxPendingMessagesPerRecipient,
       sessions: () => sessions,
       startSession: async () => 'started',
       pausedNotice,

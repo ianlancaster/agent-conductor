@@ -81,6 +81,7 @@ beforeEach(() => {
     store,
     delivery,
     states,
+    maxPendingMessagesPerRecipient: 5,
     sessions: () => sessions,
     startSession: (c, o) => lifecycle.start(c, o),
   });
@@ -388,6 +389,27 @@ describe('surface contract', () => {
       'Message #1 was not found or is not part of your conversation. Receipt ids are fleet-wide; this response does not indicate a ledger gap.',
     );
     await expect(tool('get_message_status').handler({ messageId: 1.5 }, 'alpha')).rejects.toThrow(/positive integer/);
+  });
+
+  it('returns a structured queue_full result without minting a rejected receipt', async () => {
+    await tool('start_session').handler({ codename: 'beta' }, 'alpha');
+    runtime.inputState = 'draft';
+    for (let index = 1; index <= 5; index += 1) {
+      await tool('send_to_session').handler({ codename: 'beta', message: `pending-${String(index)}` }, 'alpha');
+    }
+
+    await expect(
+      tool('send_to_session').handler({ codename: 'beta', message: 'must not persist' }, 'alpha'),
+    ).resolves.toEqual({
+      classification: 'queue_full',
+      recipient: 'beta',
+      capacity: 5,
+      pendingCount: 5,
+      message:
+        'Message queue for beta is full: 5 pending messages at capacity 5. Capacity must be released by delivery or cancellation before a new send can be accepted.',
+    });
+    expect(store.getPendingDeliveries('beta')).toHaveLength(5);
+    expect(tool('send_to_session').description).toContain('queue_full');
   });
 
   it('cancels only pending outbound receipts', async () => {

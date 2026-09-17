@@ -66,6 +66,7 @@ describe('ensureFleetScaffold', () => {
 
     expect(text).toContain('heartbeatIntervalSeconds: 30');
     expect(text).toContain('maxTagLength: 50');
+    expect(text).toContain('maxPendingMessagesPerRecipient: 5');
     expect(text).toContain('auto: false');
     expect(text).toContain('events:\n  journal:\n    enabled: true');
     expect(text).toContain('integrations: []');

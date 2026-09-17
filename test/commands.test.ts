@@ -114,6 +114,7 @@ beforeEach(() => {
     store,
     delivery,
     states,
+    maxPendingMessagesPerRecipient: 5,
     sessions: () => sessions,
     startSession: (codename, opts) => lifecycle.start(codename, opts),
     events,
@@ -401,6 +402,21 @@ describe('conversation commands', () => {
       status: 'delivered',
       inMemoryPendingForRecipient: 0,
     });
+  });
+
+  it('renders queue_full backpressure for slash and free-text operator sends', async () => {
+    await router.route('/start alpha');
+    runtime.inputState = 'draft';
+    for (let index = 1; index <= 5; index += 1) {
+      expect(await router.route(`/tell alpha pending-${String(index)}`)).toContain('Queued message');
+    }
+
+    const expected =
+      'Message queue for alpha is full: 5 pending messages at capacity 5. Capacity must be released by delivery or cancellation before a new send can be accepted.';
+    expect(await router.route('/tell alpha rejected')).toBe(expected);
+    expect(await router.route('/talk alpha')).toContain('Talking to alpha');
+    expect(await router.route('also rejected')).toBe(expected);
+    expect(store.getPendingDeliveries('alpha')).toHaveLength(5);
   });
 
   it('talk + free text routes to the talk target', async () => {

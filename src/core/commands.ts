@@ -1,5 +1,5 @@
 import type { ConductorOperations, OperationActor } from './operations.js';
-import { isMessageReceipt, renderMessageReceipt } from './messaging.js';
+import { isMessageSendResult, renderMessageSendResult } from './messaging.js';
 import type { Placement } from './types.js';
 
 /** Tokenize a command line, honoring double quotes. */
@@ -15,7 +15,7 @@ export type CommandGroup = 'Sessions' | 'Conversation' | 'Modes' | 'Lifecycle' |
 
 function renderOperationResult(result: Awaited<ReturnType<ConductorOperations['invoke']>>): string {
   if (typeof result === 'string') return result;
-  return isMessageReceipt(result) ? renderMessageReceipt(result) : JSON.stringify(result, null, 2);
+  return isMessageSendResult(result) ? renderMessageSendResult(result) : JSON.stringify(result, null, 2);
 }
 
 export interface OperatorCommandDefinition {

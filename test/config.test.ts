@@ -53,6 +53,7 @@ describe('loadSupervisorConfig', () => {
     expect(config.supervisor.maxTagLength).toBe(DEFAULT_MAX_TAG_LENGTH);
     expect(config.mcp.host).toBe('127.0.0.1');
     expect(config.health.captureLines).toBe(40);
+    expect(config.messaging.maxPendingMessagesPerRecipient).toBe(5);
     expect(config.messaging.queueDrainMs).toBe(2000);
     expect(config.defaults.auto).toBe(false);
     expect(config.defaults.runtime).toBe('claude-code');
@@ -83,6 +84,19 @@ describe('loadSupervisorConfig', () => {
     expect(config.events.journal.enabled).toBe(true);
     expect(config.integrations).toEqual([]);
     expect(config.federation).toBeUndefined();
+  });
+
+  it('accepts a positive integer pending-message capacity and rejects invalid values', () => {
+    writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'messaging:\n  maxPendingMessagesPerRecipient: 12\n');
+    expect(loadSupervisorConfig(baseDir).messaging.maxPendingMessagesPerRecipient).toBe(12);
+
+    for (const value of ['0', '-1', '1.5']) {
+      writeFileSync(
+        join(baseDir, 'config', 'supervisor.yaml'),
+        `messaging:\n  maxPendingMessagesPerRecipient: ${value}\n`,
+      );
+      expect(() => loadSupervisorConfig(baseDir)).toThrow(/maxPendingMessagesPerRecipient/);
+    }
   });
 
   it('loads minimal explicit and wildcard federation configuration', () => {

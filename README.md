@@ -134,12 +134,15 @@ most recent conversation. Explicit IDs are opaque, runtime-specific values. A re
 the original codename and runtime; `continue all` cannot accept one.
 
 Messages sent with `/tell` or the agent-facing `send_to_session` operation are signed with
-mechanical sender identity and return observable delivery receipts. `/type` is intentionally
-different: it writes raw terminal input for prompts and slash commands, bypasses the
-protected delivery queue, and can overwrite operator typing. Use it only for deliberate
-terminal control. Every queued receipt records why it could not run, including when it is waiting
-behind an earlier FIFO message, and recipient activation prompts an immediate retry in addition to
-the periodic drain.
+mechanical sender identity and return observable delivery receipts. Each recipient accepts at most
+`messaging.maxPendingMessagesPerRecipient` durable pending deliveries (default `5`). A send beyond
+that limit returns a structured `queue_full` result with the recipient, capacity, and pending count;
+it creates no receipt and writes nothing to the pane. Capacity must be released by delivery or
+cancellation before another send can be accepted. `/type` is intentionally different: it writes raw
+terminal input for prompts and slash commands, bypasses the protected delivery queue, and can
+overwrite operator typing. Use it only for deliberate terminal control. Every queued receipt records
+why it could not run, including when it is waiting behind an earlier FIFO message, and recipient
+activation prompts an immediate retry in addition to the periodic drain.
 
 ## Status and observability
 
@@ -412,7 +415,15 @@ injects a high-visibility pause notice with the pause start, suspended automatio
 action. A paused session may explicitly resume itself; it still cannot pause, stop, or restart
 itself.
 
-Session-originated direct messages and broadcasts are persisted per recipient before delivery. A paused recipient acknowledges them as queued, remains undisturbed, and receives them in durable order after resume or its next start. Operator messages intentionally bypass that pause while retaining composer protection. Raw terminal input remains an explicit escape hatch outside these guarantees.
+Session-originated direct messages, operator-to-session messages, integration messages, and
+per-recipient broadcast deliveries share the configured pending limit and durable FIFO ledger. A
+paused recipient acknowledges accepted work as queued, remains undisturbed, and receives it in
+durable order after resume or its next start. A broadcast can be accepted for recipients with room
+while explicitly reporting `queue_full` for others. Operator messages intentionally bypass pause,
+but not capacity or composer protection. Existing queues above a newly configured limit are
+preserved across restart; new admission remains blocked until the pending count falls below the
+limit. Raw terminal input remains an explicit escape hatch outside these guarantees. Scheduler and
+sentinel prompts remain separate ephemeral, non-receipted delivery paths.
 
 The stock CLI can load an explicit trusted local ESM file during foreground startup:
 

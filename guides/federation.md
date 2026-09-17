@@ -99,6 +99,14 @@ so keep that field and pass it to `get_message_status` or `cancel_message`:
 get_message_status({ "fleet": "backend", "messageId": 42 })
 ```
 
+A remote recipient enforces its own fleet-wide
+`messaging.maxPendingMessagesPerRecipient` limit. When it is full, `send_to_session` returns the
+same structured `queue_full` result as a local send, plus `fleet`; it includes recipient, capacity,
+and pending count but no receipt ID or message content. The rejected message was not accepted.
+Capacity must be released on the destination before a new send can be accepted; do not poll or
+automatically retry. Remote broadcasts admit recipients independently and name any full recipients
+in their summary.
+
 Unknown, stopped, incompatible, or otherwise unavailable fleets fail explicitly. A failed remote
 lookup never falls back to a same-named local session.
 

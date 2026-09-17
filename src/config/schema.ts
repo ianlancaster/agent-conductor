@@ -272,6 +272,8 @@ export const supervisorConfigSchema = z
       .default({}),
     messaging: z
       .object({
+        /** Maximum durable pending deliveries accepted for any one recipient. */
+        maxPendingMessagesPerRecipient: z.number().int().positive().default(5),
         queueDrainMs: z.number().int().positive().default(2_000),
         /** @deprecated Retained for config compatibility; occupied input is never force-delivered over. */
         queueMaxAgeMs: z.number().int().positive().default(60_000),
