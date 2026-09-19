@@ -3,7 +3,8 @@
 Agent Conductor can register two optional runtime names over the native CLI integrations:
 `opencodex` (Codex CLI) and `opencodex-claude` (Claude Code CLI). The proxy handles model requests;
 Conductor still owns session identity, hooks, health, protected messaging, and terminal panes. It
-does not install, configure, start, or authenticate the proxy. The existing `codex` and
+does not install, configure, or authenticate the proxy. An optional operator-supplied executable
+can ensure the proxy is ready before each launch. The existing `codex` and
 `claude-code` runtime names are unchanged.
 
 ## Prerequisites and configuration
@@ -25,10 +26,18 @@ runtimes:
   openCodex:
     enabled: true
     proxyOrigin: http://127.0.0.1:10100
+    proxyEnsureCommand: null
     claudeCodeEnabled: false
 ```
 
-`proxyOrigin` is required when enabled and accepts only a plain HTTP loopback origin. The Codex
+`proxyOrigin` is required when enabled and accepts only a plain HTTP loopback origin. The optional
+`proxyEnsureCommand` is an absolute path to a trusted, operator-owned executable. Conductor runs
+it before the proxy health check on every start or continuation; a nonzero exit prevents the CLI
+from launching. A small fleet-owned wrapper can read `VERCEL_AI_GATEWAY_TOKEN` from the fleet's
+private environment, run OpenCodex's ensure command with isolated homes, and fail closed when the
+key is absent. The token alone does not activate a provider or overwrite an existing OpenCodex
+configuration: provider setup and proxy ownership remain explicit. Do not put the token or a
+shell command string in YAML. The Codex
 profile connects to its `/v1` Responses endpoint; the Claude profile uses its Anthropic-compatible
 endpoint. The proxy port must match the separately running service. This setting is read at
 Conductor startup, so run `conductor validate` and arrange a deliberate restart before selecting
@@ -68,6 +77,12 @@ loopback `ANTHROPIC_BASE_URL`, a non-secret gateway token placeholder, and gatew
 It clears inherited Anthropic provider and model variables before launch. It does not invoke
 `ocx claude`, because [that command can intentionally fall back to native Claude](https://github.com/lidge-jun/opencodex/blob/main/docs-site/src/content/docs/guides/claude-code.md#native-fallback-when-claude-routing-is-off).
 
+The bundled Claude profile keeps its folder-trust record under this Conductor instance's data
+directory rather than changing the user's ordinary Claude trust record. For a separate agent
+roster and history, set `runtimes.claudeCode.env.CLAUDE_CONFIG_DIR` to a dedicated directory and
+point OpenCodex agent synchronization at the same directory. Do not assume the inherited native
+Claude configuration contains the required routed agents.
+
 OpenCodex's Claude route has its own enable switch. If that route is off, the proxy can reject
 `/v1/messages` even while `/healthz` is healthy. Treat this as an explicit acceptance failure; do
 not move the session to native Claude credentials automatically. Direct proxy environment behavior
@@ -76,12 +91,20 @@ still needs a live check against your installed Claude Code and OpenCodex versio
 ## Native children and limitations
 
 Codex documents that native subagents inherit their parent's model and reasoning settings unless
-overridden. Verify that an explicit child model actually routes through the same OpenCodex proxy
-with a real bounded turn; offline Conductor tests do not prove provider inheritance. A native
-child shares the parent's Conductor identity, so it cannot receive `send_to_session` independently. Spawn another
-Conductor session for an independently addressable worker. See [Codex subagent
+overridden. Select a proxy catalog model explicitly for a different child, and use a non-inheriting
+fork where that Codex version requires it. Verify the child route in OpenCodex's usage records,
+not only from its self-reported model. A native child shares the parent's Conductor identity, so
+it cannot receive `send_to_session` independently. Spawn another Conductor session for an
+independently addressable worker. See [Codex subagent
 configuration](https://learn.chatgpt.com/docs/agent-configuration/subagents) and [custom model
 providers](https://learn.chatgpt.com/docs/config-file/config-advanced#custom-model-providers).
+
+For Claude Code, OpenCodex can generate `ocx-*` custom agent definitions from its
+`subagentModels` roster into the isolated `CLAUDE_CONFIG_DIR`. Select the generated agent type,
+not a general/default agent, for an explicitly routed child. Some Claude Code versions expose
+only a tier alias such as `haiku` in the Agent tool's `model` argument; OpenCodex's generated
+`ocx-route` directive controls the proxy route. A displayed tier alias is not routing evidence.
+Check the proxy's recorded requested and selected models and successful upstream response.
 
 Provider compatibility varies: a catalog entry alone does not establish reasoning effort,
 tool-call, subagent, compaction, or message-delivery success. Use the

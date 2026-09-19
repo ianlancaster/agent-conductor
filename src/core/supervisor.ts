@@ -224,6 +224,7 @@ export class Supervisor {
             sessionDataDir: join(dataDir, 'sessions'),
           },
           proxyOrigin,
+          this.config.runtimes.openCodex.proxyEnsureCommand,
         ),
       );
       if (this.config.runtimes.openCodex.claudeCodeEnabled) {
@@ -234,9 +235,11 @@ export class Supervisor {
               config: this.config.runtimes.claudeCode,
               protocolPath,
               protocolNotice,
-              claudeJsonPath: options.claudeJsonPath,
+              // Keep proxy-backed folder trust separate from ordinary Claude Code.
+              claudeJsonPath: options.claudeJsonPath ?? join(dataDir, 'opencodex-claude.json'),
             },
             proxyOrigin,
+            this.config.runtimes.openCodex.proxyEnsureCommand,
           ),
         );
       }

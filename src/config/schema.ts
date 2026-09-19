@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
 export const DEFAULT_CLAUDE_CODE_MODELS = [
@@ -449,6 +450,14 @@ export const supervisorConfigSchema = z
                   url.hash === ''
                 );
               }, 'proxyOrigin must be an HTTP loopback origin without credentials or a path')
+              .nullable()
+              .default(null),
+            /** Optional owner-configured executable that makes the proxy ready before launch. */
+            proxyEnsureCommand: z
+              .string()
+              .trim()
+              .min(1)
+              .refine((value) => isAbsolute(value) && !/[\r\n]/u.test(value), 'must be an absolute executable path')
               .nullable()
               .default(null),
             /** Claude Code proxy routing needs separate operator qualification. */

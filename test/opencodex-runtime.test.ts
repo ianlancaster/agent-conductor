@@ -61,6 +61,7 @@ describe('built-in OpenCodex profiles', () => {
     expect(supervisorConfigSchema.parse({}).runtimes.openCodex).toEqual({
       enabled: false,
       proxyOrigin: null,
+      proxyEnsureCommand: null,
       claudeCodeEnabled: false,
     });
     expect(() => supervisorConfigSchema.parse({ runtimes: { openCodex: { enabled: true } } })).toThrow();
@@ -73,6 +74,13 @@ describe('built-in OpenCodex profiles', () => {
       'http://127.0.0.1:10100/v1',
     ]) {
       expect(() => config(true, false, proxyOrigin)).toThrow();
+    }
+    for (const proxyEnsureCommand of ['relative/ensure.sh', '/tmp/bad\ncommand']) {
+      expect(() =>
+        supervisorConfigSchema.parse({
+          runtimes: { openCodex: { enabled: true, proxyOrigin: 'http://127.0.0.1:10100', proxyEnsureCommand } },
+        }),
+      ).toThrow();
     }
     const adapter = { name: 'opencodex', module: './runtime.mjs' };
     expect(supervisorConfigSchema.parse({ runtimeAdapters: [adapter] }).runtimeAdapters[0]?.name).toBe('opencodex');
@@ -156,6 +164,49 @@ describe('built-in OpenCodex profiles', () => {
     server = undefined;
     await expect(execFileAsync('sh', ['-c', proxyCommand])).rejects.toThrow();
     expect(existsSync(marker)).toBe(false);
+  });
+
+  it('runs an explicitly configured proxy ensure command before launch and fails closed', async () => {
+    const origin = await healthyProxy();
+    const marker = join(dir, 'codex-launched.txt');
+    const binary = join(dir, 'fake-codex');
+    const ensure = join(dir, 'ensure-proxy.sh');
+    writeFileSync(binary, `#!/bin/sh\nprintf 'launched' > '${marker}'\n`, { mode: 0o700 });
+    writeFileSync(ensure, '#!/bin/sh\nexit 12\n', { mode: 0o700 });
+    const settings = { ...config().runtimes.codex, binary };
+    const proxy = new OpenCodexRuntime({ config: settings, baseDir: dir }, origin, ensure);
+    const command = proxy.buildLaunchCommand(session('opencodex', 'provider/model-id'), identity(), {});
+    expect(command).toContain(`'${ensure}' && curl`);
+    await expect(execFileAsync('sh', ['-c', command])).rejects.toThrow();
+    expect(existsSync(marker)).toBe(false);
+
+    writeFileSync(ensure, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    await execFileAsync('sh', ['-c', command]);
+    expect(readFileSync(marker, 'utf8')).toBe('launched');
+  });
+
+  it('keeps proxy-backed Claude folder trust in the fleet data directory', async () => {
+    const configDir = join(dir, 'config');
+    mkdirSync(join(configDir, 'sessions'), { recursive: true });
+    writeFileSync(
+      join(configDir, 'supervisor.yaml'),
+      'terminal:\n  backend: tmux\nruntimes:\n  openCodex:\n    enabled: true\n    proxyOrigin: http://127.0.0.1:10100\n    claudeCodeEnabled: true\n',
+    );
+    writeFileSync(
+      join(configDir, 'sessions', 'worker.yaml'),
+      `codename: worker\nrepo: ${dir}\nruntime: opencodex-claude\nmodel: provider/model-id\n`,
+    );
+    supervisor = new Supervisor(dir, {
+      terminalBackend: new FakeTerminalBackend(),
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    expect(await supervisor.command('/start worker')).toContain('started');
+    const trustPath = join(dir, 'data', 'opencodex-claude.json');
+    const trust = JSON.parse(readFileSync(trustPath, 'utf8')) as {
+      projects: Record<string, { hasTrustDialogAccepted: boolean }>;
+    };
+    expect(trust.projects[dir]?.hasTrustDialogAccepted).toBe(true);
   });
 
   it('registers optional names only after a supervisor restart and injects the enabled notice', async () => {

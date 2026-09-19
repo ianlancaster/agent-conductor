@@ -12,8 +12,9 @@ function requiredModel(session: SessionConfig): void {
   }
 }
 
-function proxyHealthCommand(origin: string): string {
-  return `curl -fsS --max-time 2 --output /dev/null ${shellQuote(`${origin}/healthz`)}`;
+function proxyReadyCommand(origin: string, ensureCommand: string | null): string {
+  const health = `curl -fsS --max-time 2 --output /dev/null ${shellQuote(`${origin}/healthz`)}`;
+  return ensureCommand === null ? health : `${shellQuote(ensureCommand)} && ${health}`;
 }
 
 /** A separate, opt-in name over the native Codex lifecycle and pane integration. */
@@ -23,13 +24,14 @@ export class OpenCodexRuntime extends CodexRuntime {
   constructor(
     options: CodexRuntimeOptions,
     private readonly proxyOrigin: string,
+    private readonly proxyEnsureCommand: string | null = null,
   ) {
     super(options);
   }
 
   override buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, options: LaunchOptions): string {
     requiredModel(session);
-    return `${proxyHealthCommand(this.proxyOrigin)} && ${super.buildLaunchCommand(session, identity, options)}`;
+    return `${proxyReadyCommand(this.proxyOrigin, this.proxyEnsureCommand)} && ${super.buildLaunchCommand(session, identity, options)}`;
   }
 
   protected override additionalConfigOverrides(_session: SessionConfig): string[] {
@@ -69,6 +71,7 @@ export class OpenCodexClaudeRuntime extends ClaudeCodeRuntime {
   constructor(
     options: ClaudeCodeRuntimeOptions,
     private readonly proxyOrigin: string,
+    private readonly proxyEnsureCommand: string | null = null,
   ) {
     super({
       ...options,
@@ -92,7 +95,7 @@ export class OpenCodexClaudeRuntime extends ClaudeCodeRuntime {
 
   override buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, options: LaunchOptions): string {
     requiredModel(session);
-    return `unset ${CLAUDE_PROVIDER_ENV.join(' ')} && ${proxyHealthCommand(this.proxyOrigin)} && ${super.buildLaunchCommand(session, identity, options)}`;
+    return `unset ${CLAUDE_PROVIDER_ENV.join(' ')} && ${proxyReadyCommand(this.proxyOrigin, this.proxyEnsureCommand)} && ${super.buildLaunchCommand(session, identity, options)}`;
   }
 }
 

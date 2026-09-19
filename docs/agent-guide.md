@@ -1414,6 +1414,8 @@ manual verification steps are in `guides/opencodex.md`.
 model IDs come from the proxy's current catalog, not a Conductor allowlist. The ordinary `codex`
 and `claude-code` names retain their existing behavior. Proxy credentials belong to the proxy's
 own secret mechanism, never session or supervisor YAML, Conductor messages, or generated prompts.
+An optional operator-configured `proxyEnsureCommand` can prepare the proxy before the health check;
+it is not permission to invent a shell command or move credentials into YAML.
 
 Use a disposable session and a small assigned task for first acceptance. Check proxy health and
 model availability before starting it. A failed proxy check prevents the CLI launch; a disabled
@@ -1425,4 +1427,7 @@ Native Codex subagents share their parent's Conductor identity. Codex documents 
 settings, but verify proxy routing and an explicit child model in a live bounded task; the
 child is not an independently addressable Conductor session. Use a new Conductor session when
 independent messaging is needed. Do not infer child routing, tools, effort, or compaction support
-from a model catalog entry; verify the chosen combination in a live bounded task.
+from a model catalog entry or a child's model self-report; verify the chosen combination against
+the proxy's recorded route in a live bounded task. For Claude Code, select an OpenCodex-generated
+`ocx-*` agent type from its configured roster for a different routed child; a displayed tier alias
+such as `haiku` can be only the Agent tool's placeholder, not the selected provider model.

@@ -8,7 +8,8 @@ do not infer success from a healthy proxy or catalog listing.
 1. Confirm the separate proxy is bound to loopback and healthy, and inspect its live model
    catalog. Confirm the model under test is available. Keep credentials inside the proxy's secret
    mechanism. Do not print their values.
-2. Enable `runtimes.openCodex.enabled`, set its exact `proxyOrigin`, run `conductor validate`,
+2. Enable `runtimes.openCodex.enabled`, set its exact `proxyOrigin`, optionally configure an
+   absolute `proxyEnsureCommand` for an operator-owned startup wrapper, run `conductor validate`,
    and restart only the intended Conductor instance. Call `get_conductor_docs` without a topic:
    `opencodex` should appear and `opencodex-claude` should not appear unless its separate flag
    was enabled. Read the `opencodex` topic and inspect the live spawn runtime choices.
@@ -30,7 +31,9 @@ do not infer success from a healthy proxy or catalog listing.
    disposable session with an explicit proxy model, including with an inherited native
    `ANTHROPIC_API_KEY` or Claude login in the launching environment. Confirm the proxy records
    the request and no native provider receives it. Check a completed turn, Conductor messaging,
-   stop/continue, and proxy-down failure. A 403 from the proxy's Claude route is a failed gate.
+   stop/continue, and proxy-down failure. Test one generated `ocx-*` child type with a different
+   model, verifying the proxy's selected model rather than trusting the Agent tool's tier alias.
+   A 403 from the proxy's Claude route is a failed gate.
 7. Stop disposable sessions, preserve any work worth keeping, set the feature flags back to the
    intended state, and restart deliberately if changing them. Record the Conductor version,
    proxy and CLI versions, model IDs, route evidence, and each pass/failure.
