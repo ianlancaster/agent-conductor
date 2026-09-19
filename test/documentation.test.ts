@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   CONDUCTOR_DOC_ALIASES,
   CONDUCTOR_DOC_TOPICS,
+  OPTIONAL_CONDUCTOR_DOC_TOPICS,
   ConductorDocumentation,
   parseConductorDocumentation,
 } from '../src/core/documentation.js';
@@ -20,7 +21,7 @@ afterEach(() => {
   for (const path of scratch.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-function documentation(): ConductorDocumentation {
+function documentation(openCodexEnabled = false): ConductorDocumentation {
   return new ConductorDocumentation({
     referencePath,
     fleetDir: '/fleets/example',
@@ -42,13 +43,14 @@ function documentation(): ConductorDocumentation {
       fleetRunbooksDir: '/fleets/example/.conductor/runbooks',
       builtInDir,
     }),
+    openCodexEnabled,
   });
 }
 
 describe('agent documentation', () => {
   it('parses every declared lazy topic exactly once with a visible heading', () => {
     const parsed = new Map([...parseConductorDocumentation(readFileSync(referencePath, 'utf8'))]);
-    expect([...parsed.keys()]).toEqual(CONDUCTOR_DOC_TOPICS);
+    expect([...parsed.keys()]).toEqual([...CONDUCTOR_DOC_TOPICS, ...OPTIONAL_CONDUCTOR_DOC_TOPICS]);
     for (const topic of parsed.values()) {
       expect(topic.title.length).toBeGreaterThan(0);
       expect(topic.content).toContain(`## ${topic.title}`);
@@ -72,6 +74,21 @@ describe('agent documentation', () => {
       runbooksDir: '/fleets/example/.conductor/runbooks',
     });
     expect(result.safety).toContain('Never print');
+  });
+
+  it('hides OpenCodex guidance when off and exposes it lazily only when configured', async () => {
+    const disabled = documentation();
+    const disabledIndex = JSON.parse(await disabled.read()) as { topics: { name: string }[] };
+    expect(disabledIndex.topics.map(({ name }) => name)).not.toContain('opencodex');
+    await expect(disabled.read('opencodex')).rejects.toThrow("Unknown Conductor documentation topic 'opencodex'");
+
+    const enabled = documentation(true);
+    const index = JSON.parse(await enabled.read()) as { topics: { name: string }[] };
+    expect(index.topics.map(({ name }) => name)).toContain('opencodex');
+    const topic = JSON.parse(await enabled.read('opencodex')) as { content: string };
+    expect(topic.content).toContain('`opencodex-claude`');
+    expect(topic.content).toContain('Proxy credentials');
+    expect(topic.content).not.toContain('FLEET_ULTRA');
   });
 
   it('documents static and fresh continuity layers with their privacy and failure boundaries', async () => {

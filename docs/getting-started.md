@@ -412,6 +412,10 @@ primitive, not an approval or execution queue.
   suppress the local restoration output. Repository instruction files still load through Codex normally; Conductor does
   not edit the repository or its `.gitignore`. The session also receives a mechanically scoped
   Conductor MCP endpoint and lifecycle notify hook.
+- **OpenCodex proxy sessions**: enable the optional `runtimes.openCodex` profile and select
+  `runtime: opencodex` with an explicit proxy model. The separate Claude Code profile is gated by
+  `claudeCodeEnabled`. Conductor does not start the proxy or hold its provider key. Follow the
+  [setup and manual acceptance guide](../guides/opencodex.md) before relying on either profile.
 
 ---
 

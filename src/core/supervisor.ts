@@ -22,6 +22,7 @@ import { ConductorMcpServer } from '../mcp/server.js';
 import { buildMcpTools } from '../mcp/tools.js';
 import { ClaudeCodeRuntime } from '../runtimes/claude-code/index.js';
 import { CodexRuntime } from '../runtimes/codex/index.js';
+import { OpenCodexClaudeRuntime, OpenCodexRuntime, openCodexProxyOrigin } from '../runtimes/opencodex/index.js';
 import type { SessionRuntime } from '../runtimes/types.js';
 import { Store } from '../store/index.js';
 import { ITermBackend } from '../terminals/iterm/index.js';
@@ -186,11 +187,17 @@ export class Supervisor {
             env: inheritedEnv,
           });
     const protocolPath = this.resolveProtocolPath();
+    const protocolNotice = this.config.runtimes.openCodex.enabled
+      ? `OpenCodex proxy harness is configured in this Conductor. Registered managed runtime names: opencodex${
+          this.config.runtimes.openCodex.claudeCodeEnabled ? ', opencodex-claude' : ''
+        }. Proxy readiness and model access require a live check. Call get_conductor_docs without a topic, then load the opencodex topic before use.`
+      : undefined;
     this.runtimes.set(
       'claude-code',
       new ClaudeCodeRuntime({
         config: this.config.runtimes.claudeCode,
         protocolPath,
+        protocolNotice,
         claudeJsonPath: options.claudeJsonPath,
       }),
     );
@@ -200,9 +207,40 @@ export class Supervisor {
         config: this.config.runtimes.codex,
         baseDir,
         protocolPath,
+        protocolNotice,
         sessionDataDir: join(dataDir, 'sessions'),
       }),
     );
+    if (this.config.runtimes.openCodex.enabled) {
+      const proxyOrigin = openCodexProxyOrigin(this.config.runtimes.openCodex);
+      this.runtimes.set(
+        'opencodex',
+        new OpenCodexRuntime(
+          {
+            config: this.config.runtimes.codex,
+            baseDir,
+            protocolPath,
+            protocolNotice,
+            sessionDataDir: join(dataDir, 'sessions'),
+          },
+          proxyOrigin,
+        ),
+      );
+      if (this.config.runtimes.openCodex.claudeCodeEnabled) {
+        this.runtimes.set(
+          'opencodex-claude',
+          new OpenCodexClaudeRuntime(
+            {
+              config: this.config.runtimes.claudeCode,
+              protocolPath,
+              protocolNotice,
+              claudeJsonPath: options.claudeJsonPath,
+            },
+            proxyOrigin,
+          ),
+        );
+      }
+    }
     const injectedRuntimeNames = new Set<string>();
     for (const runtime of options.runtimes ?? []) {
       const name = runtime.name.trim();
@@ -228,6 +266,7 @@ export class Supervisor {
       fleetDir: baseDir,
       fleetPaths,
       runbooks: this.runbooks,
+      openCodexEnabled: this.config.runtimes.openCodex.enabled,
     });
     this.store = new Store(join(dataDir, 'conductor.db'));
     const journalDegradedMarker = eventJournalDegradedPath(dataDir);
@@ -459,11 +498,15 @@ export class Supervisor {
       modelHints: {
         'claude-code': this.config.runtimes.claudeCode.availableModels,
         'codex': this.config.runtimes.codex.availableModels,
+        ...(this.config.runtimes.openCodex.enabled ? { opencodex: [] } : {}),
+        ...(this.config.runtimes.openCodex.claudeCodeEnabled ? { 'opencodex-claude': [] } : {}),
         ...Object.fromEntries([...injectedRuntimeNames].map((name) => [name, [] as string[]])),
       },
       effortHints: {
         'claude-code': this.config.runtimes.claudeCode.availableEfforts,
         'codex': this.config.runtimes.codex.availableEfforts,
+        ...(this.config.runtimes.openCodex.enabled ? { opencodex: [] } : {}),
+        ...(this.config.runtimes.openCodex.claudeCodeEnabled ? { 'opencodex-claude': [] } : {}),
         ...Object.fromEntries([...injectedRuntimeNames].map((name) => [name, [] as string[]])),
       },
       runtimeNames: [...this.runtimes.keys()].sort(),

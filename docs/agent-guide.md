@@ -1398,3 +1398,31 @@ make that built-in bundle's temporary `runbook-engineering-management-*` aliases
 For deeper operator onboarding, read `docs/getting-started.md`. For runbook authoring and sharing,
 read `guides/runbooks.md`. For service-specific problems, use the Telegram, Slack, or PR Shepherd
 guide.
+
+<!-- conductor-topic:opencodex -->
+
+## OpenCodex proxy-backed coding sessions
+
+This topic appears in `get_conductor_docs` only while `runtimes.openCodex.enabled` is true in the
+running supervisor. Read the live `spawn_session` and `start_session` runtime choices before acting:
+an edited YAML file does not register a runtime until Conductor restarts. The public setup and
+manual verification steps are in `guides/opencodex.md`.
+
+`opencodex` uses the native Codex CLI through a separately managed loopback proxy.
+`opencodex-claude` uses the native Claude Code CLI through that proxy, and is registered only when
+`runtimes.openCodex.claudeCodeEnabled` is also true. Both require an explicit session `model`;
+model IDs come from the proxy's current catalog, not a Conductor allowlist. The ordinary `codex`
+and `claude-code` names retain their existing behavior. Proxy credentials belong to the proxy's
+own secret mechanism, never session or supervisor YAML, Conductor messages, or generated prompts.
+
+Use a disposable session and a small assigned task for first acceptance. Check proxy health and
+model availability before starting it. A failed proxy check prevents the CLI launch; a disabled
+Claude route or unavailable model must be reported rather than silently moved to native billing.
+Confirm the actual model and route, a completed turn, `send_to_session` delivery and reply, and
+stop/continue recovery. A `queued` message receipt is not proof of delivery: inspect its status.
+
+Native Codex subagents share their parent's Conductor identity. Codex documents inherited model
+settings, but verify proxy routing and an explicit child model in a live bounded task; the
+child is not an independently addressable Conductor session. Use a new Conductor session when
+independent messaging is needed. Do not infer child routing, tools, effort, or compaction support
+from a model catalog entry; verify the chosen combination in a live bounded task.

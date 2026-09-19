@@ -7,6 +7,7 @@ import type { PaneActivityEvidence, RuntimeEvent } from '../../core/types.js';
 import { shellQuote } from '../../core/shell.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
 import {
+  appendProtocolNotice,
   prepareInstructionLayers,
   PROTOCOL_SNAPSHOT_NAME,
   SESSION_INSTRUCTIONS_SNAPSHOT_NAME,
@@ -39,6 +40,8 @@ export interface ClaudeCodeRuntimeOptions {
   config: ClaudeCodeConfig;
   /** Path to the conductor protocol prompt appended to every session's system prompt. */
   protocolPath?: string;
+  /** Optional fleet capability hint appended to the managed protocol. */
+  protocolNotice?: string;
   /** Override Claude's state path when embedding the runtime (primarily for isolated tests). */
   claudeJsonPath?: string;
 }
@@ -76,7 +79,7 @@ export async function seedFolderTrust(claudeJsonPath: string, repo: string): Pro
 }
 
 export class ClaudeCodeRuntime implements SessionRuntime {
-  readonly name = 'claude-code';
+  readonly name: string = 'claude-code';
   readonly capabilities: RuntimeCapabilities = {
     lifecycleEvents: true,
     targetedResume: true,
@@ -88,11 +91,13 @@ export class ClaudeCodeRuntime implements SessionRuntime {
 
   private readonly config: ClaudeCodeConfig;
   private readonly protocolPath: string | undefined;
+  private readonly protocolNotice: string | undefined;
   private readonly claudeJsonPath: string;
 
   constructor(opts: ClaudeCodeRuntimeOptions) {
     this.config = opts.config;
     this.protocolPath = opts.protocolPath;
+    this.protocolNotice = opts.protocolNotice;
     this.claudeJsonPath = opts.claudeJsonPath ?? join(homedir(), '.claude.json');
   }
 
@@ -102,10 +107,12 @@ export class ClaudeCodeRuntime implements SessionRuntime {
       session.continuityStateFile === undefined
         ? undefined
         : await prepareContinuityStateSource(session.continuityStateFile);
-    const protocolText =
+    const sourceProtocolText =
       this.protocolPath !== undefined && existsSync(this.protocolPath)
         ? await readFile(this.protocolPath, 'utf8')
         : undefined;
+    const protocolText =
+      sourceProtocolText === undefined ? undefined : appendProtocolNotice(sourceProtocolText, this.protocolNotice);
     await prepareInstructionLayers({
       configDir: identity.configDir,
       protocolText,

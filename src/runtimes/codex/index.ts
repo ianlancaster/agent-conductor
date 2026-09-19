@@ -5,7 +5,7 @@ import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import { runGit } from '../../core/git.js';
 import type { PaneActivityEvidence, RuntimeEvent } from '../../core/types.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
-import { prepareInstructionLayers, writeAtomicFile } from '../instructions.js';
+import { appendProtocolNotice, prepareInstructionLayers, writeAtomicFile } from '../instructions.js';
 import {
   cleanupContinuityReaderGenerations,
   parseContinuityRestorationEvent,
@@ -42,6 +42,8 @@ export interface CodexRuntimeOptions {
   baseDir: string;
   /** Path to the conductor protocol prompt inlined into the session's home instructions. */
   protocolPath?: string;
+  /** Optional fleet capability hint appended to the managed protocol. */
+  protocolNotice?: string;
   /** Fleet data/sessions directory, used to inspect this runtime's isolated rollout. */
   sessionDataDir?: string;
 }
@@ -303,7 +305,7 @@ function visibleInputBlock(capture: string): string | null {
  * guidance, then appends revocable session instructions followed by the mandatory protocol.
  */
 export class CodexRuntime implements SessionRuntime {
-  readonly name = 'codex';
+  readonly name: string = 'codex';
   readonly capabilities: RuntimeCapabilities = {
     lifecycleEvents: true,
     targetedResume: true,
@@ -316,6 +318,7 @@ export class CodexRuntime implements SessionRuntime {
   private readonly settings: CodexRuntimeSettings;
   private readonly baseDir: string;
   private readonly protocolPath: string | undefined;
+  private readonly protocolNotice: string | undefined;
   private readonly sessionDataDir: string | undefined;
   private readonly rolloutInputCache = new Map<string, CachedRolloutInputEvidence>();
 
@@ -323,6 +326,7 @@ export class CodexRuntime implements SessionRuntime {
     this.settings = opts.config;
     this.baseDir = opts.baseDir;
     this.protocolPath = opts.protocolPath;
+    this.protocolNotice = opts.protocolNotice;
     this.sessionDataDir = opts.sessionDataDir;
   }
 
@@ -422,7 +426,8 @@ export class CodexRuntime implements SessionRuntime {
       bareUi: this.settings.bareUi,
       effort,
     });
-    for (const override of overrides) parts.push('-c', shellQuote(override));
+    for (const override of [...overrides, ...this.additionalConfigOverrides(session)])
+      parts.push('-c', shellQuote(override));
 
     if (opts.bypassPermissions === true) parts.push('--dangerously-bypass-approvals-and-sandbox');
     if (this.settings.bypassHookTrust === true) parts.push('--dangerously-bypass-hook-trust');
@@ -436,6 +441,11 @@ export class CodexRuntime implements SessionRuntime {
 
     const codexHome = this.codexHomePath(identity);
     return `cd ${shellQuote(repo)} && export CODEX_HOME=${shellQuote(codexHome)} && ${parts.join(' ')}`;
+  }
+
+  /** Provider-specific launch overrides belong to a named runtime, never the shared Codex home. */
+  protected additionalConfigOverrides(_session: SessionConfig): string[] {
+    return [];
   }
 
   /**
@@ -753,13 +763,13 @@ export class CodexRuntime implements SessionRuntime {
   }
 
   private async readProtocolText(): Promise<string> {
-    if (this.protocolPath === undefined) return PROTOCOL_PLACEHOLDER;
+    if (this.protocolPath === undefined) return appendProtocolNotice(PROTOCOL_PLACEHOLDER, this.protocolNotice);
     const text = await this.readIfExists(this.resolvePath(this.protocolPath));
     if (text === null) {
       log().warn('codex', `protocol file not found at ${this.protocolPath}; using placeholder`);
-      return PROTOCOL_PLACEHOLDER;
+      return appendProtocolNotice(PROTOCOL_PLACEHOLDER, this.protocolNotice);
     }
-    return text;
+    return appendProtocolNotice(text, this.protocolNotice);
   }
 
   /** Git's index is authoritative: a dirty/uncommitted file is still tracked. */

@@ -9,6 +9,11 @@ export const MAX_HOOK_CONTEXT_CHARACTERS = 10_000;
 export const PROTOCOL_SNAPSHOT_NAME = 'conductor-protocol.md';
 export const SESSION_INSTRUCTIONS_SNAPSHOT_NAME = 'session-instructions.md';
 
+/** Keep optional fleet capability hints in the managed protocol, including after compaction. */
+export function appendProtocolNotice(protocol: string, notice?: string): string {
+  return notice === undefined ? protocol : `${protocol.trimEnd()}\n\n${notice.trim()}\n`;
+}
+
 export interface PreparedInstructionLayer {
   content: string;
   path: string;

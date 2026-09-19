@@ -25,6 +25,7 @@ export const CONDUCTOR_DOC_TOPICS = [
   'event-subscribers',
   'troubleshooting',
 ] as const;
+export const OPTIONAL_CONDUCTOR_DOC_TOPICS = ['opencodex'] as const;
 
 export type ConductorDocTopic = (typeof CONDUCTOR_DOC_TOPICS)[number];
 
@@ -39,6 +40,8 @@ export interface ConductorDocumentationOptions {
   fleetDir: string;
   fleetPaths: FleetPaths;
   runbooks: RunbookRegistry;
+  /** Expose proxy-harness guidance only when the fleet enables that runtime. */
+  openCodexEnabled?: boolean;
 }
 
 const ENGINEERING_MANAGEMENT_ID = 'agent-conductor/engineering-management';
@@ -93,7 +96,10 @@ export class ConductorDocumentation {
       log().warn('runbooks', `${diagnostic.source} ${diagnostic.path}: ${diagnostic.message}`);
     }
     const runbookKeys = runbookSnapshot.runbooks.flatMap((runbook) => this.runbookKeys(runbook));
-    const availableTopics = [...CONDUCTOR_DOC_TOPICS, ...runbookKeys, ...Object.keys(CONDUCTOR_DOC_ALIASES)];
+    const coreTopics: readonly string[] = this.options.openCodexEnabled
+      ? [...CONDUCTOR_DOC_TOPICS, ...OPTIONAL_CONDUCTOR_DOC_TOPICS]
+      : CONDUCTOR_DOC_TOPICS;
+    const availableTopics = [...coreTopics, ...runbookKeys, ...Object.keys(CONDUCTOR_DOC_ALIASES)];
     const context = {
       fleetDir: this.options.fleetDir,
       supervisorConfig: this.options.fleetPaths.supervisorFile,
@@ -110,7 +116,7 @@ export class ConductorDocumentation {
           purpose:
             'Lazy reference for operating, composing, configuring, troubleshooting, and extending Agent Conductor.',
           usage: "Call get_conductor_docs again with one topic name. Load only the topics relevant to the user's task.",
-          topics: CONDUCTOR_DOC_TOPICS.map((name) => {
+          topics: coreTopics.map((name) => {
             const entry = parsed.get(name);
             return { name, title: entry?.title };
           }),
@@ -133,7 +139,7 @@ export class ConductorDocumentation {
       );
     }
 
-    const entry = parsed.get(topic);
+    const entry = coreTopics.includes(topic) ? parsed.get(topic) : undefined;
     if (entry !== undefined) {
       return JSON.stringify(
         {
@@ -201,8 +207,10 @@ export class ConductorDocumentation {
   }
 
   private assertComplete(parsed: Map<string, ParsedTopic>): void {
-    const missing = CONDUCTOR_DOC_TOPICS.filter((topic) => !parsed.has(topic));
-    const unknown = [...parsed.keys()].filter((topic) => !CONDUCTOR_DOC_TOPICS.includes(topic as ConductorDocTopic));
+    const allTopics: readonly string[] = [...CONDUCTOR_DOC_TOPICS, ...OPTIONAL_CONDUCTOR_DOC_TOPICS];
+    const required: readonly string[] = this.options.openCodexEnabled ? allTopics : CONDUCTOR_DOC_TOPICS;
+    const missing = required.filter((topic) => !parsed.has(topic));
+    const unknown = [...parsed.keys()].filter((topic) => !allTopics.includes(topic));
     if (missing.length > 0 || unknown.length > 0) {
       throw new Error(
         `Conductor documentation topic mismatch (missing: ${missing.join(', ') || 'none'}; unknown: ${

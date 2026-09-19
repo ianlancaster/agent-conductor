@@ -51,6 +51,18 @@ describe('configured runtime adapters', () => {
       supervisorConfigSchema.parse({ runtimeAdapters: [{ ...entry(), env: { TOKEN: 'synthetic' } }] }),
     ).toThrow();
   });
+  it('keeps an existing external opencodex adapter valid until the built-in profile is enabled', async () => {
+    file();
+    const external = entry('./adapter.mjs', 'opencodex');
+    expect(resolveConfiguredRuntimeAdapters(dir, [external])).toHaveLength(1);
+    expect((await loadConfiguredRuntimeAdapters(dir, [external], host()))[0]?.name).toBe('opencodex');
+    expect(() =>
+      supervisorConfigSchema.parse({
+        runtimeAdapters: [external],
+        runtimes: { openCodex: { enabled: true, proxyOrigin: 'http://127.0.0.1:10100' } },
+      }),
+    ).toThrow(/conflicts with the enabled built-in runtime/u);
+  });
   it('validate and doctor inspect files without executing imports or factories', async () => {
     const marker = join(dir, 'executed');
     file(`import{writeFileSync}from'node:fs';writeFileSync(${JSON.stringify(marker)},'bad');throw Error('bad')`);

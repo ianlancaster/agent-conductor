@@ -429,6 +429,49 @@ export const supervisorConfigSchema = z
           })
           .strict()
           .default({}),
+        openCodex: z
+          .object({
+            /** Register the optional proxy-backed Codex runtime. */
+            enabled: z.boolean().default(false),
+            /** Loopback origin of a separately managed OpenCodex-compatible proxy. */
+            proxyOrigin: z
+              .string()
+              .url()
+              .refine((value) => {
+                const url = new URL(value);
+                return (
+                  url.protocol === 'http:' &&
+                  ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) &&
+                  url.pathname === '/' &&
+                  url.username === '' &&
+                  url.password === '' &&
+                  url.search === '' &&
+                  url.hash === ''
+                );
+              }, 'proxyOrigin must be an HTTP loopback origin without credentials or a path')
+              .nullable()
+              .default(null),
+            /** Claude Code proxy routing needs separate operator qualification. */
+            claudeCodeEnabled: z.boolean().default(false),
+          })
+          .strict()
+          .superRefine((value, context) => {
+            if (value.enabled && value.proxyOrigin === null) {
+              context.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['proxyOrigin'],
+                message: 'is required when enabled',
+              });
+            }
+            if (value.claudeCodeEnabled && !value.enabled) {
+              context.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['claudeCodeEnabled'],
+                message: 'requires enabled: true',
+              });
+            }
+          })
+          .default({}),
       })
       .strict()
       .default({}),
@@ -451,7 +494,22 @@ export const supervisorConfigSchema = z
       .strict()
       .default({}),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const reserved = [
+      ...(value.runtimes.openCodex.enabled ? ['opencodex'] : []),
+      ...(value.runtimes.openCodex.claudeCodeEnabled ? ['opencodex-claude'] : []),
+    ];
+    for (const name of reserved) {
+      if (value.runtimeAdapters.some((adapter) => adapter.name === name)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['runtimeAdapters'],
+          message: `configured adapter '${name}' conflicts with the enabled built-in runtime; remove that adapter before enabling the built-in profile`,
+        });
+      }
+    }
+  });
 
 export type ScheduleEntry = z.infer<typeof scheduleEntrySchema>;
 export type RuntimeName = z.infer<typeof runtimeSchema>;

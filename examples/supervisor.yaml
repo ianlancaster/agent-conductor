@@ -171,6 +171,10 @@ runtimes:
     # Managed launches trust hooks by default so they do not stop for review. This trusts EVERY hook Codex
     # discovers from the shared config, repository, and plugins; set false to require /hooks review instead.
     bypassHookTrust: true
+  openCodex:
+    enabled: false # opt in to the built-in OpenCodex-backed Codex runtime name
+    proxyOrigin: null # when enabled, e.g. http://127.0.0.1:10100 (loopback only; no key)
+    claudeCodeEnabled: false # separately opt in after qualifying Claude Code proxy routing
 
 channels:
   telegram:
