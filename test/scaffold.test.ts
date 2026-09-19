@@ -74,7 +74,7 @@ describe('ensureFleetScaffold', () => {
     expect(text).toContain('slack:\n    enabled: false');
     expect(text).toContain('bypassHookTrust: true');
     expect(text).toContain(
-      'openCodex:\n    enabled: false\n    proxyOrigin: null\n    proxyEnsureCommand: null\n    claudeCodeEnabled: false',
+      'openCodex:\n    enabled: false\n    proxyOrigin: null\n    proxyEnsureCommand: null\n    claudeConfigDir: null\n    claudeCodeEnabled: false',
     );
     expect(text).toContain('agent:\n      source: https://github.com/ianlancaster/cognitive-agent-template');
     expect(text).not.toContain('# defaults:');

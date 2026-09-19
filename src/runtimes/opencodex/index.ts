@@ -72,6 +72,7 @@ export class OpenCodexClaudeRuntime extends ClaudeCodeRuntime {
     options: ClaudeCodeRuntimeOptions,
     private readonly proxyOrigin: string,
     private readonly proxyEnsureCommand: string | null = null,
+    claudeConfigDir?: string,
   ) {
     super({
       ...options,
@@ -88,6 +89,7 @@ export class OpenCodexClaudeRuntime extends ClaudeCodeRuntime {
           // A non-secret placeholder forces gateway mode rather than native OAuth.
           ANTHROPIC_AUTH_TOKEN: 'opencodex-proxy',
           CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1',
+          ...(claudeConfigDir === undefined ? {} : { CLAUDE_CONFIG_DIR: claudeConfigDir }),
         },
       },
     });

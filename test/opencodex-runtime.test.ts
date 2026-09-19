@@ -62,6 +62,7 @@ describe('built-in OpenCodex profiles', () => {
       enabled: false,
       proxyOrigin: null,
       proxyEnsureCommand: null,
+      claudeConfigDir: null,
       claudeCodeEnabled: false,
     });
     expect(() => supervisorConfigSchema.parse({ runtimes: { openCodex: { enabled: true } } })).toThrow();
@@ -82,6 +83,17 @@ describe('built-in OpenCodex profiles', () => {
         }),
       ).toThrow();
     }
+    expect(() =>
+      supervisorConfigSchema.parse({
+        runtimes: {
+          openCodex: {
+            enabled: true,
+            proxyOrigin: 'http://127.0.0.1:10100',
+            claudeConfigDir: 'relative/claude-config',
+          },
+        },
+      }),
+    ).toThrow();
     const adapter = { name: 'opencodex', module: './runtime.mjs' };
     expect(supervisorConfigSchema.parse({ runtimeAdapters: [adapter] }).runtimeAdapters[0]?.name).toBe('opencodex');
     expect(() =>
@@ -196,12 +208,15 @@ describe('built-in OpenCodex profiles', () => {
       join(configDir, 'sessions', 'worker.yaml'),
       `codename: worker\nrepo: ${dir}\nruntime: opencodex-claude\nmodel: provider/model-id\n`,
     );
+    const backend = new FakeTerminalBackend();
     supervisor = new Supervisor(dir, {
-      terminalBackend: new FakeTerminalBackend(),
+      terminalBackend: backend,
       includeConfiguredChannels: false,
       env: {},
     });
     expect(await supervisor.command('/start worker')).toContain('started');
+    const launch = backend.panes.get('pane-1')?.launched[0];
+    expect(launch).toContain(`export CLAUDE_CONFIG_DIR='${join(dir, 'data', 'opencodex-claude-config')}'`);
     const trustPath = join(dir, 'data', 'opencodex-claude.json');
     const trust = JSON.parse(readFileSync(trustPath, 'utf8')) as {
       projects: Record<string, { hasTrustDialogAccepted: boolean }>;

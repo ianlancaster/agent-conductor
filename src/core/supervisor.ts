@@ -240,6 +240,7 @@ export class Supervisor {
             },
             proxyOrigin,
             this.config.runtimes.openCodex.proxyEnsureCommand,
+            this.config.runtimes.openCodex.claudeConfigDir ?? join(dataDir, 'opencodex-claude-config'),
           ),
         );
       }

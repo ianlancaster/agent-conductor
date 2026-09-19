@@ -460,6 +460,14 @@ export const supervisorConfigSchema = z
               .refine((value) => isAbsolute(value) && !/[\r\n]/u.test(value), 'must be an absolute executable path')
               .nullable()
               .default(null),
+            /** Separate Claude Code configuration for proxy-backed sessions. */
+            claudeConfigDir: z
+              .string()
+              .trim()
+              .min(1)
+              .refine((value) => isAbsolute(value) && !/[\r\n]/u.test(value), 'must be an absolute directory path')
+              .nullable()
+              .default(null),
             /** Claude Code proxy routing needs separate operator qualification. */
             claudeCodeEnabled: z.boolean().default(false),
           })

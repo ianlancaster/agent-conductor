@@ -566,7 +566,8 @@ An optional OpenCodex proxy harness is bundled and off by default. Enabling
 `runtimes.openCodex` registers a separate `opencodex` Codex CLI runtime; its Claude Code substrate
 has a second `claudeCodeEnabled` gate. Both require an explicit session model and a loopback
 proxy; an optional `proxyEnsureCommand` can start or refresh that separately configured proxy
-before each launch. Ordinary `codex` and `claude-code` sessions keep their native launch
+before each launch. The bundled Claude profile gets a separate config directory. Ordinary
+`codex` and `claude-code` sessions keep their native launch
 configuration. See the [OpenCodex setup and acceptance guide](guides/opencodex.md).
 
 The stock CLI supports an explicit `runtimeAdapters` list of trusted local factory files in

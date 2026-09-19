@@ -1416,6 +1416,10 @@ and `claude-code` names retain their existing behavior. Proxy credentials belong
 own secret mechanism, never session or supervisor YAML, Conductor messages, or generated prompts.
 An optional operator-configured `proxyEnsureCommand` can prepare the proxy before the health check;
 it is not permission to invent a shell command or move credentials into YAML.
+The Claude profile uses a separate configuration directory by default; if OpenCodex synchronizes
+routed `ocx-*` child definitions elsewhere, the operator must point
+`runtimes.openCodex.claudeConfigDir` at that same directory. Do not change the ordinary Claude
+runtime's config directory to make proxy children visible.
 
 Use a disposable session and a small assigned task for first acceptance. Check proxy health and
 model availability before starting it. A failed proxy check prevents the CLI launch; a disabled

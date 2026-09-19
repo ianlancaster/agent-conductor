@@ -27,6 +27,7 @@ runtimes:
     enabled: true
     proxyOrigin: http://127.0.0.1:10100
     proxyEnsureCommand: null
+    claudeConfigDir: null
     claudeCodeEnabled: false
 ```
 
@@ -77,11 +78,13 @@ loopback `ANTHROPIC_BASE_URL`, a non-secret gateway token placeholder, and gatew
 It clears inherited Anthropic provider and model variables before launch. It does not invoke
 `ocx claude`, because [that command can intentionally fall back to native Claude](https://github.com/lidge-jun/opencodex/blob/main/docs-site/src/content/docs/guides/claude-code.md#native-fallback-when-claude-routing-is-off).
 
-The bundled Claude profile keeps its folder-trust record under this Conductor instance's data
-directory rather than changing the user's ordinary Claude trust record. For a separate agent
-roster and history, set `runtimes.claudeCode.env.CLAUDE_CONFIG_DIR` to a dedicated directory and
-point OpenCodex agent synchronization at the same directory. Do not assume the inherited native
-Claude configuration contains the required routed agents.
+The bundled Claude profile keeps its folder-trust record and, by default, its Claude configuration
+under this Conductor instance's data directory rather than changing the user's ordinary Claude
+state. Set `runtimes.openCodex.claudeConfigDir` to an absolute directory only when the separately
+configured OpenCodex agent synchronization uses that same directory. Do not set
+`runtimes.claudeCode.env.CLAUDE_CONFIG_DIR` for this purpose: that would also change ordinary
+Claude sessions. The proxy startup wrapper or operator must create and populate the chosen
+directory before a routed child is invoked.
 
 OpenCodex's Claude route has its own enable switch. If that route is off, the proxy can reject
 `/v1/messages` even while `/healthz` is healthy. Treat this as an explicit acceptance failure; do
