@@ -22,9 +22,17 @@ do not infer success from a healthy proxy or catalog listing.
    contains no OpenCodex provider override. Do not send a paid native request solely for this
    comparison unless approved.
 5. For a native Codex child-model test, explicitly select a different proxy catalog model for
-   the child. Give the child a tiny verifiable task and inspect the proxy's actual route. Confirm
-   the child shares the parent's Conductor identity; use a second Conductor session if independent
-   addressing is needed. Record any child, tool, effort, or compaction mismatch.
+   the child. If a native ChatGPT parent routes to a non-ChatGPT child, first check the live
+   `/v1/catalog`, the session's isolated `models_cache.json`, and the **fresh conversation's**
+   native multi-agent tool surface as described in the
+   [V1 transport setup](opencodex.md#routed-codex-children-and-the-v1-transport).
+   `/continue` is not a fresh-session test. An accepted spawn followed by
+   `unreadable_encrypted_agent_task` is a failed transport gate even if the proxy is healthy;
+   do not try to rescue it with a follow-up or silently fall back to a native model. Give the
+   child a tiny verifiable tool task, send one distinct follow-up, and inspect the proxy's
+   actual upstream route and successful response for both turns. Confirm the child shares the
+   parent's Conductor identity; use a second Conductor session if independent addressing is
+   needed. Record any child, tool, effort, or compaction mismatch.
 6. To qualify Claude Code, enable its route in the proxy first. Then set
    `runtimes.openCodex.claudeCodeEnabled: true`, validate, and restart the intended Conductor
    instance. Confirm `opencodex-claude` now appears in the live runtime choices. Start a

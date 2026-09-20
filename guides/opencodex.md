@@ -102,6 +102,64 @@ independently addressable worker. See [Codex subagent
 configuration](https://learn.chatgpt.com/docs/agent-configuration/subagents) and [custom model
 providers](https://learn.chatgpt.com/docs/config-file/config-advanced#custom-model-providers).
 
+### Routed Codex children and the V1 transport
+
+On the Codex V2 multi-agent surface, a native ChatGPT-model parent can submit an encrypted child
+task that a routed non-ChatGPT provider cannot read. The spawn may be accepted, then fail before
+the child runs with `unreadable_encrypted_agent_task`; a follow-up to that child fails the same
+way. A healthy proxy and a listed model do not clear this gate. This is a child-task transport
+failure, not evidence that the target provider is down. Do not silently retry on a native model
+or treat the accepted spawn as successful inference.
+
+OpenCodex's `ocx v2 mode v1` forces its V1 multi-agent surface for the selected OpenCodex home.
+This is a catalog/transport setting, **not** a Codex binary downgrade or an Astra model change.
+It affects other models and new conversations using that home, so coordinate the change with its
+users. The following sequence was needed with OpenCodex 2.59.0; check your installed CLI's help
+and live catalog because later versions may refresh differently. Replace the example paths and
+origin with this fleet's actual installation; never point a missing proxy config at a shared user
+home or create an empty `config.toml` to satisfy the command.
+
+```sh
+OCX_BIN=/absolute/path/to/ocx
+OCX_DIR=/absolute/path/to/opencodex-home
+PROXY_CODEX_DIR=/absolute/path/to/proxy-owned/codex-home
+SESSION_CODEX_DIR=/absolute/path/to/fleet/.conductor/data/sessions/worker/codex-home
+PROXY_ORIGIN=http://127.0.0.1:10100
+PARENT_MODEL=your-parent-model-slug
+CHILD_MODEL=your-routed-child-model-slug
+
+test -f "$SESSION_CODEX_DIR/config.toml" &&
+  env OPENCODEX_HOME="$OCX_DIR" CODEX_HOME="$SESSION_CODEX_DIR" "$OCX_BIN" v2 mode v1
+env OPENCODEX_HOME="$OCX_DIR" CODEX_HOME="$SESSION_CODEX_DIR" "$OCX_BIN" v2 status
+env OPENCODEX_HOME="$OCX_DIR" CODEX_HOME="$PROXY_CODEX_DIR" "$OCX_BIN" restart
+env OPENCODEX_HOME="$OCX_DIR" CODEX_HOME="$PROXY_CODEX_DIR" "$OCX_BIN" sync
+curl -fsS "$PROXY_ORIGIN/v1/catalog" |
+  jq -r --arg model "$PARENT_MODEL" '.models[] | select(.slug == $model) | [.slug, .multi_agent_version] | @tsv'
+env OPENCODEX_HOME="$OCX_DIR" CODEX_HOME="$SESSION_CODEX_DIR" "$OCX_BIN" sync
+jq -r --arg parent "$PARENT_MODEL" --arg child "$CHILD_MODEL" \
+  '.models[] | select(.slug == $parent or .slug == $child) | [.slug, .multi_agent_version] | @tsv' \
+  "$SESSION_CODEX_DIR/models_cache.json"
+```
+
+Stop if the first command fails its `config.toml` check; do not proceed to the restart or sync.
+The proxy-owned Codex home and Conductor's isolated per-session `CODEX_HOME` are different.
+The former may have no `config.toml`, so `ocx v2 mode v1` can fail there; target the session's
+existing config for that command. A successful `v2 status` alone is insufficient: the running
+proxy's persisted `/v1/catalog` and the session's `models_cache.json` can still advertise V2.
+In the observed 2.59.0 setup, restarting the proxy alone did not refresh that catalog; syncing
+both homes as shown did. `ocx restart` is a proxy lifecycle operation, not a Conductor restart.
+It can briefly affect active proxy-backed sessions. Do not use `ocx sync --restart-codex` merely
+to refresh these caches: it can terminate live Codex conversations.
+
+After both catalog checks report V1 for the parent and routed child, stop the affected Conductor
+session and **start a new conversation**. `/continue` resumes the prior Codex conversation and
+can retain its V2 tool surface even after the catalogs change. In the new session, check that
+the native multi-agent tools expose V1 `spawn_agent`, `send_input`, and `resume_agent` rather than
+the V2 `collaboration.spawn_agent` / `followup_task` surface. Then run a bounded child task with
+an explicit routed model, verify its tool execution and a separate follow-up, and confirm the
+actual upstream model and successful response in proxy records. A V1 catalog entry or child
+self-report alone is not acceptance evidence. See the [manual acceptance guide](opencodex-acceptance.md).
+
 For Claude Code, OpenCodex can generate `ocx-*` custom agent definitions from its
 `subagentModels` roster into the isolated `CLAUDE_CONFIG_DIR`. Select the generated agent type,
 not a general/default agent, for an explicitly routed child. Some Claude Code versions expose
