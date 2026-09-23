@@ -120,6 +120,12 @@ health:
   suppressSimilarity: 0.8
   eventSilenceMs: 120000 # pane-silence fallback delay for runtimes without authoritative completion
 
+# Work-status attention thresholds; starting defaults to tune from observed durations.
+status:
+  disagreementMs: 3600000 # working claim vs proven idle for 1 hour
+  staleMs: 14400000 # 4-hour working claim plus positive nonactivity
+  waitingMs: 14400000 # 4-hour wait or resolved blocker awaiting a new claim
+
 messaging:
   maxPendingMessagesPerRecipient: 5 # durable pending direct/broadcast deliveries accepted per recipient
   queueDrainMs: 2000 # how often held messages retry; also the release latency after input clears

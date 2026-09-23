@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ChannelAdapter, ChannelMessage } from '../channels/types.js';
@@ -23,6 +23,7 @@ import { buildMcpTools } from '../mcp/tools.js';
 import { ClaudeCodeRuntime } from '../runtimes/claude-code/index.js';
 import { CodexRuntime } from '../runtimes/codex/index.js';
 import { OpenCodexClaudeRuntime, OpenCodexRuntime, openCodexProxyOrigin } from '../runtimes/opencodex/index.js';
+import { STATUS_MAPPING_SNAPSHOT_NAME, STATUS_MAPPING_VERSION } from '../runtimes/instructions.js';
 import type { SessionRuntime } from '../runtimes/types.js';
 import { Store } from '../store/index.js';
 import { ITermBackend } from '../terminals/iterm/index.js';
@@ -52,6 +53,7 @@ import { observePaneActivity, observePaneInputState } from './activity.js';
 import { ShepherdManager } from './shepherd-manager.js';
 import { IntegrationManager } from './integration-manager.js';
 import { SessionStatusAttestor } from './attestation.js';
+import { deriveWorkStatus, type WorkStatusSummary } from './work-status.js';
 import { FederationRegistry } from '../federation/registry.js';
 import { FederationRouter } from '../federation/router.js';
 
@@ -515,6 +517,43 @@ export class Supervisor {
       },
       runtimeNames: [...this.runtimes.keys()].sort(),
       statusReport: (codename, only) => this.statusReport(codename, only),
+      reportWorkStatus: (session, report) => {
+        if (!this.sessions.has(session)) throw new Error(`Unknown session: ${session}`);
+        const snapshot = join(dataDir, 'sessions', session, STATUS_MAPPING_SNAPSHOT_NAME);
+        const version = existsSync(snapshot) ? readFileSync(snapshot, 'utf8').trim() : STATUS_MAPPING_VERSION;
+        return this.store.workStatus.report(this.resolvedInstance.fleetId, session, report, version);
+      },
+      resolveWorkBlocker: async (workId, answer, exactTarget) => {
+        const target = this.store.workStatus.currentBlocker(
+          this.resolvedInstance.fleetId,
+          workId,
+          exactTarget?.attemptId,
+        );
+        if (target.blocker_id === null || target.blocker_revision === null)
+          throw new Error('Blocker identity is missing.');
+        const receipt = this.store.workStatus.resolve(
+          this.resolvedInstance.fleetId,
+          workId,
+          answer,
+          exactTarget ?? {
+            attemptId: target.attempt_id,
+            blockerId: target.blocker_id,
+            blockerRevision: target.blocker_revision,
+            targetClaimEventId: `${this.resolvedInstance.fleetId}:work-status:${String(target.id)}`,
+          },
+          Date.now(),
+          this.config.messaging.maxPendingMessagesPerRecipient,
+        );
+        try {
+          await this.messaging.recoverPendingMessages(receipt.session);
+        } catch (error) {
+          log().warn(
+            'status',
+            `Resolution answer remains queued for ${receipt.session}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        return receipt;
+      },
       attestSessionStatus: (codename, actor, resourceKind, resourceNamespace, resourceKey, owner, idempotencyKey) =>
         this.attestSessionStatus(codename, actor, resourceKind, resourceNamespace, resourceKey, owner, idempotencyKey),
       tail: (codename, lines) => this.tail(codename, lines),
@@ -831,6 +870,7 @@ export class Supervisor {
         effortFor: (name) => this.displayEffortFor(name),
         sentinelCodename: () => this.sentinel.sentinelCodename(),
         processObservation: (name) => this.lifecycle.processObservation(name),
+        workStatus: (visible) => this.workStatus(visible),
       },
       codename,
       { shepherdRecipient: this.shepherd.recipientSession() },
@@ -858,6 +898,35 @@ export class Supervisor {
             },
           }),
     });
+  }
+
+  private workStatus(only?: ReadonlySet<string>): WorkStatusSummary {
+    const now = Date.now();
+    const events = this.store.workStatus
+      .events(this.resolvedInstance.fleetId)
+      .filter((event) => (only === undefined ? true : only.has(event.session)));
+    return deriveWorkStatus(
+      events,
+      (session) => {
+        const process = this.lifecycle.processObservation(session);
+        const activity = this.health.activityObservation(session);
+        return {
+          processActive: process?.active ?? null,
+          ...(process === undefined ? {} : { processObservedAt: Date.parse(process.observedAt) }),
+          activity: activity?.activity ?? 'unknown',
+          ...(activity === undefined ? {} : { activityObservedAt: activity.observedAt }),
+          ...(activity?.activity !== 'idle' ? {} : { idleSince: activity.since }),
+        };
+      },
+      (session) => this.states.isPaused(session),
+      now,
+      {
+        disagreementMs: this.config.status.disagreementMs,
+        staleMs: this.config.status.staleMs,
+        waitingMs: this.config.status.waitingMs,
+        observationMaxAgeMs: this.config.supervisor.heartbeatIntervalSeconds * 3_000,
+      },
+    );
   }
 
   /** Structured companion status for embedding and tests. */

@@ -133,6 +133,9 @@ beforeEach(() => {
         },
         c,
       ),
+    reportWorkStatus: (session, report) => store.workStatus.report('test-fleet', session, report),
+    resolveWorkBlocker: async (workId, answer, target) =>
+      store.workStatus.resolve('test-fleet', workId, answer, target),
     tail: async (c, n) => `tail:${c}:${n}`,
     typeInPane: async (codename, text) => {
       const pane = lifecycle.getPane(codename);
@@ -161,6 +164,28 @@ beforeEach(() => {
 });
 
 describe('surface contract', () => {
+  it('binds report_status to the calling session and requires conditional evidence', async () => {
+    const first = JSON.parse(
+      await tool('report_status').handler({ state: 'working', work_id: 'review-1', summary: 'Reviewing' }, 'alpha'),
+    ) as { attemptId: string; eventId: string };
+    expect(first.attemptId).toBeTruthy();
+    expect(store.workStatus.events('test-fleet')[0]).toMatchObject({
+      session: 'alpha',
+      work_id: 'review-1',
+      mapping_version: '1',
+    });
+    await expect(
+      tool('report_status').handler({ state: 'done', work_id: 'review-1', summary: 'Reviewed' }, 'alpha'),
+    ).rejects.toThrow('evidence');
+    const done = JSON.parse(
+      await tool('report_status').handler(
+        { state: 'done', work_id: 'review-1', summary: 'Reviewed', evidence: ['review://1'] },
+        'alpha',
+      ),
+    ) as { attemptId: string };
+    expect(done.attemptId).toBe(first.attemptId);
+  });
+
   it('classifies the complete canonical catalog for federation at compile-enforced definitions', () => {
     const sessionDefinitions = operations.definitions('session');
     expect(
@@ -196,7 +221,7 @@ describe('surface contract', () => {
         .filter((definition) => definition.federation === 'local-only')
         .map((definition) => definition.name)
         .sort(),
-    ).toEqual(['attest_session_status', 'get_conductor_docs', 'send_to_operator', 'whoami'].sort());
+    ).toEqual(['attest_session_status', 'get_conductor_docs', 'report_status', 'send_to_operator', 'whoami'].sort());
     expect(
       operations
         .definitions()

@@ -52,6 +52,10 @@ export interface HealthDeps {
  * unchanged pane into a `silent` stall.
  */
 export class HealthMonitor {
+  private readonly activityEvidence = new Map<
+    string,
+    { activity: 'working' | 'idle'; since: number; observedAt: number }
+  >();
   private readonly turnPhases = new Map<string, 'active' | 'complete' | 'interrupted'>();
   /** Multiple Codex hook turns may overlap while the root turn owns the pane. */
   private readonly activeTurnIds = new Map<string, Set<string>>();
@@ -238,6 +242,7 @@ export class HealthMonitor {
 
   /** Clear all per-session tracking (on start/restart/mode change). */
   reset(session: string): void {
+    this.activityEvidence.delete(session);
     this.clearIdleTimer(session);
     this.turnPhases.delete(session);
     this.activeTurnIds.delete(session);
@@ -308,6 +313,8 @@ export class HealthMonitor {
     )
       return;
 
+    this.noteActivityEvidence(session, activity);
+
     if (activity === 'working') {
       this.pendingCompactions.delete(session);
       this.recordWorking(session);
@@ -340,6 +347,7 @@ export class HealthMonitor {
   }
 
   private recordWorking(session: string): void {
+    this.noteActivityEvidence(session, 'working');
     this.clearIdleTimer(session);
     this.turnPhases.set(session, 'active');
     this.lastActivityAt.set(session, Date.now());
@@ -350,6 +358,22 @@ export class HealthMonitor {
   stop(): void {
     for (const timer of this.idleTimers.values()) clearTimeout(timer);
     this.idleTimers.clear();
+  }
+
+  /** Latest positive runtime evidence; callers must still check its age. */
+  activityObservation(
+    session: string,
+  ): { activity: 'working' | 'idle'; since: number; observedAt: number } | undefined {
+    return this.activityEvidence.get(session);
+  }
+
+  private noteActivityEvidence(session: string, activity: 'working' | 'idle', at = Date.now()): void {
+    const previous = this.activityEvidence.get(session);
+    this.activityEvidence.set(session, {
+      activity,
+      since: previous?.activity === activity ? previous.since : at,
+      observedAt: at,
+    });
   }
 
   private async checkSession(session: string, observation: TerminalLivenessObservation): Promise<void> {
@@ -507,6 +531,7 @@ export class HealthMonitor {
   }
 
   private reportStall(session: string, kind: StallKind, info: StallInfo): void {
+    if (kind !== 'silent') this.noteActivityEvidence(session, 'idle');
     this.deps.onStall(session, kind, { ...info, detectedAt: new Date().toISOString() });
   }
 }
