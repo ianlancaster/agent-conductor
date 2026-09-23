@@ -1,10 +1,11 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import type { PaneActivityEvidence, RuntimeEvent } from '../../core/types.js';
 import { shellQuote } from '../../core/shell.js';
+import { resolveTrustPaths } from '../../core/trust-paths.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
 import {
   appendProtocolNotice,
@@ -50,10 +51,18 @@ export interface ClaudeCodeRuntimeOptions {
  * Pre-accept Claude Code's folder-trust dialog for a session's repo.
  * `--dangerously-skip-permissions` does NOT cover the separate trust gate, so
  * a freshly-spawned directory otherwise boots into "do you trust this
- * folder?" and sits not-ready until someone answers. Best-effort: a corrupt
- * or unwritable ~/.claude.json must never block a launch.
+ * folder?" and sits not-ready until someone answers — and Claude Code does
+ * not run project `.claude/settings.json` hooks in an untrusted workspace
+ * either, so an unseeded/mis-seeded entry silently drops hooks rather than
+ * just showing a dialog. Best-effort: a corrupt or unwritable `.claude.json`
+ * must never block a launch.
+ *
+ * `paths` should be every location Claude Code might resolve THIS session's
+ * project to — see `resolveTrustPaths` — since Claude compares resolved
+ * paths and applies trust at the Git repository root, not necessarily the
+ * literal cwd.
  */
-export async function seedFolderTrust(claudeJsonPath: string, repo: string): Promise<void> {
+export async function seedFolderTrust(claudeJsonPath: string, paths: readonly string[]): Promise<void> {
   try {
     let root: Record<string, unknown> = {};
     if (existsSync(claudeJsonPath)) {
@@ -65,13 +74,21 @@ export async function seedFolderTrust(claudeJsonPath: string, repo: string): Pro
     }
     const projects =
       typeof root.projects === 'object' && root.projects !== null ? (root.projects as Record<string, unknown>) : {};
-    const entry =
-      typeof projects[repo] === 'object' && projects[repo] !== null ? (projects[repo] as Record<string, unknown>) : {};
-    if (entry.hasTrustDialogAccepted === true) return;
-    entry.hasTrustDialogAccepted = true;
-    projects[repo] = entry;
+    let changed = false;
+    for (const repoPath of paths) {
+      const entry =
+        typeof projects[repoPath] === 'object' && projects[repoPath] !== null
+          ? (projects[repoPath] as Record<string, unknown>)
+          : {};
+      if (entry.hasTrustDialogAccepted === true) continue;
+      entry.hasTrustDialogAccepted = true;
+      projects[repoPath] = entry;
+      changed = true;
+    }
+    if (!changed) return;
     root.projects = projects;
-    await writeFile(claudeJsonPath, JSON.stringify(root, null, 2));
+    await mkdir(dirname(claudeJsonPath), { recursive: true });
+    await writeAtomicFile(claudeJsonPath, JSON.stringify(root, null, 2), 0o600);
   } catch (err) {
     // Never let trust seeding break a launch.
     void err;
@@ -136,7 +153,7 @@ export class ClaudeCodeRuntime implements SessionRuntime {
       0o600,
     );
     await cleanupContinuityReaderGenerations(identity.configDir, continuityReader);
-    await seedFolderTrust(this.claudeJsonPath, session.repo);
+    await seedFolderTrust(this.claudeJsonPath, await resolveTrustPaths(session.repo));
   }
 
   buildLaunchCommand(session: SessionConfig, identity: IdentityEndpoints, opts: LaunchOptions): string {

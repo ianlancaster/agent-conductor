@@ -228,6 +228,13 @@ export class Supervisor {
         ),
       );
       if (this.config.runtimes.openCodex.claudeCodeEnabled) {
+        // The proxy runtime launches with CLAUDE_CONFIG_DIR set to this isolated
+        // home, so Claude Code reads ITS `.claude.json` — not `~/.claude.json` —
+        // for folder trust and hook enablement. Seeding must write to the SAME
+        // file the launched CLI will read, or the seeded entry is inert and
+        // project hooks silently never run in the (still-untrusted) real one.
+        const claudeConfigDir =
+          this.config.runtimes.openCodex.claudeConfigDir ?? join(dataDir, 'opencodex-claude-config');
         this.runtimes.set(
           'opencodex-claude',
           new OpenCodexClaudeRuntime(
@@ -235,12 +242,11 @@ export class Supervisor {
               config: this.config.runtimes.claudeCode,
               protocolPath,
               protocolNotice,
-              // Keep proxy-backed folder trust separate from ordinary Claude Code.
-              claudeJsonPath: options.claudeJsonPath ?? join(dataDir, 'opencodex-claude.json'),
+              claudeJsonPath: options.claudeJsonPath ?? join(claudeConfigDir, '.claude.json'),
             },
             proxyOrigin,
             this.config.runtimes.openCodex.proxyEnsureCommand,
-            this.config.runtimes.openCodex.claudeConfigDir ?? join(dataDir, 'opencodex-claude-config'),
+            claudeConfigDir,
           ),
         );
       }

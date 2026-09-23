@@ -1,8 +1,9 @@
-import { mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import { runGit } from '../../core/git.js';
+import { resolveTrustPaths } from '../../core/trust-paths.js';
 import type { PaneActivityEvidence, RuntimeEvent } from '../../core/types.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
 import { appendProtocolNotice, prepareInstructionLayers, writeAtomicFile } from '../instructions.js';
@@ -717,7 +718,7 @@ export class CodexRuntime implements SessionRuntime {
     // launch, so shared-config edits are picked up on the next (re)start.
     const sharedConfig = (await this.readIfExists(path.join(sharedHome, 'config.toml'))) ?? '';
     const protectedConfig = ensureProjectDocMaxBytes(sharedConfig, minimumDocBytes);
-    const trustPaths = await this.trustedProjectPaths(repo);
+    const trustPaths = await resolveTrustPaths(repo);
     let trustEntry = '';
     for (const trustPath of trustPaths) {
       const trustHeader = `[projects.${tomlString(trustPath)}]`;
@@ -728,64 +729,6 @@ export class CodexRuntime implements SessionRuntime {
     // May be a symlink from an earlier conductor version — remove, never write through it.
     await rm(configDest, { force: true });
     await writeFile(configDest, `${protectedConfig}${trustEntry}`);
-  }
-
-  /**
-   * Paths Codex needs pre-trusted for the startup dialog to stay silent.
-   * Codex compares REALPATHs (resolving symlinks like macOS's /tmp ->
-   * /private/tmp), and applies trust at the Git repository ROOT — for a
-   * linked worktree that's the main worktree's root, not the worktree's own
-   * directory. Cover the literal cwd (harmless to keep, and preserves prior
-   * behavior for any Codex code path that compares literally), the resolved
-   * cwd, the worktree's own resolved top level (`git rev-parse
-   * --show-toplevel`), and the resolved MAIN repository root — so plain
-   * repos, linked worktrees, and non-git directories are all trusted where
-   * Codex actually checks.
-   */
-  private async trustedProjectPaths(repo: string): Promise<string[]> {
-    const paths: string[] = [];
-    const addUnique = (candidate: string): void => {
-      if (!paths.includes(candidate)) paths.push(candidate);
-    };
-
-    addUnique(repo);
-    addUnique(await this.realpathOrSelf(repo));
-
-    try {
-      const [commonDirResult, toplevelResult] = await Promise.all([
-        runGit(['-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
-          timeoutMs: GIT_TIMEOUT_MS,
-        }),
-        runGit(['-C', repo, 'rev-parse', '--path-format=absolute', '--show-toplevel'], {
-          timeoutMs: GIT_TIMEOUT_MS,
-        }),
-      ]);
-      const commonDir = commonDirResult.stdout.trim();
-      const toplevel = toplevelResult.stdout.trim();
-      if (toplevel.length > 0) addUnique(await this.realpathOrSelf(toplevel));
-      // dirname(commonDir) is only the repository root when the common dir
-      // sits directly inside it as `.git` — the standard layout. A bare
-      // repository or `--separate-git-dir` puts the common dir elsewhere
-      // (e.g. /x/repos/foo.git), and dirname would trust the PARENT
-      // directory — a directory full of unrelated repos. Trust is a
-      // security control: skip it rather than trust too broadly.
-      if (commonDir.length > 0 && path.basename(commonDir) === '.git') {
-        addUnique(await this.realpathOrSelf(path.dirname(commonDir)));
-      }
-    } catch {
-      // Not a Git repository (or git unavailable) — trusting the resolved cwd is enough.
-    }
-
-    return paths;
-  }
-
-  /** realpath() resolves symlinks; a missing/unreadable path just trusts itself as given. */
-  private async realpathOrSelf(candidate: string): Promise<string> {
-    try {
-      return await realpath(candidate);
-    } catch {
-      return candidate;
-    }
   }
 
   private async readActiveGlobalGuidance(sharedHome: string): Promise<string | null> {

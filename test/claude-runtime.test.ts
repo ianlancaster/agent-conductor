@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { supervisorConfigSchema, type SessionConfig } from '../src/config/schema.js';
+import { isolatedGitEnvironment } from '../src/core/git.js';
 import { ClaudeCodeRuntime, seedFolderTrust } from '../src/runtimes/claude-code/index.js';
 import {
   parseClaudeActivityState,
@@ -448,7 +449,7 @@ describe('seedFolderTrust', () => {
   const read = (): Record<string, unknown> => JSON.parse(readFileSync(claudeJson(), 'utf8')) as Record<string, unknown>;
 
   it('creates the file and trusts the repo when no config exists', async () => {
-    await seedFolderTrust(claudeJson(), '/tmp/spawned');
+    await seedFolderTrust(claudeJson(), ['/tmp/spawned']);
     expect(read()).toEqual({ projects: { '/tmp/spawned': { hasTrustDialogAccepted: true } } });
   });
 
@@ -460,7 +461,7 @@ describe('seedFolderTrust', () => {
         projects: { '/other': { hasTrustDialogAccepted: true, history: [1] } },
       }),
     );
-    await seedFolderTrust(claudeJson(), '/tmp/spawned');
+    await seedFolderTrust(claudeJson(), ['/tmp/spawned']);
     const root = read();
     expect(root.oauthAccount).toEqual({ email: 'x@y.z' });
     const projects = root.projects as Record<string, unknown>;
@@ -470,7 +471,7 @@ describe('seedFolderTrust', () => {
 
   it('preserves other per-project fields when trusting an existing project', async () => {
     writeFileSync(claudeJson(), JSON.stringify({ projects: { '/tmp/spawned': { history: ['a'] } } }));
-    await seedFolderTrust(claudeJson(), '/tmp/spawned');
+    await seedFolderTrust(claudeJson(), ['/tmp/spawned']);
     expect((read().projects as Record<string, unknown>)['/tmp/spawned']).toEqual({
       history: ['a'],
       hasTrustDialogAccepted: true,
@@ -479,7 +480,76 @@ describe('seedFolderTrust', () => {
 
   it('NEVER overwrites an existing file it cannot parse — that is the real Claude config', async () => {
     writeFileSync(claudeJson(), '{corrupt json!!');
-    await seedFolderTrust(claudeJson(), '/tmp/spawned');
+    await seedFolderTrust(claudeJson(), ['/tmp/spawned']);
     expect(readFileSync(claudeJson(), 'utf8')).toBe('{corrupt json!!');
+  });
+
+  it('trusts every path a runtime might resolve the project to (literal cwd, realpath, git root)', async () => {
+    await seedFolderTrust(claudeJson(), ['/tmp/spawned', '/private/tmp/spawned', '/private/tmp/main-repo']);
+    const projects = read().projects as Record<string, { hasTrustDialogAccepted: boolean }>;
+    expect(projects['/tmp/spawned']?.hasTrustDialogAccepted).toBe(true);
+    expect(projects['/private/tmp/spawned']?.hasTrustDialogAccepted).toBe(true);
+    expect(projects['/private/tmp/main-repo']?.hasTrustDialogAccepted).toBe(true);
+  });
+
+  it('creates the CLAUDE_CONFIG_DIR-style parent directory when the target file does not live there yet', async () => {
+    const nested = join(configDir, 'nested', 'claude-config', '.claude.json');
+    await seedFolderTrust(nested, ['/tmp/spawned']);
+    expect(JSON.parse(readFileSync(nested, 'utf8')) as unknown).toEqual({
+      projects: { '/tmp/spawned': { hasTrustDialogAccepted: true } },
+    });
+  });
+
+  it('writes atomically: a failed write never leaves a corrupt or partial file behind', async () => {
+    await seedFolderTrust(claudeJson(), ['/tmp/spawned']);
+    const before = readFileSync(claudeJson(), 'utf8');
+    // A second call with an already-trusted path is a no-op write; content is unchanged either way.
+    await seedFolderTrust(claudeJson(), ['/tmp/spawned']);
+    expect(readFileSync(claudeJson(), 'utf8')).toBe(before);
+    expect(readdirSync(configDir).some((entry) => entry.endsWith('.tmp'))).toBe(false);
+  });
+});
+
+describe('resolveTrustPaths (via ClaudeCodeRuntime.prepare)', () => {
+  // Mirrors the Codex runtime's trust-preseeding coverage: Claude Code also
+  // compares resolved paths and applies trust at the Git repository root, so
+  // seedFolderTrust must receive every path Claude might resolve the project
+  // to. These exercise it through the real runtime.prepare() call, the same
+  // path a launch takes.
+  let workDir: string;
+  const gitEnv = isolatedGitEnvironment();
+  const git = (cwd: string, ...args: string[]): void => {
+    execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {
+      stdio: 'ignore',
+      env: gitEnv,
+    });
+  };
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'claude-trust-'));
+  });
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it('trusts the literal cwd, worktree top level, and resolved main-repository root for a linked worktree', async () => {
+    const main = join(workDir, 'main-repo');
+    mkdirSync(main, { recursive: true });
+    git(main, 'init', '-b', 'main');
+    writeFileSync(join(main, 'file.txt'), 'hi');
+    git(main, 'add', 'file.txt');
+    git(main, 'commit', '-m', 'init');
+    const worktree = join(workDir, 'wt');
+    execFileSync('git', ['-C', main, 'worktree', 'add', '-b', 'wt-branch', worktree], { env: gitEnv });
+
+    const claudeJsonPath = join(workDir, '.claude.json');
+    const wtRuntime = new ClaudeCodeRuntime({ config: defaults.runtimes.claudeCode, claudeJsonPath });
+    await wtRuntime.prepare({ ...session, repo: worktree }, identity);
+
+    const trust = JSON.parse(readFileSync(claudeJsonPath, 'utf8')) as { projects: Record<string, unknown> };
+    const realWorktree = execFileSync('sh', ['-c', `cd '${worktree}' && pwd -P`], { encoding: 'utf8' }).trim();
+    const realMain = execFileSync('sh', ['-c', `cd '${main}' && pwd -P`], { encoding: 'utf8' }).trim();
+    expect(Object.keys(trust.projects)).toEqual(expect.arrayContaining([worktree, realWorktree, realMain]));
   });
 });
