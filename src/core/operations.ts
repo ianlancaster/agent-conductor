@@ -226,7 +226,7 @@ export class ConductorOperations {
         name: 'report_status',
         description:
           'Report a work-state transition. Required: state, work_id, summary.\n' +
-          'waiting needs waiting_on; blocked needs needs_from and question; recommendation, meanwhile, if_no_answer are optional.\n' +
+          'waiting needs waiting_on; blocked needs needs_from and question, and should carry your recommendation so the answer can be yes or no; meanwhile and if_no_answer are optional.\n' +
           'done needs evidence; failed needs reason; leaving an unresolved block needs resolution.\n' +
           'Same-state reports are for changed waiting_on, a changed blocker packet, or new done evidence; never a heartbeat.\n' +
           'Only one working claim per session; done is a claim, not acceptance. Conductor returns the bound attempt and event receipt.',
