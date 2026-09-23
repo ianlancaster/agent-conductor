@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sessionConfigSchema, supervisorConfigSchema } from '../src/config/schema.js';
 import type { SessionConfig } from '../src/config/schema.js';
-import { isolatedGitEnvironment } from '../src/core/git.js';
+import { isolatedGitEnvironment, runGit } from '../src/core/git.js';
 import type { IdentityEndpoints } from '../src/runtimes/types.js';
 import { MAX_SESSION_INSTRUCTION_BYTES } from '../src/runtimes/instructions.js';
 import { CodexRuntime } from '../src/runtimes/codex/index.js';
@@ -653,7 +653,10 @@ describe('prepare', () => {
       expect(sessionConfig).toContain('model = "gpt-5.5"');
       const generatedOverride = await readFile(path.join(home, 'AGENTS.override.md'), 'utf8');
       expect(readProjectDocMaxBytes(sessionConfig)).toBeGreaterThan(Buffer.byteLength(generatedOverride, 'utf8'));
-      expect(sessionConfig).toContain(`[projects."${repoDir}"]`);
+      // repoDir is not a Git repository here, so only its REALPATH (symlinks
+      // resolved, e.g. macOS's /var -> /private/var) gets pre-trusted.
+      const realRepoDir = await realpath(repoDir);
+      expect(sessionConfig).toContain(`[projects."${realRepoDir}"]`);
       expect(sessionConfig).toContain('trust_level = "trusted"');
       // The operator's real config was never touched.
       expect(await readFile(path.join(sharedHome, 'config.toml'), 'utf8')).toBe('model = "gpt-5.5"\n');
@@ -661,11 +664,11 @@ describe('prepare', () => {
       // Re-prepare with a shared config that ALREADY trusts the repo: no duplicate table (TOML would reject it).
       await writeFile(
         path.join(sharedHome, 'config.toml'),
-        `model = "gpt-5.5"\n[projects."${repoDir}"]\ntrust_level = "trusted"\n`,
+        `model = "gpt-5.5"\n[projects."${realRepoDir}"]\ntrust_level = "trusted"\n`,
       );
       await runtime.prepare(makeSession({ repo: repoDir }), makeIdentity(configDir));
       const reprepared = await readFile(path.join(home, 'config.toml'), 'utf8');
-      expect(reprepared.split(`[projects."${repoDir}"]`).length - 1).toBe(1);
+      expect(reprepared.split(`[projects."${realRepoDir}"]`).length - 1).toBe(1);
     } finally {
       if (prev === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = prev;
@@ -685,6 +688,132 @@ describe('prepare', () => {
       if (prev === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = prev;
     }
+  });
+});
+
+describe('prepare — trust pre-seeding matches what Codex actually checks', () => {
+  // Codex compares REALPATHs (resolving symlinks, e.g. macOS's /tmp ->
+  // /private/tmp) and applies trust at the Git repository ROOT — for a
+  // linked worktree that's the main worktree's root, not the worktree's own
+  // directory. These cases were verified live against Codex 0.156.1: an
+  // untrusted linked worktree under a symlinked tmp root shows the "Trust
+  // this folder?" startup dialog naming the *main* worktree's resolved root
+  // as the repository root Codex will apply trust to; pre-trusting the
+  // resolved cwd plus that resolved root silences the dialog.
+  let workDir: string;
+  let configDir: string;
+  let sharedHome: string;
+  let previousCodexHome: string | undefined;
+  const gitEnv = isolatedGitEnvironment();
+  const git = (cwd: string, ...args: string[]): void => {
+    execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {
+      stdio: 'ignore',
+      env: gitEnv,
+    });
+  };
+
+  beforeEach(async () => {
+    workDir = await mkdtemp(path.join(tmpdir(), 'codex-trust-'));
+    configDir = path.join(workDir, 'cfg');
+    sharedHome = path.join(workDir, 'shared-codex');
+    await mkdir(sharedHome, { recursive: true });
+    previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = sharedHome;
+  });
+
+  afterEach(async () => {
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  async function trustedHeaders(configText: string): Promise<string[]> {
+    return [...configText.matchAll(/\[projects\."([^"]+)"\]/g)].map((match) => match[1]!);
+  }
+
+  it('trusts the REALPATH of a symlinked working directory, not the symlink itself', async () => {
+    const real = path.join(workDir, 'real-dir');
+    await mkdir(real, { recursive: true });
+    const link = path.join(workDir, 'link-dir');
+    await symlink(real, link);
+
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+    await runtime.prepare(makeSession({ repo: link }), makeIdentity(configDir));
+
+    const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
+    const realDir = await realpath(real);
+    expect(await trustedHeaders(sessionConfig)).toEqual([realDir]);
+  });
+
+  it('trusts both the linked worktree itself and the resolved main-repository root', async () => {
+    const main = path.join(workDir, 'main-repo');
+    await mkdir(main, { recursive: true });
+    git(main, 'init', '-b', 'main');
+    await writeFile(path.join(main, 'file.txt'), 'hi');
+    git(main, 'add', 'file.txt');
+    git(main, 'commit', '-m', 'init');
+    const worktree = path.join(workDir, 'wt');
+    await runGit(['-C', main, 'worktree', 'add', '-b', 'wt-branch', worktree], { env: gitEnv });
+
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+    await runtime.prepare(makeSession({ repo: worktree }), makeIdentity(configDir));
+
+    const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
+    const realWorktree = await realpath(worktree);
+    const realMain = await realpath(main);
+    expect(await trustedHeaders(sessionConfig)).toEqual(expect.arrayContaining([realWorktree, realMain]));
+    expect(await trustedHeaders(sessionConfig)).toHaveLength(2);
+  });
+
+  it('trusts only the single resolved root for a plain (non-worktree) repository', async () => {
+    const repo = path.join(workDir, 'plain-repo');
+    await mkdir(repo, { recursive: true });
+    git(repo, 'init', '-b', 'main');
+
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+    await runtime.prepare(makeSession({ repo }), makeIdentity(configDir));
+
+    const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
+    const realRepo = await realpath(repo);
+    expect(await trustedHeaders(sessionConfig)).toEqual([realRepo]);
+  });
+
+  it('trusts only the resolved cwd for a non-git directory', async () => {
+    const dir = path.join(workDir, 'not-a-repo');
+    await mkdir(dir, { recursive: true });
+
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+    await runtime.prepare(makeSession({ repo: dir }), makeIdentity(configDir));
+
+    const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
+    const realDir = await realpath(dir);
+    expect(await trustedHeaders(sessionConfig)).toEqual([realDir]);
+  });
+
+  it('does not duplicate an entry already present in the shared config, but still adds the missing one', async () => {
+    const main = path.join(workDir, 'main-repo2');
+    await mkdir(main, { recursive: true });
+    git(main, 'init', '-b', 'main');
+    await writeFile(path.join(main, 'file.txt'), 'hi');
+    git(main, 'add', 'file.txt');
+    git(main, 'commit', '-m', 'init');
+    const worktree = path.join(workDir, 'wt2');
+    await runGit(['-C', main, 'worktree', 'add', '-b', 'wt2-branch', worktree], { env: gitEnv });
+    const realMain = await realpath(main);
+
+    // Shared config already trusts the main repository root (e.g. from an
+    // earlier plain-repo session) but not this worktree's own directory.
+    await writeFile(path.join(sharedHome, 'config.toml'), `[projects."${realMain}"]\ntrust_level = "trusted"\n`);
+
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+    await runtime.prepare(makeSession({ repo: worktree }), makeIdentity(configDir));
+
+    const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
+    const headers = await trustedHeaders(sessionConfig);
+    const realWorktree = await realpath(worktree);
+    // The pre-existing entry is not duplicated; the missing worktree entry is added.
+    expect(headers.filter((header) => header === realMain)).toHaveLength(1);
+    expect(headers).toContain(realWorktree);
   });
 });
 

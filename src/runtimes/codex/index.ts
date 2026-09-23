@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
@@ -717,14 +717,61 @@ export class CodexRuntime implements SessionRuntime {
     // launch, so shared-config edits are picked up on the next (re)start.
     const sharedConfig = (await this.readIfExists(path.join(sharedHome, 'config.toml'))) ?? '';
     const protectedConfig = ensureProjectDocMaxBytes(sharedConfig, minimumDocBytes);
-    const trustHeader = `[projects.${tomlString(repo)}]`;
-    const trustEntry = protectedConfig.includes(trustHeader)
-      ? ''
-      : `\n# ${GENERATED_MARKER}: pre-trust the session working directory\n${trustHeader}\ntrust_level = "trusted"\n`;
+    const trustPaths = await this.trustedProjectPaths(repo);
+    let trustEntry = '';
+    for (const trustPath of trustPaths) {
+      const trustHeader = `[projects.${tomlString(trustPath)}]`;
+      if (protectedConfig.includes(trustHeader) || trustEntry.includes(trustHeader)) continue;
+      trustEntry += `\n# ${GENERATED_MARKER}: pre-trust the session working directory\n${trustHeader}\ntrust_level = "trusted"\n`;
+    }
     const configDest = path.join(home, 'config.toml');
     // May be a symlink from an earlier conductor version — remove, never write through it.
     await rm(configDest, { force: true });
     await writeFile(configDest, `${protectedConfig}${trustEntry}`);
+  }
+
+  /**
+   * Paths Codex needs pre-trusted for the startup dialog to stay silent.
+   * Codex compares REALPATHs (resolving symlinks like macOS's /tmp ->
+   * /private/tmp), and applies trust at the Git repository ROOT — for a
+   * linked worktree that's the main worktree's root (from `git
+   * rev-parse --git-common-dir`), not the worktree's own directory. Cover
+   * both the resolved cwd and the resolved repository root so plain repos,
+   * linked worktrees, and non-git directories are all trusted where Codex
+   * actually checks.
+   */
+  private async trustedProjectPaths(repo: string): Promise<string[]> {
+    const paths: string[] = [];
+    const addUnique = (candidate: string): void => {
+      if (!paths.includes(candidate)) paths.push(candidate);
+    };
+
+    const realRepo = await this.realpathOrSelf(repo);
+    addUnique(realRepo);
+
+    try {
+      const { stdout } = await runGit(['-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+        timeoutMs: GIT_TIMEOUT_MS,
+      });
+      const commonDir = stdout.trim();
+      if (commonDir.length > 0) {
+        const gitRoot = path.dirname(commonDir);
+        addUnique(await this.realpathOrSelf(gitRoot));
+      }
+    } catch {
+      // Not a Git repository (or git unavailable) — trusting the resolved cwd is enough.
+    }
+
+    return paths;
+  }
+
+  /** realpath() resolves symlinks; a missing/unreadable path just trusts itself as given. */
+  private async realpathOrSelf(candidate: string): Promise<string> {
+    try {
+      return await realpath(candidate);
+    } catch {
+      return candidate;
+    }
   }
 
   private async readActiveGlobalGuidance(sharedHome: string): Promise<string | null> {

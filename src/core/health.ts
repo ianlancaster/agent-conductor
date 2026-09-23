@@ -492,11 +492,26 @@ export class HealthMonitor {
     }
 
     const eventSequence = this.eventSequences.get(session) ?? 0;
+    // A completion notification can be reused by the runtime for an
+    // in-turn checkpoint (e.g. Codex firing agent-turn-complete for an
+    // interim commentary message while a background command it just
+    // launched — same turn id — is still running). Execution evidence is
+    // authoritative over that stale completion, exactly as it already is
+    // in reconcileActivity/confirmCompactionIdle: a still-visible spinner
+    // means the turn never actually ended, whatever the notification said.
+    const activity = await this.deps.observeActivity(session, pane);
     const inputState = await this.deps.observeInputState(session, pane);
-    // Composer observation is asynchronous. A newer lifecycle event or
+    // Both observations are asynchronous. A newer lifecycle event or
     // Conductor submission always wins over the older idle candidate.
     if ((this.eventSequences.get(session) ?? 0) !== eventSequence || this.turnPhases.get(session) !== 'complete')
       return;
+    if (activity === 'working') {
+      this.deps.logEvent(session, 'idle_suppressed', 'execution evidence still shows the turn working');
+      this.turnPhases.set(session, 'active');
+      this.recordWorking(session);
+      this.deps.onWorking(session);
+      return;
+    }
     if (inputState === 'draft') {
       this.deps.logEvent(session, 'idle_suppressed', 'composer contains a draft');
       return;
