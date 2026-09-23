@@ -17,6 +17,10 @@ export interface WorkStatusCurrent {
   resolved_at_ms: number | null;
   cumulative_json: string;
   acknowledgement_wait_ms: number;
+  disposition: 'open' | 'accepted' | 'not_accepted' | 'closed';
+  disposition_event_id: number | null;
+  completion_revision: number;
+  execution_id: string | null;
 }
 
 export const EMPTY_DURATIONS: Record<WorkClaimState, number> = {
@@ -138,6 +142,10 @@ export function projectResolution(db: DatabaseSync, event: WorkStatusEvent): voi
 /** Upgrade existing PR 1 journals without discarding transition history. */
 export function migrateWorkStatusProjection(db: DatabaseSync): void {
   const columns = db.prepare('PRAGMA table_info(work_status_events)').all() as { name: string }[];
+  const existingProjection = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'work_status_current'")
+    .get() as { name: string } | undefined;
+  if (existingProjection !== undefined && columns.some((column) => column.name === 'duplicate_count')) return;
   if (!columns.some((column) => column.name === 'duplicate_count')) {
     db.exec('ALTER TABLE work_status_events ADD COLUMN duplicate_count INTEGER NOT NULL DEFAULT 0');
   }
@@ -182,5 +190,75 @@ export function migrateWorkStatusProjection(db: DatabaseSync): void {
         (fleet_id, session, idempotency_key, payload_json, claim_event_id) VALUES (?, ?, ?, ?, ?)`,
       ).run(event.fleet_id, event.session, event.idempotency_key, event.payload_json, event.id);
     }
+  }
+}
+
+/** Add authority facts while preserving existing event IDs and attempt history. */
+export function migrateWorkStatusAuthority(db: DatabaseSync): void {
+  const currentColumns = db.prepare('PRAGMA table_info(work_status_current)').all() as { name: string }[];
+  if (!currentColumns.some((column) => column.name === 'disposition'))
+    db.exec(`
+    CREATE TABLE work_status_events_next (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      fleet_id TEXT NOT NULL, session TEXT NOT NULL, work_id TEXT NOT NULL,
+      attempt_id TEXT NOT NULL, mapping_version TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN
+        ('claim', 'unchanged_report', 'blocker_resolved', 'accepted', 'not_accepted', 'work_closed', 'attempt_rebound')),
+      state TEXT CHECK (state IS NULL OR state IN ('working', 'waiting', 'blocked', 'done', 'failed')),
+      payload_json TEXT NOT NULL, idempotency_key TEXT,
+      blocker_id TEXT, blocker_revision INTEGER, target_event_id INTEGER,
+      occurred_at_ms INTEGER NOT NULL, duplicate_count INTEGER NOT NULL DEFAULT 0,
+      execution_id TEXT
+    );
+    INSERT INTO work_status_events_next
+      (id, fleet_id, session, work_id, attempt_id, mapping_version, kind, state,
+       payload_json, idempotency_key, blocker_id, blocker_revision, target_event_id,
+       occurred_at_ms, duplicate_count)
+    SELECT id, fleet_id, session, work_id, attempt_id, mapping_version, kind, state,
+       payload_json, idempotency_key, blocker_id, blocker_revision, target_event_id,
+       occurred_at_ms, duplicate_count FROM work_status_events;
+    DROP TABLE work_status_events;
+    ALTER TABLE work_status_events_next RENAME TO work_status_events;
+    CREATE INDEX idx_work_status_scope ON work_status_events(fleet_id, session, work_id, id);
+    CREATE INDEX idx_work_status_attempt ON work_status_events(fleet_id, attempt_id, id);
+    CREATE UNIQUE INDEX idx_work_status_idempotency ON work_status_events(fleet_id, session, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+    CREATE INDEX idx_work_status_sequence ON work_status_events(fleet_id, id);
+    ALTER TABLE work_status_current ADD COLUMN disposition TEXT NOT NULL DEFAULT 'open'
+      CHECK (disposition IN ('open', 'accepted', 'not_accepted', 'closed'));
+    ALTER TABLE work_status_current ADD COLUMN disposition_event_id INTEGER;
+    ALTER TABLE work_status_current ADD COLUMN completion_revision INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE work_status_current ADD COLUMN execution_id TEXT;
+  `);
+  // Also repairs a beta store whose schema was already upgraded but whose
+  // user_version was rolled back and whose PR 1 projection was replayed.
+  const current = db.prepare('SELECT * FROM work_status_current').all() as unknown as WorkStatusCurrent[];
+  for (const row of current) {
+    const events = db
+      .prepare(
+        `SELECT * FROM work_status_events
+      WHERE fleet_id = ? AND session = ? AND work_id = ? AND attempt_id = ? ORDER BY id`,
+      )
+      .all(row.fleet_id, row.session, row.work_id, row.attempt_id) as unknown as WorkStatusEvent[];
+    let disposition: WorkStatusCurrent['disposition'] = 'open';
+    let dispositionEventId: number | null = null;
+    let completionRevision = 0;
+    let executionId: string | null = null;
+    for (const event of events) {
+      if (event.kind === 'claim') {
+        if (event.state === 'done') completionRevision += 1;
+        executionId ??= event.execution_id;
+      } else if (event.kind === 'attempt_rebound') {
+        executionId = event.execution_id;
+      } else if (event.kind === 'accepted' || event.kind === 'not_accepted' || event.kind === 'work_closed') {
+        disposition =
+          event.kind === 'accepted' ? 'accepted' : event.kind === 'not_accepted' ? 'not_accepted' : 'closed';
+        dispositionEventId = event.id;
+      }
+    }
+    db.prepare(
+      `UPDATE work_status_current SET disposition = ?, disposition_event_id = ?,
+      completion_revision = ?, execution_id = ? WHERE fleet_id = ? AND session = ? AND work_id = ?`,
+    ).run(disposition, dispositionEventId, completionRevision, executionId, row.fleet_id, row.session, row.work_id);
   }
 }

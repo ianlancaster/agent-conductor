@@ -1399,6 +1399,24 @@ For deeper operator onboarding, read `docs/getting-started.md`. For runbook auth
 read `guides/runbooks.md`. For service-specific problems, use the Telegram, Slack, or PR Shepherd
 guide.
 
+<!-- conductor-topic:work-status -->
+
+## Work status claims
+
+Use `report_status` when a work item's state changes. Send `state`, `work_id`, and a short `summary`; Conductor identifies your session and returns the durable event and attempt IDs. A work ID is one reportable unit, including an independent workflow node. `waiting` requires `waiting_on`. `blocked` requires `needs_from`, `question`, `recommendation`, `meanwhile`, and `if_no_answer`; `options` is optional. Ask the operator through `send_to_operator` as well when `needs_from` is `operator`. `done` requires evidence references that identify the actual output, such as a review, answer, decision, commit, or artifact. `failed` requires a reason. Leaving an unresolved blocker requires `resolution`.
+
+Before ending a turn for a peer, background task, or CI that may become a long wait, report `waiting`. One session can claim only one `working` item. Same-state updates are for changed `waiting_on`, a substantive blocker packet clarification or new question, or new completion evidence. Summary-only working or waiting updates are rejected. Exact duplicates return `unchanged: true` and increment the duplicate count on the original claim; avoid sending them on a timer. The next step belongs in your plan. A `done` claim awaits separate acceptance.
+
+`attempt_id` and `idempotencyKey` are optional. Conductor mints an attempt ID on first `working` and reuses it for that session and work ID until the attempt ends. A packet-supplied ID takes precedence. A retry with the same idempotency key returns its original receipt after later transitions. The status vocabulary version is stamped from the session's instruction snapshot; adapters may specify it explicitly. Work status never authorizes a restart, redispatch, or automatic acceptance.
+
+Claude Code permission and elicitation notifications show immediate harness-prompt attention when their type is known. Idle-input notifications count as idle evidence. Missing or unfamiliar notification types only annotate the work row with a bounded message; pane reconciliation determines liveness. Harness prompts do not enter the operator decision queue.
+
+`record_status_acceptance` and `record_status_not_accepted` are available only to sessions configured as acceptance authorities for the target worker. They require the exact attempt and current done-claim event; include the artifact revision when that claim cites one. A session can never decide its own attempt. Acceptance records attested evidence, not a Conductor-verified merge or check. Rejection records a reason, sends it through protected delivery, and lets the worker begin a new attempt. The operator can use `/accept-status <work-id> [evidence-ref]` or `/reject-status <work-id> <reason>` without typing event IDs when the work ID is unambiguous.
+
+Configure authorities in `status.acceptanceAuthorities` as an authority codename mapped to the worker codenames it may review; the default is empty. The operator can close unresolved work with `/close-status <work-id> <reason>`. If a new Conductor run needs to continue an open attempt, the operator uses `/rebind-status <work-id> <reason>` after starting that session. Both actions bind and check the current claim. A stopped session remains stopped, and neither status action redispatches work. Conductor keeps a bounded, fleet-scoped read-after-sequence journal query for trusted adapters to catch up; it is not an agent MCP tool.
+
+Open attempts created before execution binding was available have unknown run identity after upgrade. Their next changed report requires an explicit `/rebind-status` after the owning session is live. Exact duplicate retries still return their earlier receipt.
+
 <!-- conductor-topic:opencodex -->
 
 ## OpenCodex proxy-backed coding sessions
@@ -1435,13 +1453,3 @@ from a model catalog entry or a child's model self-report; verify the chosen com
 the proxy's recorded route in a live bounded task. For Claude Code, select an OpenCodex-generated
 `ocx-*` agent type from its configured roster for a different routed child; a displayed tier alias
 such as `haiku` can be only the Agent tool's placeholder, not the selected provider model.
-
-# Work status claims
-
-Use `report_status` when a work item's state changes. Send `state`, `work_id`, and a short `summary`; Conductor identifies your session and returns the durable event and attempt IDs. A work ID is one reportable unit, including an independent workflow node. `waiting` requires `waiting_on`. `blocked` requires `needs_from`, `question`, `recommendation`, `meanwhile`, and `if_no_answer`; `options` is optional. Ask the operator through `send_to_operator` as well when `needs_from` is `operator`. `done` requires evidence references that identify the actual output, such as a review, answer, decision, commit, or artifact. `failed` requires a reason. Leaving an unresolved blocker requires `resolution`.
-
-Before ending a turn for a peer, background task, or CI that may become a long wait, report `waiting`. One session can claim only one `working` item. Same-state updates are for changed `waiting_on`, a substantive blocker packet clarification or new question, or new completion evidence. Summary-only working or waiting updates are rejected. Exact duplicates return `unchanged: true` and increment the duplicate count on the original claim; avoid sending them on a timer. The next step belongs in your plan. A `done` claim awaits separate acceptance.
-
-`attempt_id` and `idempotencyKey` are optional. Conductor mints an attempt ID on first `working` and reuses it for that session and work ID until the attempt ends. A packet-supplied ID takes precedence. A retry with the same idempotency key returns its original receipt after later transitions. The status vocabulary version is stamped from the session's instruction snapshot; adapters may specify it explicitly. Work status never authorizes a restart, redispatch, or automatic acceptance.
-
-Claude Code permission and elicitation notifications show immediate harness-prompt attention when their type is known. Idle-input notifications count as idle evidence. Missing or unfamiliar notification types only annotate the work row with a bounded message; pane reconciliation determines liveness. Harness prompts do not enter the operator decision queue.

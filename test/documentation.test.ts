@@ -64,6 +64,9 @@ describe('agent documentation', () => {
       safety: string;
     };
     expect(result.topics.map((topic) => topic.name)).toEqual(CONDUCTOR_DOC_TOPICS);
+    expect((JSON.parse(await documentation().read('work-status')) as { content: string }).content).toContain(
+      'record_status_acceptance',
+    );
     expect(result.fleet).toMatchObject({
       fleetDir: '/fleets/example',
       supervisorConfig: '/fleets/example/.conductor/config/supervisor.yaml',

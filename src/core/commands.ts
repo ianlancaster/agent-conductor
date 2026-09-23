@@ -161,6 +161,62 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       },
     },
     {
+      command: 'accept-status',
+      operations: ['record_status_acceptance'],
+      group: 'Conversation',
+      usage: '/accept-status <work-id> [evidence-ref]',
+      description: 'Attest the unique current done claim with its evidence or an explicit evidence reference.',
+      invoke: (args, actor) => {
+        const workId = args[0];
+        if (workId === undefined) usage('/accept-status <work-id> [evidence-ref]');
+        const evidence = args.slice(1).join(' ');
+        return invoke(
+          'record_status_acceptance',
+          { work_id: workId, ...(evidence === '' ? {} : { evidence_ref: evidence }) },
+          actor,
+        );
+      },
+    },
+    {
+      command: 'reject-status',
+      operations: ['record_status_not_accepted'],
+      group: 'Conversation',
+      usage: '/reject-status <work-id> <reason>',
+      description: 'Reject the unique current done claim and deliver the reason to its session.',
+      invoke: (args, actor) => {
+        const workId = args[0];
+        const reason = args.slice(1).join(' ');
+        if (workId === undefined || reason === '') usage('/reject-status <work-id> <reason>');
+        return invoke('record_status_not_accepted', { work_id: workId, reason }, actor);
+      },
+    },
+    {
+      command: 'close-status',
+      operations: ['close_status_work'],
+      group: 'Conversation',
+      usage: '/close-status <work-id> <reason>',
+      description: 'Close one unresolved work item with a recorded reason.',
+      invoke: (args, actor) => {
+        const workId = args[0];
+        const reason = args.slice(1).join(' ');
+        if (workId === undefined || reason === '') usage('/close-status <work-id> <reason>');
+        return invoke('close_status_work', { work_id: workId, reason }, actor);
+      },
+    },
+    {
+      command: 'rebind-status',
+      operations: ['rebind_status_attempt'],
+      group: 'Conversation',
+      usage: '/rebind-status <work-id> <reason>',
+      description: 'Bind one open attempt to its session’s current live execution.',
+      invoke: (args, actor) => {
+        const workId = args[0];
+        const reason = args.slice(1).join(' ');
+        if (workId === undefined || reason === '') usage('/rebind-status <work-id> <reason>');
+        return invoke('rebind_status_attempt', { work_id: workId, reason }, actor);
+      },
+    },
+    {
       command: 'start',
       operations: ['start_session'],
       group: 'Sessions',

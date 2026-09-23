@@ -136,6 +136,22 @@ beforeEach(() => {
     reportWorkStatus: (session, report) => store.workStatus.report('test-fleet', session, report),
     resolveWorkBlocker: async (workId, answer, target) =>
       store.workStatus.resolve('test-fleet', workId, answer, target),
+    actOnWorkStatus: async (action, workId, actor, options) => {
+      const bound =
+        action === 'accept' || action === 'reject'
+          ? store.workStatus.currentDone('test-fleet', workId, options.target?.attemptId)
+          : store.workStatus.currentUnresolved('test-fleet', workId, options.target?.attemptId);
+      const target = options.target ?? {
+        attemptId: bound.row.attempt_id,
+        claimEventId: `test-fleet:work-status:${String(bound.event.id)}`,
+      };
+      const name = actor.audience === 'operator' ? actor.id : actor.codename;
+      if (action === 'accept') return store.workStatus.accept('test-fleet', workId, name, target, options.evidenceRef);
+      if (action === 'reject') return store.workStatus.reject('test-fleet', workId, name, options.reason ?? '', target);
+      if (action === 'close')
+        return store.workStatus.closeWork('test-fleet', workId, name, options.reason ?? '', target);
+      return store.workStatus.rebind('test-fleet', workId, name, options.reason ?? '', target, 'run-next');
+    },
     tail: async (c, n) => `tail:${c}:${n}`,
     typeInPane: async (codename, text) => {
       const pane = lifecycle.getPane(codename);
@@ -164,6 +180,77 @@ beforeEach(() => {
 });
 
 describe('surface contract', () => {
+  it('requires a full exact done target for authority sessions and rejects partial operator targets', async () => {
+    store.workStatus.report('test-fleet', 'alpha', { state: 'working', work_id: 'AUTH-1', summary: 'Review' });
+    const done = store.workStatus.report('test-fleet', 'alpha', {
+      state: 'done',
+      work_id: 'AUTH-1',
+      summary: 'Reviewed',
+      evidence: ['review://1'],
+    });
+    await expect(
+      operations.invoke(
+        'record_status_acceptance',
+        {
+          work_id: 'AUTH-1',
+          done_claim_event_id: done.eventId,
+        },
+        { audience: 'operator', id: 'operator' },
+      ),
+    ).rejects.toThrow('Exact status targeting');
+    await expect(
+      operations.invoke(
+        'record_status_acceptance',
+        {
+          work_id: 'AUTH-1',
+        },
+        { audience: 'session', codename: 'beta' },
+      ),
+    ).rejects.toThrow('must target the exact done claim');
+    const exact = await operations.invoke(
+      'record_status_acceptance',
+      {
+        work_id: 'AUTH-1',
+        attempt_id: done.attemptId,
+        done_claim_event_id: done.eventId,
+      },
+      { audience: 'session', codename: 'beta' },
+    );
+    expect(JSON.parse(exact as string)).toMatchObject({ targetClaimEventId: done.eventId, actor: 'beta' });
+    store.workStatus.report('test-fleet', 'alpha', { state: 'working', work_id: 'AUTH-2', summary: 'Build' });
+    const cited = store.workStatus.report('test-fleet', 'alpha', {
+      state: 'done',
+      work_id: 'AUTH-2',
+      summary: 'Built',
+      evidence: ['artifact://2'],
+      artifact_revision: 'sha-2',
+    });
+    await expect(
+      operations.invoke(
+        'record_status_acceptance',
+        {
+          work_id: 'AUTH-2',
+          attempt_id: cited.attemptId,
+          done_claim_event_id: cited.eventId,
+        },
+        { audience: 'session', codename: 'beta' },
+      ),
+    ).rejects.toThrow('changed');
+    expect(
+      JSON.parse(
+        (await operations.invoke(
+          'record_status_acceptance',
+          {
+            work_id: 'AUTH-2',
+            attempt_id: cited.attemptId,
+            done_claim_event_id: cited.eventId,
+            artifact_revision: 'sha-2',
+          },
+          { audience: 'session', codename: 'beta' },
+        )) as string,
+      ),
+    ).toMatchObject({ artifactRevision: 'sha-2' });
+  });
   it('HOTSHOT rejects a supplied claim target without its other target fields', async () => {
     store.workStatus.report('test-fleet', 'alpha', { state: 'working', work_id: 'target-test', summary: 'Build' });
     const packet = {
@@ -250,7 +337,17 @@ describe('surface contract', () => {
         .filter((definition) => definition.federation === 'local-only')
         .map((definition) => definition.name)
         .sort(),
-    ).toEqual(['attest_session_status', 'get_conductor_docs', 'report_status', 'send_to_operator', 'whoami'].sort());
+    ).toEqual(
+      [
+        'attest_session_status',
+        'get_conductor_docs',
+        'record_status_acceptance',
+        'record_status_not_accepted',
+        'report_status',
+        'send_to_operator',
+        'whoami',
+      ].sort(),
+    );
     expect(
       operations
         .definitions()

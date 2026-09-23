@@ -9,7 +9,13 @@ import { InvalidRequestError } from './errors.js';
 import type { Placement } from './types.js';
 import type { RunbookAdoptionActions } from './runbook-adoptions.js';
 import type { FederationListing } from '../federation/types.js';
-import type { WorkStatusReport, WorkStatusReceipt, WorkBlockerResolution } from '../store/work-status.js';
+import type {
+  WorkStatusReport,
+  WorkStatusReceipt,
+  WorkBlockerResolution,
+  WorkStatusAuthorityReceipt,
+  WorkStatusExactTarget,
+} from '../store/work-status.js';
 import {
   operationSchema as schema,
   optionalString,
@@ -68,6 +74,12 @@ export interface ConductorOperationDeps {
     answer: string,
     target?: { attemptId: string; blockerId: string; blockerRevision: number; targetClaimEventId?: string },
   ): Promise<WorkBlockerResolution>;
+  actOnWorkStatus?(
+    action: 'accept' | 'reject' | 'close' | 'rebind',
+    workId: string,
+    actor: OperationActor,
+    options: { evidenceRef?: string; reason?: string; target?: WorkStatusExactTarget },
+  ): Promise<WorkStatusAuthorityReceipt>;
   attestSessionStatus(
     codename: string,
     actor: OperationActor,
@@ -317,6 +329,85 @@ export class ConductorOperations {
           );
         },
       },
+      ...(['accept', 'reject', 'close', 'rebind'] as const).map((action): OperationDefinition => {
+        const name = {
+          accept: 'record_status_acceptance',
+          reject: 'record_status_not_accepted',
+          close: 'close_status_work',
+          rebind: 'rebind_status_attempt',
+        }[action];
+        const exactFields =
+          action === 'accept' || action === 'reject'
+            ? ['attempt_id', 'done_claim_event_id', 'artifact_revision']
+            : ['attempt_id', 'claim_event_id'];
+        return {
+          name,
+          description: {
+            accept:
+              'Attest the exact current done claim with evidence. Configured authorities may accept only listed workers; never their own attempt.',
+            reject: 'Reject the exact current done claim with a reason and deliver rework feedback.',
+            close: 'Close one unambiguous unresolved work item with a recorded reason.',
+            rebind: 'Trust the current live session execution to continue one exact open attempt.',
+          }[action],
+          resultDescription:
+            'Returns the authority event, exact target claim and revision, actor, and evidence or reason as JSON.',
+          audiences: action === 'accept' || action === 'reject' ? BOTH : OPERATOR_ONLY,
+          federation: 'local-only',
+          inputSchema: schema(
+            {
+              work_id: stringProperty('Work ID'),
+              ...(action === 'accept'
+                ? { evidence_ref: stringProperty('Optional attested evidence reference; defaults to claim evidence') }
+                : {}),
+              ...(action !== 'accept' ? { reason: stringProperty('Required reason') } : {}),
+              attempt_id: stringProperty('Exact attempt ID for authority adapters'),
+              ...(action === 'accept' || action === 'reject'
+                ? {
+                    done_claim_event_id: stringProperty('Exact done-claim event ID'),
+                    artifact_revision: stringProperty('Exact cited artifact revision when present'),
+                  }
+                : { claim_event_id: stringProperty('Exact current claim event ID') }),
+            },
+            ['work_id', ...(action === 'accept' ? [] : ['reason'])],
+          ),
+          handler: async (args, actor) => {
+            if (this.deps.actOnWorkStatus === undefined) throw new Error('Work status is unavailable.');
+            const supplied = exactFields.filter((field) => args[field] !== undefined);
+            const expectedCore =
+              action === 'accept' || action === 'reject'
+                ? ['attempt_id', 'done_claim_event_id']
+                : ['attempt_id', 'claim_event_id'];
+            if (supplied.length > 0 && expectedCore.some((field) => args[field] === undefined)) {
+              throw new InvalidRequestError(
+                'Exact status targeting requires attempt_id and the current claim event ID.',
+              );
+            }
+            if (actor.audience === 'session' && supplied.length === 0) {
+              throw new InvalidRequestError('Session authorities must target the exact done claim.');
+            }
+            const target =
+              supplied.length === 0
+                ? undefined
+                : {
+                    attemptId: requireString(args, 'attempt_id'),
+                    claimEventId: requireString(
+                      args,
+                      action === 'accept' || action === 'reject' ? 'done_claim_event_id' : 'claim_event_id',
+                    ),
+                    ...(args.artifact_revision === undefined
+                      ? {}
+                      : { artifactRevision: requireString(args, 'artifact_revision') }),
+                  };
+            return JSON.stringify(
+              await this.deps.actOnWorkStatus(action, requireString(args, 'work_id'), actor, {
+                ...(args.evidence_ref === undefined ? {} : { evidenceRef: requireString(args, 'evidence_ref') }),
+                ...(args.reason === undefined ? {} : { reason: requireString(args, 'reason') }),
+                ...(target === undefined ? {} : { target }),
+              }),
+            );
+          },
+        };
+      }),
       {
         name: 'attest_session_status',
         description:

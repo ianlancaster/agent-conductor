@@ -40,6 +40,24 @@ function writeSession(name: string, content: string): void {
 }
 
 describe('loadSupervisorConfig', () => {
+  it('defaults acceptance authorities to none and validates scoped session codenames', () => {
+    expect(loadSupervisorConfig(baseDir).status.acceptanceAuthorities).toEqual({});
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'status:\n  acceptanceAuthorities:\n    reviewer: [worker]\n',
+    );
+    expect(loadSupervisorConfig(baseDir).status.acceptanceAuthorities).toEqual({ reviewer: ['worker'] });
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'status:\n  acceptanceAuthorities:\n    "bad name": [worker]\n',
+    );
+    expect(() => loadSupervisorConfig(baseDir)).toThrow('authority keys must be session codenames');
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'status:\n  acceptanceAuthorities:\n    reviewer: ["bad name"]\n',
+    );
+    expect(() => loadSupervisorConfig(baseDir)).toThrow();
+  });
   it('preserves trimmed external runtime names for registry-time validation', () => {
     writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'defaults:\n  runtime: " external "\n');
     expect(loadSupervisorConfig(baseDir).defaults.runtime).toBe('external');

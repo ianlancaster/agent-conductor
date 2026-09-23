@@ -6,7 +6,7 @@ import type { RunbookSource } from '../runbooks/types.js';
 import { applyMigrations, openSqliteDatabase, openSqliteDatabaseReadOnly, withTransaction } from './sqlite.js';
 import type { SqliteMigration } from './sqlite.js';
 import { WorkStatusJournal } from './work-status.js';
-import { migrateWorkStatusProjection } from './work-status-projection.js';
+import { migrateWorkStatusAuthority, migrateWorkStatusProjection } from './work-status-projection.js';
 
 /** One launch of a session's CLI (start → stop). A session has many runs over time. */
 export interface RunRow {
@@ -411,6 +411,7 @@ const MIGRATIONS: SqliteMigration[] = [
     WHERE idempotency_key IS NOT NULL;
   `,
   migrateWorkStatusProjection,
+  migrateWorkStatusAuthority,
 ];
 
 export class Store {
@@ -438,6 +439,13 @@ export class Store {
     this.db
       .prepare('INSERT INTO runs (id, session, prompt_summary) VALUES (?, ?, ?)')
       .run(id, session, promptSummary ?? null);
+  }
+
+  latestActiveRunId(session: string): string | undefined {
+    const row = this.db
+      .prepare("SELECT id FROM runs WHERE session = ? AND status = 'active' ORDER BY rowid DESC LIMIT 1")
+      .get(session) as { id: string } | undefined;
+    return row?.id;
   }
 
   touchRun(id: string): void {

@@ -24,6 +24,8 @@ export interface WorkStatusView {
   workId: string;
   attemptId: string;
   state: WorkClaimState;
+  disposition: WorkStatusCurrent['disposition'];
+  completionRevision: number;
   summary: string;
   stateEnteredAt: number;
   cumulativeMs: Record<WorkClaimState, number>;
@@ -71,6 +73,7 @@ export function deriveWorkStatus(
 ): WorkStatusSummary {
   const views: WorkStatusView[] = [];
   for (const row of rows) {
+    if (row.disposition === 'accepted' || row.disposition === 'closed') continue;
     const report = JSON.parse(row.payload_json) as WorkStatusReport;
     const mechanical = observation(row.session);
     const processFresh = fresh(mechanical.processObservedAt, now, thresholds.observationMaxAgeMs);
@@ -108,15 +111,17 @@ export function deriveWorkStatus(
           ? 0.25
           : claimBlocked
             ? 0.5
-            : stale || disagreement
-              ? 1
-              : overdue
-                ? 2
-                : row.state === 'done'
-                  ? 3
-                  : row.state === 'working'
-                    ? 4
-                    : 5;
+            : row.disposition === 'not_accepted'
+              ? 2
+              : stale || disagreement
+                ? 1
+                : overdue
+                  ? 2
+                  : row.state === 'done'
+                    ? 3
+                    : row.state === 'working'
+                      ? 4
+                      : 5;
     const attentionSince = claimBlocked
       ? (row.blocker_started_at_ms ?? row.state_entered_at_ms)
       : harnessPrompt
@@ -138,6 +143,8 @@ export function deriveWorkStatus(
       workId: row.work_id,
       attemptId: row.attempt_id,
       state: row.state,
+      disposition: row.disposition,
+      completionRevision: row.completion_revision,
       summary: report.summary,
       stateEnteredAt: row.state_entered_at_ms,
       cumulativeMs: cumulative,
@@ -167,7 +174,7 @@ export function deriveWorkStatus(
       a.workId.localeCompare(b.workId) ||
       a.attemptId.localeCompare(b.attemptId),
   );
-  const active = views.filter((view) => ACTIVE.has(view.state));
+  const active = views.filter((view) => view.disposition === 'open' && ACTIVE.has(view.state));
   const onOperator = views.filter(
     (view) => view.state === 'blocked' && view.resolvedAt === undefined && view.needsFrom === 'operator',
   );
@@ -197,28 +204,30 @@ export function renderWorkStatus(summary: WorkStatusSummary, now: number): strin
   const oldest = summary.oldestOperatorBlockMs === null ? 'none' : formatWorkDuration(summary.oldestOperatorBlockMs);
   const lines = [
     `Work status: ${String(summary.activeAttempts)} active attempt(s), ${String(summary.activeUnits)} active unit(s), ${String(summary.startedUnresolved)} started unresolved · on operator: ${String(summary.onOperator)}, oldest ${oldest}`,
-    '  Session · Work · State · In state · Work age · Evidence · Needs from · Liveness',
+    '  Session · Work · Attempt · State · In state · Work age · Evidence · Needs from · Liveness',
   ];
   for (const view of summary.views) {
     const label =
       view.attentionBand === 0.25
         ? 'harness prompt'
-        : view.resolvedAt !== undefined && view.state === 'blocked'
-          ? 'resolved; awaiting transition'
-          : view.stale
-            ? 'stale'
-            : view.disagreement
-              ? 'disagreement'
-              : view.state === 'done'
-                ? 'done awaiting acceptance'
-                : view.state;
+        : view.disposition === 'not_accepted'
+          ? 'not accepted; rework requested'
+          : view.resolvedAt !== undefined && view.state === 'blocked'
+            ? 'resolved; awaiting transition'
+            : view.stale
+              ? 'stale'
+              : view.disagreement
+                ? 'disagreement'
+                : view.state === 'done'
+                  ? `done awaiting acceptance (claim r${String(view.completionRevision)})`
+                  : view.state;
     const needs = view.needsFrom ?? view.waitingOn ?? '-';
     const annotation =
       view.unknownNotification === undefined
         ? ''
         : ` · runtime notification, type unknown: ${view.unknownNotification}`;
     lines.push(
-      `  ${view.session} · ${view.workId} · ${label}${view.paused ? ' (session paused)' : ''} · ${formatWorkDuration(now - view.stateEnteredAt)} · ${formatWorkDuration(now - view.workStartedAt)} · ${view.evidence?.[0] ?? '-'} · ${needs} · ${view.liveness}${annotation}`,
+      `  ${view.session} · ${view.workId} · ${view.attemptId} · ${label}${view.paused ? ' (session paused)' : ''} · ${formatWorkDuration(now - view.stateEnteredAt)} · ${formatWorkDuration(now - view.workStartedAt)} · ${view.evidence?.[0] ?? '-'} · ${needs} · ${view.liveness}${annotation}`,
     );
   }
   return lines.join('\n');

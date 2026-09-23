@@ -34,7 +34,8 @@ export interface WorkStatusEvent {
   work_id: string;
   attempt_id: string;
   mapping_version: string;
-  kind: 'claim' | 'unchanged_report' | 'blocker_resolved';
+  kind:
+    'claim' | 'unchanged_report' | 'blocker_resolved' | 'accepted' | 'not_accepted' | 'work_closed' | 'attempt_rebound';
   state: WorkClaimState | null;
   payload_json: string;
   idempotency_key: string | null;
@@ -43,6 +44,7 @@ export interface WorkStatusEvent {
   target_event_id: number | null;
   occurred_at_ms: number;
   duplicate_count: number;
+  execution_id: string | null;
 }
 
 export interface WorkStatusReceipt {
@@ -69,6 +71,35 @@ export interface WorkBlockerResolution {
   answer: string;
   targetClaimEventId: string;
   messageId: number;
+}
+
+export interface WorkStatusExactTarget {
+  attemptId: string;
+  claimEventId: string;
+  artifactRevision?: string;
+}
+
+export interface WorkStatusAuthorityReceipt {
+  eventId: string;
+  sequence: number;
+  workId: string;
+  fleetId: string;
+  attemptId: string;
+  session: string;
+  targetClaimEventId: string;
+  claimRevision: number;
+  artifactRevision?: string;
+  evidence?: string[];
+  claimEvidence?: string[];
+  reason?: string;
+  actor: string;
+  attestation: 'attested' | 'authority';
+  messageId?: number;
+}
+
+export interface WorkStatusReadPage {
+  events: (WorkStatusEvent & { eventId: string })[];
+  highWater: number;
 }
 
 const CLAIM_FIELDS = [
@@ -174,6 +205,58 @@ export class WorkStatusJournal {
           .all(fleetId, session)) as unknown as WorkStatusCurrent[];
   }
 
+  /** Bounded internal catch-up read. Sequence is global; scope and high-water are fixed for this page. */
+  readAfter(fleetId: string, afterSequence: number, limit: number, session?: string): WorkStatusReadPage {
+    if (
+      !Number.isSafeInteger(afterSequence) ||
+      afterSequence < 0 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 500
+    ) {
+      throw new InvalidRequestError('afterSequence must be nonnegative and limit must be 1–500.');
+    }
+    const scope = session === undefined ? 'fleet_id = ?' : 'fleet_id = ? AND session = ?';
+    const values = session === undefined ? [fleetId] : [fleetId, session];
+    const latest = this.db
+      .prepare(`SELECT max(id) AS high_water FROM work_status_events WHERE ${scope}`)
+      .get(...values) as { high_water: number | null };
+    const highWater = latest.high_water ?? 0;
+    const rows = this.db
+      .prepare(`SELECT * FROM work_status_events WHERE ${scope} AND id > ? AND id <= ? ORDER BY id LIMIT ?`)
+      .all(...values, afterSequence, highWater, limit) as unknown as WorkStatusEvent[];
+    return {
+      events: rows.map((event) => ({ ...event, eventId: `${event.fleet_id}:work-status:${String(event.id)}` })),
+      highWater,
+    };
+  }
+
+  currentDone(fleetId: string, workId: string, attemptId?: string): { event: WorkStatusEvent; row: WorkStatusCurrent } {
+    const row = this.uniqueCurrent(
+      fleetId,
+      workId,
+      attemptId,
+      "state = 'done' AND disposition = 'open'",
+      'No open done claim for this work ID.',
+    );
+    return { row, event: this.eventById(row.claim_event_id) };
+  }
+
+  currentUnresolved(
+    fleetId: string,
+    workId: string,
+    attemptId?: string,
+  ): { event: WorkStatusEvent; row: WorkStatusCurrent } {
+    const row = this.uniqueCurrent(
+      fleetId,
+      workId,
+      attemptId,
+      "disposition NOT IN ('accepted', 'closed')",
+      'No unresolved work for this work ID.',
+    );
+    return { row, event: this.eventById(row.claim_event_id) };
+  }
+
   report(
     fleetId: string,
     session: string,
@@ -181,8 +264,10 @@ export class WorkStatusJournal {
     snapshotVersion = '1',
     now = Date.now(),
     knownSessions?: ReadonlySet<string>,
+    executionId?: string,
   ): WorkStatusReceipt {
     validate(report);
+    if (executionId !== undefined) required(executionId, 'execution_id', 160);
     const version = report.mapping_version ?? snapshotVersion;
     if (version !== '1') throw new InvalidRequestError('Unsupported status mapping version.');
     const normalized = claimPayload(report);
@@ -212,9 +297,22 @@ export class WorkStatusJournal {
       const currentReport = current === undefined ? undefined : payload(current);
       const currentAttempt = current?.attempt_id;
       const terminal = currentReport?.state === 'done' || currentReport?.state === 'failed';
+      if (currentRow?.disposition === 'accepted' || currentRow?.disposition === 'closed') {
+        throw new InvalidRequestError('Work is closed; new reports require a new work ID.');
+      }
+      if (
+        currentReport?.state === 'failed' &&
+        current !== undefined &&
+        (report.attempt_id === undefined || report.attempt_id === currentAttempt) &&
+        same(claimPayload(currentReport), normalized)
+      ) {
+        this.countDuplicate(current.id);
+        this.bindKey(fleetId, session, report.idempotencyKey, normalizedJson, current.id);
+        return this.receipt(current, true);
+      }
       const newAttempt =
         current === undefined ||
-        (currentReport?.state === 'failed' &&
+        ((currentReport?.state === 'failed' || currentRow?.disposition === 'not_accepted') &&
           report.state === 'working' &&
           (report.attempt_id === undefined || report.attempt_id !== currentAttempt));
       if (!newAttempt && report.attempt_id !== undefined && report.attempt_id !== currentAttempt) {
@@ -222,6 +320,9 @@ export class WorkStatusJournal {
       }
       if (newAttempt && report.state !== 'working') {
         throw new InvalidRequestError('A new work attempt must start with working.');
+      }
+      if (currentRow?.disposition === 'not_accepted' && !newAttempt) {
+        throw new InvalidRequestError('The done claim was not accepted; start a new working attempt.');
       }
       if (terminal && !newAttempt && !(currentReport?.state === 'done' && report.state === 'done')) {
         throw new InvalidRequestError('This attempt is closed to new state reports.');
@@ -275,6 +376,14 @@ export class WorkStatusJournal {
               currentReport.artifact_revision !== report.artifact_revision));
         if (!allowed) throw new InvalidRequestError('Same-state reports require a changed structured field.');
       }
+      if (
+        executionId !== undefined &&
+        !newAttempt &&
+        !(currentReport?.state === 'done' && report.state === 'done') &&
+        (currentRow?.execution_id === null || currentRow?.execution_id !== executionId)
+      ) {
+        throw new InvalidRequestError('Attempt belongs to an unknown or previous execution; request a trusted rebind.');
+      }
       if (currentReport?.state === 'blocked' && current !== undefined) {
         const resolved = currentRow?.resolved_at_ms !== null;
         const newQuestion = report.state === 'blocked' && report.question !== currentReport.question;
@@ -322,8 +431,25 @@ export class WorkStatusJournal {
         blockerId,
         blockerRevision,
         idempotencyKey: report.idempotencyKey,
+        executionId,
       });
       projectClaim(this.db, inserted);
+      if (newAttempt) {
+        this.db
+          .prepare(
+            `UPDATE work_status_current SET disposition = 'open', disposition_event_id = NULL,
+          completion_revision = 0, execution_id = ? WHERE fleet_id = ? AND session = ? AND work_id = ?`,
+          )
+          .run(executionId ?? null, fleetId, session, report.work_id);
+      }
+      if (report.state === 'done') {
+        this.db
+          .prepare(
+            `UPDATE work_status_current SET completion_revision = completion_revision + 1
+          WHERE fleet_id = ? AND session = ? AND work_id = ?`,
+          )
+          .run(fleetId, session, report.work_id);
+      }
       this.bindKey(fleetId, session, report.idempotencyKey, normalizedJson, inserted.id);
       return this.receipt(inserted, false);
     });
@@ -420,6 +546,264 @@ export class WorkStatusJournal {
     return this.eventById(current.claim_event_id);
   }
 
+  accept(
+    fleetId: string,
+    workId: string,
+    actor: string,
+    target: WorkStatusExactTarget,
+    evidenceRef?: string,
+    now = Date.now(),
+  ): WorkStatusAuthorityReceipt {
+    required(actor, 'actor', 160);
+    if (evidenceRef !== undefined) required(evidenceRef, 'evidence_ref', 320);
+    return withTransaction(this.db, () => {
+      const { row, event } = this.exactDone(fleetId, workId, target);
+      const claim = payload(event);
+      const evidence = evidenceRef === undefined ? (claim.evidence ?? []) : [evidenceRef];
+      if (evidence.length === 0) throw new InvalidRequestError('Acceptance requires attested evidence.');
+      const accepted = this.insert({
+        fleetId,
+        session: row.session,
+        workId,
+        attemptId: row.attempt_id,
+        version: event.mapping_version,
+        kind: 'accepted',
+        state: null,
+        json: JSON.stringify({
+          actor,
+          evidence,
+          attestation: 'attested',
+          claimRevision: row.completion_revision,
+          ...(claim.artifact_revision === undefined ? {} : { artifactRevision: claim.artifact_revision }),
+        }),
+        now,
+        target: event.id,
+      });
+      this.setDisposition(row, 'accepted', accepted.id);
+      return this.authorityReceipt(accepted, row, event, actor, 'attested', { evidence });
+    });
+  }
+
+  reject(
+    fleetId: string,
+    workId: string,
+    actor: string,
+    reason: string,
+    target: WorkStatusExactTarget,
+    now = Date.now(),
+    queueCapacity = 5,
+    messageSender = actor,
+  ): WorkStatusAuthorityReceipt {
+    required(actor, 'actor', 160);
+    required(reason, 'reason', 1000);
+    return withTransaction(this.db, () => {
+      const { row, event } = this.exactDone(fleetId, workId, target);
+      this.assertQueueSpace(row.session, queueCapacity);
+      const content = `Work ${workId} completion claim ${fleetId}:work-status:${String(event.id)} was not accepted: ${reason}\nReport your next state.`;
+      const message = this.db
+        .prepare(
+          "INSERT INTO messages (sender, recipient, type, content, delivery_policy, delivery_envelope) VALUES (?, ?, 'message', ?, 'bypass', ?)",
+        )
+        .run(messageSender, row.session, content, messageEnvelope(messageSender, content));
+      const rejected = this.insert({
+        fleetId,
+        session: row.session,
+        workId,
+        attemptId: row.attempt_id,
+        version: event.mapping_version,
+        kind: 'not_accepted',
+        state: null,
+        json: JSON.stringify({ actor, reason, claimRevision: row.completion_revision }),
+        now,
+        target: event.id,
+      });
+      this.setDisposition(row, 'not_accepted', rejected.id);
+      return this.authorityReceipt(rejected, row, event, actor, 'authority', {
+        reason,
+        messageId: Number(message.lastInsertRowid),
+      });
+    });
+  }
+
+  closeWork(
+    fleetId: string,
+    workId: string,
+    actor: string,
+    reason: string,
+    target: { attemptId: string; claimEventId: string },
+    now = Date.now(),
+  ): WorkStatusAuthorityReceipt {
+    required(actor, 'actor', 160);
+    required(reason, 'reason', 1000);
+    return withTransaction(this.db, () => {
+      const { row, event } = this.exactUnresolved(fleetId, workId, target);
+      const closed = this.insert({
+        fleetId,
+        session: row.session,
+        workId,
+        attemptId: row.attempt_id,
+        version: event.mapping_version,
+        kind: 'work_closed',
+        state: null,
+        json: JSON.stringify({ actor, reason }),
+        now,
+        target: event.id,
+      });
+      this.setDisposition(row, 'closed', closed.id, true);
+      return this.authorityReceipt(closed, row, event, actor, 'authority', { reason });
+    });
+  }
+
+  rebind(
+    fleetId: string,
+    workId: string,
+    actor: string,
+    reason: string,
+    target: { attemptId: string; claimEventId: string },
+    executionId: string,
+    now = Date.now(),
+  ): WorkStatusAuthorityReceipt {
+    required(actor, 'actor', 160);
+    required(reason, 'reason', 1000);
+    required(executionId, 'execution_id', 160);
+    return withTransaction(this.db, () => {
+      const { row, event } = this.exactUnresolved(fleetId, workId, target);
+      if (row.disposition !== 'open' || row.state === 'done' || row.state === 'failed') {
+        throw new InvalidRequestError('Only an open executing attempt can be rebound.');
+      }
+      if (row.execution_id === executionId)
+        throw new InvalidRequestError('Attempt is already bound to this execution.');
+      const rebound = this.insert({
+        fleetId,
+        session: row.session,
+        workId,
+        attemptId: row.attempt_id,
+        version: event.mapping_version,
+        kind: 'attempt_rebound',
+        state: null,
+        json: JSON.stringify({ actor, reason, previousExecutionId: row.execution_id, executionId }),
+        now,
+        target: event.id,
+        executionId,
+      });
+      const changed = this.db
+        .prepare(
+          `UPDATE work_status_current SET execution_id = ?
+        WHERE fleet_id = ? AND session = ? AND work_id = ? AND attempt_id = ? AND claim_event_id = ?
+          AND disposition NOT IN ('accepted', 'closed')`,
+        )
+        .run(executionId, fleetId, row.session, workId, row.attempt_id, row.claim_event_id);
+      if (changed.changes !== 1)
+        throw new InvalidRequestError('Attempt changed before rebind; refresh the status view.');
+      return this.authorityReceipt(rebound, row, event, actor, 'authority', { reason });
+    });
+  }
+
+  private uniqueCurrent(
+    fleetId: string,
+    workId: string,
+    attemptId: string | undefined,
+    predicate: string,
+    missing: string,
+  ): WorkStatusCurrent {
+    required(workId, 'work_id', 160);
+    const rows = (attemptId === undefined
+      ? this.db
+          .prepare(`SELECT * FROM work_status_current WHERE fleet_id = ? AND work_id = ? AND ${predicate}`)
+          .all(fleetId, workId)
+      : this.db
+          .prepare(
+            `SELECT * FROM work_status_current WHERE fleet_id = ? AND work_id = ? AND attempt_id = ? AND ${predicate}`,
+          )
+          .all(fleetId, workId, attemptId)) as unknown as WorkStatusCurrent[];
+    if (rows.length !== 1)
+      throw new InvalidRequestError(rows.length === 0 ? missing : 'Ambiguous work ID; specify an attempt.');
+    const row = rows[0];
+    if (row === undefined) throw new Error('Current work row is missing.');
+    return row;
+  }
+
+  private exactDone(
+    fleetId: string,
+    workId: string,
+    target: WorkStatusExactTarget,
+  ): { row: WorkStatusCurrent; event: WorkStatusEvent } {
+    const current = this.currentDone(fleetId, workId, target.attemptId);
+    const claim = payload(current.event);
+    if (
+      target.claimEventId !== `${fleetId}:work-status:${String(current.event.id)}` ||
+      (target.artifactRevision ?? null) !== (claim.artifact_revision ?? null)
+    ) {
+      throw new InvalidRequestError('Done claim changed before acceptance; refresh the status view.');
+    }
+    return current;
+  }
+
+  private exactUnresolved(
+    fleetId: string,
+    workId: string,
+    target: { attemptId: string; claimEventId: string },
+  ): { row: WorkStatusCurrent; event: WorkStatusEvent } {
+    const current = this.currentUnresolved(fleetId, workId, target.attemptId);
+    if (target.claimEventId !== `${fleetId}:work-status:${String(current.event.id)}`) {
+      throw new InvalidRequestError('Work claim changed before action; refresh the status view.');
+    }
+    return current;
+  }
+
+  private setDisposition(
+    row: WorkStatusCurrent,
+    disposition: WorkStatusCurrent['disposition'],
+    eventId: number,
+    allowRejected = false,
+  ): void {
+    const allowed = allowRejected ? "('open', 'not_accepted')" : "('open')";
+    const changed = this.db
+      .prepare(
+        `UPDATE work_status_current SET disposition = ?, disposition_event_id = ?
+      WHERE fleet_id = ? AND session = ? AND work_id = ? AND attempt_id = ? AND claim_event_id = ? AND disposition IN ${allowed}`,
+      )
+      .run(disposition, eventId, row.fleet_id, row.session, row.work_id, row.attempt_id, row.claim_event_id);
+    if (changed.changes !== 1)
+      throw new InvalidRequestError('Work claim changed before action; refresh the status view.');
+  }
+
+  private assertQueueSpace(session: string, capacity: number): void {
+    const pending = this.db
+      .prepare("SELECT count(*) AS count FROM messages WHERE recipient = ? AND status = 'pending'")
+      .get(session) as { count: number };
+    if (pending.count >= capacity)
+      throw new InvalidRequestError(`Message queue for ${session} is full; status is unchanged.`);
+  }
+
+  private authorityReceipt(
+    event: WorkStatusEvent,
+    row: WorkStatusCurrent,
+    target: WorkStatusEvent,
+    actor: string,
+    attestation: WorkStatusAuthorityReceipt['attestation'],
+    extra: { evidence?: string[]; reason?: string; messageId?: number },
+  ): WorkStatusAuthorityReceipt {
+    const claim = payload(target);
+    return {
+      eventId: `${event.fleet_id}:work-status:${String(event.id)}`,
+      sequence: event.id,
+      workId: row.work_id,
+      fleetId: row.fleet_id,
+      attemptId: row.attempt_id,
+      session: row.session,
+      targetClaimEventId: `${target.fleet_id}:work-status:${String(target.id)}`,
+      claimRevision: row.completion_revision,
+      ...(claim.artifact_revision === undefined ? {} : { artifactRevision: claim.artifact_revision }),
+      ...(claim.evidence === undefined ? {} : { claimEvidence: claim.evidence }),
+      ...(extra.evidence === undefined ? {} : { evidence: extra.evidence }),
+      ...(extra.reason === undefined ? {} : { reason: extra.reason }),
+      ...(extra.messageId === undefined ? {} : { messageId: extra.messageId }),
+      actor,
+      attestation,
+    };
+  }
+
   private eventById(id: number): WorkStatusEvent {
     const event = this.db.prepare('SELECT * FROM work_status_events WHERE id = ?').get(id) as
       WorkStatusEvent | undefined;
@@ -470,13 +854,14 @@ export class WorkStatusJournal {
     blockerId?: string;
     blockerRevision?: number;
     idempotencyKey?: string;
+    executionId?: string;
   }): WorkStatusEvent {
     const result = this.db
       .prepare(
         `INSERT INTO work_status_events
          (fleet_id, session, work_id, attempt_id, mapping_version, kind, state, payload_json,
-          blocker_id, blocker_revision, target_event_id, occurred_at_ms, idempotency_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          blocker_id, blocker_revision, target_event_id, occurred_at_ms, idempotency_key, execution_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.fleetId,
@@ -492,6 +877,7 @@ export class WorkStatusJournal {
         input.target ?? null,
         input.now,
         input.idempotencyKey ?? null,
+        input.executionId ?? null,
       );
     const event = this.db
       .prepare('SELECT * FROM work_status_events WHERE id = ?')

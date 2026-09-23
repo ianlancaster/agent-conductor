@@ -1091,6 +1091,199 @@ describe('Supervisor construction', () => {
     }
   });
 
+  it('applies short operator acceptance and scoped authority tools to exact done claims', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\nstatus:\n  acceptanceAuthorities:\n    reviewer: [worker]\n`, {
+      worker: `codename: worker\nrepo: ${baseDir}\nruntime: fake\n`,
+      reviewer: `codename: reviewer\nrepo: ${baseDir}\nruntime: fake\n`,
+      other: `codename: other\nrepo: ${baseDir}\nruntime: fake\n`,
+    });
+    const fleetId = resolveConductorInstance(baseDir).fleetId;
+    const seeded = new Store(join(baseDir, 'data', 'conductor.db'));
+    const complete = (session: string, workId: string) => {
+      seeded.workStatus.report(fleetId, session, { state: 'working', work_id: workId, summary: 'Review' });
+      return seeded.workStatus.report(fleetId, session, {
+        state: 'done',
+        work_id: workId,
+        summary: 'Reviewed',
+        evidence: [`review://${workId}`],
+      });
+    };
+    complete('worker', 'TASK-1');
+    const delegated = complete('worker', 'TASK-2');
+    const self = complete('reviewer', 'TASK-3');
+    const toReject = complete('worker', 'TASK-4');
+    seeded.close();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      runtimes: [new FakeRuntime('fake')],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+    const short = JSON.parse(await supervisor.command('/accept-status TASK-1')) as {
+      targetClaimEventId: string;
+      claimRevision: number;
+      evidence: string[];
+    };
+    expect(short).toMatchObject({ claimRevision: 1, evidence: ['review://TASK-1'] });
+    expect(short.targetClaimEventId).toContain(':work-status:');
+    const rpc = async (caller: string, workId: string, attemptId: string, claimEventId: string) => {
+      const response = await fetch(`http://127.0.0.1:${String(port)}/mcp/${caller}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: {
+            name: 'record_status_acceptance',
+            arguments: {
+              work_id: workId,
+              attempt_id: attemptId,
+              done_claim_event_id: claimEventId,
+              evidence_ref: `attested://${workId}`,
+            },
+          },
+        }),
+      });
+      return (await response.json()) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+        error?: { message?: string };
+      };
+    };
+    const forbidden = await rpc('other', 'TASK-2', delegated.attemptId, delegated.eventId);
+    expect(JSON.stringify(forbidden)).toContain('not an acceptance authority');
+    const selfAttempt = await rpc('reviewer', 'TASK-3', self.attemptId, self.eventId);
+    expect(JSON.stringify(selfAttempt)).toContain('cannot accept or reject its own attempt');
+    const accepted = await rpc('reviewer', 'TASK-2', delegated.attemptId, delegated.eventId);
+    expect(JSON.stringify(accepted)).toContain('attested://TASK-2');
+    expect(JSON.stringify(accepted)).toContain(`session:${fleetId}:reviewer`);
+    const rejectionResponse = await fetch(`http://127.0.0.1:${String(port)}/mcp/reviewer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'record_status_not_accepted',
+          arguments: {
+            work_id: 'TASK-4',
+            attempt_id: toReject.attemptId,
+            done_claim_event_id: toReject.eventId,
+            reason: 'Needs another review',
+          },
+        },
+      }),
+    });
+    expect(JSON.stringify(await rejectionResponse.json())).toContain('Needs another review');
+    const persisted = new Store(join(baseDir, 'data', 'conductor.db'));
+    expect(persisted.workStatus.current(fleetId).filter((row) => row.disposition === 'accepted')).toHaveLength(2);
+    expect(persisted.workStatus.current(fleetId).find((row) => row.work_id === 'TASK-4')?.disposition).toBe(
+      'not_accepted',
+    );
+    persisted.close();
+  });
+
+  it('uses short rejection and closure commands, and requires a trusted rebind for a replacement run', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      worker: `codename: worker\nrepo: ${baseDir}\nruntime: fake\n`,
+    });
+    const fleetId = resolveConductorInstance(baseDir).fleetId;
+    const seeded = new Store(join(baseDir, 'data', 'conductor.db'));
+    seeded.workStatus.report(fleetId, 'worker', { state: 'working', work_id: 'DONE', summary: 'Answer' });
+    seeded.workStatus.report(fleetId, 'worker', {
+      state: 'done',
+      work_id: 'DONE',
+      summary: 'Answered',
+      evidence: ['answer://42'],
+    });
+    seeded.workStatus.report(fleetId, 'worker', { state: 'working', work_id: 'FAILED', summary: 'Build' });
+    seeded.workStatus.report(fleetId, 'worker', {
+      state: 'failed',
+      work_id: 'FAILED',
+      summary: 'Failed',
+      reason: 'CI',
+    });
+    seeded.workStatus.report(
+      fleetId,
+      'worker',
+      {
+        state: 'working',
+        work_id: 'ACTIVE',
+        summary: 'Build',
+      },
+      '1',
+      Date.now(),
+      undefined,
+      'old-run',
+    );
+    seeded.close();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      runtimes: [new FakeRuntime('fake')],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+    const rejected = JSON.parse(await supervisor.command('/reject-status DONE Needs tests')) as {
+      targetClaimEventId: string;
+      reason: string;
+      messageId: number;
+    };
+    expect(rejected).toMatchObject({ reason: 'Needs tests' });
+    const closed = JSON.parse(await supervisor.command('/close-status FAILED Cancelled')) as { reason: string };
+    expect(closed.reason).toBe('Cancelled');
+    expect(await supervisor.command('/start worker')).toBe('worker started.');
+    const before = new Store(join(baseDir, 'data', 'conductor.db'));
+    const runId = before.latestActiveRunId('worker');
+    expect(runId).toBeTruthy();
+    expect(() =>
+      before.workStatus.report(
+        fleetId,
+        'worker',
+        {
+          state: 'waiting',
+          work_id: 'ACTIVE',
+          summary: 'CI',
+          waiting_on: 'CI',
+        },
+        '1',
+        Date.now(),
+        undefined,
+        runId,
+      ),
+    ).toThrow('trusted rebind');
+    before.close();
+    const rebound = JSON.parse(await supervisor.command('/rebind-status ACTIVE Replacement run')) as {
+      targetClaimEventId: string;
+      reason: string;
+    };
+    expect(rebound.reason).toBe('Replacement run');
+    const persisted = new Store(join(baseDir, 'data', 'conductor.db'));
+    expect(persisted.getMessage(rejected.messageId)).toMatchObject({ recipient: 'worker' });
+    expect(persisted.workStatus.current(fleetId).find((row) => row.work_id === 'FAILED')?.disposition).toBe('closed');
+    expect(
+      persisted.workStatus.report(
+        fleetId,
+        'worker',
+        {
+          state: 'waiting',
+          work_id: 'ACTIVE',
+          summary: 'CI',
+          waiting_on: 'CI',
+        },
+        '1',
+        Date.now(),
+        undefined,
+        runId,
+      ).state,
+    ).toBe('waiting');
+    persisted.close();
+  });
+
   it('persists the fleet-watch toggle across supervisor instances', async () => {
     writeConfig('terminal:\n  backend: tmux\nmcp:\n  port: 43394\n', {
       alpha: `codename: alpha\nrepo: ${baseDir}\n`,
