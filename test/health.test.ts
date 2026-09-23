@@ -431,6 +431,7 @@ describe('event-driven signals', () => {
   it('does not treat a runtime session boundary as process death', () => {
     event('session-end');
     expect(sessionEnds).toEqual([]);
+    expect(monitor.activityObservation('alpha')).toBeUndefined();
   });
 
   it('records content-free continuity metadata without changing turn activity', async () => {
@@ -610,6 +611,7 @@ describe('starting confirmation', () => {
       expect(stalls).toEqual([
         { session: 'alpha', kind: 'not-started', reason: expect.stringContaining('unknown') as string },
       ]);
+      expect(monitor.activityObservation('alpha')).toBeUndefined();
       expect(working).toEqual([]);
     },
   );

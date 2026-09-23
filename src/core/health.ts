@@ -729,7 +729,8 @@ export class HealthMonitor {
   }
 
   private reportStall(session: string, kind: StallKind, info: StallInfo): void {
-    if (kind !== 'silent') this.noteActivityEvidence(session, kind === 'blocked' ? 'blocked' : 'idle');
+    if (kind === 'blocked') this.noteActivityEvidence(session, 'blocked');
+    if (kind === 'idle' || kind === 'compaction') this.noteActivityEvidence(session, 'idle');
     this.deps.onStall(session, kind, { ...info, detectedAt: new Date().toISOString() });
   }
 }

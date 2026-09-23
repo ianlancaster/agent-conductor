@@ -53,7 +53,7 @@ it('keeps a key first supplied on an exact duplicate, after subsequent transitio
 it('stops blocked time when the operator resolves the blocker', () => {
   store.workStatus.report(fleet, 'alpha', working, 100);
   store.workStatus.report(fleet, 'alpha', blocker, 200);
-  store.workStatus.resolve(fleet, 'TASK', 'A', undefined, 500);
+  store.workStatus.resolve(fleet, 'TASK', 'A', 500);
   const projection = (now: number) =>
     deriveWorkStatus(
       store.workStatus.current(fleet),

@@ -137,18 +137,10 @@ beforeEach(() => {
     reportWorkStatus: (session, report) => store.workStatus.report('test-fleet', session, report),
     resolveWorkBlocker: async (workId, answer) => store.workStatus.resolve('test-fleet', workId, answer),
     actOnWorkStatus: async (action, workId, actor, options) => {
-      const bound =
-        action === 'close'
-          ? store.workStatus.currentUnresolved('test-fleet', workId)
-          : store.workStatus.currentDone('test-fleet', workId);
-      const target = {
-        attemptId: bound.row.attempt_id,
-        claimEventId: `test-fleet:work-status:${String(bound.event.id)}`,
-      };
       const name = actor.audience === 'operator' ? actor.id : actor.codename;
-      if (action === 'accept') return store.workStatus.accept('test-fleet', workId, name, target, options.evidenceRef);
-      if (action === 'reject') return store.workStatus.reject('test-fleet', workId, name, options.reason ?? '', target);
-      return store.workStatus.closeWork('test-fleet', workId, name, options.reason ?? '', target);
+      if (action === 'accept') return store.workStatus.accept('test-fleet', workId, name, options.evidenceRef);
+      if (action === 'reject') return store.workStatus.reject('test-fleet', workId, name, options.reason ?? '');
+      return store.workStatus.closeWork('test-fleet', workId, name, options.reason ?? '');
     },
     tail: async (c, n) => `tail:${c}:${n}`,
     typeInPane: async (codename, text) => {

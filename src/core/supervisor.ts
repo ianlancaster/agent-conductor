@@ -546,19 +546,10 @@ export class Supervisor {
         );
       },
       resolveWorkBlocker: async (workId, answer) => {
-        const target = this.store.workStatus.currentBlocker(this.resolvedInstance.fleetId, workId);
-        if (target.blocker_id === null || target.blocker_revision === null)
-          throw new Error('Blocker identity is missing.');
         const receipt = this.store.workStatus.resolve(
           this.resolvedInstance.fleetId,
           workId,
           answer,
-          {
-            attemptId: target.attempt_id,
-            blockerId: target.blocker_id,
-            blockerRevision: target.blocker_revision,
-            targetClaimEventId: `${this.resolvedInstance.fleetId}:work-status:${String(target.id)}`,
-          },
           Date.now(),
           this.config.messaging.maxPendingMessagesPerRecipient,
         );
@@ -573,27 +564,17 @@ export class Supervisor {
         return receipt;
       },
       actOnWorkStatus: async (action, workId, actor, options) => {
-        const fleetId = this.resolvedInstance.fleetId;
-        const bound =
-          action === 'accept' || action === 'reject'
-            ? this.store.workStatus.currentDone(fleetId, workId)
-            : this.store.workStatus.currentUnresolved(fleetId, workId);
         if (actor.audience !== 'operator') throw new InvalidRequestError('Only the operator may decide work status.');
-        const target = {
-          attemptId: bound.row.attempt_id,
-          claimEventId: `${fleetId}:work-status:${String(bound.event.id)}`,
-        };
+        const fleetId = this.resolvedInstance.fleetId;
         const actorName = actor.id;
-        if (action === 'accept')
-          return this.store.workStatus.accept(fleetId, workId, actorName, target, options.evidenceRef);
+        if (action === 'accept') return this.store.workStatus.accept(fleetId, workId, actorName, options.evidenceRef);
         if (action === 'close')
-          return this.store.workStatus.closeWork(fleetId, workId, actorName, options.reason ?? '', target);
+          return this.store.workStatus.closeWork(fleetId, workId, actorName, options.reason ?? '');
         const receipt = this.store.workStatus.reject(
           fleetId,
           workId,
           actorName,
           options.reason ?? '',
-          target,
           Date.now(),
           this.config.messaging.maxPendingMessagesPerRecipient,
         );

@@ -33,7 +33,6 @@ export interface WorkStatusEvent {
   kind: 'claim' | 'blocker_resolved' | 'accepted' | 'not_accepted' | 'work_closed';
   state: WorkClaimState | null;
   payload_json: string;
-  idempotency_key: string | null;
   blocker_id: string | null;
   blocker_revision: number | null;
   target_event_id: number | null;
@@ -65,11 +64,6 @@ export interface WorkBlockerResolution {
   answer: string;
   targetClaimEventId: string;
   messageId: number;
-}
-
-export interface WorkStatusExactTarget {
-  attemptId: string;
-  claimEventId: string;
 }
 
 export interface WorkStatusAuthorityReceipt {
@@ -195,26 +189,20 @@ export class WorkStatusJournal {
           .all(fleetId, session)) as unknown as WorkStatusCurrent[];
   }
 
-  currentDone(fleetId: string, workId: string, attemptId?: string): { event: WorkStatusEvent; row: WorkStatusCurrent } {
+  currentDone(fleetId: string, workId: string): { event: WorkStatusEvent; row: WorkStatusCurrent } {
     const row = this.uniqueCurrent(
       fleetId,
       workId,
-      attemptId,
       "state = 'done' AND disposition = 'open'",
       'No open done claim for this work ID.',
     );
     return { row, event: this.eventById(row.claim_event_id) };
   }
 
-  currentUnresolved(
-    fleetId: string,
-    workId: string,
-    attemptId?: string,
-  ): { event: WorkStatusEvent; row: WorkStatusCurrent } {
+  currentUnresolved(fleetId: string, workId: string): { event: WorkStatusEvent; row: WorkStatusCurrent } {
     const row = this.uniqueCurrent(
       fleetId,
       workId,
-      attemptId,
       "disposition NOT IN ('accepted', 'closed')",
       'No unresolved work for this work ID.',
     );
@@ -359,7 +347,6 @@ export class WorkStatusJournal {
         now,
         blockerId,
         blockerRevision,
-        idempotencyKey: report.idempotencyKey,
       });
       projectClaim(this.db, inserted);
       if (newAttempt) {
@@ -375,30 +362,13 @@ export class WorkStatusJournal {
     });
   }
 
-  resolve(
-    fleetId: string,
-    workId: string,
-    answer: string,
-    target?: { attemptId: string; blockerId: string; blockerRevision: number; targetClaimEventId?: string },
-    now = Date.now(),
-    queueCapacity = 5,
-  ): WorkBlockerResolution {
+  resolve(fleetId: string, workId: string, answer: string, now = Date.now(), queueCapacity = 5): WorkBlockerResolution {
     required(workId, 'work_id', 160);
     required(answer, 'answer', 2000);
     return withTransaction(this.db, () => {
-      const current = this.currentBlocker(fleetId, workId, target?.attemptId);
+      const current = this.currentBlocker(fleetId, workId);
       if (current.blocker_id === null || current.blocker_revision === null)
         throw new Error('Blocker identity is missing.');
-      if (
-        target !== undefined &&
-        (target.attemptId !== current.attempt_id ||
-          target.blockerId !== current.blocker_id ||
-          target.blockerRevision !== current.blocker_revision ||
-          (target.targetClaimEventId !== undefined &&
-            target.targetClaimEventId !== `${fleetId}:work-status:${String(current.id)}`))
-      ) {
-        throw new InvalidRequestError('Blocker changed before resolution; refresh the status view.');
-      }
       const content = `Work ${workId} blocker ${current.blocker_id} (revision ${String(current.blocker_revision)}) was answered: ${answer}\nReport your next state.`;
       const messageId = this.queueMessage(current.session, content, queueCapacity);
       const event = this.insert({
@@ -431,20 +401,13 @@ export class WorkStatusJournal {
     });
   }
 
-  currentBlocker(fleetId: string, workId: string, attemptId?: string): WorkStatusEvent {
-    const open = (attemptId === undefined
-      ? this.db
-          .prepare(
-            `SELECT * FROM work_status_current
+  currentBlocker(fleetId: string, workId: string): WorkStatusEvent {
+    const open = this.db
+      .prepare(
+        `SELECT * FROM work_status_current
           WHERE fleet_id = ? AND work_id = ? AND state = 'blocked' AND disposition = 'open' AND resolved_at_ms IS NULL`,
-          )
-          .all(fleetId, workId)
-      : this.db
-          .prepare(
-            `SELECT * FROM work_status_current
-          WHERE fleet_id = ? AND work_id = ? AND attempt_id = ? AND state = 'blocked' AND disposition = 'open' AND resolved_at_ms IS NULL`,
-          )
-          .all(fleetId, workId, attemptId)) as unknown as WorkStatusCurrent[];
+      )
+      .all(fleetId, workId) as unknown as WorkStatusCurrent[];
     if (open.length !== 1) {
       throw new InvalidRequestError(
         open.length === 0 ? 'No open blocker for this work ID.' : 'Ambiguous work ID; specify an attempt.',
@@ -459,14 +422,13 @@ export class WorkStatusJournal {
     fleetId: string,
     workId: string,
     actor: string,
-    target: WorkStatusExactTarget,
     evidenceRef?: string,
     now = Date.now(),
   ): WorkStatusAuthorityReceipt {
     required(actor, 'actor', 160);
     if (evidenceRef !== undefined) required(evidenceRef, 'evidence_ref', 320);
     return withTransaction(this.db, () => {
-      const { row, event } = this.exactDone(fleetId, workId, target);
+      const { row, event } = this.currentDone(fleetId, workId);
       const claim = payload(event);
       const evidence = evidenceRef === undefined ? (claim.evidence ?? []) : [evidenceRef];
       if (evidence.length === 0) throw new InvalidRequestError('Acceptance requires attested evidence.');
@@ -491,14 +453,13 @@ export class WorkStatusJournal {
     workId: string,
     actor: string,
     reason: string,
-    target: WorkStatusExactTarget,
     now = Date.now(),
     queueCapacity = 5,
   ): WorkStatusAuthorityReceipt {
     required(actor, 'actor', 160);
     required(reason, 'reason', 1000);
     return withTransaction(this.db, () => {
-      const { row, event } = this.exactDone(fleetId, workId, target);
+      const { row, event } = this.currentDone(fleetId, workId);
       const content = `Work ${workId} completion claim ${fleetId}:work-status:${String(event.id)} was not accepted: ${reason}\nReport your next state.`;
       const messageId = this.queueMessage(row.session, content, queueCapacity);
       const rejected = this.insert({
@@ -525,13 +486,12 @@ export class WorkStatusJournal {
     workId: string,
     actor: string,
     reason: string,
-    target: { attemptId: string; claimEventId: string },
     now = Date.now(),
   ): WorkStatusAuthorityReceipt {
     required(actor, 'actor', 160);
     required(reason, 'reason', 1000);
     return withTransaction(this.db, () => {
-      const { row, event } = this.exactUnresolved(fleetId, workId, target);
+      const { row, event } = this.currentUnresolved(fleetId, workId);
       const closed = this.insert({
         fleetId,
         session: row.session,
@@ -548,52 +508,16 @@ export class WorkStatusJournal {
     });
   }
 
-  private uniqueCurrent(
-    fleetId: string,
-    workId: string,
-    attemptId: string | undefined,
-    predicate: string,
-    missing: string,
-  ): WorkStatusCurrent {
+  private uniqueCurrent(fleetId: string, workId: string, predicate: string, missing: string): WorkStatusCurrent {
     required(workId, 'work_id', 160);
-    const rows = (attemptId === undefined
-      ? this.db
-          .prepare(`SELECT * FROM work_status_current WHERE fleet_id = ? AND work_id = ? AND ${predicate}`)
-          .all(fleetId, workId)
-      : this.db
-          .prepare(
-            `SELECT * FROM work_status_current WHERE fleet_id = ? AND work_id = ? AND attempt_id = ? AND ${predicate}`,
-          )
-          .all(fleetId, workId, attemptId)) as unknown as WorkStatusCurrent[];
+    const rows = this.db
+      .prepare(`SELECT * FROM work_status_current WHERE fleet_id = ? AND work_id = ? AND ${predicate}`)
+      .all(fleetId, workId) as unknown as WorkStatusCurrent[];
     if (rows.length !== 1)
       throw new InvalidRequestError(rows.length === 0 ? missing : 'Ambiguous work ID; specify an attempt.');
     const row = rows[0];
     if (row === undefined) throw new Error('Current work row is missing.');
     return row;
-  }
-
-  private exactDone(
-    fleetId: string,
-    workId: string,
-    target: WorkStatusExactTarget,
-  ): { row: WorkStatusCurrent; event: WorkStatusEvent } {
-    const current = this.currentDone(fleetId, workId, target.attemptId);
-    if (target.claimEventId !== `${fleetId}:work-status:${String(current.event.id)}`) {
-      throw new InvalidRequestError('Done claim changed before acceptance; refresh the status view.');
-    }
-    return current;
-  }
-
-  private exactUnresolved(
-    fleetId: string,
-    workId: string,
-    target: { attemptId: string; claimEventId: string },
-  ): { row: WorkStatusCurrent; event: WorkStatusEvent } {
-    const current = this.currentUnresolved(fleetId, workId, target.attemptId);
-    if (target.claimEventId !== `${fleetId}:work-status:${String(current.event.id)}`) {
-      throw new InvalidRequestError('Work claim changed before action; refresh the status view.');
-    }
-    return current;
   }
 
   private setDisposition(
@@ -606,11 +530,10 @@ export class WorkStatusJournal {
     const changed = this.db
       .prepare(
         `UPDATE work_status_current SET disposition = ?, disposition_event_id = ?
-      WHERE fleet_id = ? AND session = ? AND work_id = ? AND attempt_id = ? AND claim_event_id = ? AND disposition IN ${allowed}`,
+      WHERE fleet_id = ? AND session = ? AND work_id = ? AND attempt_id = ? AND disposition IN ${allowed}`,
       )
-      .run(disposition, eventId, row.fleet_id, row.session, row.work_id, row.attempt_id, row.claim_event_id);
-    if (changed.changes !== 1)
-      throw new InvalidRequestError('Work claim changed before action; refresh the status view.');
+      .run(disposition, eventId, row.fleet_id, row.session, row.work_id, row.attempt_id);
+    if (changed.changes !== 1) throw new Error('Current work disposition could not be recorded.');
   }
 
   private queueMessage(session: string, content: string, capacity: number): number {
@@ -696,14 +619,13 @@ export class WorkStatusJournal {
     target?: number;
     blockerId?: string;
     blockerRevision?: number;
-    idempotencyKey?: string;
   }): WorkStatusEvent {
     const result = this.db
       .prepare(
         `INSERT INTO work_status_events
          (fleet_id, session, work_id, attempt_id, kind, state, payload_json,
-          blocker_id, blocker_revision, target_event_id, occurred_at_ms, idempotency_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          blocker_id, blocker_revision, target_event_id, occurred_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.fleetId,
@@ -717,7 +639,6 @@ export class WorkStatusJournal {
         input.blockerRevision ?? null,
         input.target ?? null,
         input.now,
-        input.idempotencyKey ?? null,
       );
     const event = this.db
       .prepare('SELECT * FROM work_status_events WHERE id = ?')

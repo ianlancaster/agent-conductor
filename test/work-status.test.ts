@@ -82,7 +82,7 @@ describe('work status journal', () => {
     expect(store.workStatus.events(fleet).find((event) => event.id === first.sequence)?.duplicate_count).toBe(2);
   });
 
-  it('revises a blocker only for a changed question, and rejects late answers', () => {
+  it('revises a blocker only for a changed question, and resolves the current revision', () => {
     store.workStatus.report(fleet, 'alpha', { state: 'working', work_id: 'TASK-1', summary: 'Build' }, 100);
     const first = store.workStatus.report(fleet, 'alpha', blocked, 200);
     expect(first.blockerRevision).toBe(1);
@@ -93,22 +93,7 @@ describe('work status journal', () => {
     expect(clarification).toMatchObject({ blockerId: first.blockerId, blockerRevision: 1 });
     const next = store.workStatus.report(fleet, 'alpha', { ...blocked, question: 'Which endpoint?' }, 400);
     expect(next).toMatchObject({ blockerId: first.blockerId, blockerRevision: 2 });
-    expect(() =>
-      store.workStatus.resolve(
-        fleet,
-        'TASK-1',
-        'A',
-        { attemptId: first.attemptId, blockerId: first.blockerId!, blockerRevision: 1 },
-        500,
-      ),
-    ).toThrow('changed before resolution');
-    const answer = store.workStatus.resolve(
-      fleet,
-      'TASK-1',
-      'Use endpoint B',
-      { attemptId: next.attemptId, blockerId: next.blockerId!, blockerRevision: 2 },
-      500,
-    );
+    const answer = store.workStatus.resolve(fleet, 'TASK-1', 'Use endpoint B', 500);
     expect(answer).toMatchObject({ targetClaimEventId: next.eventId, blockerRevision: 2, question: 'Which endpoint?' });
     expect(store.getMessage(answer.messageId)).toMatchObject({ recipient: 'alpha', status: 'pending' });
     expect(
@@ -145,18 +130,17 @@ describe('work status journal', () => {
     expect(store.workStatus.events(fleet)[1]?.duplicate_count).toBe(1);
   });
 
-  it('binds a short resolution to the exact claim event and rejects an intervening clarification', () => {
+  it('resolves the latest clarification and records its claim event', () => {
     store.workStatus.report(fleet, 'alpha', { state: 'working', work_id: 'TASK-1', summary: 'Build' }, 100);
     const first = store.workStatus.report(fleet, 'alpha', blocked, 200);
-    const staleTarget = {
-      attemptId: first.attemptId,
-      blockerId: first.blockerId!,
-      blockerRevision: first.blockerRevision!,
-      targetClaimEventId: first.eventId,
-    };
-    store.workStatus.report(fleet, 'alpha', { ...blocked, recommendation: 'Use B' }, 300);
-    expect(() => store.workStatus.resolve(fleet, 'TASK-1', 'A', staleTarget, 400)).toThrow('changed before resolution');
-    expect(store.workStatus.events(fleet).filter((event) => event.kind === 'blocker_resolved')).toHaveLength(0);
+    const clarified = store.workStatus.report(fleet, 'alpha', { ...blocked, recommendation: 'Use B' }, 300);
+    const resolved = store.workStatus.resolve(fleet, 'TASK-1', 'A', 400);
+    expect(resolved).toMatchObject({
+      targetClaimEventId: clarified.eventId,
+      blockerId: first.blockerId,
+      blockerRevision: first.blockerRevision,
+    });
+    expect(store.workStatus.events(fleet).filter((event) => event.kind === 'blocker_resolved')).toHaveLength(1);
   });
 
   it('requires evidence identifying done output, permits new evidence, and bars failed amendments', () => {
@@ -203,7 +187,7 @@ describe('work status journal', () => {
     store.workStatus.report(fleet, 'alpha', { state: 'working', work_id: 'TASK-1', summary: 'Build' }, 100);
     store.workStatus.report(fleet, 'alpha', blocked, 200);
     store.insertDirectMessage('operator', 'alpha', 'Existing message');
-    expect(() => store.workStatus.resolve(fleet, 'TASK-1', 'Use A', undefined, 300, 1)).toThrow('queue');
+    expect(() => store.workStatus.resolve(fleet, 'TASK-1', 'Use A', 300, 1)).toThrow('queue');
     expect(store.workStatus.currentBlocker(fleet, 'TASK-1').state).toBe('blocked');
     expect(store.workStatus.events(fleet).filter((event) => event.kind === 'blocker_resolved')).toHaveLength(0);
   });

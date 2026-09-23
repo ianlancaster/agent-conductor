@@ -397,7 +397,6 @@ const MIGRATIONS: SqliteMigration[] = [
     kind TEXT NOT NULL CHECK (kind IN ('claim', 'blocker_resolved', 'accepted', 'not_accepted', 'work_closed')),
     state TEXT CHECK (state IS NULL OR state IN ('working', 'waiting', 'blocked', 'done', 'failed')),
     payload_json TEXT NOT NULL,
-    idempotency_key TEXT,
     blocker_id TEXT,
     blocker_revision INTEGER,
     target_event_id INTEGER,
@@ -406,8 +405,6 @@ const MIGRATIONS: SqliteMigration[] = [
   );
   CREATE INDEX IF NOT EXISTS idx_work_status_scope ON work_status_events(fleet_id, session, work_id, id);
   CREATE INDEX IF NOT EXISTS idx_work_status_attempt ON work_status_events(fleet_id, attempt_id, id);
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_work_status_idempotency ON work_status_events(fleet_id, session, idempotency_key)
-    WHERE idempotency_key IS NOT NULL;
   CREATE TABLE IF NOT EXISTS work_status_idempotency (
     fleet_id TEXT NOT NULL, session TEXT NOT NULL, idempotency_key TEXT NOT NULL,
     payload_json TEXT NOT NULL, claim_event_id INTEGER NOT NULL,
