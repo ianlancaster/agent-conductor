@@ -236,9 +236,9 @@ Both settings survive Conductor restarts. `/pause` holds peer messages and suppr
 ### What the stall sentinel does
 
 Conductor mechanically identifies evidence such as an ended turn that stayed quiet, a
-permission/input block, context compaction, or—in runtimes without authoritative completion
-events—a silent unchanged pane. It does not decide
-whether that state is actually a problem and it never calls an LLM itself.
+permission/input block, context compaction, a launch that never reached its own composer within
+`health.startConfirmMs`, or—in runtimes without authoritative completion events—a silent unchanged
+pane. It does not decide whether that state is actually a problem and it never calls an LLM itself.
 
 For compaction, Conductor waits for the runtime's compact-complete event and confirms that a
 composer is actually visible before routing the stall. It never types a generic `continue` into

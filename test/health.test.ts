@@ -5,7 +5,13 @@ import { CodexRuntime } from '../src/runtimes/codex/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
 
-const CONFIG = { captureLines: 40, stallBeatsThreshold: 2, idleConfirmMs: 15_000, eventSilenceMs: 120_000 };
+const CONFIG = {
+  captureLines: 40,
+  stallBeatsThreshold: 2,
+  idleConfirmMs: 15_000,
+  eventSilenceMs: 120_000,
+  startConfirmMs: 60_000,
+};
 
 interface Recorded {
   session: string;
@@ -465,5 +471,105 @@ describe('fallback pane-diff watchdog', () => {
     await monitor.heartbeat();
     expect(await backend.isAlive({ backend: 'fake', id: paneId })).toBe(true);
     expect(sessionEnds).toEqual(['alpha']);
+  });
+});
+
+describe('starting confirmation', () => {
+  // A freshly launched (or resumed) session starts with NO authoritative
+  // evidence — not even that its runtime got past a pre-turn dialog.
+  // armStartConfirmation is what Lifecycle.start() arms on every launch; the
+  // mechanism itself is runtime-agnostic (it only ever calls the generic
+  // observeActivity/handleEvent seams), so these run against both built-in
+  // runtime names to prove nothing here is accidentally hardcoded to one.
+  it.each(['codex', 'claude-code'] as const)(
+    'reports a not-started stall when a %s session never produces recognizable pane evidence (parked at a pre-turn dialog)',
+    async (runtimeName) => {
+      runtime = new FakeRuntime(runtimeName);
+      paneActivity = 'unknown';
+      monitor.armStartConfirmation('alpha');
+
+      // Heartbeats in between change nothing: `unknown` never counts.
+      await monitor.heartbeat();
+      await monitor.heartbeat();
+      expect(stalls).toEqual([]);
+      expect(working).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(CONFIG.startConfirmMs + 1);
+
+      expect(stalls).toEqual([
+        { session: 'alpha', kind: 'not-started', reason: expect.stringContaining('unknown') as string },
+      ]);
+      expect(working).toEqual([]);
+    },
+  );
+
+  it.each(['codex', 'claude-code'] as const)(
+    'leaves starting the instant a %s lifecycle hook arrives, well before the confirmation window elapses',
+    (runtimeName) => {
+      runtime = new FakeRuntime(runtimeName);
+      monitor.armStartConfirmation('alpha');
+
+      event('session-start');
+      vi.advanceTimersByTime(CONFIG.startConfirmMs * 2);
+
+      expect(stalls).toEqual([]);
+      expect(working).toEqual(['alpha']);
+    },
+  );
+
+  it.each(['codex', 'claude-code'] as const)(
+    "leaves starting on the heartbeat's first positive activity classification, with no lifecycle hook ever received",
+    async (runtimeName) => {
+      runtime = new FakeRuntime(runtimeName);
+      monitor.armStartConfirmation('alpha');
+      paneActivity = 'idle';
+
+      await monitor.heartbeat();
+      vi.advanceTimersByTime(CONFIG.startConfirmMs * 2);
+
+      expect(stalls).toEqual([]);
+    },
+  );
+
+  it('graduates working, not just idle, on a positive heartbeat classification', async () => {
+    monitor.armStartConfirmation('alpha');
+    paneActivity = 'working';
+
+    await monitor.heartbeat();
+
+    expect(working).toEqual(['alpha']);
+    vi.advanceTimersByTime(CONFIG.startConfirmMs * 2);
+    expect(stalls).toEqual([]);
+  });
+
+  it('cancels the confirmation timer once graduated, so it never fires a stale not-started stall', async () => {
+    monitor.armStartConfirmation('alpha');
+    paneActivity = 'working';
+    await monitor.heartbeat();
+    expect(working).toEqual(['alpha']);
+
+    await vi.advanceTimersByTimeAsync(CONFIG.startConfirmMs + 1);
+
+    expect(stalls).toEqual([]);
+  });
+
+  it('re-arms a fresh confirmation window for a resumed session exactly like a fresh launch', async () => {
+    // Lifecycle.start() calls armStartConfirmation for both a fresh launch
+    // AND a resume (`continueSession`) — the mechanism cannot and does not
+    // distinguish them; a resumed runtime process has proven nothing about
+    // itself yet either.
+    monitor.armStartConfirmation('alpha');
+    vi.advanceTimersByTime(CONFIG.startConfirmMs / 2);
+    event('session-start'); // e.g. the resumed runtime's own SessionStart hook
+    expect(working).toEqual(['alpha']);
+
+    // Re-arming (a later resume of the same session) starts a fresh window
+    // rather than reusing whatever the first launch left behind.
+    monitor.armStartConfirmation('alpha');
+    paneActivity = 'unknown';
+    vi.advanceTimersByTime(CONFIG.startConfirmMs / 2);
+    expect(stalls).toEqual([]);
+    await vi.advanceTimersByTimeAsync(CONFIG.startConfirmMs);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'not-started', reason: expect.any(String) as string }]);
   });
 });

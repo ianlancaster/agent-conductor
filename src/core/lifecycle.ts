@@ -96,6 +96,13 @@ export interface LifecycleDeps {
   reloadSessions(teardownSession?: string): void;
   /** Reset per-run health and stall-routing tracking on lifecycle boundaries. */
   supervisionReset(session: string): void;
+  /**
+   * Arm the `starting` confirmation window for a freshly launched (or
+   * resumed) session — called ONLY from a genuine launch, never from
+   * adopting/recovering an already-alive pane, which has already proven
+   * (by surviving) that its runtime is well past this gap.
+   */
+  armStartConfirmation(session: string): void;
   /** Resolve working/idle from runtime-owned execution evidence at recovery boundaries. */
   observeActivity?(session: string, pane: PaneRef): Promise<PaneActivityEvidence>;
   /** Reconcile live activity after terminal-process liveness is confirmed. */
@@ -383,8 +390,13 @@ export class Lifecycle {
 
     this.deps.states.setSession(codename, pane.id);
     this.emitStarted(codename, opts.continueSession === true ? 'continue' : 'start');
-    this.deps.states.setActivity(codename, 'working');
+    // A freshly launched (or resumed) runtime has proven nothing yet — not
+    // even that it reached its own composer past a pre-turn dialog. `starting`
+    // is left the instant a lifecycle hook arrives or the activity parser
+    // positively classifies the pane; see HealthMonitor.armStartConfirmation.
+    this.deps.states.setActivity(codename, 'starting');
     this.deps.supervisionReset(codename);
+    this.deps.armStartConfirmation(codename);
     this.deps.onRunning?.(codename);
     log().info('lifecycle', `${codename}: ${opts.continueSession === true ? 'continued' : 'started'} in ${pane.id}`);
     return `${codename} ${opts.continueSession === true ? 'continued' : 'started'}.`;

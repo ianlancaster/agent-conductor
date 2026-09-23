@@ -76,6 +76,7 @@ beforeEach(() => {
     sessionConfigDir: '/tmp/sessions',
     reloadSessions: () => undefined,
     supervisionReset: () => undefined,
+    armStartConfirmation: () => undefined,
   });
   const messaging = new Messaging({
     store,

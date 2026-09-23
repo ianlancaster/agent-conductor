@@ -426,7 +426,11 @@ describe.skipIf(!hasTmux)('tmux E2E', () => {
       // stopped — not report ghosts as working or idle.
       await supervisor.start();
       await supervisor.command('/start alpha');
-      expect(supervisor.statusReport()).toContain('alpha - CC · 🟢 working');
+      // Immediately after launch, before any lifecycle hook or heartbeat
+      // classification arrives, the session is `starting` — not yet claimed
+      // `working`. That distinction is the point of this fix; the recovery
+      // behavior under test only needs "registered and running" here.
+      expect(supervisor.statusReport()).toContain('alpha - CC · 🟠 starting');
       await supervisor.stop();
       killSession();
 

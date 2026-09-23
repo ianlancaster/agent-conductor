@@ -164,7 +164,12 @@ core. External channels are ordinary `ChannelAdapter` instances injected through
    (`eventSilenceMs`) is only for runtimes that explicitly lack authoritative completion. A
    `PreCompact` hook begins compaction; only the matching compact-complete hook plus runtime-owned
    idle evidence can produce compaction-stall evidence. Don't add runtime-specific pane heuristics to
-   core; parsing belongs in the runtime adapter.
+   core; parsing belongs in the runtime adapter. A freshly launched or resumed session is `starting`,
+   never optimistically `working` — a live foreground process alone is not evidence its runtime
+   reached its own composer, so `ready` stays false too. `starting` is left only on a lifecycle hook
+   reaching Conductor at all, or the activity parser positively classifying the pane (`unknown` never
+   counts); a session still `starting` after `startConfirmMs` becomes a `not-started` stall, distinct
+   from `blocked`, without ever guessing at an activity value.
 5. **All strings into AppleScript go through the escaping helper**; all tmux invocations
    are execFile arg arrays, never shell strings.
 6. **Async only in backends** — no execSync in request/heartbeat paths.

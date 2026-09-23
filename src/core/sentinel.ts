@@ -241,8 +241,20 @@ export class StallSentinelRouter {
     return [...this.registeredSessions].filter((session) => !this.isSentinel(session));
   }
 
+  /**
+   * `starting` reads as unknown liveness here, not as evidence of a stall: a
+   * freshly launched (or resumed) fleet has proven nothing yet, and treating
+   * an unconfirmed launch the same as a confirmed idle/stopped fleet would
+   * turn an ordinary `start-all` into a spurious "everyone stalled" alarm.
+   */
   private allFleetMembersNonWorking(sessions: readonly string[]): boolean {
-    return sessions.length > 0 && sessions.every((session) => this.deps.activityFor(session) !== 'working');
+    return (
+      sessions.length > 0 &&
+      sessions.every((session) => {
+        const activity = this.deps.activityFor(session);
+        return activity === 'idle' || activity === 'stopped';
+      })
+    );
   }
 
   private evaluateFleetWatch(): void {

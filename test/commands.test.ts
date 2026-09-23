@@ -107,6 +107,7 @@ beforeEach(() => {
       for (const codename of sessions.keys()) states.register(codename, false);
     },
     supervisionReset: () => undefined,
+    armStartConfirmation: () => undefined,
     events,
   });
 

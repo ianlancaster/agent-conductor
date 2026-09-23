@@ -75,7 +75,7 @@ export type ConductorEvent = ConductorEventEnvelope &
     | {
         readonly type: 'stall';
         readonly session: string;
-        readonly kind: 'idle' | 'blocked' | 'compaction' | 'silent';
+        readonly kind: 'idle' | 'blocked' | 'compaction' | 'silent' | 'not-started';
         /** Mechanical classification time; may precede occurredAt when routing performs async work. */
         readonly detectedAt: string;
         readonly disposition:

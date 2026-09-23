@@ -352,6 +352,7 @@ async function main() {
       sessionConfigDir: scratch,
       reloadSessions: () => undefined,
       supervisionReset: () => undefined,
+      armStartConfirmation: () => undefined,
       reconcileActivity: async (_session, pane) => {
         await backend.capture(pane, 5);
       },

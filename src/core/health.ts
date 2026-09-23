@@ -3,7 +3,7 @@ import type { InputState, SessionRuntime } from '../runtimes/types.js';
 import type { TerminalBackend } from '../terminals/types.js';
 import type { TerminalLivenessObservation } from '../terminals/types.js';
 import { observeLiveness } from '../terminals/liveness.js';
-import type { PaneActivityEvidence, PaneRef, RuntimeEvent, StallKind } from './types.js';
+import type { PaneActivityEvidence, PaneRef, RuntimeEvent, RuntimeEventType, StallKind } from './types.js';
 
 export interface StallInfo {
   reason?: string;
@@ -18,12 +18,19 @@ export interface HealthDeps {
     stallBeatsThreshold: number;
     idleConfirmMs: number;
     eventSilenceMs: number;
+    /** How long a session may sit `starting` before it is reported as a `not-started` stall. */
+    startConfirmMs: number;
   };
   backend: TerminalBackend;
   runtimeFor(session: string): SessionRuntime | undefined;
   getPane(session: string): PaneRef | undefined;
   getActiveSessions(): string[];
-  /** A live foreground process proves launch completed even before a runtime hook fires. */
+  /**
+   * A live foreground process proves the launch COMMAND completed even
+   * before a runtime hook fires. Only called once a session is no longer
+   * `starting` — a live process is not, by itself, evidence the runtime
+   * reached its own composer (it may be parked at a pre-turn dialog).
+   */
   onRuntimeObserved?(session: string): void;
   /** Runtime-owned execution evidence used to reconcile best-effort lifecycle hooks. */
   observeActivity(session: string, pane: PaneRef): Promise<PaneActivityEvidence>;
@@ -71,12 +78,101 @@ export class HealthMonitor {
   private readonly stillBeats = new Map<string, number>();
   private readonly silentNotified = new Set<string>();
   private readonly pendingCompactions = new Map<string, StallInfo>();
+  /** Sessions launched but with no authoritative evidence yet that their runtime is live. */
+  private readonly stillStarting = new Set<string>();
+  private readonly startingTimers = new Map<string, NodeJS.Timeout>();
   private heartbeatInFlight = false;
 
   constructor(private readonly deps: HealthDeps) {}
 
+  /**
+   * Arm the `starting` confirmation window for a freshly launched (or
+   * resumed) session. Cleared the instant either kind of authoritative
+   * evidence arrives — a lifecycle hook (`handleEvent`) or the runtime
+   * activity parser positively classifying the pane as idle or working
+   * (`checkSession`'s heartbeat). An `unknown` classification never counts:
+   * a session parked at a pre-turn runtime dialog (neither a spinner nor a
+   * recognized composer) stays `starting` until this window elapses, then
+   * reports a `not-started` stall instead of silently staying `starting`
+   * forever.
+   */
+  armStartConfirmation(session: string): void {
+    this.clearStartConfirmation(session);
+    this.stillStarting.add(session);
+    const timer = setTimeout(() => {
+      this.startingTimers.delete(session);
+      void this.confirmStartTimeout(session);
+    }, this.deps.config.startConfirmMs);
+    timer.unref();
+    this.startingTimers.set(session, timer);
+  }
+
+  private clearStartConfirmation(session: string): void {
+    const timer = this.startingTimers.get(session);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.startingTimers.delete(session);
+    }
+    this.stillStarting.delete(session);
+  }
+
+  /** Provisional evidence a `starting` session is alive: any lifecycle hook reaching Conductor at all. */
+  private graduateStartingFromEvent(session: string, eventType: RuntimeEventType): void {
+    if (!this.stillStarting.has(session)) return;
+    this.clearStartConfirmation(session);
+    // turn-start/session-start already call onWorking unconditionally in
+    // their own handling immediately below — do not double-count. Every
+    // other event type needs this provisional mark because its own handling
+    // might not touch activity at all (a `stop` suppressed by a composer
+    // draft, for instance) — refined exactly as it already is for any
+    // ordinary mid-session working → idle/blocked transition.
+    if (eventType === 'turn-start' || eventType === 'session-start') return;
+    this.recordWorking(session);
+    this.deps.onWorking(session);
+  }
+
+  /** Authoritative evidence a `starting` session reached its own composer or turn loop. */
+  private graduateStartingFromActivity(session: string, activity: 'working' | 'idle'): void {
+    if (!this.stillStarting.has(session)) return;
+    this.clearStartConfirmation(session);
+    if (activity === 'working') {
+      this.recordWorking(session);
+      this.deps.onWorking(session);
+      return;
+    }
+    this.turnPhases.set(session, 'complete');
+    void this.scheduleIdleReport(session, 'idle', {});
+  }
+
+  private async confirmStartTimeout(session: string): Promise<void> {
+    if (!this.stillStarting.has(session)) return;
+    const pane = this.deps.getPane(session);
+    let activity: PaneActivityEvidence = 'unknown';
+    if (pane !== undefined) {
+      try {
+        activity = await this.deps.observeActivity(session, pane);
+      } catch (err) {
+        log().warn(
+          'health',
+          `${session}: start-confirmation activity check failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    // A newer graduation (event or heartbeat) may have arrived while this awaited.
+    if (!this.stillStarting.has(session)) return;
+    if (activity === 'working' || activity === 'idle') {
+      this.graduateStartingFromActivity(session, activity);
+      return;
+    }
+    this.clearStartConfirmation(session);
+    this.reportStall(session, 'not-started', {
+      reason: `still starting ${String(this.deps.config.startConfirmMs)}ms after launch; last pane classification: ${activity}`,
+    });
+  }
+
   handleEvent(event: RuntimeEvent): void {
     const { session } = event;
+    this.graduateStartingFromEvent(session, event.type);
     if (event.type === 'continuity-restoration') {
       const detail = [
         `source=${event.continuitySource ?? 'unknown'}`,
@@ -239,6 +335,7 @@ export class HealthMonitor {
   /** Clear all per-session tracking (on start/restart/mode change). */
   reset(session: string): void {
     this.clearIdleTimer(session);
+    this.clearStartConfirmation(session);
     this.turnPhases.delete(session);
     this.activeTurnIds.delete(session);
     this.pendingTurnIds.delete(session);
@@ -303,10 +400,19 @@ export class HealthMonitor {
     const activity = await this.deps.observeActivity(session, pane);
     if (
       (this.eventSequences.get(session) ?? 0) !== eventSequence ||
-      this.observationSequences.get(session) !== observationSequence ||
-      activity === 'unknown'
+      this.observationSequences.get(session) !== observationSequence
     )
       return;
+
+    // On-demand reconciliation (get_session_status, list_sessions) reaches
+    // here directly, bypassing the heartbeat's own starting gate — handle it
+    // here too so a `starting` session is never turn-tracked as though it
+    // had already reached its composer.
+    if (this.stillStarting.has(session)) {
+      if (activity !== 'unknown') this.graduateStartingFromActivity(session, activity);
+      return;
+    }
+    if (activity === 'unknown') return;
 
     if (activity === 'working') {
       this.pendingCompactions.delete(session);
@@ -350,6 +456,8 @@ export class HealthMonitor {
   stop(): void {
     for (const timer of this.idleTimers.values()) clearTimeout(timer);
     this.idleTimers.clear();
+    for (const timer of this.startingTimers.values()) clearTimeout(timer);
+    this.startingTimers.clear();
   }
 
   private async checkSession(session: string, observation: TerminalLivenessObservation): Promise<void> {
@@ -378,6 +486,23 @@ export class HealthMonitor {
       this.deps.logEvent(session, 'runtime_ended');
       this.reset(session);
       this.deps.onSessionEnd(session);
+      return;
+    }
+    // A live foreground process only proves the launch COMMAND completed —
+    // not that the runtime itself is past a pre-turn dialog. Only the
+    // activity parser POSITIVELY classifying the pane (never `unknown`)
+    // counts as evidence the runtime reached its own composer or turn loop.
+    // `onRuntimeObserved` (below) marks the session ready for delivery, so it
+    // deliberately waits for that graduation too — a session parked at a
+    // trust dialog must not be reported ready just because its process is up.
+    if (this.stillStarting.has(session)) {
+      const startingActivity = await this.deps.observeActivity(session, pane);
+      if (startingActivity === 'unknown') return; // still starting; nothing further this tick
+      // Graduation already did the equivalent of turn-tracking/fallback for
+      // this classification — dispatching into reconcileActivity again in
+      // the SAME tick would just redundantly reclassify the same evidence.
+      this.graduateStartingFromActivity(session, startingActivity);
+      this.deps.onRuntimeObserved?.(session);
       return;
     }
     this.deps.onRuntimeObserved?.(session);
