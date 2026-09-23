@@ -46,6 +46,11 @@ describe('formatSessionLine', () => {
     expect(formatSessionLine('alpha', 'codex', state, false)).toBe('alpha - codex · 🟡 idle - auto 🔄 · needs review');
   });
 
+  it('shows the starting icon for a freshly launched session with no confirmed evidence yet', () => {
+    const state = sessionState({ activity: 'starting', ready: false });
+    expect(formatSessionLine('alpha', 'codex', state, false)).toBe('alpha - codex · 🟠 starting');
+  });
+
   it('shows pause after auto without changing the setting', () => {
     const state = sessionState({
       auto: true,

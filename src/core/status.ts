@@ -9,6 +9,7 @@ import type { ProcessObservation } from './lifecycle.js';
 import type { ManagedShepherdStatus } from './shepherd-manager.js';
 
 const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
+  starting: '🟠',
   working: '🟢',
   idle: '🟡',
   stopped: '⚪',

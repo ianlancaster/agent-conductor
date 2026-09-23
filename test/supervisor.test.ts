@@ -1009,7 +1009,12 @@ describe('Supervisor construction', () => {
     });
 
     await supervisor.command('/start alpha');
-    expect(supervisor.statusReport('alpha')).toContain('"activity": "working"');
+    // A fresh launch reports `starting` until reconciliation confirms
+    // authoritative evidence — `/status` is the reconciling path (the
+    // point of this test is that reconciliation repairs stale activity in
+    // both directions), so use it here too rather than the raw, unreconciled
+    // synchronous report.
+    expect(await supervisor.command('/status alpha')).toContain('"activity": "working"');
 
     runtime.activityState = 'idle';
     expect(await supervisor.command('/status alpha')).toContain('"activity": "idle"');
@@ -1296,7 +1301,10 @@ describe('Supervisor construction', () => {
     await supervisor.start({ startAll: true });
 
     expect(channel.started).toBe(true);
-    expect(supervisor.statusReport('alpha')).toContain('"activity": "working"');
+    // A fresh launch reports `starting` until reconciliation confirms
+    // authoritative evidence; the FakeRuntime here reports no evidence
+    // (`unknown`) by default, so it stays `starting` for this check.
+    expect(supervisor.statusReport('alpha')).toContain('"activity": "starting"');
     expect(channel.sent.some((message) => message.text.startsWith('🚨 Fleet stalled'))).toBe(false);
   });
 

@@ -268,6 +268,14 @@ export const supervisorConfigSchema = z
         suppressSimilarity: z.number().min(0).max(1).default(0.8),
         /** Quiet period before pane-silence fallback for runtimes without authoritative completion events. */
         eventSilenceMs: z.number().int().positive().default(120_000),
+        /**
+         * How long a session may sit in `starting` — launched, but with no
+         * authoritative evidence yet that its runtime reached its own
+         * composer or turn loop (a lifecycle hook, or the activity parser
+         * positively classifying the pane) — before it is reported as a
+         * stall instead of silently staying `starting` forever.
+         */
+        startConfirmMs: z.number().int().positive().default(60_000),
       })
       .strict()
       .default({}),

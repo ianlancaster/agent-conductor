@@ -2,8 +2,14 @@ import type { RuntimeName } from '../config/schema.js';
 
 export type Placement = 'pane' | 'tab' | 'window';
 
-/** Mechanical session activity. Stall causes remain events, not durable activity states. */
-export type Activity = 'working' | 'idle' | 'stopped';
+/**
+ * Mechanical session activity. Stall causes remain events, not durable
+ * activity states. `starting` is the launch gap before any authoritative
+ * evidence (a lifecycle hook, or the activity parser positively classifying
+ * the pane) proves the runtime reached its own composer or turn loop —
+ * distinct from `working`, which claims the runtime is actually executing.
+ */
+export type Activity = 'starting' | 'working' | 'idle' | 'stopped';
 
 /** Runtime-owned evidence about whether a live runtime is executing a turn. */
 export type PaneActivityEvidence = 'working' | 'idle' | 'unknown';
@@ -63,4 +69,12 @@ export interface RuntimeEvent {
   receivedAt: number;
 }
 
-export type StallKind = 'idle' | 'blocked' | 'compaction' | 'silent' | 'session-end';
+/**
+ * `not-started` is distinct from `blocked`: `blocked` means a live runtime
+ * reached a decision point and is waiting on a human (a genuine
+ * `notification` hook). `not-started` means Conductor has NO evidence the
+ * runtime ever got that far — it may still be sitting at a pre-turn runtime
+ * dialog. Conflating the two would tell an operator "the agent got going and
+ * needs you" when actually nothing has happened yet.
+ */
+export type StallKind = 'idle' | 'blocked' | 'compaction' | 'silent' | 'session-end' | 'not-started';

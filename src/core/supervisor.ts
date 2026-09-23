@@ -396,6 +396,9 @@ export class Supervisor {
         if (this.states.get(session)?.activity === 'working') this.health.markTurnActive(session);
         this.sentinel.reset(session);
       },
+      armStartConfirmation: (session) => {
+        this.health.armStartConfirmation(session);
+      },
       observeActivity: (session, pane) =>
         observePaneActivity(this.backend, this.runtimeFor(session), session, pane, this.config.health.captureLines),
       reconcileActivity: (session, pane) => this.health.reconcileActivity(session, pane),
@@ -481,8 +484,11 @@ export class Supervisor {
         observePaneInputState(this.backend, this.runtimeFor(session), session, pane, this.config.health.captureLines),
       onStall: (session, kind, info) => {
         // A stall kind is causal evidence for the sentinel, not a separate
-        // mechanical activity state. A live runtime that is not working is idle.
-        this.states.setActivity(session, 'idle');
+        // mechanical activity state. A live runtime that is not working is
+        // idle — except `not-started`: there is no evidence the runtime ever
+        // reached its composer, so the mechanical activity stays `starting`
+        // (never guessed at) while the sentinel/operator is alerted.
+        if (kind !== 'not-started') this.states.setActivity(session, 'idle');
         void this.sentinel.handleStall(session, kind, info);
       },
       onWorking: (session) => {
@@ -934,7 +940,13 @@ export class Supervisor {
       registered: this.sessions.has(codename),
       configPresent: existsSync(join(configDir, `${codename}.yaml`)) || existsSync(join(configDir, `${codename}.yml`)),
       running: state?.running === true,
-      activity: state?.activity ?? 'stopped',
+      // The signed receipt schema is a versioned external contract
+      // (schemaVersion 1) with its own fixed three-value activity enum.
+      // `starting` — launched, no authoritative evidence yet — is new and
+      // out of scope for that contract; attest it as `idle` (running, not
+      // confirmed executing) rather than widening a cryptographically
+      // versioned payload shape.
+      activity: state?.activity === 'starting' ? 'idle' : (state?.activity ?? 'stopped'),
       processActive: process.active,
       processObservedAt: process.observedAt,
       issuer:

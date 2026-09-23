@@ -22,6 +22,7 @@ let lifecycle: Lifecycle;
 let sessions: Map<string, SessionConfig>;
 let supervisionResets: string[];
 let supervisionRunningStates: boolean[];
+let armedStartConfirmations: string[];
 let defaultBypassPermissions: boolean;
 let defaultEfforts: { 'claude-code': string | undefined; 'codex': string | undefined };
 let lifecycleEvents: FakeEventPublisher;
@@ -43,6 +44,7 @@ beforeEach(() => {
   sessions = loadSessionConfigs(baseDir);
   supervisionResets = [];
   supervisionRunningStates = [];
+  armedStartConfirmations = [];
   defaultBypassPermissions = true;
   defaultEfforts = { 'claude-code': undefined, 'codex': undefined };
   lifecycleEvents = new FakeEventPublisher();
@@ -85,6 +87,9 @@ beforeEach(() => {
       supervisionResets.push(session);
       supervisionRunningStates.push(states.get(session)?.running === true);
     },
+    armStartConfirmation: (session) => {
+      armedStartConfirmations.push(session);
+    },
     observeActivity: (session) => activityObserver(session),
     events: lifecycleEvents,
   });
@@ -112,6 +117,31 @@ describe('lifecycle edges', () => {
       runtime: 'claude-code',
     });
   });
+
+  it.each(['claude-code', 'codex'] as const)(
+    'reports a fresh %s launch as starting, not working, and arms the start confirmation window',
+    async (runtimeName) => {
+      await lifecycle.start('alpha', { runtime: runtimeName });
+
+      expect(states.get('alpha')?.activity).toBe('starting');
+      expect(armedStartConfirmations).toEqual(['alpha']);
+    },
+  );
+
+  it.each(['claude-code', 'codex'] as const)(
+    'reports a %s resume as starting too, and arms a fresh confirmation window — a resumed process has proven nothing yet either',
+    async (runtimeName) => {
+      await lifecycle.start('alpha', { runtime: runtimeName });
+      const pane = lifecycle.getPane('alpha')!;
+      backend.endSession(pane.id); // e.g. Ctrl-C ended the runtime; the pane survives
+      armedStartConfirmations = [];
+
+      await lifecycle.continue('alpha', { runtime: runtimeName });
+
+      expect(states.get('alpha')?.activity).toBe('starting');
+      expect(armedStartConfirmations).toEqual(['alpha']);
+    },
+  );
 
   it('publishes stopped state before supervision reevaluates fleet membership', async () => {
     await lifecycle.start('alpha');
@@ -567,6 +597,7 @@ describe('lifecycle edges', () => {
       events: lifecycleEvents,
       reloadSessions: () => undefined,
       supervisionReset: () => undefined,
+      armStartConfirmation: () => undefined,
     });
 
     expect(await denied.spawn('denied')).toBe('Session admission denied: no matching claim.');

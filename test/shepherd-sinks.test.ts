@@ -83,6 +83,7 @@ beforeEach(async () => {
     sessionConfigDir: '/tmp/sessions',
     reloadSessions: () => undefined,
     supervisionReset: () => undefined,
+    armStartConfirmation: () => undefined,
   });
   delivery = new DeliveryQueue({
     backend,
