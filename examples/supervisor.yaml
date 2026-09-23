@@ -125,6 +125,7 @@ status:
   disagreementMs: 3600000 # working claim vs proven idle for 1 hour
   staleMs: 14400000 # 4-hour working claim plus positive nonactivity
   waitingMs: 14400000 # 4-hour wait or resolved blocker awaiting a new claim
+  acceptanceAuthorities: {} # authority codename: [worker codenames]; self-acceptance is always forbidden
 
 messaging:
   maxPendingMessagesPerRecipient: 5 # durable pending direct/broadcast deliveries accepted per recipient

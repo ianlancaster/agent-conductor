@@ -24,6 +24,7 @@ export const CONDUCTOR_DOC_TOPICS = [
   'adapters',
   'event-subscribers',
   'troubleshooting',
+  'work-status',
 ] as const;
 export const OPTIONAL_CONDUCTOR_DOC_TOPICS = ['opencodex'] as const;
 

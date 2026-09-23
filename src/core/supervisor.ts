@@ -37,6 +37,7 @@ import type { ConductorIntegration } from '../integrations/types.js';
 import { configuredRunbookRegistry, type RunbookRegistry } from '../runbooks/registry.js';
 import { CommandRouter } from './commands.js';
 import { DeliveryQueue } from './delivery.js';
+import { InvalidRequestError } from './errors.js';
 import { ConductorDocumentation } from './documentation.js';
 import { HealthMonitor } from './health.js';
 import { identityFor } from './identity.js';
@@ -522,6 +523,10 @@ export class Supervisor {
       statusReport: (codename, only) => this.statusReport(codename, only),
       reportWorkStatus: (session, report) => {
         if (!this.sessions.has(session)) throw new Error(`Unknown session: ${session}`);
+        const executionId = this.lifecycle.currentRunId(session);
+        if (executionId === undefined || this.states.get(session)?.running !== true) {
+          throw new InvalidRequestError(`Session ${session} has no live execution for report_status.`);
+        }
         const snapshot = join(dataDir, 'sessions', session, STATUS_MAPPING_SNAPSHOT_NAME);
         const version = existsSync(snapshot) ? readFileSync(snapshot, 'utf8').trim() : STATUS_MAPPING_VERSION;
         return this.store.workStatus.report(
@@ -531,6 +536,7 @@ export class Supervisor {
           version,
           Date.now(),
           new Set(this.sessions.keys()),
+          executionId,
         );
       },
       resolveWorkBlocker: async (workId, answer, exactTarget) => {
@@ -560,6 +566,62 @@ export class Supervisor {
           log().warn(
             'status',
             `Resolution answer remains queued for ${receipt.session}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        return receipt;
+      },
+      actOnWorkStatus: async (action, workId, actor, options) => {
+        const fleetId = this.resolvedInstance.fleetId;
+        const bound =
+          action === 'accept' || action === 'reject'
+            ? this.store.workStatus.currentDone(fleetId, workId, options.target?.attemptId)
+            : this.store.workStatus.currentUnresolved(fleetId, workId, options.target?.attemptId);
+        if (actor.audience === 'session') {
+          if (action !== 'accept' && action !== 'reject')
+            throw new InvalidRequestError('Only the operator may close or rebind work.');
+          if (actor.codename === bound.row.session)
+            throw new InvalidRequestError('A session cannot accept or reject its own attempt.');
+          if (!this.config.status.acceptanceAuthorities[actor.codename]?.includes(bound.row.session)) {
+            throw new InvalidRequestError(`${actor.codename} is not an acceptance authority for ${bound.row.session}.`);
+          }
+        }
+        const claim = JSON.parse(bound.event.payload_json) as { artifact_revision?: string };
+        const target = options.target ?? {
+          attemptId: bound.row.attempt_id,
+          claimEventId: `${fleetId}:work-status:${String(bound.event.id)}`,
+          ...(claim.artifact_revision === undefined ? {} : { artifactRevision: claim.artifact_revision }),
+        };
+        const actorName = actor.audience === 'operator' ? actor.id : `session:${fleetId}:${actor.codename}`;
+        if (action === 'accept')
+          return this.store.workStatus.accept(fleetId, workId, actorName, target, options.evidenceRef);
+        if (action === 'close')
+          return this.store.workStatus.closeWork(fleetId, workId, actorName, options.reason ?? '', target);
+        if (action === 'rebind') {
+          if (bound.row.state === 'done' || bound.row.state === 'failed' || bound.row.disposition !== 'open') {
+            throw new InvalidRequestError('Only an open executing attempt can be rebound.');
+          }
+          const executionId = this.lifecycle.currentRunId(bound.row.session);
+          if (executionId === undefined || this.states.get(bound.row.session)?.running !== true) {
+            throw new InvalidRequestError(`Session ${bound.row.session} has no live execution to bind.`);
+          }
+          return this.store.workStatus.rebind(fleetId, workId, actorName, options.reason ?? '', target, executionId);
+        }
+        const receipt = this.store.workStatus.reject(
+          fleetId,
+          workId,
+          actorName,
+          options.reason ?? '',
+          target,
+          Date.now(),
+          this.config.messaging.maxPendingMessagesPerRecipient,
+          actor.audience === 'operator' ? 'operator' : actor.codename,
+        );
+        try {
+          await this.messaging.recoverPendingMessages(receipt.session);
+        } catch (error) {
+          log().warn(
+            'status',
+            `Rework reason remains queued for ${receipt.session}: ${error instanceof Error ? error.message : String(error)}`,
           );
         }
         return receipt;

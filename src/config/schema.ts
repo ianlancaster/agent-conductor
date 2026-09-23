@@ -277,6 +277,11 @@ export const supervisorConfigSchema = z
         disagreementMs: z.number().int().positive().default(3_600_000),
         staleMs: z.number().int().positive().default(14_400_000),
         waitingMs: z.number().int().positive().default(14_400_000),
+        /** Authority session codename -> sessions whose done claims it may attest or reject. */
+        acceptanceAuthorities: z
+          .record(z.array(z.string().regex(CODENAME_PATTERN)).min(1))
+          .refine((value) => Object.keys(value).every(isValidCodename), 'authority keys must be session codenames')
+          .default({}),
       })
       .strict()
       .default({}),

@@ -119,6 +119,10 @@ export class Lifecycle {
     return this.panes.get(session);
   }
 
+  currentRunId(session: string): string | undefined {
+    return this.sessions.get(session);
+  }
+
   processObservation(session: string): ProcessObservation | undefined {
     return this.processObservations.get(session);
   }
@@ -165,6 +169,9 @@ export class Lifecycle {
   async adopt(codename: string, pane: PaneRef): Promise<void> {
     this.panes.set(codename, pane);
     if (this.deps.states.has(codename)) {
+      const runId = this.deps.store.latestActiveRunId(codename) ?? randomUUID();
+      if (this.deps.store.getRun(runId) === undefined) this.deps.store.insertRun(runId, codename);
+      this.sessions.set(codename, runId);
       const configuredRuntime = this.deps.sessions().get(codename)?.runtime;
       if (this.deps.states.get(codename)?.runtime === undefined && configuredRuntime !== undefined) {
         this.deps.states.setRuntime(codename, configuredRuntime);
