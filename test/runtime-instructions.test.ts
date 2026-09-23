@@ -7,6 +7,8 @@ import {
   MAX_HOOK_CONTEXT_CHARACTERS,
   MAX_HOOK_CONTEXT_UTF8_BYTES,
   MAX_SESSION_INSTRUCTION_BYTES,
+  STATUS_MAPPING_SNAPSHOT_NAME,
+  STATUS_MAPPING_VERSION,
   assertHookContextFits,
   prepareInstructionLayers,
 } from '../src/runtimes/instructions.js';
@@ -38,6 +40,8 @@ describe('prepareInstructionLayers', () => {
     expect(await readFile(join(configDir, 'session-instructions.md'), 'utf8')).toBe('  exact prose  \n');
     expect((await stat(join(configDir, 'conductor-protocol.md'))).mode & 0o777).toBe(0o600);
     expect((await stat(join(configDir, 'session-instructions.md'))).mode & 0o777).toBe(0o600);
+    expect(await readFile(join(configDir, STATUS_MAPPING_SNAPSHOT_NAME), 'utf8')).toBe(`${STATUS_MAPPING_VERSION}\n`);
+    expect((await stat(join(configDir, STATUS_MAPPING_SNAPSHOT_NAME))).mode & 0o777).toBe(0o600);
   });
 
   it('accepts a symlink that resolves to a regular file', async () => {

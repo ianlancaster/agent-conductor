@@ -7,6 +7,7 @@ import type { ConductorEventJournalStatus } from '../events/types.js';
 import type { IntegrationStatus } from '../integrations/types.js';
 import type { ProcessObservation } from './lifecycle.js';
 import type { ManagedShepherdStatus } from './shepherd-manager.js';
+import { renderWorkStatus, type WorkStatusSummary } from './work-status.js';
 
 const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
   working: '🟢',
@@ -58,6 +59,7 @@ export interface StatusDeps {
   effortFor(codename: string): string | undefined;
   sentinelCodename(): string | undefined;
   processObservation(codename: string): ProcessObservation | undefined;
+  workStatus?(only?: ReadonlySet<string>): WorkStatusSummary;
 }
 
 export type RuntimeSettingDefaults = Record<string, string | undefined>;
@@ -127,6 +129,7 @@ export function statusReport(
     const session = deps.sessions().get(codename);
     if (state === undefined || session === undefined) return `Unknown session: ${codename}`;
     const process = deps.processObservation(codename);
+    const work = deps.workStatus?.(new Set([codename]));
     return JSON.stringify(
       {
         codename,
@@ -147,6 +150,7 @@ export function statusReport(
         agentProject: state.isAgentProject,
         isSentinel: codename === sentinel,
         isShepherdRecipient: codename === markers.shepherdRecipient,
+        ...(work === undefined || work.views.length === 0 ? {} : { workStatuses: work.views }),
       },
       null,
       2,
@@ -161,6 +165,11 @@ export function statusReport(
   const sessions = names.filter((name) => deps.getState(name)?.isAgentProject !== true);
 
   const lines: string[] = [];
+  const work = deps.workStatus?.(only);
+  if (work !== undefined) {
+    const rendered = renderWorkStatus(work, Date.now());
+    if (rendered.length > 0) lines.push(rendered, '');
+  }
   for (const [header, group] of [
     ['Agents:', agents],
     ['Sessions:', sessions],

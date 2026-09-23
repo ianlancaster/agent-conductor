@@ -5,6 +5,8 @@ import type { ConductorEvent } from '../events/types.js';
 import type { RunbookSource } from '../runbooks/types.js';
 import { applyMigrations, openSqliteDatabase, openSqliteDatabaseReadOnly, withTransaction } from './sqlite.js';
 import type { SqliteMigration } from './sqlite.js';
+import { WorkStatusJournal } from './work-status.js';
+import { migrateWorkStatusProjection } from './work-status-projection.js';
 
 /** One launch of a session's CLI (start → stop). A session has many runs over time. */
 export interface RunRow {
@@ -386,15 +388,40 @@ const MIGRATIONS: SqliteMigration[] = [
         ON schedule_occurrences(state, admitted_at, id);
     `);
   },
+  `
+  CREATE TABLE IF NOT EXISTS work_status_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fleet_id TEXT NOT NULL,
+    session TEXT NOT NULL,
+    work_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    mapping_version TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('claim', 'unchanged_report', 'blocker_resolved')),
+    state TEXT CHECK (state IS NULL OR state IN ('working', 'waiting', 'blocked', 'done', 'failed')),
+    payload_json TEXT NOT NULL,
+    idempotency_key TEXT,
+    blocker_id TEXT,
+    blocker_revision INTEGER,
+    target_event_id INTEGER,
+    occurred_at_ms INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_work_status_scope ON work_status_events(fleet_id, session, work_id, id);
+  CREATE INDEX IF NOT EXISTS idx_work_status_attempt ON work_status_events(fleet_id, attempt_id, id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_work_status_idempotency ON work_status_events(fleet_id, session, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+  `,
+  migrateWorkStatusProjection,
 ];
 
 export class Store {
   private readonly db: DatabaseSync;
+  readonly workStatus: WorkStatusJournal;
 
   constructor(dbPath: string) {
     this.db = openSqliteDatabase(dbPath);
     try {
       applyMigrations(this.db, MIGRATIONS);
+      this.workStatus = new WorkStatusJournal(this.db);
     } catch (error) {
       this.db.close();
       throw error;

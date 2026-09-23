@@ -12,6 +12,68 @@ afterEach(() => {
 });
 
 describe('beta migration version collision recovery', () => {
+  it('rebuilds the current status projection and keyed receipts from a prior journal', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conductor-status-projection-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'conductor.db');
+    const seeded = new Store(dbPath);
+    const first = seeded.workStatus.report(
+      'fleet',
+      'alpha',
+      {
+        state: 'working',
+        work_id: 'TASK-1',
+        summary: 'Build',
+        idempotencyKey: 'first',
+      },
+      '1',
+      100,
+    );
+    seeded.workStatus.report(
+      'fleet',
+      'alpha',
+      {
+        state: 'waiting',
+        work_id: 'TASK-1',
+        summary: 'CI',
+        waiting_on: 'CI',
+      },
+      '1',
+      200,
+    );
+    seeded.close();
+    const old = openSqliteDatabase(dbPath);
+    old.exec(`
+      DROP TABLE work_status_current;
+      DROP TABLE work_status_idempotency;
+      ALTER TABLE work_status_events DROP COLUMN duplicate_count;
+      PRAGMA user_version = 18;
+    `);
+    old.close();
+    const migrated = new Store(dbPath);
+    expect(migrated.workStatus.current('fleet')[0]).toMatchObject({
+      state: 'waiting',
+      state_entered_at_ms: 200,
+      work_started_at_ms: 100,
+    });
+    expect(
+      migrated.workStatus.report(
+        'fleet',
+        'alpha',
+        {
+          state: 'working',
+          work_id: 'TASK-1',
+          summary: 'Build',
+          idempotencyKey: 'first',
+        },
+        '1',
+        300,
+      ),
+    ).toMatchObject({ eventId: first.eventId, unchanged: true });
+    expect(migrated.workStatus.current('fleet')[0]?.state).toBe('waiting');
+    migrated.close();
+  });
+
   it('opens an already-upgraded store after rollback without deleting its records', () => {
     const dir = mkdtempSync(join(tmpdir(), 'conductor-rollback-schema-'));
     tempDirs.push(dir);
@@ -33,7 +95,7 @@ describe('beta migration version collision recovery', () => {
     expect(reopened.getMessage(next)).toMatchObject({ status: 'pending' });
     reopened.close();
     const inspected = openSqliteDatabase(dbPath);
-    expect(inspected.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 17 });
+    expect(inspected.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 19 });
     expect(
       inspected.prepare('SELECT evidence FROM message_reconciliations WHERE message_id = ?').get(id),
     ).toMatchObject({ evidence: 'Preserved evidence' });
@@ -108,7 +170,7 @@ describe('beta migration version collision recovery', () => {
     expect(reopened.getMessage(operator.row.id)).toEqual(operator.row);
     reopened.close();
     const inspected = openSqliteDatabase(dbPath);
-    expect(inspected.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 17 });
+    expect(inspected.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 19 });
     expect(inspected.prepare('SELECT room, kind, member FROM room_members').all()).toEqual([
       { room: 'review', kind: 'session', member: 'alpha' },
     ]);

@@ -61,6 +61,8 @@ return to direct messages.
 - When contacted through a remote operator channel, reply with `send_to_operator`; terminal text
   does not reach the remote operator.
 - Keep your status tag current when it materially helps fleet coordination.
+- Report state changes via `report_status`, not as a heartbeat; next steps go in your
+  plan. Report `waiting` before long waits; operator reviews or decisions are `blocked`.
 - Protected messaging preserves operator drafts. `type_in_pane` is raw terminal control that
   bypasses that protection and can overwrite an operator's text; use it only when raw input is
   explicitly intended.

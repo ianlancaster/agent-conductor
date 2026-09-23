@@ -7,6 +7,8 @@ export const MAX_HOOK_CONTEXT_UTF8_BYTES = 10_000;
 export const MAX_HOOK_CONTEXT_CHARACTERS = 10_000;
 
 export const PROTOCOL_SNAPSHOT_NAME = 'conductor-protocol.md';
+export const STATUS_MAPPING_SNAPSHOT_NAME = 'status-mapping-version';
+export const STATUS_MAPPING_VERSION = '1';
 export const SESSION_INSTRUCTIONS_SNAPSHOT_NAME = 'session-instructions.md';
 
 /** Keep optional fleet capability hints in the managed protocol, including after compaction. */
@@ -131,6 +133,9 @@ export async function prepareInstructionLayers(
   await mkdir(options.configDir, { recursive: true });
   if (protocol === undefined) await rm(protocolPath, { force: true });
   else await writeAtomicFile(protocol.path, protocol.content, 0o600);
+  const statusVersionPath = join(options.configDir, STATUS_MAPPING_SNAPSHOT_NAME);
+  if (protocol === undefined) await rm(statusVersionPath, { force: true });
+  else await writeAtomicFile(statusVersionPath, `${STATUS_MAPPING_VERSION}\n`, 0o600);
   if (session === undefined) await rm(sessionPath, { force: true });
   else await writeAtomicFile(session.path, session.content, 0o600);
   return layers;

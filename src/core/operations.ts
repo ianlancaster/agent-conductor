@@ -9,6 +9,7 @@ import { InvalidRequestError } from './errors.js';
 import type { Placement } from './types.js';
 import type { RunbookAdoptionActions } from './runbook-adoptions.js';
 import type { FederationListing } from '../federation/types.js';
+import type { WorkStatusReport, WorkStatusReceipt, WorkBlockerResolution } from '../store/work-status.js';
 import {
   operationSchema as schema,
   optionalString,
@@ -61,6 +62,12 @@ export interface ConductorOperationDeps {
   effortHints: Record<string, readonly string[]>;
   runtimeNames?: readonly string[];
   statusReport(codename?: string, only?: ReadonlySet<string>): string;
+  reportWorkStatus?(session: string, report: WorkStatusReport): WorkStatusReceipt;
+  resolveWorkBlocker?(
+    workId: string,
+    answer: string,
+    target?: { attemptId: string; blockerId: string; blockerRevision: number; targetClaimEventId?: string },
+  ): Promise<WorkBlockerResolution>;
   attestSessionStatus(
     codename: string,
     actor: OperationActor,
@@ -208,6 +215,108 @@ export class ConductorOperations {
     const templateNames = this.deps.lifecycle.templateNames();
     const runRuntimeProperty = runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex']);
     const definitions: OperationDefinition[] = [
+      {
+        name: 'report_status',
+        description:
+          'Report a work-state transition. Required: state, work_id, summary.\n' +
+          'waiting needs waiting_on; blocked needs needs_from, question, recommendation, meanwhile, if_no_answer (options optional).\n' +
+          'done needs evidence; failed needs reason; leaving an unresolved block needs resolution.\n' +
+          'Same-state reports are for changed waiting_on, a changed blocker packet, or new done evidence; never a heartbeat.\n' +
+          'Only one working claim per session; done is a claim, not acceptance. Conductor returns the bound attempt and event receipt.',
+        resultDescription: 'Returns the durable event receipt as JSON.',
+        audiences: SESSION_ONLY,
+        federation: 'local-only',
+        inputSchema: schema(
+          {
+            state: {
+              type: 'string',
+              enum: ['working', 'waiting', 'blocked', 'done', 'failed'],
+              description: 'Current work state',
+            },
+            work_id: { ...stringProperty('One independently reportable work unit'), maxLength: 160 },
+            summary: { ...stringProperty('Short work summary'), maxLength: 240 },
+            attempt_id: { ...stringProperty('Optional packet-supplied attempt ID'), maxLength: 160 },
+            idempotencyKey: { ...stringProperty('Optional retry key'), maxLength: 160 },
+            mapping_version: {
+              type: 'string',
+              enum: ['1'],
+              description: 'Status vocabulary version for trusted adapters',
+            },
+            waiting_on: stringProperty('Named dependency while waiting'),
+            needs_from: stringProperty('Who can answer this blocker; operator for Ian'),
+            question: stringProperty('Decision needed'),
+            recommendation: stringProperty('Recommended answer'),
+            meanwhile: stringProperty('What continues while blocked'),
+            if_no_answer: stringProperty('Safe default if no answer arrives'),
+            options: optionsProperty,
+            evidence: {
+              type: 'array',
+              description: 'References identifying the completed output',
+              minItems: 1,
+              maxItems: 8,
+              items: { type: 'string', minLength: 1, maxLength: 320 },
+            },
+            artifact_revision: stringProperty('Optional revision of the completed artifact'),
+            reason: stringProperty('Why the attempt failed'),
+            resolution: stringProperty('How the previous blocker was resolved'),
+          },
+          ['state', 'work_id', 'summary'],
+        ),
+        handler: (args, actor) => {
+          if (actor.audience !== 'session') throw new InvalidRequestError('report_status requires a session caller.');
+          if (this.deps.reportWorkStatus === undefined) throw new Error('Work status is unavailable.');
+          return Promise.resolve(
+            JSON.stringify(this.deps.reportWorkStatus(actor.codename, args as unknown as WorkStatusReport)),
+          );
+        },
+      },
+      {
+        name: 'resolve_status_blocker',
+        description:
+          'Answer the current blocker for a work ID and queue the answer without starting its session. Supply all exact-target fields for adapters.',
+        resultDescription: 'Returns the exact blocker revision, answer event, and durable message receipt as JSON.',
+        audiences: OPERATOR_ONLY,
+        federation: 'local-only',
+        inputSchema: schema(
+          {
+            work_id: stringProperty('Work ID'),
+            answer: stringProperty('Answer to the current blocker'),
+            attempt_id: stringProperty('Exact attempt ID for adapter calls'),
+            blocker_id: stringProperty('Exact blocker ID for adapter calls'),
+            blocker_revision: {
+              type: 'number',
+              minimum: 1,
+              description: 'Exact integer blocker revision for adapter calls',
+            },
+            target_claim_event_id: stringProperty('Exact current blocker claim event for adapter calls'),
+          },
+          ['work_id', 'answer'],
+        ),
+        handler: async (args) => {
+          if (this.deps.resolveWorkBlocker === undefined) throw new Error('Work status is unavailable.');
+          const targetFields = ['attempt_id', 'blocker_id', 'blocker_revision', 'target_claim_event_id'].filter(
+            (key) => args[key] !== undefined,
+          );
+          if (targetFields.length > 0 && targetFields.length !== 4)
+            throw new InvalidRequestError(
+              'Exact blocker targeting requires attempt_id, blocker_id, blocker_revision, and target_claim_event_id.',
+            );
+          if (targetFields.length > 0 && !Number.isInteger(args.blocker_revision))
+            throw new InvalidRequestError('blocker_revision must be an integer.');
+          const target =
+            targetFields.length === 0
+              ? undefined
+              : {
+                  attemptId: requireString(args, 'attempt_id'),
+                  blockerId: requireString(args, 'blocker_id'),
+                  blockerRevision: args.blocker_revision as number,
+                  targetClaimEventId: requireString(args, 'target_claim_event_id'),
+                };
+          return JSON.stringify(
+            await this.deps.resolveWorkBlocker(requireString(args, 'work_id'), requireString(args, 'answer'), target),
+          );
+        },
+      },
       {
         name: 'attest_session_status',
         description:

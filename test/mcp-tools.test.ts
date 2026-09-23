@@ -133,6 +133,9 @@ beforeEach(() => {
         },
         c,
       ),
+    reportWorkStatus: (session, report) => store.workStatus.report('test-fleet', session, report),
+    resolveWorkBlocker: async (workId, answer, target) =>
+      store.workStatus.resolve('test-fleet', workId, answer, target),
     tail: async (c, n) => `tail:${c}:${n}`,
     typeInPane: async (codename, text) => {
       const pane = lifecycle.getPane(codename);
@@ -161,6 +164,57 @@ beforeEach(() => {
 });
 
 describe('surface contract', () => {
+  it('HOTSHOT rejects a supplied claim target without its other target fields', async () => {
+    store.workStatus.report('test-fleet', 'alpha', { state: 'working', work_id: 'target-test', summary: 'Build' });
+    const packet = {
+      state: 'blocked' as const,
+      work_id: 'target-test',
+      summary: 'Choose',
+      needs_from: 'operator',
+      question: 'A or B?',
+      recommendation: 'A',
+      meanwhile: 'Wait',
+      if_no_answer: 'Wait',
+    };
+    const old = store.workStatus.report('test-fleet', 'alpha', packet);
+    store.workStatus.report('test-fleet', 'alpha', { ...packet, question: 'C or D?' });
+    await expect(
+      operations.invoke(
+        'resolve_status_blocker',
+        { work_id: 'target-test', answer: 'A', target_claim_event_id: old.eventId },
+        { audience: 'operator', id: 'review-operator' },
+      ),
+    ).rejects.toThrow();
+    expect(
+      store.workStatus
+        .events('test-fleet')
+        .filter(
+          (e) => e.kind === 'blocker_resolved' && (JSON.parse(e.payload_json) as { by?: string }).by === 'operator',
+        ),
+    ).toHaveLength(0);
+  });
+  it('binds report_status to the calling session and requires conditional evidence', async () => {
+    const first = JSON.parse(
+      await tool('report_status').handler({ state: 'working', work_id: 'review-1', summary: 'Reviewing' }, 'alpha'),
+    ) as { attemptId: string; eventId: string };
+    expect(first.attemptId).toBeTruthy();
+    expect(store.workStatus.events('test-fleet')[0]).toMatchObject({
+      session: 'alpha',
+      work_id: 'review-1',
+      mapping_version: '1',
+    });
+    await expect(
+      tool('report_status').handler({ state: 'done', work_id: 'review-1', summary: 'Reviewed' }, 'alpha'),
+    ).rejects.toThrow('evidence');
+    const done = JSON.parse(
+      await tool('report_status').handler(
+        { state: 'done', work_id: 'review-1', summary: 'Reviewed', evidence: ['review://1'] },
+        'alpha',
+      ),
+    ) as { attemptId: string };
+    expect(done.attemptId).toBe(first.attemptId);
+  });
+
   it('classifies the complete canonical catalog for federation at compile-enforced definitions', () => {
     const sessionDefinitions = operations.definitions('session');
     expect(
@@ -196,7 +250,7 @@ describe('surface contract', () => {
         .filter((definition) => definition.federation === 'local-only')
         .map((definition) => definition.name)
         .sort(),
-    ).toEqual(['attest_session_status', 'get_conductor_docs', 'send_to_operator', 'whoami'].sort());
+    ).toEqual(['attest_session_status', 'get_conductor_docs', 'report_status', 'send_to_operator', 'whoami'].sort());
     expect(
       operations
         .definitions()
@@ -651,7 +705,7 @@ describe('surface contract', () => {
 
   it('keeps every turn-zero invariant inside a bounded mandatory prompt', () => {
     const protocol = readFileSync(new URL('../prompts/conductor-protocol.md', import.meta.url), 'utf8');
-    expect(Buffer.byteLength(protocol, 'utf8')).toBeLessThanOrEqual(4_500);
+    expect(Buffer.byteLength(protocol, 'utf8')).toBeLessThanOrEqual(4_673);
     for (const invariant of [
       'identity is mechanical',
       '[Message from <sender>]',

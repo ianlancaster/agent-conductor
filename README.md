@@ -105,6 +105,7 @@ version-matched reference; these are the commands used most often:
 | Task                                         | Command                                                                    |
 | -------------------------------------------- | -------------------------------------------------------------------------- |
 | Inspect the fleet or one session             | `/status` · `/status <session>`                                            |
+| Answer a reported work blocker               | `/resolve <work-id> <answer>`                                              |
 | Create or restore a session                  | `/spawn <name> [-r claude-code\|codex] [-s <id>] [--path <dir>]`           |
 | Start, resume, or stop it                    | `/start <session>` · `/continue <session> [-s <id>]` · `/stop <session>`   |
 | Send a message                               | `/tell <session> <message>` · `/broadcast <message>`                       |
@@ -165,6 +166,11 @@ For diagnosis, `conductor logs [session]` reads recent persisted health events,
 `conductor validate` checks strict fleet configuration, and `/tail` reads pane output.
 Managed agents can use `list_sessions` and `get_session_status` for structured,
 non-invasive status without scraping peers' terminals.
+Agents report work transitions through `report_status`. The status view groups open blockers,
+stale or conflicting claims, overdue waits, completion claims, and active work. It shows
+time in state, work age, WIP counts, and the operator blocker queue. Verified harness prompts appear separately; unknown notification types only add a neutral annotation. `/resolve` records an
+answer against the exact current blocker and delivers it through protected messaging; a
+stopped session remains stopped. Completion remains an agent claim until separately accepted.
 Configured PR Shepherd companions always appear in fleet status: healthy companions show Online,
 while paused, starting, degraded, and failed states remain explicit instead of disappearing.
 Status reconciliation uses each runtime's own activity parser to repair missed lifecycle hooks in

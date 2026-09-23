@@ -147,6 +147,20 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       },
     },
     {
+      command: 'resolve',
+      operations: ['resolve_status_blocker'],
+      group: 'Conversation',
+      usage: '/resolve <work-id> <answer>',
+      description:
+        'Answer the current blocker for one unambiguous work ID; the answer is delivered without starting its session.',
+      invoke: (args, actor) => {
+        const workId = args[0];
+        const answer = args.slice(1).join(' ');
+        if (workId === undefined || answer.length === 0) usage('/resolve <work-id> <answer>');
+        return invoke('resolve_status_blocker', { work_id: workId, answer }, actor);
+      },
+    },
+    {
       command: 'start',
       operations: ['start_session'],
       group: 'Sessions',

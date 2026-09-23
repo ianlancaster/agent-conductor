@@ -153,6 +153,9 @@ describe('config generation', () => {
   it('keeps the shipped protocol plus the largest valid session layer inside provider hook limits', async () => {
     const protocol = await readFile(path.resolve('prompts/conductor-protocol.md'), 'utf8');
     const largestValidSession = `${'x'.repeat(MAX_SESSION_INSTRUCTION_BYTES - 1)}\n`;
+    expect(Buffer.byteLength(renderProtocolReminderContext(protocol, largestValidSession), 'utf8')).toBeLessThanOrEqual(
+      9_905,
+    );
     expect(() => renderProtocolReminderScript(protocol, largestValidSession)).not.toThrow();
   });
 
