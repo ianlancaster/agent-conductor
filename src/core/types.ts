@@ -56,6 +56,7 @@ export interface RuntimeEvent {
   /** Runtime-owned identity used to reject stale, out-of-order completion events. */
   turnId?: string;
   reason?: string;
+  notificationType?: string;
   transcriptPath?: string;
   continuitySource?: 'startup' | 'resume' | 'compact';
   continuityOutcome?: 'emitted' | 'missing' | 'unreadable' | 'not-file' | 'invalid-utf8' | 'oversized';

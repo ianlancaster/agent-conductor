@@ -213,6 +213,9 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     return {
       type,
       reason: typeof record.message === 'string' ? record.message : undefined,
+      ...(hookEvent === 'Notification' && typeof record.notification_type === 'string'
+        ? { notificationType: record.notification_type }
+        : {}),
       transcriptPath: typeof record.transcript_path === 'string' ? record.transcript_path : undefined,
     };
   }

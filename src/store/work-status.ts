@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { InvalidRequestError } from '../core/errors.js';
 import { messageEnvelope } from '../core/utils.js';
 import { withTransaction } from './sqlite.js';
+import { currentWork, projectClaim, projectResolution, type WorkStatusCurrent } from './work-status-projection.js';
 
 export type WorkClaimState = 'working' | 'waiting' | 'blocked' | 'done' | 'failed';
 
@@ -41,6 +42,7 @@ export interface WorkStatusEvent {
   blocker_revision: number | null;
   target_event_id: number | null;
   occurred_at_ms: number;
+  duplicate_count: number;
 }
 
 export interface WorkStatusReceipt {
@@ -148,10 +150,6 @@ function validate(report: WorkStatusReport): void {
   if (report.resolution !== undefined) required(report.resolution, 'resolution');
 }
 
-function claims(events: readonly WorkStatusEvent[]): WorkStatusEvent[] {
-  return events.filter((event) => event.kind === 'claim');
-}
-
 function payload(event: WorkStatusEvent): WorkStatusReport {
   return JSON.parse(event.payload_json) as WorkStatusReport;
 }
@@ -168,12 +166,21 @@ export class WorkStatusJournal {
           .all(fleetId, session)) as unknown as WorkStatusEvent[];
   }
 
+  current(fleetId: string, session?: string): WorkStatusCurrent[] {
+    return (session === undefined
+      ? this.db.prepare('SELECT * FROM work_status_current WHERE fleet_id = ? ORDER BY work_id, session').all(fleetId)
+      : this.db
+          .prepare('SELECT * FROM work_status_current WHERE fleet_id = ? AND session = ? ORDER BY work_id')
+          .all(fleetId, session)) as unknown as WorkStatusCurrent[];
+  }
+
   report(
     fleetId: string,
     session: string,
     report: WorkStatusReport,
     snapshotVersion = '1',
     now = Date.now(),
+    knownSessions?: ReadonlySet<string>,
   ): WorkStatusReceipt {
     validate(report);
     const version = report.mapping_version ?? snapshotVersion;
@@ -183,23 +190,31 @@ export class WorkStatusJournal {
     return withTransaction(this.db, () => {
       if (report.idempotencyKey !== undefined) {
         const keyed = this.db
-          .prepare('SELECT * FROM work_status_events WHERE fleet_id = ? AND session = ? AND idempotency_key = ?')
-          .get(fleetId, session, report.idempotencyKey) as WorkStatusEvent | undefined;
+          .prepare('SELECT * FROM work_status_idempotency WHERE fleet_id = ? AND session = ? AND idempotency_key = ?')
+          .get(fleetId, session, report.idempotencyKey) as { payload_json: string; claim_event_id: number } | undefined;
         if (keyed !== undefined) {
           if (keyed.payload_json !== normalizedJson)
             throw new InvalidRequestError('idempotencyKey was reused with different report content.');
-          return this.receipt(keyed, true);
+          const original = this.eventById(keyed.claim_event_id);
+          this.countDuplicate(original.id);
+          return this.receipt(original, true);
         }
       }
-      const all = this.events(fleetId);
-      const work = claims(all).filter((event) => event.session === session && event.work_id === report.work_id);
-      const current = work.at(-1);
+      if (
+        report.state === 'blocked' &&
+        report.needs_from !== 'operator' &&
+        !knownSessions?.has(report.needs_from ?? '')
+      ) {
+        throw new InvalidRequestError('needs_from must be operator or a known session codename.');
+      }
+      const currentRow = currentWork(this.db, fleetId, session, report.work_id);
+      const current = currentRow === undefined ? undefined : this.eventById(currentRow.claim_event_id);
       const currentReport = current === undefined ? undefined : payload(current);
       const currentAttempt = current?.attempt_id;
       const terminal = currentReport?.state === 'done' || currentReport?.state === 'failed';
       const newAttempt =
         current === undefined ||
-        (terminal &&
+        (currentReport?.state === 'failed' &&
           report.state === 'working' &&
           (report.attempt_id === undefined || report.attempt_id !== currentAttempt));
       if (!newAttempt && report.attempt_id !== undefined && report.attempt_id !== currentAttempt) {
@@ -212,34 +227,32 @@ export class WorkStatusJournal {
         throw new InvalidRequestError('This attempt is closed to new state reports.');
       }
       if (report.state === 'working') {
-        const otherWorking = claims(all).filter(
-          (event) => event.session === session && event.work_id !== report.work_id,
-        );
-        const latestByWork = new Map<string, WorkStatusEvent>();
-        for (const event of otherWorking) latestByWork.set(event.work_id, event);
-        if ([...latestByWork.values()].some((event) => payload(event).state === 'working')) {
-          throw new InvalidRequestError('Move the current working item to waiting, blocked, done, or failed first.');
+        const conflict = this.db
+          .prepare(
+            `SELECT work_id, attempt_id FROM work_status_current
+          WHERE fleet_id = ? AND session = ? AND state = 'working' AND work_id <> ? LIMIT 1`,
+          )
+          .get(fleetId, session, report.work_id) as { work_id: string; attempt_id: string } | undefined;
+        if (conflict !== undefined) {
+          throw new InvalidRequestError(
+            `Move ${conflict.work_id} (attempt ${conflict.attempt_id}) from working before starting ${report.work_id}.`,
+          );
         }
       }
       const attemptId = newAttempt ? (report.attempt_id ?? randomUUID()) : currentAttempt;
       if (attemptId === undefined) throw new Error('Attempt binding is missing.');
-      if (newAttempt && all.some((event) => event.attempt_id === attemptId)) {
+      if (
+        newAttempt &&
+        this.db
+          .prepare('SELECT id FROM work_status_events WHERE fleet_id = ? AND attempt_id = ? LIMIT 1')
+          .get(fleetId, attemptId) !== undefined
+      ) {
         throw new InvalidRequestError('attempt_id is already bound to an attempt.');
       }
       if (current !== undefined && !newAttempt && currentReport?.state === report.state) {
         if (same(claimPayload(currentReport), normalized)) {
-          this.insert({
-            fleetId,
-            session,
-            workId: report.work_id,
-            attemptId,
-            version,
-            kind: 'unchanged_report',
-            state: null,
-            json: normalizedJson,
-            now,
-            target: current.id,
-          });
+          this.countDuplicate(current.id);
+          this.bindKey(fleetId, session, report.idempotencyKey, normalizedJson, current.id);
           return this.receipt(current, true);
         }
         if (
@@ -263,16 +276,11 @@ export class WorkStatusJournal {
         if (!allowed) throw new InvalidRequestError('Same-state reports require a changed structured field.');
       }
       if (currentReport?.state === 'blocked' && current !== undefined) {
-        const resolved = all.some(
-          (event) =>
-            event.kind === 'blocker_resolved' &&
-            event.blocker_id === current.blocker_id &&
-            event.blocker_revision === current.blocker_revision,
-        );
+        const resolved = currentRow?.resolved_at_ms !== null;
         const newQuestion = report.state === 'blocked' && report.question !== currentReport.question;
         if ((report.state !== 'blocked' || newQuestion) && !resolved) {
           if (!newQuestion) required(report.resolution, 'resolution');
-          this.insert({
+          const resolution = this.insert({
             fleetId,
             session,
             workId: report.work_id,
@@ -286,6 +294,7 @@ export class WorkStatusJournal {
             blockerRevision: current.blocker_revision ?? undefined,
             target: current.id,
           });
+          projectResolution(this.db, resolution);
         }
       }
       const blockerId =
@@ -314,6 +323,8 @@ export class WorkStatusJournal {
         blockerRevision,
         idempotencyKey: report.idempotencyKey,
       });
+      projectClaim(this.db, inserted);
+      this.bindKey(fleetId, session, report.idempotencyKey, normalizedJson, inserted.id);
       return this.receipt(inserted, false);
     });
   }
@@ -348,7 +359,7 @@ export class WorkStatusJournal {
       if (pending.count >= queueCapacity) {
         throw new InvalidRequestError(`Message queue for ${current.session} is full; the blocker remains open.`);
       }
-      const content = `Work ${workId} blocker ${current.blocker_id} (revision ${String(current.blocker_revision)}) was answered: ${answer}`;
+      const content = `Work ${workId} blocker ${current.blocker_id} (revision ${String(current.blocker_revision)}) was answered: ${answer}\nReport your next state.`;
       const message = this.db
         .prepare(
           "INSERT INTO messages (sender, recipient, type, content, delivery_policy, delivery_envelope) VALUES ('operator', ?, 'message', ?, 'bypass', ?)",
@@ -368,6 +379,7 @@ export class WorkStatusJournal {
         blockerRevision: current.blocker_revision,
         target: current.id,
       });
+      projectResolution(this.db, event);
       return {
         eventId: `${fleetId}:work-status:${String(event.id)}`,
         sequence: event.id,
@@ -385,21 +397,19 @@ export class WorkStatusJournal {
   }
 
   currentBlocker(fleetId: string, workId: string, attemptId?: string): WorkStatusEvent {
-    const all = this.events(fleetId);
-    const latest = new Map<string, WorkStatusEvent>();
-    for (const event of claims(all)) {
-      if (event.work_id === workId && (attemptId === undefined || event.attempt_id === attemptId))
-        latest.set(event.attempt_id, event);
-    }
-    const open = [...latest.values()].filter((event) => {
-      if (payload(event).state !== 'blocked') return false;
-      return !all.some(
-        (item) =>
-          item.kind === 'blocker_resolved' &&
-          item.blocker_id === event.blocker_id &&
-          item.blocker_revision === event.blocker_revision,
-      );
-    });
+    const open = (attemptId === undefined
+      ? this.db
+          .prepare(
+            `SELECT * FROM work_status_current
+          WHERE fleet_id = ? AND work_id = ? AND state = 'blocked' AND resolved_at_ms IS NULL`,
+          )
+          .all(fleetId, workId)
+      : this.db
+          .prepare(
+            `SELECT * FROM work_status_current
+          WHERE fleet_id = ? AND work_id = ? AND attempt_id = ? AND state = 'blocked' AND resolved_at_ms IS NULL`,
+          )
+          .all(fleetId, workId, attemptId)) as unknown as WorkStatusCurrent[];
     if (open.length !== 1) {
       throw new InvalidRequestError(
         open.length === 0 ? 'No open blocker for this work ID.' : 'Ambiguous work ID; specify an attempt.',
@@ -407,7 +417,28 @@ export class WorkStatusJournal {
     }
     const current = open[0];
     if (current === undefined) throw new Error('Current blocker is missing.');
-    return current;
+    return this.eventById(current.claim_event_id);
+  }
+
+  private eventById(id: number): WorkStatusEvent {
+    const event = this.db.prepare('SELECT * FROM work_status_events WHERE id = ?').get(id) as
+      WorkStatusEvent | undefined;
+    if (event === undefined) throw new Error(`Work status event ${String(id)} is missing.`);
+    return event;
+  }
+
+  private countDuplicate(eventId: number): void {
+    this.db.prepare('UPDATE work_status_events SET duplicate_count = duplicate_count + 1 WHERE id = ?').run(eventId);
+  }
+
+  private bindKey(fleetId: string, session: string, key: string | undefined, json: string, eventId: number): void {
+    if (key === undefined) return;
+    this.db
+      .prepare(
+        `INSERT INTO work_status_idempotency
+      (fleet_id, session, idempotency_key, payload_json, claim_event_id) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(fleetId, session, key, json, eventId);
   }
 
   private receipt(event: WorkStatusEvent, unchanged: boolean): WorkStatusReceipt {

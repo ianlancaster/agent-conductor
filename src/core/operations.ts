@@ -222,7 +222,7 @@ export class ConductorOperations {
           'waiting needs waiting_on; blocked needs needs_from, question, recommendation, meanwhile, if_no_answer (options optional).\n' +
           'done needs evidence; failed needs reason; leaving an unresolved block needs resolution.\n' +
           'Same-state reports are for changed waiting_on, a changed blocker packet, or new done evidence; never a heartbeat.\n' +
-          'Conductor identifies your session and returns the bound attempt and event receipt.',
+          'Only one working claim per session; done is a claim, not acceptance. Conductor returns the bound attempt and event receipt.',
         resultDescription: 'Returns the durable event receipt as JSON.',
         audiences: SESSION_ONLY,
         federation: 'local-only',
@@ -294,12 +294,12 @@ export class ConductorOperations {
         ),
         handler: async (args) => {
           if (this.deps.resolveWorkBlocker === undefined) throw new Error('Work status is unavailable.');
-          const targetFields = ['attempt_id', 'blocker_id', 'blocker_revision'].filter(
+          const targetFields = ['attempt_id', 'blocker_id', 'blocker_revision', 'target_claim_event_id'].filter(
             (key) => args[key] !== undefined,
           );
-          if (targetFields.length > 0 && targetFields.length !== 3)
+          if (targetFields.length > 0 && targetFields.length !== 4)
             throw new InvalidRequestError(
-              'Exact blocker targeting requires attempt_id, blocker_id, and blocker_revision.',
+              'Exact blocker targeting requires attempt_id, blocker_id, blocker_revision, and target_claim_event_id.',
             );
           if (targetFields.length > 0 && !Number.isInteger(args.blocker_revision))
             throw new InvalidRequestError('blocker_revision must be an integer.');
@@ -310,9 +310,7 @@ export class ConductorOperations {
                   attemptId: requireString(args, 'attempt_id'),
                   blockerId: requireString(args, 'blocker_id'),
                   blockerRevision: args.blocker_revision as number,
-                  ...(args.target_claim_event_id === undefined
-                    ? {}
-                    : { targetClaimEventId: requireString(args, 'target_claim_event_id') }),
+                  targetClaimEventId: requireString(args, 'target_claim_event_id'),
                 };
           return JSON.stringify(
             await this.deps.resolveWorkBlocker(requireString(args, 'work_id'), requireString(args, 'answer'), target),

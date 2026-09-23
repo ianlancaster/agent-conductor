@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { deriveWorkStatus, type WorkActivityObservation } from '../src/core/work-status.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { deriveWorkStatus, renderWorkStatus, type WorkActivityObservation } from '../src/core/work-status.js';
 import { Store } from '../src/store/index.js';
 import type { WorkStatusReport } from '../src/store/work-status.js';
 
@@ -38,7 +41,7 @@ describe('work status journal', () => {
     ).toThrow('changed structured field');
     expect(() =>
       store.workStatus.report(fleet, 'alpha', { state: 'working', work_id: 'TASK-2', summary: 'Other' }, '1', 200),
-    ).toThrow('current working item');
+    ).toThrow(`Move TASK-1 (attempt ${first.attemptId}) from working before starting TASK-2.`);
     const wait = store.workStatus.report(
       fleet,
       'alpha',
@@ -110,7 +113,8 @@ describe('work status journal', () => {
     expect(() => store.workStatus.report(fleet, 'alpha', { ...report, summary: 'Different' }, '1', 300)).toThrow(
       'idempotencyKey',
     );
-    expect(store.workStatus.events(fleet).filter((event) => event.kind === 'unchanged_report')).toHaveLength(1);
+    expect(store.workStatus.events(fleet).filter((event) => event.kind === 'unchanged_report')).toHaveLength(0);
+    expect(store.workStatus.events(fleet).find((event) => event.id === first.sequence)?.duplicate_count).toBe(2);
   });
 
   it('revises a blocker only for a changed question, and rejects late answers', () => {
@@ -151,6 +155,29 @@ describe('work status journal', () => {
         600,
       ).attemptId,
     ).toBe(first.attemptId);
+  });
+
+  it('requires an identified blocker owner', () => {
+    store.workStatus.report(fleet, 'alpha', { state: 'working', work_id: 'TASK-1', summary: 'Build' }, '1', 100);
+    expect(() =>
+      store.workStatus.report(fleet, 'alpha', { ...blocked, needs_from: 'Ian' }, '1', 200, new Set(['alpha', 'bob'])),
+    ).toThrow('needs_from must be operator or a known session codename');
+    expect(
+      store.workStatus.report(fleet, 'alpha', { ...blocked, needs_from: 'bob' }, '1', 200, new Set(['alpha', 'bob']))
+        .state,
+    ).toBe('blocked');
+  });
+
+  it('returns an old keyed blocker receipt after its authority leaves the roster', () => {
+    store.workStatus.report(fleet, 'alpha', { state: 'working', work_id: 'TASK-1', summary: 'Build' }, '1', 100);
+    const packet = { ...blocked, needs_from: 'bob', idempotencyKey: 'decision-1' };
+    const first = store.workStatus.report(fleet, 'alpha', packet, '1', 200, new Set(['alpha', 'bob']));
+    expect(store.workStatus.report(fleet, 'alpha', packet, '1', 300, new Set(['alpha']))).toMatchObject({
+      eventId: first.eventId,
+      unchanged: true,
+    });
+    expect(store.workStatus.events(fleet)).toHaveLength(2);
+    expect(store.workStatus.events(fleet)[1]?.duplicate_count).toBe(1);
   });
 
   it('binds a short resolution to the exact claim event and rejects an intervening clarification', () => {
@@ -194,6 +221,9 @@ describe('work status journal', () => {
     );
     expect(amended.eventId).not.toBe(first.eventId);
     expect(() =>
+      store.workStatus.report(fleet, 'alpha', { state: 'working', work_id: 'TASK-1', summary: 'Rework' }, '1', 350),
+    ).toThrow('closed');
+    expect(() =>
       store.workStatus.report(
         fleet,
         'alpha',
@@ -226,7 +256,7 @@ describe('work status projection', () => {
   const unknown: WorkActivityObservation = { processActive: null, activity: 'unknown' };
   const derive = (now: number, observation: WorkActivityObservation = unknown) =>
     deriveWorkStatus(
-      store.workStatus.events(fleet),
+      store.workStatus.current(fleet),
       () => observation,
       () => true,
       now,
@@ -285,5 +315,124 @@ describe('work status projection', () => {
       later,
     );
     expect(derive(later).startedUnresolved).toBe(1);
+  });
+
+  it('keeps a completed stop in attention after telemetry expires and a store restart', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conductor-work-stop-'));
+    try {
+      const dbPath = join(dir, 'conductor.db');
+      const persistent = new Store(dbPath);
+      persistent.workStatus.report(fleet, 'alpha', { state: 'working', work_id: 'TASK-1', summary: 'Build' }, '1', 100);
+      persistent.upsertSessionState({
+        session: 'alpha',
+        auto: false,
+        tag: null,
+        paused: false,
+        activeRuntime: null,
+        activeEffort: null,
+        activity: 'stopped',
+      });
+      persistent.close();
+      const restarted = new Store(dbPath);
+      try {
+        const now = 10 * limits.observationMaxAgeMs;
+        const summary = deriveWorkStatus(
+          restarted.workStatus.current(fleet),
+          () => ({
+            processActive: null,
+            activity: 'unknown',
+            persistedStopped: restarted.getSessionState('alpha')?.activity === 'stopped',
+          }),
+          () => false,
+          now,
+          limits,
+        );
+        expect(summary.views[0]).toMatchObject({ liveness: 'stopped', disagreement: true, attentionBand: 1 });
+      } finally {
+        restarted.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('puts a verified harness prompt below operator blockers without adding it to the operator queue', () => {
+    store.workStatus.report(fleet, 'alpha', { state: 'working', work_id: 'TASK-1', summary: 'Build' }, '1', 100);
+    const now = 200;
+    const summary = derive(now, {
+      processActive: true,
+      processObservedAt: now,
+      activity: 'blocked',
+      activityObservedAt: now,
+      blockedSince: 150,
+    });
+    expect(summary.views[0]).toMatchObject({ liveness: 'blocked', attentionBand: 0.25, disagreement: false });
+    expect(summary.onOperator).toBe(0);
+    expect(
+      derive(now, {
+        processActive: null,
+        activity: 'blocked',
+        activityObservedAt: now,
+        blockedSince: 150,
+      }).views[0]?.attentionBand,
+    ).toBe(0.25);
+    store.workStatus.report(
+      fleet,
+      'alpha',
+      { state: 'waiting', work_id: 'TASK-1', summary: 'CI', waiting_on: 'CI' },
+      '1',
+      175,
+    );
+    expect(
+      derive(now, {
+        processActive: true,
+        processObservedAt: now,
+        activity: 'blocked',
+        activityObservedAt: now,
+        blockedSince: 150,
+      }).views[0]?.attentionBand,
+    ).toBe(0.25);
+  });
+
+  it('renders a bounded neutral notification without changing liveness or queue counts', () => {
+    store.workStatus.report(fleet, 'alpha', { state: 'working', work_id: 'TASK-1', summary: 'Build' }, '1', 100);
+    const summary = derive(200, {
+      processActive: true,
+      processObservedAt: 200,
+      activity: 'unknown',
+      unknownNotification: 'older hook message',
+    });
+    expect(summary.views[0]).toMatchObject({ liveness: 'unknown', attentionBand: 4 });
+    expect(summary.onOperator).toBe(0);
+    expect(renderWorkStatus(summary, 200)).toContain('runtime notification, type unknown: older hook message');
+  });
+
+  it('shows only the latest attempt for a work item and preserves work age through retry', () => {
+    const first = store.workStatus.report(
+      fleet,
+      'alpha',
+      { state: 'working', work_id: 'TASK-1', summary: 'Build' },
+      '1',
+      100,
+    );
+    store.workStatus.report(
+      fleet,
+      'alpha',
+      { state: 'failed', work_id: 'TASK-1', summary: 'Failed', reason: 'CI' },
+      '1',
+      200,
+    );
+    const second = store.workStatus.report(
+      fleet,
+      'alpha',
+      { state: 'working', work_id: 'TASK-1', summary: 'Retry' },
+      '1',
+      300,
+    );
+    expect(second.attemptId).not.toBe(first.attemptId);
+    const summary = derive(400);
+    expect(summary.views).toHaveLength(1);
+    expect(summary.views[0]).toMatchObject({ attemptId: second.attemptId, workStartedAt: 100 });
+    expect(summary.startedUnresolved).toBe(1);
   });
 });

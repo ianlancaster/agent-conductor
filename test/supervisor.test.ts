@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Supervisor } from '../src/core/supervisor.js';
+import { resolveConductorInstance } from '../src/config/paths.js';
 import { isolatedGitEnvironment } from '../src/core/git.js';
 import type { ChannelAdapter, ChannelHandlers, ChannelMessage } from '../src/channels/types.js';
 import { exportEventJournalJsonl, Store } from '../src/store/index.js';
@@ -1055,6 +1056,39 @@ describe('Supervisor construction', () => {
     const status = supervisor.statusReport('alpha');
     expect(status).toContain('"auto": true');
     expect(status).toContain('"tag": "carry-over"');
+  });
+
+  it('keeps a stopped working claim in attention after observation expiry and supervisor restart', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\nruntime: fake\n`,
+    });
+    const fleetId = resolveConductorInstance(baseDir).fleetId;
+    const seeded = new Store(join(baseDir, 'data', 'conductor.db'));
+    seeded.workStatus.report(fleetId, 'alpha', { state: 'working', work_id: 'TASK-1', summary: 'Build' });
+    seeded.close();
+    const terminal = new FakeTerminalBackend();
+    const options = {
+      terminalBackend: terminal,
+      runtimes: [new FakeRuntime('fake')],
+      includeConfiguredChannels: false,
+      env: {},
+    };
+    supervisor = new Supervisor(baseDir, options);
+    await supervisor.start();
+    expect(await supervisor.command('/start alpha')).toBe('alpha started.');
+    expect(await supervisor.command('/stop alpha')).toBe('alpha stopped.');
+    const future = Date.now() + 10 * 60_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(future);
+    try {
+      expect(supervisor.statusReport()).toContain('disagreement');
+      await supervisor.stop();
+      supervisor = new Supervisor(baseDir, options);
+      await supervisor.start();
+      expect(supervisor.statusReport()).toContain('disagreement');
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('persists the fleet-watch toggle across supervisor instances', async () => {

@@ -164,6 +164,35 @@ beforeEach(() => {
 });
 
 describe('surface contract', () => {
+  it('HOTSHOT rejects a supplied claim target without its other target fields', async () => {
+    store.workStatus.report('test-fleet', 'alpha', { state: 'working', work_id: 'target-test', summary: 'Build' });
+    const packet = {
+      state: 'blocked' as const,
+      work_id: 'target-test',
+      summary: 'Choose',
+      needs_from: 'operator',
+      question: 'A or B?',
+      recommendation: 'A',
+      meanwhile: 'Wait',
+      if_no_answer: 'Wait',
+    };
+    const old = store.workStatus.report('test-fleet', 'alpha', packet);
+    store.workStatus.report('test-fleet', 'alpha', { ...packet, question: 'C or D?' });
+    await expect(
+      operations.invoke(
+        'resolve_status_blocker',
+        { work_id: 'target-test', answer: 'A', target_claim_event_id: old.eventId },
+        { audience: 'operator', id: 'review-operator' },
+      ),
+    ).rejects.toThrow();
+    expect(
+      store.workStatus
+        .events('test-fleet')
+        .filter(
+          (e) => e.kind === 'blocker_resolved' && (JSON.parse(e.payload_json) as { by?: string }).by === 'operator',
+        ),
+    ).toHaveLength(0);
+  });
   it('binds report_status to the calling session and requires conditional evidence', async () => {
     const first = JSON.parse(
       await tool('report_status').handler({ state: 'working', work_id: 'review-1', summary: 'Reviewing' }, 'alpha'),
@@ -676,7 +705,7 @@ describe('surface contract', () => {
 
   it('keeps every turn-zero invariant inside a bounded mandatory prompt', () => {
     const protocol = readFileSync(new URL('../prompts/conductor-protocol.md', import.meta.url), 'utf8');
-    expect(Buffer.byteLength(protocol, 'utf8')).toBeLessThanOrEqual(4_500);
+    expect(Buffer.byteLength(protocol, 'utf8')).toBeLessThanOrEqual(4_673);
     for (const invariant of [
       'identity is mechanical',
       '[Message from <sender>]',

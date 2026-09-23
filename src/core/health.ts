@@ -18,6 +18,7 @@ export interface HealthDeps {
     stallBeatsThreshold: number;
     idleConfirmMs: number;
     eventSilenceMs: number;
+    activityEvidenceMaxAgeMs?: number;
   };
   backend: TerminalBackend;
   runtimeFor(session: string): SessionRuntime | undefined;
@@ -52,9 +53,10 @@ export interface HealthDeps {
  * unchanged pane into a `silent` stall.
  */
 export class HealthMonitor {
+  private readonly unknownNotifications = new Map<string, string>();
   private readonly activityEvidence = new Map<
     string,
-    { activity: 'working' | 'idle'; since: number; observedAt: number }
+    { activity: 'working' | 'idle' | 'blocked'; since: number; observedAt: number }
   >();
   private readonly turnPhases = new Map<string, 'active' | 'complete' | 'interrupted'>();
   /** Multiple Codex hook turns may overlap while the root turn owns the pane. */
@@ -93,6 +95,26 @@ export class HealthMonitor {
       }
       return;
     }
+    if (event.type === 'notification') {
+      const prompt = ['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog'].includes(
+        event.notificationType ?? '',
+      );
+      const idle = event.notificationType === 'idle_prompt';
+      if (!prompt && !idle) {
+        const knownNonblocking = [
+          'auth_success',
+          'elicitation_complete',
+          'elicitation_response',
+          'agent_needs_input',
+          'agent_completed',
+          'quota_auto_resume_fired',
+          'quota_auto_resume_stale',
+          'quota_auto_resume_disabled',
+        ].includes(event.notificationType ?? '');
+        if (!knownNonblocking) this.unknownNotifications.set(session, (event.reason ?? '').slice(0, 160));
+        return;
+      }
+    }
     this.bumpEventSequence(session);
     if (event.type === 'stop' && event.turnId !== undefined) {
       const activeTurnIds = this.activeTurnIds.get(session);
@@ -116,6 +138,7 @@ export class HealthMonitor {
 
     switch (event.type) {
       case 'turn-start': {
+        this.unknownNotifications.delete(session);
         this.lifecycleSequence += 1;
         this.latestTurnStartSequence.set(session, this.lifecycleSequence);
         this.turnPhases.set(session, 'active');
@@ -133,6 +156,7 @@ export class HealthMonitor {
         return;
       }
       case 'stop': {
+        this.unknownNotifications.delete(session);
         this.lifecycleSequence += 1;
         this.latestCompletionSequence.set(session, this.lifecycleSequence);
         this.turnPhases.set(session, 'complete');
@@ -143,8 +167,17 @@ export class HealthMonitor {
         return;
       }
       case 'notification':
-        this.turnPhases.set(session, 'interrupted');
-        this.reportStall(session, 'blocked', { reason: event.reason, transcriptPath: event.transcriptPath });
+        if (
+          ['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog'].includes(event.notificationType ?? '')
+        ) {
+          this.unknownNotifications.delete(session);
+          this.turnPhases.set(session, 'interrupted');
+          this.reportStall(session, 'blocked', { reason: event.reason, transcriptPath: event.transcriptPath });
+        } else if (event.notificationType === 'idle_prompt') {
+          this.unknownNotifications.delete(session);
+          this.turnPhases.set(session, 'complete');
+          this.reportStall(session, 'idle', { reason: event.reason, transcriptPath: event.transcriptPath });
+        }
         return;
       case 'compaction':
         this.turnPhases.set(session, 'interrupted');
@@ -243,6 +276,7 @@ export class HealthMonitor {
   /** Clear all per-session tracking (on start/restart/mode change). */
   reset(session: string): void {
     this.activityEvidence.delete(session);
+    this.unknownNotifications.delete(session);
     this.clearIdleTimer(session);
     this.turnPhases.delete(session);
     this.activeTurnIds.delete(session);
@@ -308,10 +342,13 @@ export class HealthMonitor {
     const activity = await this.deps.observeActivity(session, pane);
     if (
       (this.eventSequences.get(session) ?? 0) !== eventSequence ||
-      this.observationSequences.get(session) !== observationSequence ||
-      activity === 'unknown'
+      this.observationSequences.get(session) !== observationSequence
     )
       return;
+    if (activity === 'unknown') {
+      this.activityEvidence.delete(session);
+      return;
+    }
 
     this.noteActivityEvidence(session, activity);
 
@@ -363,15 +400,22 @@ export class HealthMonitor {
   /** Latest positive runtime evidence; callers must still check its age. */
   activityObservation(
     session: string,
-  ): { activity: 'working' | 'idle'; since: number; observedAt: number } | undefined {
+  ): { activity: 'working' | 'idle' | 'blocked'; since: number; observedAt: number } | undefined {
     return this.activityEvidence.get(session);
   }
 
-  private noteActivityEvidence(session: string, activity: 'working' | 'idle', at = Date.now()): void {
+  unknownNotification(session: string): string | undefined {
+    return this.unknownNotifications.get(session);
+  }
+
+  private noteActivityEvidence(session: string, activity: 'working' | 'idle' | 'blocked', at = Date.now()): void {
     const previous = this.activityEvidence.get(session);
+    const continuous =
+      previous?.activity === activity &&
+      at - previous.observedAt <= (this.deps.config.activityEvidenceMaxAgeMs ?? this.deps.config.eventSilenceMs);
     this.activityEvidence.set(session, {
       activity,
-      since: previous?.activity === activity ? previous.since : at,
+      since: continuous ? previous.since : at,
       observedAt: at,
     });
   }
@@ -531,7 +575,7 @@ export class HealthMonitor {
   }
 
   private reportStall(session: string, kind: StallKind, info: StallInfo): void {
-    if (kind !== 'silent') this.noteActivityEvidence(session, 'idle');
+    if (kind !== 'silent') this.noteActivityEvidence(session, kind === 'blocked' ? 'blocked' : 'idle');
     this.deps.onStall(session, kind, { ...info, detectedAt: new Date().toISOString() });
   }
 }

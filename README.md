@@ -168,7 +168,7 @@ Managed agents can use `list_sessions` and `get_session_status` for structured,
 non-invasive status without scraping peers' terminals.
 Agents report work transitions through `report_status`. The status view groups open blockers,
 stale or conflicting claims, overdue waits, completion claims, and active work. It shows
-time in state, work age, WIP counts, and the operator blocker queue. `/resolve` records an
+time in state, work age, WIP counts, and the operator blocker queue. Verified harness prompts appear separately; unknown notification types only add a neutral annotation. `/resolve` records an
 answer against the exact current blocker and delivers it through protected messaging; a
 stopped session remains stopped. Completion remains an agent claim until separately accepted.
 Configured PR Shepherd companions always appear in fleet status: healthy companions show Online,

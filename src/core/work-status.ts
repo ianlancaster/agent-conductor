@@ -1,11 +1,15 @@
-import type { WorkClaimState, WorkStatusEvent, WorkStatusReport } from '../store/work-status.js';
+import type { WorkClaimState, WorkStatusReport } from '../store/work-status.js';
+import type { WorkStatusCurrent } from '../store/work-status-projection.js';
 
 export interface WorkActivityObservation {
   processActive: boolean | null;
   processObservedAt?: number;
-  activity: 'working' | 'idle' | 'unknown';
+  activity: 'working' | 'idle' | 'blocked' | 'unknown';
   idleSince?: number;
+  blockedSince?: number;
   activityObservedAt?: number;
+  persistedStopped?: boolean;
+  unknownNotification?: string;
 }
 
 export interface WorkStatusThresholds {
@@ -23,6 +27,7 @@ export interface WorkStatusView {
   summary: string;
   stateEnteredAt: number;
   cumulativeMs: Record<WorkClaimState, number>;
+  resolvedAwaitingTransitionMs: number;
   workStartedAt: number;
   claimEventId: string;
   blockerId?: string;
@@ -32,7 +37,8 @@ export interface WorkStatusView {
   waitingOn?: string;
   evidence?: string[];
   resolvedAt?: number;
-  liveness: 'working' | 'idle' | 'stopped' | 'unknown';
+  liveness: 'working' | 'idle' | 'blocked' | 'stopped' | 'unknown';
+  unknownNotification?: string;
   stale: boolean;
   disagreement: boolean;
   attentionBand: number;
@@ -51,139 +57,112 @@ export interface WorkStatusSummary {
 
 const ACTIVE = new Set<WorkClaimState>(['working', 'waiting', 'blocked', 'done']);
 
-function claim(event: WorkStatusEvent): WorkStatusReport {
-  return JSON.parse(event.payload_json) as WorkStatusReport;
-}
-
 function fresh(observedAt: number | undefined, now: number, maxAge: number): boolean {
   return observedAt !== undefined && now >= observedAt && now - observedAt <= maxAge;
 }
 
+/** Current-row projection; no history is replayed for status rendering. */
 export function deriveWorkStatus(
-  events: readonly WorkStatusEvent[],
+  rows: readonly WorkStatusCurrent[],
   observation: (session: string) => WorkActivityObservation,
   paused: (session: string) => boolean,
   now: number,
   thresholds: WorkStatusThresholds,
 ): WorkStatusSummary {
-  const current = new Map<
-    string,
-    {
-      event: WorkStatusEvent;
-      enteredAt: number;
-      blockerStartedAt?: number;
-      accumulated: Record<WorkClaimState, number>;
-    }
-  >();
-  const firstStart = new Map<string, number>();
-  const resolved = new Map<string, number>();
-  for (const event of events) {
-    const key = `${event.fleet_id}\0${event.attempt_id}`;
-    if (event.kind === 'blocker_resolved' && event.blocker_id !== null && event.blocker_revision !== null) {
-      resolved.set(`${event.blocker_id}:${String(event.blocker_revision)}`, event.occurred_at_ms);
-    }
-    if (event.kind !== 'claim' || event.state === null) continue;
-    const workKey = `${event.fleet_id}\0${event.work_id}`;
-    firstStart.set(workKey, Math.min(firstStart.get(workKey) ?? event.occurred_at_ms, event.occurred_at_ms));
-    const prior = current.get(key);
-    const enteredAt = prior?.event.state === event.state ? prior.enteredAt : event.occurred_at_ms;
-    const accumulated = prior?.accumulated ?? { working: 0, waiting: 0, blocked: 0, done: 0, failed: 0 };
-    if (prior !== undefined && prior.event.state !== null && prior.event.state !== event.state) {
-      accumulated[prior.event.state] += event.occurred_at_ms - prior.enteredAt;
-    }
-    const blockerStartedAt =
-      event.state !== 'blocked'
-        ? undefined
-        : prior?.event.blocker_id === event.blocker_id && prior.event.blocker_revision === event.blocker_revision
-          ? prior.blockerStartedAt
-          : event.occurred_at_ms;
-    current.set(key, { event, enteredAt, blockerStartedAt, accumulated });
-  }
   const views: WorkStatusView[] = [];
-  for (const { event, enteredAt, blockerStartedAt, accumulated } of current.values()) {
-    if (event.state === null) continue;
-    const report = claim(event);
-    const mechanical = observation(event.session);
+  for (const row of rows) {
+    const report = JSON.parse(row.payload_json) as WorkStatusReport;
+    const mechanical = observation(row.session);
     const processFresh = fresh(mechanical.processObservedAt, now, thresholds.observationMaxAgeMs);
     const activityFresh = fresh(mechanical.activityObservedAt, now, thresholds.observationMaxAgeMs);
     const liveness: WorkStatusView['liveness'] =
-      processFresh && mechanical.processActive === false
+      mechanical.persistedStopped === true || (processFresh && mechanical.processActive === false)
         ? 'stopped'
-        : processFresh && mechanical.processActive === true && activityFresh
-          ? mechanical.activity
-          : 'unknown';
-    const disagree =
-      event.state === 'working' &&
+        : activityFresh && mechanical.activity === 'blocked'
+          ? 'blocked'
+          : processFresh && mechanical.processActive === true && activityFresh
+            ? mechanical.activity
+            : 'unknown';
+    const disagreement =
+      row.state === 'working' &&
       (liveness === 'stopped' ||
         (liveness === 'idle' &&
           mechanical.idleSince !== undefined &&
           now - mechanical.idleSince >= thresholds.disagreementMs));
     const stale =
-      event.state === 'working' &&
-      now - enteredAt >= thresholds.staleMs &&
+      row.state === 'working' &&
+      now - row.state_entered_at_ms >= thresholds.staleMs &&
       (liveness === 'stopped' ||
         (liveness === 'idle' &&
           mechanical.idleSince !== undefined &&
           now - mechanical.idleSince >= thresholds.disagreementMs));
-    const resolutionKey =
-      event.blocker_id === null || event.blocker_revision === null
-        ? undefined
-        : `${event.blocker_id}:${String(event.blocker_revision)}`;
-    const resolvedAt = resolutionKey === undefined ? undefined : resolved.get(resolutionKey);
-    const blocked = event.state === 'blocked' && resolvedAt === undefined;
+    const claimBlocked = row.state === 'blocked' && row.resolved_at_ms === null;
+    const harnessPrompt = liveness === 'blocked' && !claimBlocked;
     const overdue =
-      (event.state === 'waiting' && now - enteredAt >= thresholds.waitingMs) ||
-      (resolvedAt !== undefined && now - resolvedAt >= thresholds.waitingMs);
+      (row.state === 'waiting' && now - row.state_entered_at_ms >= thresholds.waitingMs) ||
+      (row.state === 'blocked' && row.resolved_at_ms !== null && now - row.resolved_at_ms >= thresholds.waitingMs);
     const attentionBand =
-      blocked && report.needs_from === 'operator'
+      claimBlocked && report.needs_from === 'operator'
         ? 0
-        : blocked
-          ? 0
-          : stale || disagree
-            ? 1
-            : overdue
-              ? 2
-              : event.state === 'done'
-                ? 3
-                : event.state === 'working'
-                  ? 4
-                  : 5;
-    const attentionSince =
-      blocked && blockerStartedAt !== undefined
-        ? blockerStartedAt
-        : overdue && resolvedAt !== undefined
-          ? resolvedAt
-          : enteredAt;
+        : harnessPrompt
+          ? 0.25
+          : claimBlocked
+            ? 0.5
+            : stale || disagreement
+              ? 1
+              : overdue
+                ? 2
+                : row.state === 'done'
+                  ? 3
+                  : row.state === 'working'
+                    ? 4
+                    : 5;
+    const attentionSince = claimBlocked
+      ? (row.blocker_started_at_ms ?? row.state_entered_at_ms)
+      : harnessPrompt
+        ? (mechanical.blockedSince ?? mechanical.activityObservedAt ?? row.state_entered_at_ms)
+        : overdue && row.resolved_at_ms !== null
+          ? row.resolved_at_ms
+          : row.state_entered_at_ms;
+    const cumulative = JSON.parse(row.cumulative_json) as Record<WorkClaimState, number>;
+    if (row.state === 'blocked' && row.resolved_at_ms === null) {
+      cumulative.blocked += Math.max(0, now - (row.blocker_started_at_ms ?? row.state_entered_at_ms));
+    } else if (row.state !== 'blocked') {
+      cumulative[row.state] += Math.max(0, now - row.state_entered_at_ms);
+    }
+    const resolvedAwaitingTransitionMs =
+      row.acknowledgement_wait_ms +
+      (row.state === 'blocked' && row.resolved_at_ms !== null ? Math.max(0, now - row.resolved_at_ms) : 0);
     views.push({
-      session: event.session,
-      workId: event.work_id,
-      attemptId: event.attempt_id,
-      state: event.state,
+      session: row.session,
+      workId: row.work_id,
+      attemptId: row.attempt_id,
+      state: row.state,
       summary: report.summary,
-      stateEnteredAt: enteredAt,
-      cumulativeMs: { ...accumulated, [event.state]: accumulated[event.state] + Math.max(0, now - enteredAt) },
-      workStartedAt: firstStart.get(`${event.fleet_id}\0${event.work_id}`) ?? enteredAt,
-      claimEventId: `${event.fleet_id}:work-status:${String(event.id)}`,
-      ...(event.blocker_id === null ? {} : { blockerId: event.blocker_id }),
-      ...(event.blocker_revision === null ? {} : { blockerRevision: event.blocker_revision }),
-      ...(blockerStartedAt === undefined ? {} : { blockerStartedAt }),
+      stateEnteredAt: row.state_entered_at_ms,
+      cumulativeMs: cumulative,
+      resolvedAwaitingTransitionMs,
+      workStartedAt: row.work_started_at_ms,
+      claimEventId: `${row.fleet_id}:work-status:${String(row.claim_event_id)}`,
+      ...(row.blocker_id === null ? {} : { blockerId: row.blocker_id }),
+      ...(row.blocker_revision === null ? {} : { blockerRevision: row.blocker_revision }),
+      ...(row.blocker_started_at_ms === null ? {} : { blockerStartedAt: row.blocker_started_at_ms }),
       ...(report.needs_from === undefined ? {} : { needsFrom: report.needs_from }),
       ...(report.waiting_on === undefined ? {} : { waitingOn: report.waiting_on }),
       ...(report.evidence === undefined ? {} : { evidence: report.evidence }),
-      ...(resolvedAt === undefined ? {} : { resolvedAt }),
+      ...(row.resolved_at_ms === null ? {} : { resolvedAt: row.resolved_at_ms }),
+      ...(mechanical.unknownNotification === undefined ? {} : { unknownNotification: mechanical.unknownNotification }),
       liveness,
       stale,
-      disagreement: disagree,
+      disagreement,
       attentionBand,
       attentionSince,
-      paused: paused(event.session),
+      paused: paused(row.session),
     });
   }
   views.sort(
     (a, b) =>
       a.attentionBand - b.attentionBand ||
-      (a.attentionBand === 0 && a.needsFrom === 'operator' && b.needsFrom !== 'operator' ? -1 : 0) ||
-      (a.attentionBand === 0 && b.needsFrom === 'operator' && a.needsFrom !== 'operator' ? 1 : 0) ||
       a.attentionSince - b.attentionSince ||
       a.workId.localeCompare(b.workId) ||
       a.attemptId.localeCompare(b.attemptId),
@@ -192,12 +171,11 @@ export function deriveWorkStatus(
   const onOperator = views.filter(
     (view) => view.state === 'blocked' && view.resolvedAt === undefined && view.needsFrom === 'operator',
   );
-  const units = new Set(views.map((view) => view.workId));
   return {
     views,
     activeAttempts: active.length,
     activeUnits: new Set(active.map((view) => view.workId)).size,
-    startedUnresolved: units.size,
+    startedUnresolved: new Set(views.map((view) => view.workId)).size,
     onOperator: onOperator.length,
     oldestOperatorBlockMs:
       onOperator.length === 0
@@ -218,23 +196,29 @@ export function renderWorkStatus(summary: WorkStatusSummary, now: number): strin
   if (summary.views.length === 0) return '';
   const oldest = summary.oldestOperatorBlockMs === null ? 'none' : formatWorkDuration(summary.oldestOperatorBlockMs);
   const lines = [
-    `Work status: ${String(summary.activeAttempts)} active attempt(s), ${String(summary.activeUnits)} active unit(s), ${String(summary.startedUnresolved)} started unresolved · on Ian: ${String(summary.onOperator)}, oldest ${oldest}`,
+    `Work status: ${String(summary.activeAttempts)} active attempt(s), ${String(summary.activeUnits)} active unit(s), ${String(summary.startedUnresolved)} started unresolved · on operator: ${String(summary.onOperator)}, oldest ${oldest}`,
     '  Session · Work · State · In state · Work age · Evidence · Needs from · Liveness',
   ];
   for (const view of summary.views) {
     const label =
-      view.resolvedAt !== undefined && view.state === 'blocked'
-        ? 'resolved; awaiting transition'
-        : view.stale
-          ? 'stale'
-          : view.disagreement
-            ? 'disagreement'
-            : view.state === 'done'
-              ? 'done awaiting acceptance'
-              : view.state;
+      view.attentionBand === 0.25
+        ? 'harness prompt'
+        : view.resolvedAt !== undefined && view.state === 'blocked'
+          ? 'resolved; awaiting transition'
+          : view.stale
+            ? 'stale'
+            : view.disagreement
+              ? 'disagreement'
+              : view.state === 'done'
+                ? 'done awaiting acceptance'
+                : view.state;
     const needs = view.needsFrom ?? view.waitingOn ?? '-';
+    const annotation =
+      view.unknownNotification === undefined
+        ? ''
+        : ` · runtime notification, type unknown: ${view.unknownNotification}`;
     lines.push(
-      `  ${view.session} · ${view.workId} · ${label}${view.paused ? ' (session paused)' : ''} · ${formatWorkDuration(now - view.stateEnteredAt)} · ${formatWorkDuration(now - view.workStartedAt)} · ${view.evidence?.[0] ?? '-'} · ${needs} · ${view.liveness}`,
+      `  ${view.session} · ${view.workId} · ${label}${view.paused ? ' (session paused)' : ''} · ${formatWorkDuration(now - view.stateEnteredAt)} · ${formatWorkDuration(now - view.workStartedAt)} · ${view.evidence?.[0] ?? '-'} · ${needs} · ${view.liveness}${annotation}`,
     );
   }
   return lines.join('\n');

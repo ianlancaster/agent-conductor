@@ -6,6 +6,7 @@ import type { RunbookSource } from '../runbooks/types.js';
 import { applyMigrations, openSqliteDatabase, openSqliteDatabaseReadOnly, withTransaction } from './sqlite.js';
 import type { SqliteMigration } from './sqlite.js';
 import { WorkStatusJournal } from './work-status.js';
+import { migrateWorkStatusProjection } from './work-status-projection.js';
 
 /** One launch of a session's CLI (start → stop). A session has many runs over time. */
 export interface RunRow {
@@ -409,6 +410,7 @@ const MIGRATIONS: SqliteMigration[] = [
   CREATE UNIQUE INDEX IF NOT EXISTS idx_work_status_idempotency ON work_status_events(fleet_id, session, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
   `,
+  migrateWorkStatusProjection,
 ];
 
 export class Store {

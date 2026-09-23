@@ -463,7 +463,10 @@ export class Supervisor {
     });
 
     this.health = new HealthMonitor({
-      config: this.config.health,
+      config: {
+        ...this.config.health,
+        activityEvidenceMaxAgeMs: this.config.supervisor.heartbeatIntervalSeconds * 3_000,
+      },
       backend: this.backend,
       runtimeFor: (session) => this.runtimeFor(session),
       getPane: (session) => this.lifecycle.getPane(session),
@@ -476,8 +479,8 @@ export class Supervisor {
       observeInputState: (session, pane) =>
         observePaneInputState(this.backend, this.runtimeFor(session), session, pane, this.config.health.captureLines),
       onStall: (session, kind, info) => {
-        // A stall kind is causal evidence for the sentinel, not a separate
-        // mechanical activity state. A live runtime that is not working is idle.
+        // A stall kind is causal evidence for the sentinel. Permission and
+        // elicitation prompts also carry distinct blocked liveness evidence.
         this.states.setActivity(session, 'idle');
         void this.sentinel.handleStall(session, kind, info);
       },
@@ -521,7 +524,14 @@ export class Supervisor {
         if (!this.sessions.has(session)) throw new Error(`Unknown session: ${session}`);
         const snapshot = join(dataDir, 'sessions', session, STATUS_MAPPING_SNAPSHOT_NAME);
         const version = existsSync(snapshot) ? readFileSync(snapshot, 'utf8').trim() : STATUS_MAPPING_VERSION;
-        return this.store.workStatus.report(this.resolvedInstance.fleetId, session, report, version);
+        return this.store.workStatus.report(
+          this.resolvedInstance.fleetId,
+          session,
+          report,
+          version,
+          Date.now(),
+          new Set(this.sessions.keys()),
+        );
       },
       resolveWorkBlocker: async (workId, answer, exactTarget) => {
         const target = this.store.workStatus.currentBlocker(
@@ -902,11 +912,11 @@ export class Supervisor {
 
   private workStatus(only?: ReadonlySet<string>): WorkStatusSummary {
     const now = Date.now();
-    const events = this.store.workStatus
-      .events(this.resolvedInstance.fleetId)
-      .filter((event) => (only === undefined ? true : only.has(event.session)));
+    const rows = this.store.workStatus
+      .current(this.resolvedInstance.fleetId)
+      .filter((row) => (only === undefined ? true : only.has(row.session)));
     return deriveWorkStatus(
-      events,
+      rows,
       (session) => {
         const process = this.lifecycle.processObservation(session);
         const activity = this.health.activityObservation(session);
@@ -916,6 +926,12 @@ export class Supervisor {
           activity: activity?.activity ?? 'unknown',
           ...(activity === undefined ? {} : { activityObservedAt: activity.observedAt }),
           ...(activity?.activity !== 'idle' ? {} : { idleSince: activity.since }),
+          ...(activity?.activity !== 'blocked' ? {} : { blockedSince: activity.since }),
+          persistedStopped:
+            this.states.get(session)?.running !== true && this.store.getSessionState(session)?.activity === 'stopped',
+          ...(this.health.unknownNotification(session) === undefined
+            ? {}
+            : { unknownNotification: this.health.unknownNotification(session) }),
         };
       },
       (session) => this.states.isPaused(session),
