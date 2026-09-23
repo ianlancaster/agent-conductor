@@ -699,7 +699,9 @@ describe('prepare — trust pre-seeding matches what Codex actually checks', () 
   // untrusted linked worktree under a symlinked tmp root shows the "Trust
   // this folder?" startup dialog naming the *main* worktree's resolved root
   // as the repository root Codex will apply trust to; pre-trusting the
-  // resolved cwd plus that resolved root silences the dialog.
+  // resolved cwd plus that resolved root silences the dialog. The literal
+  // (unresolved) cwd is kept too — harmless, and preserves prior behavior
+  // for any Codex code path that compares literally.
   let workDir: string;
   let configDir: string;
   let sharedHome: string;
@@ -731,7 +733,7 @@ describe('prepare — trust pre-seeding matches what Codex actually checks', () 
     return [...configText.matchAll(/\[projects\."([^"]+)"\]/g)].map((match) => match[1]!);
   }
 
-  it('trusts the REALPATH of a symlinked working directory, not the symlink itself', async () => {
+  it('trusts the literal symlinked path AND its REALPATH, not the symlink alone', async () => {
     const real = path.join(workDir, 'real-dir');
     await mkdir(real, { recursive: true });
     const link = path.join(workDir, 'link-dir');
@@ -742,10 +744,10 @@ describe('prepare — trust pre-seeding matches what Codex actually checks', () 
 
     const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
     const realDir = await realpath(real);
-    expect(await trustedHeaders(sessionConfig)).toEqual([realDir]);
+    expect(await trustedHeaders(sessionConfig)).toEqual([link, realDir]);
   });
 
-  it('trusts both the linked worktree itself and the resolved main-repository root', async () => {
+  it('trusts the literal cwd, the worktree top level, and the resolved main-repository root', async () => {
     const main = path.join(workDir, 'main-repo');
     await mkdir(main, { recursive: true });
     git(main, 'init', '-b', 'main');
@@ -761,11 +763,12 @@ describe('prepare — trust pre-seeding matches what Codex actually checks', () 
     const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
     const realWorktree = await realpath(worktree);
     const realMain = await realpath(main);
-    expect(await trustedHeaders(sessionConfig)).toEqual(expect.arrayContaining([realWorktree, realMain]));
-    expect(await trustedHeaders(sessionConfig)).toHaveLength(2);
+    const headers = await trustedHeaders(sessionConfig);
+    expect(headers).toEqual(expect.arrayContaining([worktree, realWorktree, realMain]));
+    expect(headers).toHaveLength(3);
   });
 
-  it('trusts only the single resolved root for a plain (non-worktree) repository', async () => {
+  it('trusts the literal and resolved root for a plain (non-worktree) repository', async () => {
     const repo = path.join(workDir, 'plain-repo');
     await mkdir(repo, { recursive: true });
     git(repo, 'init', '-b', 'main');
@@ -775,10 +778,35 @@ describe('prepare — trust pre-seeding matches what Codex actually checks', () 
 
     const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
     const realRepo = await realpath(repo);
-    expect(await trustedHeaders(sessionConfig)).toEqual([realRepo]);
+    expect(await trustedHeaders(sessionConfig)).toEqual([repo, realRepo]);
   });
 
-  it('trusts only the resolved cwd for a non-git directory', async () => {
+  it('does not trust the parent of a separate-git-dir (or bare) common directory', async () => {
+    // `dirname(--git-common-dir)` is only the repository root when the
+    // common dir sits directly inside it as `.git`. A `--separate-git-dir`
+    // repo (and a bare repo) puts the common dir elsewhere, and naively
+    // trusting its dirname would trust the PARENT directory — here, one
+    // holding multiple unrelated repositories. Trust is a security control:
+    // verify the parent never gets an entry.
+    const parent = path.join(workDir, 'multi-repo-parent');
+    await mkdir(parent, { recursive: true });
+    const externalGitDir = path.join(parent, 'external-git');
+    const repo = path.join(parent, 'sep-repo');
+    execFileSync('git', ['init', `--separate-git-dir=${externalGitDir}`, repo], { stdio: 'ignore', env: gitEnv });
+
+    const runtime = new CodexRuntime({ config: SETTINGS, baseDir: workDir });
+    await runtime.prepare(makeSession({ repo }), makeIdentity(configDir));
+
+    const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
+    const headers = await trustedHeaders(sessionConfig);
+    const realParent = await realpath(parent);
+    const realRepo = await realpath(repo);
+    expect(headers).not.toContain(parent);
+    expect(headers).not.toContain(realParent);
+    expect(headers).toEqual(expect.arrayContaining([repo, realRepo]));
+  });
+
+  it('trusts only the literal and resolved cwd for a non-git directory', async () => {
     const dir = path.join(workDir, 'not-a-repo');
     await mkdir(dir, { recursive: true });
 
@@ -787,10 +815,10 @@ describe('prepare — trust pre-seeding matches what Codex actually checks', () 
 
     const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
     const realDir = await realpath(dir);
-    expect(await trustedHeaders(sessionConfig)).toEqual([realDir]);
+    expect(await trustedHeaders(sessionConfig)).toEqual([dir, realDir]);
   });
 
-  it('does not duplicate an entry already present in the shared config, but still adds the missing one', async () => {
+  it('does not duplicate an entry already present in the shared config, but still adds the missing ones', async () => {
     const main = path.join(workDir, 'main-repo2');
     await mkdir(main, { recursive: true });
     git(main, 'init', '-b', 'main');
@@ -811,8 +839,9 @@ describe('prepare — trust pre-seeding matches what Codex actually checks', () 
     const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
     const headers = await trustedHeaders(sessionConfig);
     const realWorktree = await realpath(worktree);
-    // The pre-existing entry is not duplicated; the missing worktree entry is added.
+    // The pre-existing entry is not duplicated; the missing entries are added.
     expect(headers.filter((header) => header === realMain)).toHaveLength(1);
+    expect(headers).toContain(worktree);
     expect(headers).toContain(realWorktree);
   });
 });

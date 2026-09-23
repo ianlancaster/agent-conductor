@@ -734,11 +734,13 @@ export class CodexRuntime implements SessionRuntime {
    * Paths Codex needs pre-trusted for the startup dialog to stay silent.
    * Codex compares REALPATHs (resolving symlinks like macOS's /tmp ->
    * /private/tmp), and applies trust at the Git repository ROOT — for a
-   * linked worktree that's the main worktree's root (from `git
-   * rev-parse --git-common-dir`), not the worktree's own directory. Cover
-   * both the resolved cwd and the resolved repository root so plain repos,
-   * linked worktrees, and non-git directories are all trusted where Codex
-   * actually checks.
+   * linked worktree that's the main worktree's root, not the worktree's own
+   * directory. Cover the literal cwd (harmless to keep, and preserves prior
+   * behavior for any Codex code path that compares literally), the resolved
+   * cwd, the worktree's own resolved top level (`git rev-parse
+   * --show-toplevel`), and the resolved MAIN repository root — so plain
+   * repos, linked worktrees, and non-git directories are all trusted where
+   * Codex actually checks.
    */
   private async trustedProjectPaths(repo: string): Promise<string[]> {
     const paths: string[] = [];
@@ -746,17 +748,29 @@ export class CodexRuntime implements SessionRuntime {
       if (!paths.includes(candidate)) paths.push(candidate);
     };
 
-    const realRepo = await this.realpathOrSelf(repo);
-    addUnique(realRepo);
+    addUnique(repo);
+    addUnique(await this.realpathOrSelf(repo));
 
     try {
-      const { stdout } = await runGit(['-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
-        timeoutMs: GIT_TIMEOUT_MS,
-      });
-      const commonDir = stdout.trim();
-      if (commonDir.length > 0) {
-        const gitRoot = path.dirname(commonDir);
-        addUnique(await this.realpathOrSelf(gitRoot));
+      const [commonDirResult, toplevelResult] = await Promise.all([
+        runGit(['-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+          timeoutMs: GIT_TIMEOUT_MS,
+        }),
+        runGit(['-C', repo, 'rev-parse', '--path-format=absolute', '--show-toplevel'], {
+          timeoutMs: GIT_TIMEOUT_MS,
+        }),
+      ]);
+      const commonDir = commonDirResult.stdout.trim();
+      const toplevel = toplevelResult.stdout.trim();
+      if (toplevel.length > 0) addUnique(await this.realpathOrSelf(toplevel));
+      // dirname(commonDir) is only the repository root when the common dir
+      // sits directly inside it as `.git` — the standard layout. A bare
+      // repository or `--separate-git-dir` puts the common dir elsewhere
+      // (e.g. /x/repos/foo.git), and dirname would trust the PARENT
+      // directory — a directory full of unrelated repos. Trust is a
+      // security control: skip it rather than trust too broadly.
+      if (commonDir.length > 0 && path.basename(commonDir) === '.git') {
+        addUnique(await this.realpathOrSelf(path.dirname(commonDir)));
       }
     } catch {
       // Not a Git repository (or git unavailable) — trusting the resolved cwd is enough.
