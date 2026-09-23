@@ -36,6 +36,7 @@ import type { ConductorIntegration } from '../integrations/types.js';
 import { configuredRunbookRegistry, type RunbookRegistry } from '../runbooks/registry.js';
 import { CommandRouter } from './commands.js';
 import { DeliveryQueue } from './delivery.js';
+import { InvalidRequestError } from './errors.js';
 import { ConductorDocumentation } from './documentation.js';
 import { HealthMonitor } from './health.js';
 import { identityFor } from './identity.js';
@@ -52,6 +53,7 @@ import { observePaneActivity, observePaneInputState } from './activity.js';
 import { ShepherdManager } from './shepherd-manager.js';
 import { IntegrationManager } from './integration-manager.js';
 import { SessionStatusAttestor } from './attestation.js';
+import { deriveWorkStatus, type WorkStatusSummary } from './work-status.js';
 import { FederationRegistry } from '../federation/registry.js';
 import { FederationRouter } from '../federation/router.js';
 
@@ -470,7 +472,10 @@ export class Supervisor {
     });
 
     this.health = new HealthMonitor({
-      config: this.config.health,
+      config: {
+        ...this.config.health,
+        activityEvidenceMaxAgeMs: this.config.supervisor.heartbeatIntervalSeconds * 3_000,
+      },
       backend: this.backend,
       runtimeFor: (session) => this.runtimeFor(session),
       getPane: (session) => this.lifecycle.getPane(session),
@@ -527,6 +532,81 @@ export class Supervisor {
       },
       runtimeNames: [...this.runtimes.keys()].sort(),
       statusReport: (codename, only) => this.statusReport(codename, only),
+      reportWorkStatus: (session, report) => {
+        if (!this.sessions.has(session)) throw new Error(`Unknown session: ${session}`);
+        if (this.states.get(session)?.running !== true) {
+          throw new InvalidRequestError(`Session ${session} has no live execution for report_status.`);
+        }
+        return this.store.workStatus.report(
+          this.resolvedInstance.fleetId,
+          session,
+          report,
+          Date.now(),
+          new Set(this.sessions.keys()),
+        );
+      },
+      resolveWorkBlocker: async (workId, answer) => {
+        const target = this.store.workStatus.currentBlocker(this.resolvedInstance.fleetId, workId);
+        if (target.blocker_id === null || target.blocker_revision === null)
+          throw new Error('Blocker identity is missing.');
+        const receipt = this.store.workStatus.resolve(
+          this.resolvedInstance.fleetId,
+          workId,
+          answer,
+          {
+            attemptId: target.attempt_id,
+            blockerId: target.blocker_id,
+            blockerRevision: target.blocker_revision,
+            targetClaimEventId: `${this.resolvedInstance.fleetId}:work-status:${String(target.id)}`,
+          },
+          Date.now(),
+          this.config.messaging.maxPendingMessagesPerRecipient,
+        );
+        try {
+          await this.messaging.recoverPendingMessages(receipt.session);
+        } catch (error) {
+          log().warn(
+            'status',
+            `Resolution answer remains queued for ${receipt.session}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        return receipt;
+      },
+      actOnWorkStatus: async (action, workId, actor, options) => {
+        const fleetId = this.resolvedInstance.fleetId;
+        const bound =
+          action === 'accept' || action === 'reject'
+            ? this.store.workStatus.currentDone(fleetId, workId)
+            : this.store.workStatus.currentUnresolved(fleetId, workId);
+        if (actor.audience !== 'operator') throw new InvalidRequestError('Only the operator may decide work status.');
+        const target = {
+          attemptId: bound.row.attempt_id,
+          claimEventId: `${fleetId}:work-status:${String(bound.event.id)}`,
+        };
+        const actorName = actor.id;
+        if (action === 'accept')
+          return this.store.workStatus.accept(fleetId, workId, actorName, target, options.evidenceRef);
+        if (action === 'close')
+          return this.store.workStatus.closeWork(fleetId, workId, actorName, options.reason ?? '', target);
+        const receipt = this.store.workStatus.reject(
+          fleetId,
+          workId,
+          actorName,
+          options.reason ?? '',
+          target,
+          Date.now(),
+          this.config.messaging.maxPendingMessagesPerRecipient,
+        );
+        try {
+          await this.messaging.recoverPendingMessages(receipt.session);
+        } catch (error) {
+          log().warn(
+            'status',
+            `Rework reason remains queued for ${receipt.session}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        return receipt;
+      },
       attestSessionStatus: (codename, actor, resourceKind, resourceNamespace, resourceKey, owner, idempotencyKey) =>
         this.attestSessionStatus(codename, actor, resourceKind, resourceNamespace, resourceKey, owner, idempotencyKey),
       tail: (codename, lines) => this.tail(codename, lines),
@@ -843,6 +923,7 @@ export class Supervisor {
         effortFor: (name) => this.displayEffortFor(name),
         sentinelCodename: () => this.sentinel.sentinelCodename(),
         processObservation: (name) => this.lifecycle.processObservation(name),
+        workStatus: (visible) => this.workStatus(visible),
       },
       codename,
       { shepherdRecipient: this.shepherd.recipientSession() },
@@ -870,6 +951,42 @@ export class Supervisor {
             },
           }),
     });
+  }
+
+  private workStatus(only?: ReadonlySet<string>): WorkStatusSummary {
+    const now = Date.now();
+    const rows = this.store.workStatus
+      .current(this.resolvedInstance.fleetId)
+      .filter((row) => (only === undefined ? true : only.has(row.session)));
+    return deriveWorkStatus(
+      rows,
+      (session) => {
+        const process = this.lifecycle.processObservation(session);
+        const activity = this.health.activityObservation(session);
+        return {
+          processActive: process?.active ?? null,
+          ...(process === undefined ? {} : { processObservedAt: Date.parse(process.observedAt) }),
+          activity: activity?.activity ?? 'unknown',
+          ...(activity === undefined ? {} : { activityObservedAt: activity.observedAt }),
+          ...(activity?.activity !== 'idle' ? {} : { idleSince: activity.since }),
+          ...(activity?.activity !== 'blocked' ? {} : { blockedSince: activity.since }),
+          persistedStopped:
+            !this.sessions.has(session) ||
+            (this.states.get(session)?.running !== true && this.store.getSessionState(session)?.activity === 'stopped'),
+          ...(this.health.unknownNotification(session) === undefined
+            ? {}
+            : { unknownNotification: this.health.unknownNotification(session) }),
+        };
+      },
+      (session) => this.states.isPaused(session),
+      now,
+      {
+        disagreementMs: this.config.status.disagreementMs,
+        staleMs: this.config.status.staleMs,
+        waitingMs: this.config.status.waitingMs,
+        observationMaxAgeMs: this.config.supervisor.heartbeatIntervalSeconds * 3_000,
+      },
+    );
   }
 
   /** Structured companion status for embedding and tests. */

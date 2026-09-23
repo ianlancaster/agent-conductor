@@ -279,6 +279,15 @@ export const supervisorConfigSchema = z
       })
       .strict()
       .default({}),
+    status: z
+      .object({
+        /** Starting defaults, to tune from measured work-status durations. */
+        disagreementMs: z.number().int().positive().default(3_600_000),
+        staleMs: z.number().int().positive().default(14_400_000),
+        waitingMs: z.number().int().positive().default(14_400_000),
+      })
+      .strict()
+      .default({}),
     messaging: z
       .object({
         /** Maximum durable pending deliveries accepted for any one recipient. */

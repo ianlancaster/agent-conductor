@@ -5,6 +5,7 @@ import type { ConductorEvent } from '../events/types.js';
 import type { RunbookSource } from '../runbooks/types.js';
 import { applyMigrations, openSqliteDatabase, openSqliteDatabaseReadOnly, withTransaction } from './sqlite.js';
 import type { SqliteMigration } from './sqlite.js';
+import { WorkStatusJournal } from './work-status.js';
 
 /** One launch of a session's CLI (start → stop). A session has many runs over time. */
 export interface RunRow {
@@ -386,15 +387,64 @@ const MIGRATIONS: SqliteMigration[] = [
         ON schedule_occurrences(state, admitted_at, id);
     `);
   },
+  `
+  CREATE TABLE IF NOT EXISTS work_status_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fleet_id TEXT NOT NULL,
+    session TEXT NOT NULL,
+    work_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('claim', 'blocker_resolved', 'accepted', 'not_accepted', 'work_closed')),
+    state TEXT CHECK (state IS NULL OR state IN ('working', 'waiting', 'blocked', 'done', 'failed')),
+    payload_json TEXT NOT NULL,
+    idempotency_key TEXT,
+    blocker_id TEXT,
+    blocker_revision INTEGER,
+    target_event_id INTEGER,
+    occurred_at_ms INTEGER NOT NULL,
+    duplicate_count INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_work_status_scope ON work_status_events(fleet_id, session, work_id, id);
+  CREATE INDEX IF NOT EXISTS idx_work_status_attempt ON work_status_events(fleet_id, attempt_id, id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_work_status_idempotency ON work_status_events(fleet_id, session, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+  CREATE TABLE IF NOT EXISTS work_status_idempotency (
+    fleet_id TEXT NOT NULL, session TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL, claim_event_id INTEGER NOT NULL,
+    PRIMARY KEY(fleet_id, session, idempotency_key)
+  );
+  CREATE TABLE IF NOT EXISTS work_status_current (
+    fleet_id TEXT NOT NULL, session TEXT NOT NULL, work_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL, claim_event_id INTEGER NOT NULL,
+    state TEXT NOT NULL, payload_json TEXT NOT NULL,
+    state_entered_at_ms INTEGER NOT NULL, work_started_at_ms INTEGER NOT NULL,
+    blocker_started_at_ms INTEGER, blocker_id TEXT, blocker_revision INTEGER,
+    resolved_at_ms INTEGER, cumulative_json TEXT NOT NULL,
+    acknowledgement_wait_ms INTEGER NOT NULL DEFAULT 0,
+    disposition TEXT NOT NULL DEFAULT 'open' CHECK (disposition IN ('open', 'accepted', 'not_accepted', 'closed')),
+    disposition_event_id INTEGER,
+    PRIMARY KEY(fleet_id, session, work_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_work_status_current_session_state
+    ON work_status_current(fleet_id, session, state);
+  CREATE INDEX IF NOT EXISTS idx_work_status_current_work
+    ON work_status_current(fleet_id, work_id, state);
+  CREATE INDEX IF NOT EXISTS idx_work_status_current_attempt
+    ON work_status_current(fleet_id, attempt_id);
+  `,
 ];
 
 export class Store {
   private readonly db: DatabaseSync;
+  readonly workStatus: WorkStatusJournal;
 
   constructor(dbPath: string) {
     this.db = openSqliteDatabase(dbPath);
     try {
       applyMigrations(this.db, MIGRATIONS);
+      this.workStatus = new WorkStatusJournal(this.db, (sender, recipient, content, capacity, delivery) =>
+        this.admitDirectMessageInTransaction(sender, recipient, content, capacity, undefined, delivery),
+      );
     } catch (error) {
       this.db.close();
       throw error;
@@ -492,51 +542,63 @@ export class Store {
     idempotencyKey?: string,
     delivery?: ProtectedDelivery,
   ): MessageAdmissionResult {
-    return withTransaction(this.db, () => {
-      const existing =
-        idempotencyKey === undefined ? undefined : this.getDirectMessageByIdempotencyKey(sender, idempotencyKey);
-      if (
-        existing !== undefined &&
-        !(existing.status === 'cancelled' && existing.flush_skip_reason === 'conductor-restarted')
-      ) {
-        return { accepted: true, row: existing, deduplicated: true };
-      }
+    return withTransaction(this.db, () =>
+      this.admitDirectMessageInTransaction(sender, recipient, content, capacity, idempotencyKey, delivery),
+    );
+  }
 
-      const pendingCount = this.pendingDeliveryCount(recipient);
-      if (pendingCount >= capacity) {
-        return { accepted: false, recipient, capacity, pendingCount };
-      }
+  /** Shared admission policy for callers that already own a store transaction. */
+  private admitDirectMessageInTransaction(
+    sender: string,
+    recipient: string,
+    content: string,
+    capacity: number,
+    idempotencyKey?: string,
+    delivery?: ProtectedDelivery,
+  ): MessageAdmissionResult {
+    const existing =
+      idempotencyKey === undefined ? undefined : this.getDirectMessageByIdempotencyKey(sender, idempotencyKey);
+    if (
+      existing !== undefined &&
+      !(existing.status === 'cancelled' && existing.flush_skip_reason === 'conductor-restarted')
+    ) {
+      return { accepted: true, row: existing, deduplicated: true };
+    }
 
-      if (existing !== undefined) {
-        this.db
-          .prepare(
-            "UPDATE messages SET content = ?, delivery_policy = ?, delivery_envelope = ?, status = 'pending', created_at = datetime('now'), " +
-              'delivered_at = NULL, last_flush_attempt_at = NULL, flush_skip_reason = NULL, cancelled_at = NULL ' +
-              "WHERE id = ? AND status = 'cancelled'",
-          )
-          .run(content, delivery?.policy ?? 'hold', delivery?.envelope ?? null, existing.id);
-        const revived = this.getMessage(existing.id);
-        if (revived === undefined) throw new Error(`Message #${String(existing.id)} was not revived.`);
-        return { accepted: true, row: revived, deduplicated: false };
-      }
+    const pendingCount = this.pendingDeliveryCount(recipient);
+    if (pendingCount >= capacity) {
+      return { accepted: false, recipient, capacity, pendingCount };
+    }
 
-      if (idempotencyKey === undefined) {
-        const id = this.insertMessage(sender, recipient, 'message', content, undefined, delivery);
-        const row = this.getMessage(id);
-        if (row === undefined) throw new Error(`Message #${String(id)} was not persisted.`);
-        return { accepted: true, row, deduplicated: false };
-      }
-      const inserted = this.db
+    if (existing !== undefined) {
+      this.db
         .prepare(
-          `INSERT OR IGNORE INTO messages
+          "UPDATE messages SET content = ?, delivery_policy = ?, delivery_envelope = ?, status = 'pending', created_at = datetime('now'), " +
+            'delivered_at = NULL, last_flush_attempt_at = NULL, flush_skip_reason = NULL, cancelled_at = NULL ' +
+            "WHERE id = ? AND status = 'cancelled'",
+        )
+        .run(content, delivery?.policy ?? 'hold', delivery?.envelope ?? null, existing.id);
+      const revived = this.getMessage(existing.id);
+      if (revived === undefined) throw new Error(`Message #${String(existing.id)} was not revived.`);
+      return { accepted: true, row: revived, deduplicated: false };
+    }
+
+    if (idempotencyKey === undefined) {
+      const id = this.insertMessage(sender, recipient, 'message', content, undefined, delivery);
+      const row = this.getMessage(id);
+      if (row === undefined) throw new Error(`Message #${String(id)} was not persisted.`);
+      return { accepted: true, row, deduplicated: false };
+    }
+    const inserted = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO messages
            (sender, recipient, type, content, idempotency_key, delivery_policy, delivery_envelope)
            VALUES (?, ?, 'message', ?, ?, ?, ?)`,
-        )
-        .run(sender, recipient, content, idempotencyKey, delivery?.policy ?? 'hold', delivery?.envelope ?? null);
-      const row = this.getDirectMessageByIdempotencyKey(sender, idempotencyKey);
-      if (row === undefined) throw new Error('Idempotent message was not persisted.');
-      return { accepted: true, row, deduplicated: inserted.changes === 0 };
-    });
+      )
+      .run(sender, recipient, content, idempotencyKey, delivery?.policy ?? 'hold', delivery?.envelope ?? null);
+    const row = this.getDirectMessageByIdempotencyKey(sender, idempotencyKey);
+    if (row === undefined) throw new Error('Idempotent message was not persisted.');
+    return { accepted: true, row, deduplicated: inserted.changes === 0 };
   }
 
   insertBroadcastDeliveries(

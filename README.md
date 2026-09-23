@@ -102,18 +102,21 @@ For the full walkthrough, including what the generated files mean, continue with
 The operator console uses a small command language. Run `/help` for the complete,
 version-matched reference; these are the commands used most often:
 
-| Task                                         | Command                                                                    |
-| -------------------------------------------- | -------------------------------------------------------------------------- |
-| Inspect the fleet or one session             | `/status` · `/status <session>`                                            |
-| Create or restore a session                  | `/spawn <name> [-r claude-code\|codex] [-s <id>] [--path <dir>]`           |
-| Start, resume, or stop it                    | `/start <session>` · `/continue <session> [-s <id>]` · `/stop <session>`   |
-| Send a message                               | `/tell <session> <message>` · `/broadcast <message>`                       |
-| Make free text target one session            | `/talk <session>`                                                          |
-| Inspect recent terminal output               | `/tail <session> [lines]`                                                  |
-| Set or clear a concise status tag            | `/tag <session> [text]`                                                    |
-| Pause or resume peer delivery and automation | `/pause <session\|all\|federation>` · `/resume <session\|all\|federation>` |
-| Record an approved runbook condition         | `/runbook adopt <id> --version <v> --topic <topic>`                        |
-| Remove a spawned session                     | `/teardown <session> [--delete]`                                           |
+| Task                                         | Command                                                                         |
+| -------------------------------------------- | ------------------------------------------------------------------------------- |
+| Inspect the fleet or one session             | `/status` · `/status <session>`                                                 |
+| Answer a reported work blocker               | `/resolve <work-id> <answer>`                                                   |
+| Attest or reject a completion claim          | `/accept-status <work-id> [evidence-ref]` · `/reject-status <work-id> <reason>` |
+| Close unresolved work                        | `/close-status <work-id> <reason>`                                              |
+| Create or restore a session                  | `/spawn <name> [-r claude-code\|codex] [-s <id>] [--path <dir>]`                |
+| Start, resume, or stop it                    | `/start <session>` · `/continue <session> [-s <id>]` · `/stop <session>`        |
+| Send a message                               | `/tell <session> <message>` · `/broadcast <message>`                            |
+| Make free text target one session            | `/talk <session>`                                                               |
+| Inspect recent terminal output               | `/tail <session> [lines]`                                                       |
+| Set or clear a concise status tag            | `/tag <session> [text]`                                                         |
+| Pause or resume peer delivery and automation | `/pause <session\|all\|federation>` · `/resume <session\|all\|federation>`      |
+| Record an approved runbook condition         | `/runbook adopt <id> --version <v> --topic <topic>`                             |
+| Remove a spawned session                     | `/teardown <session> [--delete]`                                                |
 
 A typical hand-driven session looks like this:
 
@@ -165,6 +168,14 @@ For diagnosis, `conductor logs [session]` reads recent persisted health events,
 `conductor validate` checks strict fleet configuration, and `/tail` reads pane output.
 Managed agents can use `list_sessions` and `get_session_status` for structured,
 non-invasive status without scraping peers' terminals.
+Agents report work transitions through `report_status`. The status view groups open blockers,
+stale or conflicting claims, overdue waits, completion claims, and active work. It shows
+time in state, work age, WIP counts, and the operator blocker queue. Verified harness prompts appear separately; unknown notification types only add a neutral annotation. `/resolve` records an
+answer against the exact current blocker and delivers it through protected messaging; a
+stopped session remains stopped. Completion remains an agent claim until separately accepted
+by the operator. Acceptance names the exact claim
+and records attested evidence; rejected claims carry a reason and allow a new attempt.
+Accepted or explicitly closed work leaves the live WIP view; failed work stays visible until retried or closed.
 Configured PR Shepherd companions always appear in fleet status: healthy companions show Online,
 while paused, starting, degraded, and failed states remain explicit instead of disappearing.
 Status reconciliation uses each runtime's own activity parser to repair missed lifecycle hooks in

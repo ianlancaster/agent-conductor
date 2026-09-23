@@ -9,6 +9,12 @@ import { InvalidRequestError } from './errors.js';
 import type { Placement } from './types.js';
 import type { RunbookAdoptionActions } from './runbook-adoptions.js';
 import type { FederationListing } from '../federation/types.js';
+import type {
+  WorkStatusReport,
+  WorkStatusReceipt,
+  WorkBlockerResolution,
+  WorkStatusAuthorityReceipt,
+} from '../store/work-status.js';
 import {
   operationSchema as schema,
   optionalString,
@@ -61,6 +67,14 @@ export interface ConductorOperationDeps {
   effortHints: Record<string, readonly string[]>;
   runtimeNames?: readonly string[];
   statusReport(codename?: string, only?: ReadonlySet<string>): string;
+  reportWorkStatus?(session: string, report: WorkStatusReport): WorkStatusReceipt;
+  resolveWorkBlocker?(workId: string, answer: string): Promise<WorkBlockerResolution>;
+  actOnWorkStatus?(
+    action: 'accept' | 'reject' | 'close',
+    workId: string,
+    actor: OperationActor,
+    options: { evidenceRef?: string; reason?: string },
+  ): Promise<WorkStatusAuthorityReceipt>;
   attestSessionStatus(
     codename: string,
     actor: OperationActor,
@@ -208,6 +222,107 @@ export class ConductorOperations {
     const templateNames = this.deps.lifecycle.templateNames();
     const runRuntimeProperty = runtimeProperty(this.deps.runtimeNames ?? ['claude-code', 'codex']);
     const definitions: OperationDefinition[] = [
+      {
+        name: 'report_status',
+        description:
+          'Report a work-state transition. Required: state, work_id, summary.\n' +
+          'waiting needs waiting_on; blocked needs needs_from and question; recommendation, meanwhile, if_no_answer are optional.\n' +
+          'done needs evidence; failed needs reason; leaving an unresolved block needs resolution.\n' +
+          'Same-state reports are for changed waiting_on, a changed blocker packet, or new done evidence; never a heartbeat.\n' +
+          'Only one working claim per session; done is a claim, not acceptance. Conductor returns the bound attempt and event receipt.',
+        resultDescription: 'Returns the durable event receipt as JSON.',
+        audiences: SESSION_ONLY,
+        federation: 'local-only',
+        inputSchema: schema(
+          {
+            state: {
+              type: 'string',
+              enum: ['working', 'waiting', 'blocked', 'done', 'failed'],
+              description: 'Current work state',
+            },
+            work_id: { ...stringProperty('One independently reportable work unit'), maxLength: 160 },
+            summary: { ...stringProperty('Short work summary'), maxLength: 240 },
+            idempotencyKey: { ...stringProperty('Optional retry key'), maxLength: 160 },
+            waiting_on: stringProperty('Named dependency while waiting'),
+            needs_from: stringProperty('Who can answer this blocker: operator or a session codename'),
+            question: stringProperty('Decision needed'),
+            recommendation: stringProperty('Recommended answer'),
+            meanwhile: stringProperty('What continues while blocked'),
+            if_no_answer: stringProperty('Safe default if no answer arrives'),
+            evidence: {
+              type: 'array',
+              description: 'References identifying the completed output',
+              minItems: 1,
+              maxItems: 8,
+              items: { type: 'string', minLength: 1, maxLength: 320 },
+            },
+            reason: stringProperty('Why the attempt failed'),
+            resolution: stringProperty('How the previous blocker was resolved'),
+          },
+          ['state', 'work_id', 'summary'],
+        ),
+        handler: (args, actor) => {
+          if (actor.audience !== 'session') throw new InvalidRequestError('report_status requires a session caller.');
+          if (this.deps.reportWorkStatus === undefined) throw new Error('Work status is unavailable.');
+          return Promise.resolve(
+            JSON.stringify(this.deps.reportWorkStatus(actor.codename, args as unknown as WorkStatusReport)),
+          );
+        },
+      },
+      {
+        name: 'resolve_status_blocker',
+        description: 'Answer the current blocker for a work ID and queue the answer without starting its session.',
+        resultDescription: 'Returns the exact blocker revision, answer event, and durable message receipt as JSON.',
+        audiences: OPERATOR_ONLY,
+        federation: 'local-only',
+        inputSchema: schema(
+          { work_id: stringProperty('Work ID'), answer: stringProperty('Answer to the current blocker') },
+          ['work_id', 'answer'],
+        ),
+        handler: async (args) => {
+          if (this.deps.resolveWorkBlocker === undefined) throw new Error('Work status is unavailable.');
+          return JSON.stringify(
+            await this.deps.resolveWorkBlocker(requireString(args, 'work_id'), requireString(args, 'answer')),
+          );
+        },
+      },
+      ...(['accept', 'reject', 'close'] as const).map((action): OperationDefinition => {
+        const name = {
+          accept: 'record_status_acceptance',
+          reject: 'record_status_not_accepted',
+          close: 'close_status_work',
+        }[action];
+        return {
+          name,
+          description: {
+            accept: 'Attest the exact current done claim with evidence.',
+            reject: 'Reject the exact current done claim with a reason and deliver rework feedback.',
+            close: 'Close one unambiguous unresolved work item with a recorded reason.',
+          }[action],
+          resultDescription: 'Returns the authority event, exact target claim, actor, and evidence or reason as JSON.',
+          audiences: OPERATOR_ONLY,
+          federation: 'local-only',
+          inputSchema: schema(
+            {
+              work_id: stringProperty('Work ID'),
+              ...(action === 'accept'
+                ? { evidence_ref: stringProperty('Optional attested evidence reference; defaults to claim evidence') }
+                : {}),
+              ...(action !== 'accept' ? { reason: stringProperty('Required reason') } : {}),
+            },
+            ['work_id', ...(action === 'accept' ? [] : ['reason'])],
+          ),
+          handler: async (args, actor) => {
+            if (this.deps.actOnWorkStatus === undefined) throw new Error('Work status is unavailable.');
+            return JSON.stringify(
+              await this.deps.actOnWorkStatus(action, requireString(args, 'work_id'), actor, {
+                ...(args.evidence_ref === undefined ? {} : { evidenceRef: requireString(args, 'evidence_ref') }),
+                ...(args.reason === undefined ? {} : { reason: requireString(args, 'reason') }),
+              }),
+            );
+          },
+        };
+      }),
       {
         name: 'attest_session_status',
         description:

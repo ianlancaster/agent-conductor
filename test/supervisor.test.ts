@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Supervisor } from '../src/core/supervisor.js';
+import { resolveConductorInstance } from '../src/config/paths.js';
 import { isolatedGitEnvironment } from '../src/core/git.js';
 import type { ChannelAdapter, ChannelHandlers, ChannelMessage } from '../src/channels/types.js';
 import { exportEventJournalJsonl, Store } from '../src/store/index.js';
@@ -1060,6 +1061,137 @@ describe('Supervisor construction', () => {
     const status = supervisor.statusReport('alpha');
     expect(status).toContain('"auto": true');
     expect(status).toContain('"tag": "carry-over"');
+  });
+
+  it('keeps a stopped working claim in attention after observation expiry and supervisor restart', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\nruntime: fake\n`,
+    });
+    const fleetId = resolveConductorInstance(baseDir).fleetId;
+    const seeded = new Store(join(baseDir, 'data', 'conductor.db'));
+    seeded.workStatus.report(fleetId, 'alpha', { state: 'working', work_id: 'TASK-1', summary: 'Build' });
+    seeded.close();
+    const terminal = new FakeTerminalBackend();
+    const options = {
+      terminalBackend: terminal,
+      runtimes: [new FakeRuntime('fake')],
+      includeConfiguredChannels: false,
+      env: {},
+    };
+    supervisor = new Supervisor(baseDir, options);
+    await supervisor.start();
+    expect(await supervisor.command('/start alpha')).toBe('alpha started.');
+    expect(await supervisor.command('/stop alpha')).toBe('alpha stopped.');
+    const future = Date.now() + 10 * 60_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(future);
+    try {
+      expect(supervisor.statusReport()).toContain('disagreement');
+      await supervisor.stop();
+      supervisor = new Supervisor(baseDir, options);
+      await supervisor.start();
+      expect(supervisor.statusReport()).toContain('disagreement');
+      await supervisor.command('/teardown alpha');
+      expect(supervisor.statusReport()).toContain('disagreement');
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('accepts the unique current done claim through a short operator command and removes it from status', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      worker: `codename: worker\nrepo: ${baseDir}\nruntime: fake\n`,
+    });
+    const fleetId = resolveConductorInstance(baseDir).fleetId;
+    const seeded = new Store(join(baseDir, 'data', 'conductor.db'));
+    seeded.workStatus.report(fleetId, 'worker', { state: 'working', work_id: 'TASK-1', summary: 'Review' });
+    const done = seeded.workStatus.report(fleetId, 'worker', {
+      state: 'done',
+      work_id: 'TASK-1',
+      summary: 'Reviewed',
+      evidence: ['review://TASK-1'],
+    });
+    seeded.close();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      runtimes: [new FakeRuntime('fake')],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+    expect(supervisor.statusReport()).toContain('done awaiting acceptance');
+    const receipt = JSON.parse(await supervisor.command('/accept-status TASK-1')) as {
+      targetClaimEventId: string;
+      evidence: string[];
+    };
+    expect(receipt).toMatchObject({ targetClaimEventId: done.eventId, evidence: ['review://TASK-1'] });
+    expect(supervisor.statusReport()).not.toContain('TASK-1');
+  });
+
+  it('rejects and closes through short commands, and accepts reports after a restarted session', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      worker: `codename: worker\nrepo: ${baseDir}\nruntime: fake\n`,
+    });
+    const fleetId = resolveConductorInstance(baseDir).fleetId;
+    const seeded = new Store(join(baseDir, 'data', 'conductor.db'));
+    seeded.workStatus.report(fleetId, 'worker', { state: 'working', work_id: 'DONE', summary: 'Answer' });
+    seeded.workStatus.report(fleetId, 'worker', {
+      state: 'done',
+      work_id: 'DONE',
+      summary: 'Answered',
+      evidence: ['answer://42'],
+    });
+    seeded.workStatus.report(fleetId, 'worker', { state: 'working', work_id: 'FAILED', summary: 'Build' });
+    seeded.workStatus.report(fleetId, 'worker', {
+      state: 'failed',
+      work_id: 'FAILED',
+      summary: 'Failed',
+      reason: 'CI',
+    });
+    seeded.workStatus.report(fleetId, 'worker', { state: 'working', work_id: 'ACTIVE', summary: 'Build' });
+    seeded.close();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: new FakeTerminalBackend(),
+      runtimes: [new FakeRuntime('fake')],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+    const rejected = JSON.parse(await supervisor.command('/reject-status DONE Needs tests')) as {
+      targetClaimEventId: string;
+      reason: string;
+      messageId: number;
+    };
+    expect(rejected.reason).toBe('Needs tests');
+    const closed = JSON.parse(await supervisor.command('/close-status FAILED Cancelled')) as { reason: string };
+    expect(closed.reason).toBe('Cancelled');
+    expect(await supervisor.command('/start worker')).toBe('worker started.');
+    const response = await fetch(`http://127.0.0.1:${String(port)}/mcp/worker`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'report_status',
+          arguments: {
+            state: 'waiting',
+            work_id: 'ACTIVE',
+            summary: 'CI',
+            waiting_on: 'CI',
+          },
+        },
+      }),
+    });
+    expect(JSON.stringify(await response.json())).toContain('waiting');
+    const persisted = new Store(join(baseDir, 'data', 'conductor.db'));
+    expect(persisted.getMessage(rejected.messageId)?.content).toContain('Report your next state.');
+    expect(persisted.workStatus.current(fleetId).find((row) => row.work_id === 'FAILED')).toBeUndefined();
+    expect(persisted.workStatus.current(fleetId).find((row) => row.work_id === 'ACTIVE')?.state).toBe('waiting');
+    persisted.close();
   });
 
   it('persists the fleet-watch toggle across supervisor instances', async () => {

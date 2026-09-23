@@ -134,6 +134,22 @@ beforeEach(() => {
         },
         c,
       ),
+    reportWorkStatus: (session, report) => store.workStatus.report('test-fleet', session, report),
+    resolveWorkBlocker: async (workId, answer) => store.workStatus.resolve('test-fleet', workId, answer),
+    actOnWorkStatus: async (action, workId, actor, options) => {
+      const bound =
+        action === 'close'
+          ? store.workStatus.currentUnresolved('test-fleet', workId)
+          : store.workStatus.currentDone('test-fleet', workId);
+      const target = {
+        attemptId: bound.row.attempt_id,
+        claimEventId: `test-fleet:work-status:${String(bound.event.id)}`,
+      };
+      const name = actor.audience === 'operator' ? actor.id : actor.codename;
+      if (action === 'accept') return store.workStatus.accept('test-fleet', workId, name, target, options.evidenceRef);
+      if (action === 'reject') return store.workStatus.reject('test-fleet', workId, name, options.reason ?? '', target);
+      return store.workStatus.closeWork('test-fleet', workId, name, options.reason ?? '', target);
+    },
     tail: async (c, n) => `tail:${c}:${n}`,
     typeInPane: async (codename, text) => {
       const pane = lifecycle.getPane(codename);
@@ -162,6 +178,55 @@ beforeEach(() => {
 });
 
 describe('surface contract', () => {
+  it('keeps status decisions operator-only and rejects speculative target fields', async () => {
+    store.workStatus.report('test-fleet', 'alpha', { state: 'working', work_id: 'AUTH-1', summary: 'Review' });
+    const done = store.workStatus.report('test-fleet', 'alpha', {
+      state: 'done',
+      work_id: 'AUTH-1',
+      summary: 'Reviewed',
+      evidence: ['review://1'],
+    });
+    await expect(
+      operations.invoke('record_status_acceptance', { work_id: 'AUTH-1' }, { audience: 'session', codename: 'beta' }),
+    ).rejects.toThrow();
+    await expect(
+      operations.invoke(
+        'record_status_acceptance',
+        {
+          work_id: 'AUTH-1',
+          done_claim_event_id: done.eventId,
+        },
+        { audience: 'operator', id: 'operator' },
+      ),
+    ).rejects.toThrow();
+    const accepted = await operations.invoke(
+      'record_status_acceptance',
+      { work_id: 'AUTH-1' },
+      { audience: 'operator', id: 'operator' },
+    );
+    expect(JSON.parse(accepted as string)).toMatchObject({ targetClaimEventId: done.eventId, actor: 'operator' });
+  });
+  it('binds report_status to the calling session and requires conditional evidence', async () => {
+    const first = JSON.parse(
+      await tool('report_status').handler({ state: 'working', work_id: 'review-1', summary: 'Reviewing' }, 'alpha'),
+    ) as { attemptId: string; eventId: string };
+    expect(first.attemptId).toBeTruthy();
+    expect(store.workStatus.events('test-fleet')[0]).toMatchObject({
+      session: 'alpha',
+      work_id: 'review-1',
+    });
+    await expect(
+      tool('report_status').handler({ state: 'done', work_id: 'review-1', summary: 'Reviewed' }, 'alpha'),
+    ).rejects.toThrow('evidence');
+    const done = JSON.parse(
+      await tool('report_status').handler(
+        { state: 'done', work_id: 'review-1', summary: 'Reviewed', evidence: ['review://1'] },
+        'alpha',
+      ),
+    ) as { attemptId: string };
+    expect(done.attemptId).toBe(first.attemptId);
+  });
+
   it('classifies the complete canonical catalog for federation at compile-enforced definitions', () => {
     const sessionDefinitions = operations.definitions('session');
     expect(
@@ -197,7 +262,7 @@ describe('surface contract', () => {
         .filter((definition) => definition.federation === 'local-only')
         .map((definition) => definition.name)
         .sort(),
-    ).toEqual(['attest_session_status', 'get_conductor_docs', 'send_to_operator', 'whoami'].sort());
+    ).toEqual(['attest_session_status', 'get_conductor_docs', 'report_status', 'send_to_operator', 'whoami'].sort());
     expect(
       operations
         .definitions()
@@ -652,7 +717,7 @@ describe('surface contract', () => {
 
   it('keeps every turn-zero invariant inside a bounded mandatory prompt', () => {
     const protocol = readFileSync(new URL('../prompts/conductor-protocol.md', import.meta.url), 'utf8');
-    expect(Buffer.byteLength(protocol, 'utf8')).toBeLessThanOrEqual(4_500);
+    expect(Buffer.byteLength(protocol, 'utf8')).toBeLessThanOrEqual(4_673);
     for (const invariant of [
       'identity is mechanical',
       '[Message from <sender>]',

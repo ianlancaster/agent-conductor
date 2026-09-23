@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HealthMonitor } from '../src/core/health.js';
+import { deriveWorkStatus } from '../src/core/work-status.js';
 import type { PaneActivityEvidence, StallKind } from '../src/core/types.js';
+import { Store } from '../src/store/index.js';
 import { CodexRuntime } from '../src/runtimes/codex/index.js';
 import { FakeRuntime } from './fakes/fake-runtime.js';
 import { FakeTerminalBackend } from './fakes/fake-terminal.js';
@@ -73,8 +75,9 @@ function event(
   type: 'turn-start' | 'stop' | 'notification' | 'compaction' | 'compaction-complete' | 'session-start' | 'session-end',
   reason?: string,
   turnId?: string,
+  notificationType?: string,
 ): void {
-  monitor.handleEvent({ session: 'alpha', type, reason, turnId, receivedAt: Date.now() });
+  monitor.handleEvent({ session: 'alpha', type, reason, turnId, notificationType, receivedAt: Date.now() });
 }
 
 describe('event-driven signals', () => {
@@ -202,15 +205,123 @@ describe('event-driven signals', () => {
   });
 
   it('raises blocked stalls immediately on notification events', () => {
-    event('notification', 'needs permission');
+    event('notification', 'needs permission', undefined, 'permission_prompt');
     expect(stalls).toEqual([{ session: 'alpha', kind: 'blocked', reason: 'needs permission' }]);
+    expect(monitor.activityObservation('alpha')?.activity).toBe('blocked');
+  });
+
+  it('treats elicitation as a prompt and confirms idle_prompt through the normal debounce', async () => {
+    event('notification', 'choose an option', undefined, 'elicitation_dialog');
+    expect(monitor.activityObservation('alpha')?.activity).toBe('blocked');
+    event('notification', 'waiting for input', undefined, 'idle_prompt');
+    expect(monitor.activityObservation('alpha')).toBeUndefined();
+    expect(stalls.map((item) => item.kind)).toEqual(['blocked']);
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
+    expect(monitor.activityObservation('alpha')?.activity).toBe('idle');
+    expect(stalls.map((item) => item.kind)).toEqual(['blocked', 'idle']);
+  });
+
+  it('suppresses idle_prompt when the composer has a draft', async () => {
+    runtime.inputState = 'draft';
+    event('notification', 'waiting for input', undefined, 'idle_prompt');
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
+    expect(stalls).toEqual([]);
+    expect(healthEvents).toContainEqual({
+      session: 'alpha',
+      type: 'idle_suppressed',
+      detail: 'composer contains a draft',
+    });
+  });
+
+  it('suppresses idle_prompt while execution evidence still shows work', async () => {
+    event('notification', 'waiting for input', undefined, 'idle_prompt');
+    paneActivity = 'working';
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
+    expect(stalls).toEqual([]);
+    expect(monitor.activityObservation('alpha')?.activity).toBe('working');
+  });
+
+  it('keeps a permission prompt in the work-status attention band across two heartbeats', async () => {
+    const store = new Store(':memory:');
+    try {
+      store.workStatus.report('fleet', 'alpha', { state: 'working', work_id: 'TASK-1', summary: 'Build' }, 100);
+      vi.setSystemTime(200);
+      event('notification', 'needs permission', undefined, 'permission_prompt');
+      for (const now of [30_200, 60_200]) {
+        vi.setSystemTime(now);
+        paneActivity = 'idle';
+        await monitor.heartbeat();
+        const activity = monitor.activityObservation('alpha');
+        const status = deriveWorkStatus(
+          store.workStatus.current('fleet'),
+          () => ({
+            processActive: true,
+            processObservedAt: now,
+            activity: activity?.activity ?? 'unknown',
+            activityObservedAt: activity?.observedAt,
+            blockedSince: activity?.since,
+          }),
+          () => false,
+          now,
+          { disagreementMs: 3_600_000, staleMs: 14_400_000, waitingMs: 14_400_000, observationMaxAgeMs: 90_000 },
+        );
+        expect(status.views[0]).toMatchObject({ liveness: 'blocked', attentionBand: 1 });
+        expect(status.onOperator).toBe(0);
+      }
+      vi.setSystemTime(90_200);
+      paneActivity = 'unknown';
+      await monitor.heartbeat();
+      expect(monitor.activityObservation('alpha')).toBeUndefined();
+      vi.setSystemTime(120_200);
+      paneActivity = 'idle';
+      await monitor.heartbeat();
+      expect(monitor.activityObservation('alpha')).toMatchObject({ activity: 'blocked', since: 120_200 });
+      paneActivity = 'working';
+      await monitor.heartbeat();
+      expect(monitor.activityObservation('alpha')?.activity).toBe('working');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('annotates missing and unknown notification types without inferring liveness', () => {
+    event('notification', 'old client needs attention');
+    expect(monitor.activityObservation('alpha')).toBeUndefined();
+    expect(monitor.unknownNotification('alpha')).toBe('old client needs attention');
+    expect(stalls).toEqual([]);
+    event('notification', 'future type', undefined, 'unrecognized_type');
+    expect(monitor.activityObservation('alpha')).toBeUndefined();
+    expect(monitor.unknownNotification('alpha')).toBe('future type');
+    event('notification', 'authenticated', undefined, 'auth_success');
+    expect(stalls).toEqual([]);
+  });
+
+  it('leaves a pending idle confirmation intact for neutral notifications', async () => {
+    event('stop', 'turn complete');
+    event('notification', 'legacy message');
+    event('notification', 'future message', undefined, 'future_type');
+    event('notification', 'authenticated', undefined, 'auth_success');
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
+    expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'turn complete' }]);
+  });
+
+  it('breaks blocked evidence at an unknown pane observation', async () => {
+    vi.setSystemTime(100);
+    event('notification', 'permission', undefined, 'permission_prompt');
+    expect(monitor.activityObservation('alpha')?.since).toBe(100);
+    vi.setSystemTime(1_000_000);
+    paneActivity = 'unknown';
+    await monitor.reconcileActivity('alpha', { backend: 'fake', id: paneId });
+    vi.setSystemTime(2_000_000);
+    event('notification', 'permission again', undefined, 'permission_prompt');
+    expect(monitor.activityObservation('alpha')?.since).toBe(2_000_000);
   });
 
   it('returns an interrupted authoritative turn to working when pane output resumes', async () => {
     backend.setPaneContent(paneId, 'permission prompt');
     await monitor.heartbeat();
     event('turn-start', undefined, 'turn-1');
-    event('notification', 'needs permission', 'turn-1');
+    event('notification', 'needs permission', 'turn-1', 'permission_prompt');
     paneActivity = 'working';
     backend.setPaneContent(paneId, 'permission accepted\ncontinuing');
     await monitor.heartbeat();

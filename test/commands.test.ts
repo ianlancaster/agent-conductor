@@ -582,7 +582,8 @@ describe('help', () => {
     expect(help).toContain('/pause <session|all|federation>');
     expect(help).toContain('/resume <session|all|federation>');
     expect(help.match(/-e\|--effort level/gu)).toHaveLength(2);
-    expect(help).toContain('Conversation:\n  /tell <session> <message> —');
+    expect(help).toContain('Work status:\n  /resolve <work-id> <answer> —');
+    expect(help).toContain('  /tell <session> <message> —');
     expect(help).toContain('  -P/--pane · -T/--tab · -W/--window\n  -H/--headless — detached tmux pane');
     expect(help).toContain('    -r/--runtime cc|claude-code|codex');
     expect(help).toContain('-e/--effort <level>');

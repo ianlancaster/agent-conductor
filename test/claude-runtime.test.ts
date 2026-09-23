@@ -285,6 +285,23 @@ describe('parseEvent', () => {
     expect(runtime.parseEvent({ hook_event_name: 'Notification', message: 'needs permission' })?.type).toBe(
       'notification',
     );
+    expect(
+      runtime.parseEvent({
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Approve',
+      }),
+    ).toMatchObject({ type: 'notification', notificationType: 'permission_prompt' });
+    expect(
+      runtime.parseEvent({ hook_event_name: 'Notification', notification_type: 'idle_prompt', message: 'Idle' }),
+    ).toMatchObject({ type: 'notification', notificationType: 'idle_prompt' });
+    expect(
+      runtime.parseEvent({
+        hook_event_name: 'Notification',
+        notification_type: 'elicitation_dialog',
+        message: 'Choose',
+      }),
+    ).toMatchObject({ type: 'notification', notificationType: 'elicitation_dialog' });
     expect(runtime.parseEvent({ hook_event_name: 'PreCompact' })?.type).toBe('compaction');
     expect(runtime.parseEvent({ hook_event_name: 'SessionStart', source: 'compact' })?.type).toBe(
       'compaction-complete',

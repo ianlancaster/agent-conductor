@@ -1412,6 +1412,18 @@ For deeper operator onboarding, read `docs/getting-started.md`. For runbook auth
 read `guides/runbooks.md`. For service-specific problems, use the Telegram, Slack, or PR Shepherd
 guide.
 
+<!-- conductor-topic:work-status -->
+
+## Work status claims
+
+Use `report_status` when a work unit changes state. Send `state`, `work_id`, and a short `summary`; Conductor identifies your session, mints an attempt ID on first `working`, and returns a durable event receipt. `waiting` requires `waiting_on`. `blocked` requires `needs_from` (`operator` or a known session) and `question`; `recommendation`, `meanwhile`, and `if_no_answer` are optional. Send an operator-owned blocker through `send_to_operator` too. `done` requires evidence references identifying the actual output, such as an answer, review, decision, commit, or artifact. `failed` requires a reason. Leaving an unresolved blocker requires `resolution`.
+
+Before ending a turn for a peer, background task, or CI that may become a long wait, report `waiting`. One session can claim only one `working` item. Same-state updates are for changed `waiting_on`, a substantive blocker clarification or new question, or new completion evidence. Summary-only working or waiting updates are rejected. Exact duplicates return `unchanged: true` and increment a count on the original claim; do not send them on a timer. `idempotencyKey` is optional and lets a retry return its original receipt after later transitions. Keep next steps in your plan. Work status never authorizes a restart or redispatch.
+
+Claude Code permission and elicitation notifications show immediate harness-prompt attention while the prompt remains open. Idle-input notifications use the normal idle confirmation and draft protection. Missing or unfamiliar notification types only annotate the work row with a bounded message; pane reconciliation determines liveness. Harness prompts do not enter the operator decision queue. Codex approval prompts are not classified in this slice.
+
+The operator can use `/resolve <work-id> <answer>` to answer the unique current blocker, `/accept-status <work-id> [evidence-ref]` to attest the unique current done claim, `/reject-status <work-id> <reason>` to request rework, and `/close-status <work-id> <reason>` to close unresolved work. These commands bind the current target once and fail if it changes before commit. Ambiguous work IDs require the operator to resolve the ambiguity before acting. Rejection delivers a reason through protected messaging and lets the worker begin a new attempt. Accepted and closed work leave the live view; failed work stays until retried or closed. A stopped session remains stopped. Acceptance evidence is attested by the operator, not verified by Conductor. This slice emits no work-status event-subscriber facts.
+
 <!-- conductor-topic:opencodex -->
 
 ## OpenCodex proxy-backed coding sessions

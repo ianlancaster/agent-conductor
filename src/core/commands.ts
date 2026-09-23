@@ -11,7 +11,7 @@ export function tokenize(line: string): string[] {
   return tokens;
 }
 
-export type CommandGroup = 'Sessions' | 'Conversation' | 'Modes' | 'Lifecycle' | 'Runbooks';
+export type CommandGroup = 'Sessions' | 'Conversation' | 'Work status' | 'Modes' | 'Lifecycle' | 'Runbooks';
 
 function renderOperationResult(result: Awaited<ReturnType<ConductorOperations['invoke']>>): string {
   if (typeof result === 'string') return result;
@@ -144,6 +144,63 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
         return args[0] === undefined
           ? invoke('list_sessions', {}, actor)
           : invoke('get_session_status', { codename: args[0] }, actor);
+      },
+    },
+    {
+      command: 'resolve',
+      operations: ['resolve_status_blocker'],
+      group: 'Work status',
+      usage: '/resolve <work-id> <answer>',
+      description:
+        'Answer the current blocker for one unambiguous work ID; the answer is delivered without starting its session.',
+      invoke: (args, actor) => {
+        const workId = args[0];
+        const answer = args.slice(1).join(' ');
+        if (workId === undefined || answer.length === 0) usage('/resolve <work-id> <answer>');
+        return invoke('resolve_status_blocker', { work_id: workId, answer }, actor);
+      },
+    },
+    {
+      command: 'accept-status',
+      operations: ['record_status_acceptance'],
+      group: 'Work status',
+      usage: '/accept-status <work-id> [evidence-ref]',
+      description: 'Attest the unique current done claim with its evidence or an explicit evidence reference.',
+      invoke: (args, actor) => {
+        const workId = args[0];
+        if (workId === undefined) usage('/accept-status <work-id> [evidence-ref]');
+        const evidence = args.slice(1).join(' ');
+        return invoke(
+          'record_status_acceptance',
+          { work_id: workId, ...(evidence === '' ? {} : { evidence_ref: evidence }) },
+          actor,
+        );
+      },
+    },
+    {
+      command: 'reject-status',
+      operations: ['record_status_not_accepted'],
+      group: 'Work status',
+      usage: '/reject-status <work-id> <reason>',
+      description: 'Reject the unique current done claim and deliver the reason to its session.',
+      invoke: (args, actor) => {
+        const workId = args[0];
+        const reason = args.slice(1).join(' ');
+        if (workId === undefined || reason === '') usage('/reject-status <work-id> <reason>');
+        return invoke('record_status_not_accepted', { work_id: workId, reason }, actor);
+      },
+    },
+    {
+      command: 'close-status',
+      operations: ['close_status_work'],
+      group: 'Work status',
+      usage: '/close-status <work-id> <reason>',
+      description: 'Close one unresolved work item with a recorded reason.',
+      invoke: (args, actor) => {
+        const workId = args[0];
+        const reason = args.slice(1).join(' ');
+        if (workId === undefined || reason === '') usage('/close-status <work-id> <reason>');
+        return invoke('close_status_work', { work_id: workId, reason }, actor);
       },
     },
     {
@@ -510,7 +567,7 @@ function parseRunbookCommand(args: string[]): { operation: string; input: Record
 
 export function renderOperatorHelp(commands: readonly OperatorCommandDefinition[]): string {
   const lines: string[] = [];
-  const groups: CommandGroup[] = ['Sessions', 'Conversation', 'Modes', 'Runbooks', 'Lifecycle'];
+  const groups: CommandGroup[] = ['Sessions', 'Conversation', 'Work status', 'Modes', 'Runbooks', 'Lifecycle'];
   for (const group of groups) {
     const candidates = commands.filter((candidate) => candidate.group === group);
     if (candidates.length === 0) continue;

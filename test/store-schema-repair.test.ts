@@ -33,7 +33,7 @@ describe('beta migration version collision recovery', () => {
     expect(reopened.getMessage(next)).toMatchObject({ status: 'pending' });
     reopened.close();
     const inspected = openSqliteDatabase(dbPath);
-    expect(inspected.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 17 });
+    expect(inspected.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 18 });
     expect(
       inspected.prepare('SELECT evidence FROM message_reconciliations WHERE message_id = ?').get(id),
     ).toMatchObject({ evidence: 'Preserved evidence' });
@@ -108,7 +108,7 @@ describe('beta migration version collision recovery', () => {
     expect(reopened.getMessage(operator.row.id)).toEqual(operator.row);
     reopened.close();
     const inspected = openSqliteDatabase(dbPath);
-    expect(inspected.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 17 });
+    expect(inspected.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 18 });
     expect(inspected.prepare('SELECT room, kind, member FROM room_members').all()).toEqual([
       { room: 'review', kind: 'session', member: 'alpha' },
     ]);
