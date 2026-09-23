@@ -112,6 +112,11 @@ function required(value: unknown, name: string, max = 240): string {
   return value.trim();
 }
 
+function ambiguousWorkId(workId: string, rows: readonly WorkStatusCurrent[]): string {
+  const sessions = [...new Set(rows.map((row) => row.session))].sort();
+  return `Ambiguous work ID ${workId}: claimed by ${sessions.join(', ')}. Add --session <name>.`;
+}
+
 function validate(report: WorkStatusReport): void {
   required(report.work_id, 'work_id', 160);
   required(report.summary, 'summary', 240);
@@ -189,22 +194,28 @@ export class WorkStatusJournal {
           .all(fleetId, session)) as unknown as WorkStatusCurrent[];
   }
 
-  currentDone(fleetId: string, workId: string): { event: WorkStatusEvent; row: WorkStatusCurrent } {
+  currentDone(fleetId: string, workId: string, session?: string): { event: WorkStatusEvent; row: WorkStatusCurrent } {
     const row = this.uniqueCurrent(
       fleetId,
       workId,
       "state = 'done' AND disposition = 'open'",
       'No open done claim for this work ID.',
+      session,
     );
     return { row, event: this.eventById(row.claim_event_id) };
   }
 
-  currentUnresolved(fleetId: string, workId: string): { event: WorkStatusEvent; row: WorkStatusCurrent } {
+  currentUnresolved(
+    fleetId: string,
+    workId: string,
+    session?: string,
+  ): { event: WorkStatusEvent; row: WorkStatusCurrent } {
     const row = this.uniqueCurrent(
       fleetId,
       workId,
       "disposition NOT IN ('accepted', 'closed')",
       'No unresolved work for this work ID.',
+      session,
     );
     return { row, event: this.eventById(row.claim_event_id) };
   }
@@ -362,11 +373,18 @@ export class WorkStatusJournal {
     });
   }
 
-  resolve(fleetId: string, workId: string, answer: string, now = Date.now(), queueCapacity = 5): WorkBlockerResolution {
+  resolve(
+    fleetId: string,
+    workId: string,
+    answer: string,
+    now = Date.now(),
+    queueCapacity = 5,
+    session?: string,
+  ): WorkBlockerResolution {
     required(workId, 'work_id', 160);
     required(answer, 'answer', 2000);
     return withTransaction(this.db, () => {
-      const current = this.currentBlocker(fleetId, workId);
+      const current = this.currentBlocker(fleetId, workId, session);
       if (current.blocker_id === null || current.blocker_revision === null)
         throw new Error('Blocker identity is missing.');
       const content = `Work ${workId} blocker ${current.blocker_id} (revision ${String(current.blocker_revision)}) was answered: ${answer}\nReport your next state.`;
@@ -401,16 +419,29 @@ export class WorkStatusJournal {
     });
   }
 
-  currentBlocker(fleetId: string, workId: string): WorkStatusEvent {
-    const open = this.db
-      .prepare(
-        `SELECT * FROM work_status_current
+  currentBlocker(fleetId: string, workId: string, session?: string): WorkStatusEvent {
+    required(workId, 'work_id', 160);
+    if (session !== undefined) required(session, 'session', 160);
+    const open = (session === undefined
+      ? this.db
+          .prepare(
+            `SELECT * FROM work_status_current
           WHERE fleet_id = ? AND work_id = ? AND state = 'blocked' AND disposition = 'open' AND resolved_at_ms IS NULL`,
-      )
-      .all(fleetId, workId) as unknown as WorkStatusCurrent[];
+          )
+          .all(fleetId, workId)
+      : this.db
+          .prepare(
+            `SELECT * FROM work_status_current
+          WHERE fleet_id = ? AND work_id = ? AND session = ? AND state = 'blocked' AND disposition = 'open' AND resolved_at_ms IS NULL`,
+          )
+          .all(fleetId, workId, session)) as unknown as WorkStatusCurrent[];
     if (open.length !== 1) {
       throw new InvalidRequestError(
-        open.length === 0 ? 'No open blocker for this work ID.' : 'Ambiguous work ID; specify an attempt.',
+        open.length === 0
+          ? session === undefined
+            ? 'No open blocker for this work ID.'
+            : `No open blocker for work ID ${workId} in session ${session}.`
+          : ambiguousWorkId(workId, open),
       );
     }
     const current = open[0];
@@ -424,11 +455,12 @@ export class WorkStatusJournal {
     actor: string,
     evidenceRef?: string,
     now = Date.now(),
+    session?: string,
   ): WorkStatusAuthorityReceipt {
     required(actor, 'actor', 160);
     if (evidenceRef !== undefined) required(evidenceRef, 'evidence_ref', 320);
     return withTransaction(this.db, () => {
-      const { row, event } = this.currentDone(fleetId, workId);
+      const { row, event } = this.currentDone(fleetId, workId, session);
       const claim = payload(event);
       const evidence = evidenceRef === undefined ? (claim.evidence ?? []) : [evidenceRef];
       if (evidence.length === 0) throw new InvalidRequestError('Acceptance requires attested evidence.');
@@ -455,11 +487,12 @@ export class WorkStatusJournal {
     reason: string,
     now = Date.now(),
     queueCapacity = 5,
+    session?: string,
   ): WorkStatusAuthorityReceipt {
     required(actor, 'actor', 160);
     required(reason, 'reason', 1000);
     return withTransaction(this.db, () => {
-      const { row, event } = this.currentDone(fleetId, workId);
+      const { row, event } = this.currentDone(fleetId, workId, session);
       const content = `Work ${workId} completion claim ${fleetId}:work-status:${String(event.id)} was not accepted: ${reason}\nReport your next state.`;
       const messageId = this.queueMessage(row.session, content, queueCapacity);
       const rejected = this.insert({
@@ -487,11 +520,12 @@ export class WorkStatusJournal {
     actor: string,
     reason: string,
     now = Date.now(),
+    session?: string,
   ): WorkStatusAuthorityReceipt {
     required(actor, 'actor', 160);
     required(reason, 'reason', 1000);
     return withTransaction(this.db, () => {
-      const { row, event } = this.currentUnresolved(fleetId, workId);
+      const { row, event } = this.currentUnresolved(fleetId, workId, session);
       const closed = this.insert({
         fleetId,
         session: row.session,
@@ -508,13 +542,32 @@ export class WorkStatusJournal {
     });
   }
 
-  private uniqueCurrent(fleetId: string, workId: string, predicate: string, missing: string): WorkStatusCurrent {
+  private uniqueCurrent(
+    fleetId: string,
+    workId: string,
+    predicate: string,
+    missing: string,
+    session?: string,
+  ): WorkStatusCurrent {
     required(workId, 'work_id', 160);
-    const rows = this.db
-      .prepare(`SELECT * FROM work_status_current WHERE fleet_id = ? AND work_id = ? AND ${predicate}`)
-      .all(fleetId, workId) as unknown as WorkStatusCurrent[];
+    if (session !== undefined) required(session, 'session', 160);
+    const rows = (session === undefined
+      ? this.db
+          .prepare(`SELECT * FROM work_status_current WHERE fleet_id = ? AND work_id = ? AND ${predicate}`)
+          .all(fleetId, workId)
+      : this.db
+          .prepare(
+            `SELECT * FROM work_status_current WHERE fleet_id = ? AND work_id = ? AND session = ? AND ${predicate}`,
+          )
+          .all(fleetId, workId, session)) as unknown as WorkStatusCurrent[];
     if (rows.length !== 1)
-      throw new InvalidRequestError(rows.length === 0 ? missing : 'Ambiguous work ID; specify an attempt.');
+      throw new InvalidRequestError(
+        rows.length === 0
+          ? session === undefined
+            ? missing
+            : `${missing.replace(/\.$/, '')} in session ${session}.`
+          : ambiguousWorkId(workId, rows),
+      );
     const row = rows[0];
     if (row === undefined) throw new Error('Current work row is missing.');
     return row;

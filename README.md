@@ -102,21 +102,21 @@ For the full walkthrough, including what the generated files mean, continue with
 The operator console uses a small command language. Run `/help` for the complete,
 version-matched reference; these are the commands used most often:
 
-| Task                                         | Command                                                                         |
-| -------------------------------------------- | ------------------------------------------------------------------------------- |
-| Inspect the fleet or one session             | `/status` · `/status <session>`                                                 |
-| Answer a reported work blocker               | `/resolve <work-id> <answer>`                                                   |
-| Attest or reject a completion claim          | `/accept-status <work-id> [evidence-ref]` · `/reject-status <work-id> <reason>` |
-| Close unresolved work                        | `/close-status <work-id> <reason>`                                              |
-| Create or restore a session                  | `/spawn <name> [-r claude-code\|codex] [-s <id>] [--path <dir>]`                |
-| Start, resume, or stop it                    | `/start <session>` · `/continue <session> [-s <id>]` · `/stop <session>`        |
-| Send a message                               | `/tell <session> <message>` · `/broadcast <message>`                            |
-| Make free text target one session            | `/talk <session>`                                                               |
-| Inspect recent terminal output               | `/tail <session> [lines]`                                                       |
-| Set or clear a concise status tag            | `/tag <session> [text]`                                                         |
-| Pause or resume peer delivery and automation | `/pause <session\|all\|federation>` · `/resume <session\|all\|federation>`      |
-| Record an approved runbook condition         | `/runbook adopt <id> --version <v> --topic <topic>`                             |
-| Remove a spawned session                     | `/teardown <session> [--delete]`                                                |
+| Task                                         | Command                                                                                                               |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Inspect the fleet or one session             | `/status` · `/status <session>`                                                                                       |
+| Answer a reported work blocker               | `/resolve [--session <name>] <work-id> <answer>`                                                                      |
+| Attest or reject a completion claim          | `/accept-status [--session <name>] <work-id> [evidence-ref]` · `/reject-status [--session <name>] <work-id> <reason>` |
+| Close unresolved work                        | `/close-status [--session <name>] <work-id> <reason>`                                                                 |
+| Create or restore a session                  | `/spawn <name> [-r claude-code\|codex] [-s <id>] [--path <dir>]`                                                      |
+| Start, resume, or stop it                    | `/start <session>` · `/continue <session> [-s <id>]` · `/stop <session>`                                              |
+| Send a message                               | `/tell <session> <message>` · `/broadcast <message>`                                                                  |
+| Make free text target one session            | `/talk <session>`                                                                                                     |
+| Inspect recent terminal output               | `/tail <session> [lines]`                                                                                             |
+| Set or clear a concise status tag            | `/tag <session> [text]`                                                                                               |
+| Pause or resume peer delivery and automation | `/pause <session\|all\|federation>` · `/resume <session\|all\|federation>`                                            |
+| Record an approved runbook condition         | `/runbook adopt <id> --version <v> --topic <topic>`                                                                   |
+| Remove a spawned session                     | `/teardown <session> [--delete]`                                                                                      |
 
 A typical hand-driven session looks like this:
 

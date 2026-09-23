@@ -98,6 +98,16 @@ function oneTarget(args: string[], command: string, targets = 'session|all'): st
   return args[0];
 }
 
+function parseWorkStatusSession(args: string[], usageText: string): { session?: string; rest: string[] } {
+  if (args[0] !== '--session') {
+    if (args.includes('--session')) usage(usageText);
+    return { rest: args };
+  }
+  const session = args[1];
+  if (session === undefined || session === '' || session.startsWith('--')) usage(usageText);
+  return { session, rest: args.slice(2) };
+}
+
 function operationDescription(operations: ConductorOperations, name: string): string {
   const definition = operations.definition(name);
   if (definition === undefined) throw new Error(`Missing operation definition: ${name}`);
@@ -150,29 +160,34 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       command: 'resolve',
       operations: ['resolve_status_blocker'],
       group: 'Work status',
-      usage: '/resolve <work-id> <answer>',
+      usage: '/resolve [--session <name>] <work-id> <answer>',
       description:
         'Answer the current blocker for one unambiguous work ID; the answer is delivered without starting its session.',
       invoke: (args, actor) => {
-        const workId = args[0];
-        const answer = args.slice(1).join(' ');
-        if (workId === undefined || answer.length === 0) usage('/resolve <work-id> <answer>');
-        return invoke('resolve_status_blocker', { work_id: workId, answer }, actor);
+        const { session, rest } = parseWorkStatusSession(args, '/resolve [--session <name>] <work-id> <answer>');
+        const workId = rest[0];
+        const answer = rest.slice(1).join(' ');
+        if (workId === undefined || answer.length === 0) usage('/resolve [--session <name>] <work-id> <answer>');
+        return invoke('resolve_status_blocker', { work_id: workId, answer, ...(session ? { session } : {}) }, actor);
       },
     },
     {
       command: 'accept-status',
       operations: ['record_status_acceptance'],
       group: 'Work status',
-      usage: '/accept-status <work-id> [evidence-ref]',
+      usage: '/accept-status [--session <name>] <work-id> [evidence-ref]',
       description: 'Attest the unique current done claim with its evidence or an explicit evidence reference.',
       invoke: (args, actor) => {
-        const workId = args[0];
-        if (workId === undefined) usage('/accept-status <work-id> [evidence-ref]');
-        const evidence = args.slice(1).join(' ');
+        const { session, rest } = parseWorkStatusSession(
+          args,
+          '/accept-status [--session <name>] <work-id> [evidence-ref]',
+        );
+        const workId = rest[0];
+        if (workId === undefined) usage('/accept-status [--session <name>] <work-id> [evidence-ref]');
+        const evidence = rest.slice(1).join(' ');
         return invoke(
           'record_status_acceptance',
-          { work_id: workId, ...(evidence === '' ? {} : { evidence_ref: evidence }) },
+          { work_id: workId, ...(session ? { session } : {}), ...(evidence === '' ? {} : { evidence_ref: evidence }) },
           actor,
         );
       },
@@ -181,26 +196,32 @@ export function buildOperatorCommands(operations: ConductorOperations): Operator
       command: 'reject-status',
       operations: ['record_status_not_accepted'],
       group: 'Work status',
-      usage: '/reject-status <work-id> <reason>',
+      usage: '/reject-status [--session <name>] <work-id> <reason>',
       description: 'Reject the unique current done claim and deliver the reason to its session.',
       invoke: (args, actor) => {
-        const workId = args[0];
-        const reason = args.slice(1).join(' ');
-        if (workId === undefined || reason === '') usage('/reject-status <work-id> <reason>');
-        return invoke('record_status_not_accepted', { work_id: workId, reason }, actor);
+        const { session, rest } = parseWorkStatusSession(args, '/reject-status [--session <name>] <work-id> <reason>');
+        const workId = rest[0];
+        const reason = rest.slice(1).join(' ');
+        if (workId === undefined || reason === '') usage('/reject-status [--session <name>] <work-id> <reason>');
+        return invoke(
+          'record_status_not_accepted',
+          { work_id: workId, reason, ...(session ? { session } : {}) },
+          actor,
+        );
       },
     },
     {
       command: 'close-status',
       operations: ['close_status_work'],
       group: 'Work status',
-      usage: '/close-status <work-id> <reason>',
+      usage: '/close-status [--session <name>] <work-id> <reason>',
       description: 'Close one unresolved work item with a recorded reason.',
       invoke: (args, actor) => {
-        const workId = args[0];
-        const reason = args.slice(1).join(' ');
-        if (workId === undefined || reason === '') usage('/close-status <work-id> <reason>');
-        return invoke('close_status_work', { work_id: workId, reason }, actor);
+        const { session, rest } = parseWorkStatusSession(args, '/close-status [--session <name>] <work-id> <reason>');
+        const workId = rest[0];
+        const reason = rest.slice(1).join(' ');
+        if (workId === undefined || reason === '') usage('/close-status [--session <name>] <work-id> <reason>');
+        return invoke('close_status_work', { work_id: workId, reason, ...(session ? { session } : {}) }, actor);
       },
     },
     {

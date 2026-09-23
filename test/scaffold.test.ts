@@ -223,10 +223,15 @@ describe('conductor start initialization', () => {
 
     try {
       const startedDeadline = Date.now() + 10_000;
-      while (!existsSync(startedMarker) && child.exitCode === null && Date.now() < startedDeadline) {
+      while (
+        (!existsSync(startedMarker) || !stderr.includes('Ready —')) &&
+        child.exitCode === null &&
+        Date.now() < startedDeadline
+      ) {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       expect(existsSync(startedMarker), stderr).toBe(true);
+      expect(stderr).toContain('Ready —');
       expect(child.exitCode).toBeNull();
 
       child.kill('SIGTERM');

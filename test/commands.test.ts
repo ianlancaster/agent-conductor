@@ -162,6 +162,38 @@ beforeEach(() => {
     effortHints: { 'claude-code': [], 'codex': [] },
     attestSessionStatus: async () => 'attested',
     statusReport: (codename) => (codename !== undefined ? `status:${codename}` : 'status:all'),
+    resolveWorkBlocker: async (workId, answer, session) =>
+      store.workStatus.resolve('test-fleet', workId, answer, Date.now(), 5, session),
+    actOnWorkStatus: async (action, workId, actor, options) => {
+      if (actor.audience !== 'operator') throw new Error('Only the operator may decide work status.');
+      if (action === 'accept')
+        return store.workStatus.accept(
+          'test-fleet',
+          workId,
+          actor.id,
+          options.evidenceRef,
+          Date.now(),
+          options.session,
+        );
+      if (action === 'reject')
+        return store.workStatus.reject(
+          'test-fleet',
+          workId,
+          actor.id,
+          options.reason ?? '',
+          Date.now(),
+          5,
+          options.session,
+        );
+      return store.workStatus.closeWork(
+        'test-fleet',
+        workId,
+        actor.id,
+        options.reason ?? '',
+        Date.now(),
+        options.session,
+      );
+    },
     tail: async (codename, lines) => `tail:${codename}:${lines}`,
     typeInPane: async (codename, text) => {
       const pane = lifecycle.getPane(codename);
@@ -573,6 +605,69 @@ describe('tail and status', () => {
   });
 });
 
+describe('work status commands', () => {
+  beforeEach(() => {
+    for (const session of ['alpha', 'beta']) {
+      for (const [workId, claim] of [
+        ['TASK-1', { state: 'blocked', needs_from: 'operator', question: 'Which API?' }],
+        ['ACCEPT', { state: 'done', evidence: ['review://123'] }],
+        ['REJECT', { state: 'done', evidence: ['review://456'] }],
+        ['CLOSE', { state: 'failed', reason: 'CI' }],
+      ] as const) {
+        store.workStatus.report('test-fleet', session, { state: 'working', work_id: workId, summary: 'Started' });
+        store.workStatus.report('test-fleet', session, { ...claim, work_id: workId, summary: 'Updated' });
+      }
+    }
+  });
+
+  it('lists candidate sessions when an unqualified work ID is ambiguous', async () => {
+    for (const command of [
+      '/resolve TASK-1 Use A',
+      '/accept-status ACCEPT',
+      '/reject-status REJECT Needs tests',
+      '/close-status CLOSE Cancelled',
+    ]) {
+      expect(await router.route(command)).toBe(
+        'Ambiguous work ID ' + command.split(' ')[1] + ': claimed by alpha, beta. Add --session <name>.',
+      );
+    }
+  });
+
+  it('routes all four commands to the selected session', async () => {
+    const resolved = JSON.parse(await router.route('/resolve --session beta TASK-1 Use A')) as {
+      session: string;
+      answer: string;
+    };
+    expect(resolved).toMatchObject({ session: 'beta', answer: 'Use A' });
+    const accepted = JSON.parse(await router.route('/accept-status --session alpha ACCEPT checks://green')) as {
+      session: string;
+      evidence: string[];
+    };
+    expect(accepted).toMatchObject({ session: 'alpha', evidence: ['checks://green'] });
+    const rejected = JSON.parse(await router.route('/reject-status --session beta REJECT Needs tests')) as {
+      session: string;
+      reason: string;
+    };
+    expect(rejected).toMatchObject({ session: 'beta', reason: 'Needs tests' });
+    const closed = JSON.parse(await router.route('/close-status --session alpha CLOSE Cancelled')) as {
+      session: string;
+      reason: string;
+    };
+    expect(closed).toMatchObject({ session: 'alpha', reason: 'Cancelled' });
+  });
+
+  it('rejects a session that has no matching work', async () => {
+    for (const command of [
+      '/resolve --session gamma TASK-1 Use A',
+      '/accept-status --session gamma ACCEPT',
+      '/reject-status --session gamma REJECT Needs tests',
+      '/close-status --session gamma CLOSE Cancelled',
+    ]) {
+      expect(await router.route(command)).toContain('session gamma');
+    }
+  });
+});
+
 describe('help', () => {
   it('renders plain headers and indents commands without Markdown noise', async () => {
     const help = await router.route('/help');
@@ -582,7 +677,10 @@ describe('help', () => {
     expect(help).toContain('/pause <session|all|federation>');
     expect(help).toContain('/resume <session|all|federation>');
     expect(help.match(/-e\|--effort level/gu)).toHaveLength(2);
-    expect(help).toContain('Work status:\n  /resolve <work-id> <answer> —');
+    expect(help).toContain('Work status:\n  /resolve [--session <name>] <work-id> <answer> —');
+    expect(help).toContain('/accept-status [--session <name>] <work-id> [evidence-ref]');
+    expect(help).toContain('/reject-status [--session <name>] <work-id> <reason>');
+    expect(help).toContain('/close-status [--session <name>] <work-id> <reason>');
     expect(help).toContain('  /tell <session> <message> —');
     expect(help).toContain('  -P/--pane · -T/--tab · -W/--window\n  -H/--headless — detached tmux pane');
     expect(help).toContain('    -r/--runtime cc|claude-code|codex');

@@ -545,13 +545,14 @@ export class Supervisor {
           new Set(this.sessions.keys()),
         );
       },
-      resolveWorkBlocker: async (workId, answer) => {
+      resolveWorkBlocker: async (workId, answer, session) => {
         const receipt = this.store.workStatus.resolve(
           this.resolvedInstance.fleetId,
           workId,
           answer,
           Date.now(),
           this.config.messaging.maxPendingMessagesPerRecipient,
+          session,
         );
         try {
           await this.messaging.recoverPendingMessages(receipt.session);
@@ -567,9 +568,24 @@ export class Supervisor {
         if (actor.audience !== 'operator') throw new InvalidRequestError('Only the operator may decide work status.');
         const fleetId = this.resolvedInstance.fleetId;
         const actorName = actor.id;
-        if (action === 'accept') return this.store.workStatus.accept(fleetId, workId, actorName, options.evidenceRef);
+        if (action === 'accept')
+          return this.store.workStatus.accept(
+            fleetId,
+            workId,
+            actorName,
+            options.evidenceRef,
+            Date.now(),
+            options.session,
+          );
         if (action === 'close')
-          return this.store.workStatus.closeWork(fleetId, workId, actorName, options.reason ?? '');
+          return this.store.workStatus.closeWork(
+            fleetId,
+            workId,
+            actorName,
+            options.reason ?? '',
+            Date.now(),
+            options.session,
+          );
         const receipt = this.store.workStatus.reject(
           fleetId,
           workId,
@@ -577,6 +593,7 @@ export class Supervisor {
           options.reason ?? '',
           Date.now(),
           this.config.messaging.maxPendingMessagesPerRecipient,
+          options.session,
         );
         try {
           await this.messaging.recoverPendingMessages(receipt.session);

@@ -135,12 +135,23 @@ beforeEach(() => {
         c,
       ),
     reportWorkStatus: (session, report) => store.workStatus.report('test-fleet', session, report),
-    resolveWorkBlocker: async (workId, answer) => store.workStatus.resolve('test-fleet', workId, answer),
+    resolveWorkBlocker: async (workId, answer, session) =>
+      store.workStatus.resolve('test-fleet', workId, answer, Date.now(), 5, session),
     actOnWorkStatus: async (action, workId, actor, options) => {
       const name = actor.audience === 'operator' ? actor.id : actor.codename;
-      if (action === 'accept') return store.workStatus.accept('test-fleet', workId, name, options.evidenceRef);
-      if (action === 'reject') return store.workStatus.reject('test-fleet', workId, name, options.reason ?? '');
-      return store.workStatus.closeWork('test-fleet', workId, name, options.reason ?? '');
+      if (action === 'accept')
+        return store.workStatus.accept('test-fleet', workId, name, options.evidenceRef, Date.now(), options.session);
+      if (action === 'reject')
+        return store.workStatus.reject(
+          'test-fleet',
+          workId,
+          name,
+          options.reason ?? '',
+          Date.now(),
+          5,
+          options.session,
+        );
+      return store.workStatus.closeWork('test-fleet', workId, name, options.reason ?? '', Date.now(), options.session);
     },
     tail: async (c, n) => `tail:${c}:${n}`,
     typeInPane: async (codename, text) => {

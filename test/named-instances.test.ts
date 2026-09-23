@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import yaml from 'js-yaml';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureFleetScaffold } from '../src/cli/scaffold.js';
 import { launchdLabel, renderLaunchdPlist, renderSystemdService, systemdUnit } from '../src/cli/daemon.js';
@@ -36,6 +38,18 @@ function addSession(instance: string | undefined): void {
   );
 }
 
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (typeof address !== 'object' || address === null) throw new Error('no test port');
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return address.port;
+}
+
 describe('named instances', () => {
   it('runs the default and two named instances with isolated process, pane, event, and storage identity', async () => {
     addSession(undefined);
@@ -47,6 +61,15 @@ describe('named instances', () => {
     const configs = resolved.map((instance) => loadSupervisorConfig(instance));
     expect(new Set(resolved.map((instance) => instance.fleetId))).toHaveLength(3);
     expect(new Set(configs.map((config) => config.mcp.port))).toHaveLength(3);
+    const testPorts = new Set<number>();
+    for (const instance of resolved) {
+      let port = await freePort();
+      while (testPorts.has(port)) port = await freePort();
+      testPorts.add(port);
+      const config = yaml.load(readFileSync(instance.paths.supervisorFile, 'utf8')) as Record<string, unknown>;
+      config.mcp = { ...(config.mcp as Record<string, unknown>), port };
+      writeFileSync(instance.paths.supervisorFile, yaml.dump(config));
+    }
     expect(new Set(configs.map((config) => config.terminal.tmux.sessionName))).toHaveLength(3);
     expect(new Set(configs.map((config) => config.terminal.windowName))).toHaveLength(3);
     expect(new Set(selections.map((name) => launchdLabel(baseDir, name)))).toHaveLength(3);

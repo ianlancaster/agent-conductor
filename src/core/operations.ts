@@ -68,12 +68,12 @@ export interface ConductorOperationDeps {
   runtimeNames?: readonly string[];
   statusReport(codename?: string, only?: ReadonlySet<string>): string;
   reportWorkStatus?(session: string, report: WorkStatusReport): WorkStatusReceipt;
-  resolveWorkBlocker?(workId: string, answer: string): Promise<WorkBlockerResolution>;
+  resolveWorkBlocker?(workId: string, answer: string, session?: string): Promise<WorkBlockerResolution>;
   actOnWorkStatus?(
     action: 'accept' | 'reject' | 'close',
     workId: string,
     actor: OperationActor,
-    options: { evidenceRef?: string; reason?: string },
+    options: { evidenceRef?: string; reason?: string; session?: string },
   ): Promise<WorkStatusAuthorityReceipt>;
   attestSessionStatus(
     codename: string,
@@ -276,13 +276,21 @@ export class ConductorOperations {
         audiences: OPERATOR_ONLY,
         federation: 'local-only',
         inputSchema: schema(
-          { work_id: stringProperty('Work ID'), answer: stringProperty('Answer to the current blocker') },
+          {
+            work_id: stringProperty('Work ID'),
+            answer: stringProperty('Answer to the current blocker'),
+            session: stringProperty('Optional session codename when this work ID has multiple claimants'),
+          },
           ['work_id', 'answer'],
         ),
         handler: async (args) => {
           if (this.deps.resolveWorkBlocker === undefined) throw new Error('Work status is unavailable.');
           return JSON.stringify(
-            await this.deps.resolveWorkBlocker(requireString(args, 'work_id'), requireString(args, 'answer')),
+            await this.deps.resolveWorkBlocker(
+              requireString(args, 'work_id'),
+              requireString(args, 'answer'),
+              optionalString(args, 'session'),
+            ),
           );
         },
       },
@@ -305,6 +313,7 @@ export class ConductorOperations {
           inputSchema: schema(
             {
               work_id: stringProperty('Work ID'),
+              session: stringProperty('Optional session codename when this work ID has multiple claimants'),
               ...(action === 'accept'
                 ? { evidence_ref: stringProperty('Optional attested evidence reference; defaults to claim evidence') }
                 : {}),
@@ -318,6 +327,7 @@ export class ConductorOperations {
               await this.deps.actOnWorkStatus(action, requireString(args, 'work_id'), actor, {
                 ...(args.evidence_ref === undefined ? {} : { evidenceRef: requireString(args, 'evidence_ref') }),
                 ...(args.reason === undefined ? {} : { reason: requireString(args, 'reason') }),
+                ...(args.session === undefined ? {} : { session: requireString(args, 'session') }),
               }),
             );
           },
