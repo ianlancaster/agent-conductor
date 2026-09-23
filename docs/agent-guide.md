@@ -418,6 +418,12 @@ Use:
 Activity labels are mechanical runtime-health states, not judgments about whether an agent's answer
 was good or its task is complete:
 
+- `starting`: a launch or resume was just requested and no authoritative evidence has arrived yet
+  that the runtime reached its own composer or turn loop — not even that a live foreground process
+  proves readiness, since it may still be sitting at a runtime-owned pre-turn dialog. Left the
+  instant either a lifecycle hook reaches Conductor at all, or the activity parser positively
+  classifies the pane as idle or working; an `unknown` classification never counts. `ready` in
+  `get_session_status` is `false` for the whole time a session is `starting`.
 - `working`: a turn started, Conductor submitted work, or the runtime-owned activity parser found
   positive evidence that a turn is executing.
 - `idle`: the runtime reported a normal completed turn, or its activity parser found positive idle
@@ -433,9 +439,12 @@ from protected-delivery input detection. Both supported runtimes can show a comp
 is active, so their active-turn chrome takes precedence over composer visibility. A capture/runtime
 failure is unknown and preserves the prior activity. This continuous reconciliation repairs missed
 or out-of-order best-effort lifecycle hooks. `blocked`,
-`compaction`, `silent`, and normal turn completion remain causal kinds in health logs and stall
-events; they are deliberately not separate activity states. Older schema-v1 event journals may
-contain the retired `stalled` activity value, which current state migration normalizes to `idle`.
+`compaction`, `silent`, `not-started`, and normal turn completion remain causal kinds in health logs
+and stall events; they are deliberately not separate activity states. A session still `starting`
+after `health.startConfirmMs` (60 seconds by default) is reported as a `not-started` stall — distinct
+from `blocked`, because there is no evidence the runtime ever reached a decision point at all — and
+stays `starting` rather than being guessed at. Older schema-v1 event journals may contain the
+retired `stalled` activity value, which current state migration normalizes to `idle`.
 
 Optional richer terminal footers are installed with:
 
@@ -587,6 +596,10 @@ A worker waiting at an explicit review or approval gate may correctly remain idl
 
 Other stall kinds come from mechanical signals:
 
+- A session still `starting` after `health.startConfirmMs` (60 seconds by default) becomes
+  `not-started` — distinct from `blocked` because there is no evidence the runtime ever reached a
+  decision point, or any point at all. It carries the last pane classification and never changes
+  activity automatically.
 - Claude Code `Notification` hooks become `blocked` immediately.
 - Claude Code and Codex `PreCompact` hooks begin compaction tracking. A matching compact
   `SessionStart` begins the normal `health.idleConfirmMs` confirmation; Conductor emits

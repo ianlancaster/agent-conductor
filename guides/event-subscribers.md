@@ -145,9 +145,14 @@ runtime-owned composer check proves that the session is waiting; automatically r
 no compaction stall. `detectedAt` is the classification instant after that confirmation; the
 envelope's `occurredAt` is the later event-emission instant and may differ while routing performs
 asynchronous checks. The sentinel's own ordinary idle periods intentionally emit no stall event.
-New `session.activity.changed` events use only `working`, `idle`, and `stopped`. Schema-v1 journals
-written by earlier beta builds may contain the retired `stalled` value; consumers should normalize
-that legacy value to `idle` while reading historical exports.
+New `session.activity.changed` events use `starting`, `working`, `idle`, and `stopped`. A freshly
+launched or resumed session reports `starting` until a lifecycle hook arrives or the activity
+parser positively classifies the pane; consumers that treat any non-`working` activity as evidence
+of a stall should treat `starting` as unknown liveness instead, the same way Conductor's own
+fleet-watch does — an unconfirmed launch is not evidence in either direction. A stall with
+`kind: not-started` is emitted if a session is still `starting` after `health.startConfirmMs`.
+Schema-v1 journals written by earlier beta builds may contain the retired `stalled` value;
+consumers should normalize that legacy value to `idle` while reading historical exports.
 
 At startup, Conductor emits the complete `session.registered(cause=startup)` roster before any
 surviving-pane `session.started(cause=adopt)` events. Activity and ready events follow the started

@@ -119,6 +119,7 @@ health:
   suppressWindowMs: 300000
   suppressSimilarity: 0.8
   eventSilenceMs: 120000 # pane-silence fallback delay for runtimes without authoritative completion
+  startConfirmMs: 60000 # how long a launch may stay "starting" before it becomes a not-started stall
 
 messaging:
   maxPendingMessagesPerRecipient: 5 # durable pending direct/broadcast deliveries accepted per recipient
