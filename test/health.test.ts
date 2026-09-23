@@ -176,6 +176,25 @@ describe('event-driven signals', () => {
     expect(stalls).toEqual([{ session: 'alpha', kind: 'idle', reason: 'done' }]);
   });
 
+  it('suppresses a stale completion notification while execution evidence still shows the turn working', async () => {
+    // Mirrors a real Codex incident: agent-turn-complete fired for an
+    // in-turn commentary message while a background command the same turn
+    // had just launched (same turn id — Codex never starts a new one) kept
+    // running. The pane still shows the spinner when the debounce elapses.
+    event('stop', 'interim commentary', 'turn-1');
+    paneActivity = 'working';
+
+    await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
+
+    expect(stalls).toEqual([]);
+    expect(working).toEqual(['alpha']);
+    expect(healthEvents).toContainEqual({
+      session: 'alpha',
+      type: 'idle_suppressed',
+      detail: 'execution evidence still shows the turn working',
+    });
+  });
+
   it('raises blocked stalls immediately on notification events', () => {
     event('notification', 'needs permission');
     expect(stalls).toEqual([{ session: 'alpha', kind: 'blocked', reason: 'needs permission' }]);
@@ -190,6 +209,10 @@ describe('event-driven signals', () => {
     backend.setPaneContent(paneId, 'permission accepted\ncontinuing');
     await monitor.heartbeat();
     event('stop', 'done', 'turn-1');
+    // The turn genuinely finished this time: the spinner clears before the
+    // idle debounce elapses, so the completion is confirmed rather than
+    // suppressed as stale execution evidence.
+    paneActivity = 'idle';
     await vi.advanceTimersByTimeAsync(CONFIG.idleConfirmMs + 1);
 
     expect(working).toEqual(['alpha', 'alpha']);

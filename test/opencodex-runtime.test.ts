@@ -217,7 +217,19 @@ describe('built-in OpenCodex profiles', () => {
     expect(await supervisor.command('/start worker')).toContain('started');
     const launch = backend.panes.get('pane-1')?.launched[0];
     expect(launch).toContain(`export CLAUDE_CONFIG_DIR='${join(dir, 'data', 'opencodex-claude-config')}'`);
-    const trustPath = join(dir, 'data', 'opencodex-claude.json');
+
+    // The seeded trust file must be the SAME file the launched CLI reads from
+    // its own CLAUDE_CONFIG_DIR — not some other file Claude never opens.
+    // Extract the directory straight out of the launch command so this test
+    // fails if the two ever diverge again, rather than re-deriving the same
+    // (possibly wrong) formula twice.
+    const configDirMatch = /export CLAUDE_CONFIG_DIR='([^']+)'/u.exec(launch ?? '');
+    expect(configDirMatch).not.toBeNull();
+    const trustPath = join(configDirMatch![1]!, '.claude.json');
+    expect(trustPath).toBe(join(dir, 'data', 'opencodex-claude-config', '.claude.json'));
+    // The old, never-read location must no longer be written.
+    expect(existsSync(join(dir, 'data', 'opencodex-claude.json'))).toBe(false);
+
     const trust = JSON.parse(readFileSync(trustPath, 'utf8')) as {
       projects: Record<string, { hasTrustDialogAccepted: boolean }>;
     };

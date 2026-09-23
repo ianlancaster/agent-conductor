@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
 import { runGit } from '../../core/git.js';
+import { resolveTrustPaths } from '../../core/trust-paths.js';
 import type { PaneActivityEvidence, RuntimeEvent } from '../../core/types.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
 import { appendProtocolNotice, prepareInstructionLayers, writeAtomicFile } from '../instructions.js';
@@ -717,10 +718,13 @@ export class CodexRuntime implements SessionRuntime {
     // launch, so shared-config edits are picked up on the next (re)start.
     const sharedConfig = (await this.readIfExists(path.join(sharedHome, 'config.toml'))) ?? '';
     const protectedConfig = ensureProjectDocMaxBytes(sharedConfig, minimumDocBytes);
-    const trustHeader = `[projects.${tomlString(repo)}]`;
-    const trustEntry = protectedConfig.includes(trustHeader)
-      ? ''
-      : `\n# ${GENERATED_MARKER}: pre-trust the session working directory\n${trustHeader}\ntrust_level = "trusted"\n`;
+    const trustPaths = await resolveTrustPaths(repo);
+    let trustEntry = '';
+    for (const trustPath of trustPaths) {
+      const trustHeader = `[projects.${tomlString(trustPath)}]`;
+      if (protectedConfig.includes(trustHeader) || trustEntry.includes(trustHeader)) continue;
+      trustEntry += `\n# ${GENERATED_MARKER}: pre-trust the session working directory\n${trustHeader}\ntrust_level = "trusted"\n`;
+    }
     const configDest = path.join(home, 'config.toml');
     // May be a symlink from an earlier conductor version — remove, never write through it.
     await rm(configDest, { force: true });
