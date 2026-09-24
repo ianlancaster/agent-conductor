@@ -1424,6 +1424,78 @@ Claude Code permission and elicitation notifications show immediate harness-prom
 
 The operator can use `/resolve [--session <name>] <work-id> <answer>` to answer the current blocker, `/accept-status [--session <name>] <work-id> [evidence-ref]` to attest the current done claim, `/reject-status [--session <name>] <work-id> <reason>` to request rework, and `/close-status [--session <name>] <work-id> <reason>` to close unresolved work. If multiple sessions claim the same work ID, add `--session <name>` to select one. Rejection delivers a reason through protected messaging and lets the worker begin a new attempt. Accepted and closed work leave the live view; failed work stays until retried or closed. A stopped session remains stopped. Acceptance evidence is attested by the operator, not verified by Conductor. This slice emits no work-status event-subscriber facts.
 
+<!-- conductor-topic:fleet-knowledge -->
+
+## Fleet knowledge base
+
+A fleet knowledge base is shared markdown that every session in the fleet can search: decisions,
+records, conventions, and reference material that apply beyond one agent's repository. It is a
+file convention, not a Conductor service. Conductor does not read, index, or search the documents.
+Whatever memory service the fleet uses does the indexing and serves the results.
+
+### Where it lives
+
+The fleet has a knowledge base when `<fleetDir>/knowledge-index.toml` exists (the `fleetDir` and
+`knowledgeIndexFile` paths in this response). The file lists the folders to index. Conductor checks
+for it when each session starts and adds one protocol line pointing here, so a new index file reaches
+sessions started after it appears. Sessions that are already running do not get the line.
+
+### Index file format
+
+The index is TOML with two arrays of folder paths relative to the fleet directory:
+
+```toml
+include = ["knowledge"]
+exclude = []
+```
+
+`include` is the complete allow-list: nothing outside a listed folder is indexed. `exclude` removes
+subfolders of an included folder. The memory service enforces these safety rules. A folder that
+breaks them is not indexed:
+
+- An included folder must be a directory inside the fleet directory.
+- It must not contain `.git` or `.conductor` anywhere inside it, so a repository or a Conductor
+  directory is never included.
+- It must not overlap any agent's workspace, whether as that workspace, inside it, or containing
+  it.
+- `.conductor/`, `.env*` files, `keys/` folders, and `node_modules/` are always excluded, even
+  inside an included folder.
+- Only `*.md` files are indexed. A service may also skip files that look like they contain
+  secrets and report them.
+
+### Conventions
+
+- Write markdown, one topic per document, with a descriptive filename.
+- Give decisions and records a dated filename, such as `2026-09-23-release-branching.md`, so
+  their order and age are visible. Update a reference document in place; record a new decision in
+  a new file that links to the one it replaces.
+- Never write secrets, credentials, tokens, or private keys into the knowledge base. Refer to
+  where a secret is managed instead.
+- Keep fleet-wide knowledge here, not in your own repository. Keep knowledge about one codebase in
+  that codebase.
+
+### Searching
+
+When the fleet's memory service has this fleet registered, your memory search tools include the
+fleet scope automatically, and fleet results appear alongside your own. Nothing needs to be
+configured per session. If fleet results never appear, the fleet is probably not registered with
+the memory service. Tell the operator rather than working around it.
+
+### Adding a folder
+
+1. Choose or create a folder inside the fleet directory that meets the safety rules above. Never
+   choose a repository, a Conductor directory, or an agent workspace.
+2. Add its fleet-relative path to `include` with your memory kit's command, run from your own
+   repository, for example `bin/agent index add --shared <folder>` in Cognitive Agent repos. The
+   command records who widened the index. Editing `knowledge-index.toml` by hand also works, but
+   the change is not attributed to anyone. Widen the list only as much as needed.
+3. Add markdown documents that follow the conventions. The memory service picks up the change at
+   its next index run.
+
+If `knowledge-index.toml` does not exist, the fleet has no knowledge base yet. Creating one means
+registering the fleet with its memory service, which is an operator decision. Ask the operator
+first rather than creating the file yourself.
+
 <!-- conductor-topic:opencodex -->
 
 ## OpenCodex proxy-backed coding sessions

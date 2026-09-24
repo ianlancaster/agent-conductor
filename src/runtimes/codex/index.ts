@@ -6,7 +6,12 @@ import { runGit } from '../../core/git.js';
 import { resolveTrustPaths } from '../../core/trust-paths.js';
 import type { PaneActivityEvidence, RuntimeEvent } from '../../core/types.js';
 import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, RuntimeCapabilities } from '../types.js';
-import { appendProtocolNotice, prepareInstructionLayers, writeAtomicFile } from '../instructions.js';
+import {
+  appendProtocolNotice,
+  prepareInstructionLayers,
+  type ProtocolNotice,
+  writeAtomicFile,
+} from '../instructions.js';
 import {
   cleanupContinuityReaderGenerations,
   parseContinuityRestorationEvent,
@@ -44,7 +49,7 @@ export interface CodexRuntimeOptions {
   /** Path to the conductor protocol prompt inlined into the session's home instructions. */
   protocolPath?: string;
   /** Optional fleet capability hint appended to the managed protocol. */
-  protocolNotice?: string;
+  protocolNotice?: ProtocolNotice;
   /** Fleet data/sessions directory, used to inspect this runtime's isolated rollout. */
   sessionDataDir?: string;
 }
@@ -319,7 +324,7 @@ export class CodexRuntime implements SessionRuntime {
   private readonly settings: CodexRuntimeSettings;
   private readonly baseDir: string;
   private readonly protocolPath: string | undefined;
-  private readonly protocolNotice: string | undefined;
+  private readonly protocolNotice: ProtocolNotice | undefined;
   private readonly sessionDataDir: string | undefined;
   private readonly rolloutInputCache = new Map<string, CachedRolloutInputEvidence>();
 

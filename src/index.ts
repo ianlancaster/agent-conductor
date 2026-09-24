@@ -66,6 +66,7 @@ export type {
   RuntimeCapabilities,
   SessionRuntime,
 } from './runtimes/types.js';
+export type { ProtocolNotice } from './runtimes/instructions.js';
 /** Experimental during beta: runtime harness details may evolve from provider testing. */
 export { ClaudeCodeRuntime } from './runtimes/claude-code/index.js';
 export type { ClaudeCodeRuntimeOptions } from './runtimes/claude-code/index.js';

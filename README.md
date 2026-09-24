@@ -515,6 +515,11 @@ Fleet configuration, secrets, runtime state, and logs live under `.conductor/` i
 fleet directory. Session files hot-reload; supervisor-level changes take effect after a
 restart. Existing files are never overwritten by the startup scaffold.
 
+An optional `knowledge-index.toml` in the fleet directory marks a shared markdown knowledge
+base that the fleet's memory service indexes. When the file exists, sessions that start
+afterwards get one protocol line pointing to the `fleet-knowledge` handbook topic. Conductor
+itself does not index or search the documents.
+
 ## Documentation
 
 Start here:

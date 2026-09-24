@@ -9,9 +9,17 @@ export const MAX_HOOK_CONTEXT_CHARACTERS = 10_000;
 export const PROTOCOL_SNAPSHOT_NAME = 'conductor-protocol.md';
 export const SESSION_INSTRUCTIONS_SNAPSHOT_NAME = 'session-instructions.md';
 
+/**
+ * An optional fleet capability hint for the managed protocol. A function is
+ * evaluated each time a session's protocol is prepared, so hints derived from
+ * fleet files reflect the files at session start rather than at Conductor start.
+ */
+export type ProtocolNotice = string | (() => string | undefined);
+
 /** Keep optional fleet capability hints in the managed protocol, including after compaction. */
-export function appendProtocolNotice(protocol: string, notice?: string): string {
-  return notice === undefined ? protocol : `${protocol.trimEnd()}\n\n${notice.trim()}\n`;
+export function appendProtocolNotice(protocol: string, notice?: ProtocolNotice): string {
+  const text = typeof notice === 'function' ? notice() : notice;
+  return text === undefined ? protocol : `${protocol.trimEnd()}\n\n${text.trim()}\n`;
 }
 
 export interface PreparedInstructionLayer {
