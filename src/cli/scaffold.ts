@@ -1,5 +1,5 @@
 import { constants, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { loadSupervisorConfig } from '../config/loader.js';
@@ -9,6 +9,24 @@ const PACKAGE_ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..');
 const CONDUCTOR_GITIGNORE = `.env
 data/
 `;
+
+/** Fleet-root marker that lets launcher-neutral tools find the fleet directory and its id. */
+export const FLEET_MARKER_FILE = 'fleet.toml';
+
+/**
+ * The fleet id recorded in `fleet.toml`: the federation name when configured,
+ * otherwise the fleet directory name normalized to the same pattern.
+ */
+export function fleetMarkerId(baseDir: string, federationName?: string): string {
+  if (federationName !== undefined) return federationName;
+  const normalized = basename(baseDir)
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+/, '')
+    .slice(0, 64)
+    .replace(/-+$/, '');
+  return normalized.length > 0 ? normalized : 'fleet';
+}
 
 function createFile(file: string, contents: string, mode?: number): boolean {
   mkdirSync(dirname(file), { recursive: true });
@@ -71,6 +89,19 @@ export function ensureFleetScaffold(baseDir: string, instance?: string): string[
   }
 
   if (createFile(paths.supervisorFile, renderSupervisorConfig(resolvedInstance))) created.push(paths.supervisorFile);
+  // Written once when absent and never rewritten, so a fleet owner can edit the id freely.
+  const fleetMarker = join(resolvedInstance.baseDir, FLEET_MARKER_FILE);
+  if (!existsSync(fleetMarker)) {
+    const id = fleetMarkerId(resolvedInstance.baseDir, loadSupervisorConfig(resolvedInstance).federation?.name);
+    if (
+      createFile(
+        fleetMarker,
+        `# Fleet marker written by Agent Conductor; tools find the fleet root by this file.\nid = "${id}"\n`,
+      )
+    ) {
+      created.push(fleetMarker);
+    }
+  }
   const shepherd = ensureShepherdScaffold(resolvedInstance);
   if (shepherd !== undefined) created.push(shepherd);
 

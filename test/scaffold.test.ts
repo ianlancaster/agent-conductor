@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ensureFleetScaffold, renderSupervisorConfig } from '../src/cli/scaffold.js';
+import { ensureFleetScaffold, fleetMarkerId, renderSupervisorConfig } from '../src/cli/scaffold.js';
 import { deriveFleetDefaults } from '../src/config/derived-defaults.js';
 import { loadSupervisorConfig, validateConfig } from '../src/config/loader.js';
 
@@ -22,7 +22,7 @@ describe('ensureFleetScaffold', () => {
   it('creates a complete, immediately valid hidden fleet scaffold', () => {
     const created = ensureFleetScaffold(baseDir);
 
-    expect(created).toHaveLength(6);
+    expect(created).toHaveLength(7);
     expect(existsSync(join(baseDir, '.conductor', 'config', 'supervisor.yaml'))).toBe(true);
     const shepherd = readFileSync(join(baseDir, '.conductor', 'config', 'pr-shepherd.yaml'), 'utf8');
     expect(shepherd).toContain('agent-conductor-pr-shepherd-scaffold: identity-required');
@@ -43,6 +43,32 @@ describe('ensureFleetScaffold', () => {
       presentation: 'headless',
       configPath: join(baseDir, '.conductor', 'config', 'pr-shepherd.yaml'),
     });
+  });
+
+  it('writes the fleet marker once and never overwrites it', () => {
+    const marker = join(baseDir, 'fleet.toml');
+    expect(ensureFleetScaffold(baseDir)).toContain(marker);
+    expect(readFileSync(marker, 'utf8')).toContain(`id = "${fleetMarkerId(baseDir)}"`);
+
+    writeFileSync(marker, 'id = "owner-edited"\n');
+    expect(ensureFleetScaffold(baseDir)).not.toContain(marker);
+    expect(readFileSync(marker, 'utf8')).toBe('id = "owner-edited"\n');
+  });
+
+  it('uses the federation name as the fleet id when one is configured', () => {
+    mkdirSync(join(baseDir, '.conductor', 'config'), { recursive: true });
+    writeFileSync(
+      join(baseDir, '.conductor', 'config', 'supervisor.yaml'),
+      'federation:\n  name: ag-eng\n  expose: []\n',
+    );
+    ensureFleetScaffold(baseDir);
+    expect(readFileSync(join(baseDir, 'fleet.toml'), 'utf8')).toContain('id = "ag-eng"');
+  });
+
+  it('normalizes a directory name into a fleet id', () => {
+    expect(fleetMarkerId('/fleets/My Fleet_2')).toBe('my-fleet-2');
+    expect(fleetMarkerId('/fleets/___')).toBe('fleet');
+    expect(fleetMarkerId('/fleets/anything', 'named')).toBe('named');
   });
 
   it('scaffolds named instances without creating or selecting the default instance', () => {

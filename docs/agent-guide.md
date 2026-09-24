@@ -129,6 +129,17 @@ A modern fleet keeps its files under `<fleet>/.conductor/`:
     └── sessions/
 ```
 
+`conductor start` also writes `<fleet>/fleet.toml` when it is missing. It is a marker that lets
+launcher-neutral tools, such as a memory kit, find the fleet root from inside any agent workspace:
+
+```toml
+id = "ag-eng"
+```
+
+The `id` is the fleet's `federation.name` when one is configured, and otherwise the fleet
+directory name, lowercased with other characters replaced by `-`. Conductor writes the file once
+and never rewrites it, so the fleet owner may change the id. Conductor itself does not read it.
+
 `get_conductor_docs` without a topic returns the exact `fleetDir`, `supervisorConfig`,
 `sessionsDir`, `environmentFile`, and installed handbook path for the current instance. Do not
 guess a fleet path from the session working directory: a session may run in a project or worktree
@@ -209,6 +220,43 @@ Important rules:
   a deliberate restart.
 - Fleet-specific workflow belongs in session prompts, templates, or configuration—not in the
   reusable Conductor source.
+- `spawn.templates` is a supervisor setting. A new or changed entry is offered by `spawn_session`
+  and `/spawn` only after a restart, and already-running sessions see it only after their own
+  restart, because their tool list is fixed when they start. See "Registering a spawn template"
+  below.
+
+### Registering a spawn template
+
+Conductor does not reload `spawn.templates` live: supervisor settings are read once, and template
+names are part of the `spawn_session` schema that running sessions already hold. To register a
+template:
+
+1. Add the entry under `spawn.templates` in the supervisor file, keeping unrelated settings:
+
+   ```yaml
+   spawn:
+     templates:
+       role-reviewer:
+         source: /path/to/role-templates/reviewer
+   ```
+
+2. Run `conductor -C <fleetDir> validate`.
+3. Batch it with any other pending supervisor changes and ask the operator for one restart. The
+   restart is always the operator's decision.
+
+To use a template before that restart, clone it yourself and spawn into the clone. `spawn_session`
+accepts an existing directory through `path` and starts the session there:
+
+```bash
+git clone /path/to/role-templates/reviewer /path/to/fleet/new-reviewer
+```
+
+```json
+spawn_session({ "codename": "new-reviewer", "path": "/path/to/fleet/new-reviewer" })
+```
+
+Registering the template is still the durable path. It records the source in fleet configuration
+and lets operators use `/spawn --template`.
 
 Before proposing or making config changes:
 
@@ -378,6 +426,12 @@ lifecycle action that matches the intent:
 
 Claude Code and Codex maintain separate conversation histories. Continuing with a runtime override
 resumes that runtime's history, not the other runtime's conversation.
+
+There is no rename. A new codename is a new session with its own isolated runtime home, so the
+previous codename's native conversation does not carry over, and `sessionId` resumption cannot
+cross codenames. Agents that keep their own memory, such as cognitive-agent repositories, re-ground
+from that memory under the new name. Record the rename with the agent's own tooling, for example
+`bin/agent alias <new-name>` in cognitive-agent repositories.
 
 Model and effort resolution:
 
@@ -552,10 +606,17 @@ A useful full-fleet pattern is:
 6. Tear down temporary worktrees only after checking status, preserving reports, and confirming
    no other registered session uses the target.
 
+An agent that keeps its own memory in its repository can run extra instances in worktrees. Spawn
+with `worktreeRepo` set to the agent's own repository, not a project it works on. In
+cognitive-agent repositories the memory kit registers the worktree as an instance of that agent
+automatically when the session starts. Before `teardown_session`, have the instance run
+`bin/agent instance end` so its records are committed and merged back by the primary.
+
 Templates are better when the task needs a fresh clone of a reusable starting repository rather
 than shared Git object history. Template sources and optional refs are registered in
 `supervisor.yaml`; Conductor does not run repository scripts. Template registry changes require a
-restart.
+restart. Until then, clone the template yourself and spawn into the clone with `path`; see
+"Registering a spawn template" in the fleet-configuration topic.
 
 <!-- conductor-topic:supervision -->
 
@@ -1470,25 +1531,49 @@ subfolders of an included folder. The memory service enforces these safety rules
 breaks them is not indexed:
 
 - An included folder must be a directory inside the fleet directory.
-- It must not contain `.git` or `.conductor` anywhere inside it, so a repository or a Conductor
-  directory is never included.
+- It may be a Git repository of its own, with `.git` directly inside it; `.git` contents are never
+  indexed. Otherwise there must be no `.git` between the fleet directory and the folder or deeper
+  inside it, and no `.conductor` anywhere inside it, so an agent's or project's repository and a
+  Conductor directory are never included.
 - It must not overlap any agent's workspace, whether as that workspace, inside it, or containing
   it.
-- `.conductor/`, `.env*` files, `keys/` folders, and `node_modules/` are always excluded, even
-  inside an included folder.
+- `.conductor/`, `.env*` files, `keys/` folders, `node_modules/`, and `_inbox/` folders are always
+  excluded, even inside an included folder.
 - Only `*.md` files are indexed. A service may also skip files that look like they contain
   secrets and report them.
 
 ### Conventions
 
-- Write markdown, one topic per document, with a descriptive filename.
-- Give decisions and records a dated filename, such as `2026-09-23-release-branching.md`, so
-  their order and age are visible. Update a reference document in place; record a new decision in
-  a new file that links to the one it replaces.
+- Write markdown, one topic per document, with a lowercase, hyphenated filename.
+- Date every decision: `YYYY-MM-DD-<slug>.md`, such as `2026-09-23-release-branching.md`. Date new
+  records too, unless their collection already has its own naming scheme. Update a reference
+  document in place; record a new decision in a new file that links to the one it replaces.
+- Give every knowledge area a `README.md` that lists its documents, each with a one-line purpose.
 - Never write secrets, credentials, tokens, or private keys into the knowledge base. Refer to
   where a secret is managed instead.
 - Keep fleet-wide knowledge here, not in your own repository. Keep knowledge about one codebase in
   that codebase.
+
+Memory kits may define a stricter knowledge-area standard, and fleets that use one should follow
+it. The cognitive-agent template's standard gives every document a header with `kind`, `owner`,
+`updated`, `source`, and `status`, and checks an area with `node checks/knowledge-files.mjs
+<area-path>`. Its template repository documents the full standard.
+
+### Federation knowledge base
+
+Several fleets may share a parent directory marked by `federation.toml`, called a Federation. When
+that directory also holds a `knowledge-index.toml`, it has a Federation knowledge base for
+knowledge that holds across fleets. It uses the same index format and safety rules, relative to the
+Federation directory. Conductor adds one sentence about it to the protocol line when both files
+exist in the nearest directory above the fleet directory that holds `federation.toml`. Memory tools
+include it in default search when the memory service has the Federation registered.
+
+### Proposing changes through inboxes
+
+Each knowledge area has an owner. If you do not own an area, do not edit its documents. Write your
+proposal as a new document in the area's `_inbox/` folder, and name yourself as the proposer in its
+header. `_inbox/` folders are never indexed. The owner reviews each proposal and accepts it by
+moving it into the area, or edits or rejects it.
 
 ### Searching
 

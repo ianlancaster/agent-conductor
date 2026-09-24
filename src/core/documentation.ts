@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { FleetPaths } from '../config/paths.js';
 import { log } from '../logger.js';
 import type { RunbookRegistry } from '../runbooks/registry.js';
@@ -34,15 +34,42 @@ export const OPTIONAL_CONDUCTOR_DOC_TOPICS = ['opencodex'] as const;
 /** Fleet-root file whose presence marks a shared fleet knowledge base. */
 export const FLEET_KNOWLEDGE_INDEX_FILE = 'knowledge-index.toml';
 
+/** Marker file of a Federation root: a directory above one or more fleets. */
+export const FEDERATION_MARKER_FILE = 'federation.toml';
+
+/** The nearest strict ancestor of `fleetDir` holding `federation.toml`, if any. */
+export function findFederationRoot(fleetDir: string): string | undefined {
+  let current = dirname(fleetDir);
+  for (;;) {
+    if (existsSync(join(current, FEDERATION_MARKER_FILE))) return current;
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
 /**
- * The protocol line that points managed sessions at the fleet knowledge base,
- * or undefined when the fleet has no index file. Checked on every call so the
- * line follows the file rather than the Conductor process lifetime.
+ * The protocol line that points managed sessions at the fleet knowledge base
+ * and, when the fleet sits inside a Federation that has one, the Federation
+ * knowledge base. Undefined when neither index file exists. Checked on every
+ * call so the line follows the files rather than the Conductor process lifetime.
  */
 export function fleetKnowledgeNotice(fleetDir: string): string | undefined {
+  const sentences: string[] = [];
   const indexPath = join(fleetDir, FLEET_KNOWLEDGE_INDEX_FILE);
-  if (!existsSync(indexPath)) return undefined;
-  return `This fleet has a shared knowledge base: the markdown folders listed in \`${indexPath}\`, searchable with your memory tools. Put fleet-wide knowledge there rather than in your own repository. Load \`get_conductor_docs\` topic \`fleet-knowledge\` before adding a folder.`;
+  if (existsSync(indexPath)) {
+    sentences.push(
+      `This fleet has a shared knowledge base: the markdown folders listed in \`${indexPath}\`, searchable with your memory tools. Put fleet-wide knowledge there rather than in your own repository. Load \`get_conductor_docs\` topic \`fleet-knowledge\` before adding a folder.`,
+    );
+  }
+  const federationRoot = findFederationRoot(fleetDir);
+  const federationIndex = federationRoot === undefined ? undefined : join(federationRoot, FLEET_KNOWLEDGE_INDEX_FILE);
+  if (federationIndex !== undefined && existsSync(federationIndex)) {
+    sentences.push(
+      `There is also a Federation knowledge base for knowledge that holds across fleets, listed in \`${federationIndex}\` and searchable with your memory tools; propose changes to it through its \`_inbox/\` folders.`,
+    );
+  }
+  return sentences.length === 0 ? undefined : sentences.join(' ');
 }
 
 export type ConductorDocTopic = (typeof CONDUCTOR_DOC_TOPICS)[number];
