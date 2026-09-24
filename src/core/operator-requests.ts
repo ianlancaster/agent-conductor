@@ -3,6 +3,7 @@ import type { Store } from '../store/index.js';
 import { isMessageQueueFullResult, renderMessageSendResult, type Messaging } from './messaging.js';
 import { messageEnvelope } from './utils.js';
 import type { ConductorEventPublisher } from '../events/types.js';
+import type { OperatorSoundKind } from './operator-sound.js';
 
 const MAX_OPTIONS = 8;
 const MAX_OPTION_LENGTH = 80;
@@ -12,6 +13,11 @@ export interface OperatorRequestsDeps {
   messaging: Pick<Messaging, 'sendToSession'>;
   channelSend(message: ChannelMessage): Promise<boolean>;
   events?: ConductorEventPublisher;
+  /**
+   * Optional host alert after every send attempt, including undelivered ones,
+   * when the operator most needs to know. It must never affect delivery.
+   */
+  sound?: { notify(kind: OperatorSoundKind): void };
 }
 
 /** Correlates selectable operator questions with one ordinary session reply. */
@@ -27,7 +33,7 @@ export class OperatorRequests {
 
   async send(from: string, message: string, rawOptions?: readonly string[]): Promise<string> {
     if (rawOptions === undefined) {
-      const sent = await this.deps.channelSend({ text: messageEnvelope(from, message) });
+      const sent = await this.sendWithAlert({ text: messageEnvelope(from, message) }, 'message');
       return sent ? 'Sent to the operator.' : this.notDelivered();
     }
 
@@ -43,7 +49,7 @@ export class OperatorRequests {
       label,
       command: `/respond ${String(requestId)} ${String(index + 1)}`,
     }));
-    const sent = await this.deps.channelSend({ text: messageEnvelope(from, message), actions });
+    const sent = await this.sendWithAlert({ text: messageEnvelope(from, message), actions }, 'choices');
     return sent ? `Request #${String(requestId)} sent to the operator.` : this.notDelivered();
   }
 
@@ -95,6 +101,19 @@ export class OperatorRequests {
     } catch (error) {
       this.deps.store.releaseOperatorRequest(requestId);
       throw error;
+    }
+  }
+
+  /** Alert after every send attempt, including one that throws: that is when the operator most needs it. */
+  private async sendWithAlert(message: ChannelMessage, kind: OperatorSoundKind): Promise<boolean> {
+    try {
+      return await this.deps.channelSend(message);
+    } finally {
+      try {
+        this.deps.sound?.notify(kind);
+      } catch {
+        // The alert is a courtesy; it must not replace the send result or error.
+      }
     }
   }
 

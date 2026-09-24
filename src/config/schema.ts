@@ -394,6 +394,22 @@ export const supervisorConfigSchema = z
           })
           .strict()
           .default({}),
+        /** Audible alert on the Conductor host for every send_to_operator call, delivered or not. */
+        operatorSound: z
+          .object({
+            enabled: z.boolean().default(false),
+            /** macOS system sound name (for example Glass) or a path to an audio file. */
+            sound: z.string().trim().min(1, 'operatorSound.sound must be a non-empty name or path').default('Glass'),
+            /** Sound for messages with selectable choices; null reuses `sound`. */
+            choicesSound: z
+              .string()
+              .trim()
+              .min(1, 'operatorSound.choicesSound must be a non-empty name or path')
+              .nullable()
+              .default(null),
+          })
+          .strict()
+          .default({}),
       })
       .strict()
       .default({}),

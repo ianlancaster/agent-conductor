@@ -45,6 +45,7 @@ import { FleetLock } from './lock.js';
 import { Messaging } from './messaging.js';
 import { ConductorOperations, type OperationActor } from './operations.js';
 import { OperatorRequests } from './operator-requests.js';
+import { OperatorSound } from './operator-sound.js';
 import { RunbookAdoptions } from './runbook-adoptions.js';
 import { StallSentinelRouter } from './sentinel.js';
 import { SessionStateManager } from './state.js';
@@ -442,6 +443,7 @@ export class Supervisor {
       messaging: this.messaging,
       channelSend: (message) => this.channelSend(message),
       events: this.eventBus,
+      sound: new OperatorSound({ settings: this.config.channels.operatorSound }),
     });
 
     this.sentinel = new StallSentinelRouter({

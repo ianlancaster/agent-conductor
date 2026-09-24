@@ -337,6 +337,10 @@ tool — the conductor protocol prompt tells it to.)
 A session can also call `send_to_operator` with an `options` array. Telegram renders inline
 buttons; the local console renders numbered `/respond <request-id> <option-number>` commands.
 
+To also hear these messages on a macOS Conductor host, set `channels.operatorSound.enabled: true`
+in `supervisor.yaml` and restart. It is off by default; `examples/supervisor.yaml` lists the sound
+options.
+
 Prefer a private Slack App Home conversation for work fleets? The bundled Slack adapter provides the
 same command, talk, notification, and option-button flow over outbound Socket Mode. Follow the
 [Slack adapter setup guide](../guides/slack-adapter.md) for its copyable app manifest and least-privilege

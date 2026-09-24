@@ -190,6 +190,12 @@ channels:
     enabled: false # opt in; credentials come from .conductor/.env or the inherited environment
   slack:
     enabled: false # opt in; credentials come from .conductor/.env or the inherited environment
+  # Audible alert on the Conductor host whenever a session calls send_to_operator, delivered or not.
+  # macOS only (afplay); other hosts stay silent. At most one sound every 5 seconds.
+  operatorSound:
+    enabled: false
+    sound: Glass # macOS system sound name, or a path to an audio file
+    choicesSound: null # different sound for messages with choices; null reuses sound
 
 # Optional PR Shepherd companion. conductor start creates its inert profile beside this file.
 # Configure and shadow-test that profile before enabling, then restart Conductor deliberately.
