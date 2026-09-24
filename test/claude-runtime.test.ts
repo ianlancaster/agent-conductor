@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { supervisorConfigSchema, type SessionConfig } from '../src/config/schema.js';
 import { isolatedGitEnvironment } from '../src/core/git.js';
 import { ClaudeCodeRuntime, seedFolderTrust } from '../src/runtimes/claude-code/index.js';
+import { OpenCodexClaudeRuntime } from '../src/runtimes/opencodex/index.js';
 import {
   parseClaudeActivityState,
   parseClaudeInputState,
@@ -127,14 +128,14 @@ describe('buildLaunchCommand', () => {
     const promptFile = join(configDir, 'sentinel.md');
     writeFileSync(promptFile, '# be the sentinel');
     const command = runtime.buildLaunchCommand({ ...session, systemPromptFile: promptFile }, identity, {});
-    expect(command).toContain(`--append-system-prompt-file '${join(configDir, 'session-instructions.md')}'`);
+    expect(command).toContain(`--append-system-prompt-file '${join(configDir, 'system-prompt.md')}'`);
     expect(command).not.toContain(promptFile);
   });
 
   it('does not silently append a configured source path before preparation', () => {
     const command = runtime.buildLaunchCommand({ ...session, systemPromptFile: '/nope/missing.md' }, identity, {});
     expect(command).not.toContain('/nope/missing.md');
-    expect(command).toContain(join(configDir, 'session-instructions.md'));
+    expect(command).toContain(join(configDir, 'system-prompt.md'));
   });
 
   it('uses -c for continuation and never pipes a prompt into it', () => {
@@ -231,12 +232,88 @@ describe('prepare', () => {
 
     expect(readFileSync(join(configDir, 'conductor-protocol.md'), 'utf8')).toBe('PROTOCOL SOURCE\n');
     expect(readFileSync(join(configDir, 'session-instructions.md'), 'utf8')).toBe('SESSION SOURCE\n');
-    const command = custom.buildLaunchCommand(configured, identity, {});
-    expect(command.indexOf('session-instructions.md')).toBeLessThan(command.indexOf('conductor-protocol.md'));
+    expect(readFileSync(join(configDir, 'system-prompt.md'), 'utf8')).toBe('SESSION SOURCE\n\nPROTOCOL SOURCE\n');
 
     await expect(
       custom.prepare({ ...session, systemPromptFile: join(configDir, 'missing.md') }, identity),
     ).rejects.toThrow(/Could not read session instructions/u);
+  });
+
+  describe('single combined system-prompt file', () => {
+    const appendFlags = (command: string): string[] =>
+      [...command.matchAll(/--append-system-prompt-file '([^']+)'/gu)].map((match) => match[1]!);
+
+    function protocolRuntime(protocolText: string): ClaudeCodeRuntime {
+      const protocolPath = join(configDir, 'source-protocol.md');
+      writeFileSync(protocolPath, protocolText);
+      return new ClaudeCodeRuntime({
+        config: defaults.runtimes.claudeCode,
+        protocolPath,
+        claudeJsonPath: join(configDir, '.claude.json'),
+      });
+    }
+
+    it('passes exactly one append flag on start, continue, and native resume', async () => {
+      // Claude Code keeps only the last --append-system-prompt-file; a second
+      // flag would silently drop the session layer.
+      const sessionPath = join(configDir, 'source-session.md');
+      writeFileSync(sessionPath, 'SESSION LAYER');
+      const custom = protocolRuntime('PROTOCOL LAYER');
+      const configured = { ...session, systemPromptFile: sessionPath };
+      await custom.prepare(configured, identity);
+      const combined = join(configDir, 'system-prompt.md');
+      for (const options of [{}, { continueSession: true }, { continueSession: true, resumeSessionId: 'abc' }]) {
+        expect(appendFlags(custom.buildLaunchCommand(configured, identity, options))).toEqual([combined]);
+      }
+    });
+
+    it('keeps the protocol last and complete beside a session layer at its size limit', async () => {
+      const sessionText = `${'s'.repeat(5_119)}\n`;
+      const protocolText = `PROTOCOL START\n${'p'.repeat(20_000)}\nPROTOCOL END\n`;
+      const sessionPath = join(configDir, 'source-session.md');
+      writeFileSync(sessionPath, sessionText);
+      const custom = protocolRuntime(protocolText);
+      await custom.prepare({ ...session, systemPromptFile: sessionPath }, identity);
+      expect(readFileSync(join(configDir, 'system-prompt.md'), 'utf8')).toBe(`${sessionText}\n${protocolText}`);
+
+      writeFileSync(sessionPath, `${'s'.repeat(5_121)}`);
+      await expect(custom.prepare({ ...session, systemPromptFile: sessionPath }, identity)).rejects.toThrow(
+        /limit is 5120/u,
+      );
+    });
+
+    it('rewrites the combined file to the protocol alone when the session layer is removed', async () => {
+      const sessionPath = join(configDir, 'source-session.md');
+      writeFileSync(sessionPath, 'SESSION LAYER');
+      const custom = protocolRuntime('PROTOCOL LAYER');
+      await custom.prepare({ ...session, systemPromptFile: sessionPath }, identity);
+      await custom.prepare(session, identity);
+      expect(readFileSync(join(configDir, 'system-prompt.md'), 'utf8')).toBe('PROTOCOL LAYER\n');
+      expect(appendFlags(custom.buildLaunchCommand(session, identity, {}))).toHaveLength(1);
+    });
+
+    it('passes no append flag and leaves no stale file when there are no layers', async () => {
+      writeFileSync(join(configDir, 'system-prompt.md'), 'STALE');
+      await runtime.prepare(session, identity);
+      expect(readdirSync(configDir)).not.toContain('system-prompt.md');
+      expect(appendFlags(runtime.buildLaunchCommand(session, identity, {}))).toEqual([]);
+    });
+
+    it('applies to the OpenCodex Claude profile, which reuses this launch path', async () => {
+      const sessionPath = join(configDir, 'source-session.md');
+      writeFileSync(sessionPath, 'SESSION LAYER');
+      const protocolPath = join(configDir, 'source-protocol.md');
+      writeFileSync(protocolPath, 'PROTOCOL LAYER');
+      const proxied = new OpenCodexClaudeRuntime(
+        { config: defaults.runtimes.claudeCode, protocolPath, claudeJsonPath: join(configDir, '.claude.json') },
+        'http://127.0.0.1:10100',
+      );
+      const configured = { ...session, model: 'provider/model', systemPromptFile: sessionPath };
+      await proxied.prepare(configured, identity);
+      expect(appendFlags(proxied.buildLaunchCommand(configured, identity, {}))).toEqual([
+        join(configDir, 'system-prompt.md'),
+      ]);
+    });
   });
 
   it('reads continuity state fresh at startup, resume, and compact without restoring it on clear', async () => {

@@ -575,8 +575,10 @@ Worktree practices:
 - Current Codex sessions keep their generated override inside the isolated session home and do not
   dirty the worktree. Fleets upgraded from an earlier release may retain an obsolete
   `AGENTS.override.md` entry in `.gitignore`; remove that ignore line manually when convenient.
-- Claude Code receives the optional prepared session layer followed by the mandatory protocol
-  through its supported launch system-prompt files. Claude Code's compaction contract retains
+- Claude Code receives the optional prepared session layer followed by the mandatory protocol in
+  one combined system-prompt file, `system-prompt.md` in the session's private config directory.
+  It is one file because Claude Code keeps only the last `--append-system-prompt-file` argument, so
+  separate files would silently drop the session layer. Claude Code's compaction contract retains
   those system-prompt layers; Conductor does not add a second static reinjection hook that would
   duplicate them. A configured dynamic state reader adds only the fresh subordinate state layer
   on startup, resume, and compact.

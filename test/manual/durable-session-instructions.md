@@ -15,6 +15,9 @@ continuation prompt or mutating the working repository.
    two sessions against the same repository, one Claude Code and one Codex, with different files.
 3. Start both through the normal Conductor lifecycle. Confirm each private session config directory
    contains `conductor-protocol.md` and `session-instructions.md`, both mode `0600` where supported.
+   The Claude Code directory also contains `system-prompt.md` (session layer, then protocol), and
+   its launch passes exactly one `--append-system-prompt-file`: Claude Code keeps only the last
+   occurrence of that flag. Ask the Claude session for its session marker to confirm it is visible.
 4. Confirm neither source repository nor its ignore files changed.
 5. For Codex, keep the default `runtimes.codex.bypassHookTrust: true`, confirm no hook-review prompt
    appears, and verify all shared, repository, and plugin hook sources were vetted. Repeat once with
