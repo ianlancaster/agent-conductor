@@ -13,7 +13,10 @@ export interface OperatorRequestsDeps {
   messaging: Pick<Messaging, 'sendToSession'>;
   channelSend(message: ChannelMessage): Promise<boolean>;
   events?: ConductorEventPublisher;
-  /** Optional host alert after each delivered message; it must never affect delivery. */
+  /**
+   * Optional host alert after every send attempt, including undelivered ones,
+   * when the operator most needs to know. It must never affect delivery.
+   */
   sound?: { notify(kind: OperatorSoundKind): void };
 }
 
@@ -31,7 +34,7 @@ export class OperatorRequests {
   async send(from: string, message: string, rawOptions?: readonly string[]): Promise<string> {
     if (rawOptions === undefined) {
       const sent = await this.deps.channelSend({ text: messageEnvelope(from, message) });
-      if (sent) this.alert('message');
+      this.alert('message');
       return sent ? 'Sent to the operator.' : this.notDelivered();
     }
 
@@ -48,7 +51,7 @@ export class OperatorRequests {
       command: `/respond ${String(requestId)} ${String(index + 1)}`,
     }));
     const sent = await this.deps.channelSend({ text: messageEnvelope(from, message), actions });
-    if (sent) this.alert('choices');
+    this.alert('choices');
     return sent ? `Request #${String(requestId)} sent to the operator.` : this.notDelivered();
   }
 
@@ -107,7 +110,7 @@ export class OperatorRequests {
     try {
       this.deps.sound?.notify(kind);
     } catch {
-      // The alert is a courtesy; the message has already been delivered.
+      // The alert is a courtesy; the send result is already decided.
     }
   }
 

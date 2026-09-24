@@ -394,7 +394,7 @@ export const supervisorConfigSchema = z
           })
           .strict()
           .default({}),
-        /** Audible alert on the Conductor host for each delivered send_to_operator message. */
+        /** Audible alert on the Conductor host for every send_to_operator call, delivered or not. */
         operatorSound: z
           .object({
             enabled: z.boolean().default(false),

@@ -114,7 +114,7 @@ describe('OperatorSound', () => {
 });
 
 describe('send_to_operator sound', () => {
-  it('alerts exactly once per delivered message, with the message kind', async () => {
+  it('alerts exactly once per send_to_operator call, with the message kind', async () => {
     const notify = vi.fn();
     const { store, operatorRequests } = requests({ notify });
     expect(await operatorRequests.send('alpha', 'heads up')).toBe('Sent to the operator.');
@@ -123,11 +123,11 @@ describe('send_to_operator sound', () => {
     store.close();
   });
 
-  it('does not alert when no operator interface accepted the message', async () => {
+  it('still alerts when no operator interface accepted the message', async () => {
     const notify = vi.fn();
     const { store, operatorRequests } = requests({ notify }, false);
     expect(await operatorRequests.send('alpha', 'heads up')).toContain('NOT delivered');
-    expect(notify).not.toHaveBeenCalled();
+    expect(notify.mock.calls).toEqual([['message']]);
     store.close();
   });
 

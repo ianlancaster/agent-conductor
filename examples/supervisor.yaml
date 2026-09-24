@@ -190,7 +190,7 @@ channels:
     enabled: false # opt in; credentials come from .conductor/.env or the inherited environment
   slack:
     enabled: false # opt in; credentials come from .conductor/.env or the inherited environment
-  # Audible alert on the Conductor host whenever a session's send_to_operator is delivered.
+  # Audible alert on the Conductor host whenever a session calls send_to_operator, delivered or not.
   # macOS only (afplay); other hosts stay silent. At most one sound every 5 seconds.
   operatorSound:
     enabled: false

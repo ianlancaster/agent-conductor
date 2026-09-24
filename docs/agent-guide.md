@@ -791,9 +791,9 @@ written to Conductor's logs. `send_to_operator` confirms delivery only when an a
 least one external channel actually accepts the message; otherwise it returns `NOT delivered`.
 Agent-to-agent messaging remains available when an optional operator provider is down.
 
-An optional audible alert plays on the Conductor host each time a `send_to_operator` message is
-delivered, with or without choices. It is off by default. Enable it in `supervisor.yaml` and restart
-Conductor:
+An optional audible alert plays on the Conductor host each time a session calls `send_to_operator`,
+with or without choices, including when the result is `NOT delivered`. It is off by default.
+Enable it in `supervisor.yaml` and restart Conductor:
 
 ```yaml
 channels:
@@ -805,8 +805,7 @@ channels:
 
 It uses `afplay` on macOS. Other hosts stay silent and log one debug line. A burst of messages plays
 at most one sound every 5 seconds. Playing is fire-and-forget: a missing player or sound file never
-delays or fails the message and is logged once. An undelivered (`NOT delivered`) message plays
-nothing.
+delays or fails the message and is logged once.
 
 Slack is a private App Home Socket Mode adapter. It requires one Slack app per running fleet,
 because sharing an app silently load-balances events between connections. Follow
