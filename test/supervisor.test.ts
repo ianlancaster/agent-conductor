@@ -17,6 +17,12 @@ import type { ConductorIntegration, ConductorIntegrationContext } from '../src/i
 import { DeliveryQueue } from '../src/core/delivery.js';
 import { ShepherdManager } from '../src/core/shepherd-manager.js';
 import { ConductorMcpServer } from '../src/mcp/server.js';
+import { renderWorkStatus, type WorkStatusSummary } from '../src/core/work-status.js';
+
+/** Work-status claims left the fleet status listing; read the supervisor's summary directly. */
+function workStatusText(supervisor: Supervisor): string {
+  return renderWorkStatus((supervisor as unknown as { workStatus(): WorkStatusSummary }).workStatus(), Date.now());
+}
 
 let baseDir: string;
 let supervisor: Supervisor | undefined;
@@ -1086,13 +1092,13 @@ describe('Supervisor construction', () => {
     const future = Date.now() + 10 * 60_000;
     const clock = vi.spyOn(Date, 'now').mockReturnValue(future);
     try {
-      expect(supervisor.statusReport()).toContain('disagreement');
+      expect(workStatusText(supervisor)).toContain('disagreement');
       await supervisor.stop();
       supervisor = new Supervisor(baseDir, options);
       await supervisor.start();
-      expect(supervisor.statusReport()).toContain('disagreement');
+      expect(workStatusText(supervisor)).toContain('disagreement');
       await supervisor.command('/teardown alpha');
-      expect(supervisor.statusReport()).toContain('disagreement');
+      expect(workStatusText(supervisor)).toContain('disagreement');
     } finally {
       clock.mockRestore();
     }
@@ -1120,13 +1126,16 @@ describe('Supervisor construction', () => {
       env: {},
     });
     await supervisor.start();
-    expect(supervisor.statusReport()).toContain('done awaiting acceptance');
+    expect(workStatusText(supervisor)).toContain('done awaiting acceptance');
+    // The fleet listing leaves work status out entirely.
+    expect(supervisor.statusReport()).not.toContain('Work status');
+    expect(supervisor.statusReport()).not.toContain('TASK-1');
     const receipt = JSON.parse(await supervisor.command('/accept-status TASK-1')) as {
       targetClaimEventId: string;
       evidence: string[];
     };
     expect(receipt).toMatchObject({ targetClaimEventId: done.eventId, evidence: ['review://TASK-1'] });
-    expect(supervisor.statusReport()).not.toContain('TASK-1');
+    expect(workStatusText(supervisor)).not.toContain('TASK-1');
   });
 
   it('rejects and closes through short commands, and accepts reports after a restarted session', async () => {

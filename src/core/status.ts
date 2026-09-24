@@ -7,7 +7,7 @@ import type { ConductorEventJournalStatus } from '../events/types.js';
 import type { IntegrationStatus } from '../integrations/types.js';
 import type { ProcessObservation } from './lifecycle.js';
 import type { ManagedShepherdStatus } from './shepherd-manager.js';
-import { renderWorkStatus, type WorkStatusSummary } from './work-status.js';
+import type { WorkStatusSummary } from './work-status.js';
 
 const ACTIVITY_ICONS: Record<SessionState['activity'], string> = {
   starting: '🟠',
@@ -164,13 +164,10 @@ export function statusReport(
   const agents = names.filter((name) => deps.getState(name)?.isAgentProject === true);
   const sessions = names.filter((name) => deps.getState(name)?.isAgentProject !== true);
 
+  // The fleet listing stays small: who is working and how each session is configured.
+  // Work-status claims stay available per session (get_session_status) and to their tools.
   const lines: string[] = [];
-  const work = deps.workStatus?.(only);
-  if (work !== undefined) {
-    const rendered = renderWorkStatus(work, Date.now());
-    if (rendered.length > 0) lines.push(rendered, '');
-  }
-  if (names.length === 0) return lines.length === 0 ? 'No sessions configured.' : lines.join('\n').trimEnd();
+  if (names.length === 0) return 'No sessions configured.';
   for (const [header, group] of [
     ['Agents:', agents],
     ['Sessions:', sessions],
@@ -205,7 +202,8 @@ export function formatFleetStatusReport(
     shepherd?: ManagedShepherdStatus;
     eventJournal?: ConductorEventJournalStatus;
     integrations?: readonly IntegrationStatus[];
-    federation?: { name: string; exposedSessions: readonly string[]; peerCount: number };
+    /** This fleet's own Federation exposure: every session (`'*'`), or the exposed codenames. */
+    federation?: { name: string; exposed: 'all' | readonly string[] };
   },
 ): string {
   const heading = `Agent Conductor Status${options.fleetWatchActive ? ' 🔄' : ''}`;
@@ -222,7 +220,9 @@ export function formatFleetStatusReport(
     ...(options.federation === undefined
       ? []
       : [
-          `Federation: ${options.federation.name} · exposing ${options.federation.exposedSessions.join(', ') || 'none'} · ${String(options.federation.peerCount)} peer(s)`,
+          `Exposed as ${options.federation.name} | ${
+            options.federation.exposed === 'all' ? 'all' : options.federation.exposed.join(' · ') || 'none'
+          }`,
         ]),
     ...(options.eventJournal?.degraded === true
       ? [

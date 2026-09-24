@@ -92,14 +92,26 @@ describe('formatFleetStatusReport', () => {
       formatFleetStatusReport('Sessions:\n  coordinator - CC 🐑 · 🟢 working', {
         fleetWatchActive: false,
         shepherdOnline: true,
-        federation: { name: 'reviews', exposedSessions: ['review-coordinator'], peerCount: 1 },
+        federation: { name: 'reviews', exposed: ['review-coordinator'] },
       }),
     ).toBe(
       'Agent Conductor Status\n' +
         'PR Shepherd Status Online\n' +
-        'Federation: reviews · exposing review-coordinator · 1 peer(s)\n\n' +
+        'Exposed as reviews | review-coordinator\n\n' +
         'Sessions:\n  coordinator - CC 🐑 · 🟢 working',
     );
+  });
+
+  it('shows the local exposure as all for the wildcard, dot-separated names, or none', () => {
+    const line = (exposed: 'all' | string[]) =>
+      formatFleetStatusReport('Sessions:', {
+        fleetWatchActive: false,
+        shepherdOnline: false,
+        federation: { name: 'fleet-a', exposed },
+      }).split('\n')[1];
+    expect(line('all')).toBe('Exposed as fleet-a | all');
+    expect(line(['agent-a', 'agent-b'])).toBe('Exposed as fleet-a | agent-a · agent-b');
+    expect(line([])).toBe('Exposed as fleet-a | none');
   });
 
   it('shows a configured paused Shepherd as offline with the outage start', () => {
