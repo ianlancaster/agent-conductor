@@ -425,11 +425,22 @@ export const supervisorConfigSchema = z
             defaultEffort: z.string().min(1).optional(),
             /** Discoverability hints only; model support varies and unknown values pass through. */
             availableEfforts: stringHints(DEFAULT_CLAUDE_CODE_EFFORTS),
-            autocompactPct: z.number().int().min(1).max(100).default(70),
+            /**
+             * Exported as CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: the percentage of Claude Code's auto-compact
+             * window at which it compacts. Claude Code only; Codex keeps its native automatic compaction.
+             */
+            autocompactPct: z.number().int().min(1).max(100).default(40),
             /** Export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 (disable if it breaks tools you rely on). */
             disableNonessentialTraffic: z.boolean().default(true),
             /** Strip Claude Code's optional UI chrome from panes: spinner tips, prompt suggestions, onboarding/startup hints. */
             bareUi: z.boolean().default(true),
+            /**
+             * Claude Code's own messaging between sessions (the SendMessage and ListAgents tools and
+             * inbound peer messages). Off by default so Conductor is the only messaging substrate:
+             * the generated settings deny both tools and refuse inbound messages. Denying SendMessage
+             * also removes messaging to subagents and agent-team teammates, since one tool serves all three.
+             */
+            nativeAgentMessaging: z.boolean().default(false),
             /** Extra env vars exported to every session. Values here override the built-in defaults. */
             env: z.record(z.string()).default({}),
           })
@@ -460,6 +471,12 @@ export const supervisorConfigSchema = z
              * review when shared-config, repository, or plugin hook sources are not all trusted.
              */
             bypassHookTrust: z.boolean().default(true),
+            /**
+             * Codex's own message board between agents (the agent_message_board feature). Off by
+             * default so Conductor is the only messaging substrate. Codex's own subagents
+             * (multi_agent) are unaffected.
+             */
+            nativeAgentMessaging: z.boolean().default(false),
           })
           .strict()
           .default({}),

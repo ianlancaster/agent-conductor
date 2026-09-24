@@ -325,6 +325,13 @@ send_to_session({
 Conductor mechanically signs the message and starts a stopped local recipient if necessary. The
 receiver sees `[Message from <sender>] ...`. Never add your own signature.
 
+Conductor is the only messaging substrate between sessions. Each runtime's own agent messaging is
+off in every session Conductor launches: Claude Code's `SendMessage` and `ListAgents` tools are denied
+and inbound peer messages are refused, and Codex's `agent_message_board` feature is pinned off. A fleet
+can re-enable either with `runtimes.claudeCode.nativeAgentMessaging` or
+`runtimes.codex.nativeAgentMessaging`. Denying `SendMessage` also removes Claude Code's messaging to its
+own subagents; starting subagents is unaffected.
+
 When the `list_federation` tool is present, this Conductor participates in local federation. Call
 it once to receive `localFleet`—the public name of the Conductor you are currently connected to—and
 one direct snapshot of every reachable fleet plus its exposed sessions. The call is deliberately

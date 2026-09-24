@@ -107,6 +107,25 @@ describe('config generation', () => {
     expect(overrides.join(' ')).toContain('mcp_servers.conductor.url');
   });
 
+  it('pins Codex native agent messaging off unless a fleet re-enables it', () => {
+    const base = {
+      mcpUrl: 'http://127.0.0.1:3456/mcp/sample',
+      notifyCommand: ['/bin/sh', '/cfg/notify.sh'],
+      toolTimeoutSec: 600,
+      bypassPermissions: true,
+      bareUi: true,
+    };
+    expect(buildConfigOverrides(base)).toContain('features.agent_message_board=false');
+    expect(buildConfigOverrides({ ...base, nativeAgentMessaging: false })).toContain(
+      'features.agent_message_board=false',
+    );
+    expect(buildConfigOverrides({ ...base, nativeAgentMessaging: true }).join(' ')).not.toContain(
+      'agent_message_board',
+    );
+    // Subagents are a separate feature and stay untouched.
+    expect(buildConfigOverrides(base).join(' ')).not.toContain('multi_agent');
+  });
+
   it('escapes TOML strings', () => {
     expect(tomlString('a"b\\c')).toBe('"a\\"b\\\\c"');
     expect(tomlString('line1\nline2')).toBe('"line1\\nline2"');

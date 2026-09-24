@@ -430,6 +430,7 @@ export class CodexRuntime implements SessionRuntime {
       toolTimeoutSec: this.settings.toolTimeoutSec,
       bypassPermissions: opts.bypassPermissions === true,
       bareUi: this.settings.bareUi,
+      nativeAgentMessaging: this.settings.nativeAgentMessaging,
       effort,
     });
     for (const override of [...overrides, ...this.additionalConfigOverrides(session)])

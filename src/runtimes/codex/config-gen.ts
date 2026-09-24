@@ -50,6 +50,8 @@ export interface CodexOverrideOptions {
   effort?: string;
   /** Strip UI chrome and non-essential traffic (update check, analytics, tips, animations, title writes). */
   bareUi: boolean;
+  /** Leave Codex's own message board between agents available. Off unless explicitly true. */
+  nativeAgentMessaging?: boolean;
 }
 
 /** Escape a string for use as a TOML basic (double-quoted) string. */
@@ -88,6 +90,9 @@ export function buildConfigOverrides(opts: CodexOverrideOptions): string[] {
     // to the per-session config.toml copy instead.
   ];
   if (opts.effort !== undefined) overrides.push(`model_reasoning_effort=${tomlString(opts.effort)}`);
+  // Conductor is the only messaging substrate: pin Codex's own message board between agents
+  // off, whatever a user or project config says. Subagents (multi_agent) are separate and stay.
+  if (opts.nativeAgentMessaging !== true) overrides.push('features.agent_message_board=false');
   if (opts.bypassPermissions) {
     overrides.push(
       // Belt and braces alongside --dangerously-bypass-approvals-and-sandbox:

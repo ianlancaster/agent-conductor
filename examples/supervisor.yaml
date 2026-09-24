@@ -151,10 +151,15 @@ runtimes:
     # defaultEffort: xhigh # fleet launch default; omit to let Claude Code choose
     # Hints shown on spawn/start/continue effort. Model support varies; unknown values still pass through.
     availableEfforts: [low, medium, high, xhigh, max]
-    autocompactPct: 70
+    # Compact at 40% of Claude Code's auto-compact window (exported as CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).
+    # Claude Code only: Codex keeps its native automatic compaction.
+    autocompactPct: 40
     disableNonessentialTraffic: true # exports CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; disable if it breaks tools you rely on
     bareUi: true # bare-bones panes: no spinner tips, prompt suggestions, or onboarding/startup hints. Set false for the full Claude Code UI.
     # Native auto-memory is disabled by default. Set this override to "0" to re-enable it.
+    # Claude Code's own messaging between sessions (SendMessage, ListAgents, inbound peer messages) is off,
+    # so Conductor is the only messaging substrate. true re-enables it; SendMessage also serves subagents.
+    nativeAgentMessaging: false
     env: {} # e.g. { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0" }; values override built-in conductor defaults
   codex:
     binary: codex
@@ -178,6 +183,8 @@ runtimes:
     # Managed launches trust hooks by default so they do not stop for review. This trusts EVERY hook Codex
     # discovers from the shared config, repository, and plugins; set false to require /hooks review instead.
     bypassHookTrust: true
+    # Codex's own message board between agents (features.agent_message_board) is pinned off. Subagents stay.
+    nativeAgentMessaging: false
   openCodex:
     enabled: false # opt in to the built-in OpenCodex-backed Codex runtime name
     proxyOrigin: null # when enabled, e.g. http://127.0.0.1:10100 (loopback only; no key)
