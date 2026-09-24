@@ -105,10 +105,14 @@ describe('agent documentation', () => {
     const topic = JSON.parse(await documentation().read('fleet-knowledge')) as { content: string };
     expect(topic.content).toContain('include = ["knowledge"]');
     expect(topic.content).toContain('exclude = []');
-    expect(topic.content).toContain('`.git` or `.conductor`');
+    expect(topic.content).toContain('no `.conductor` anywhere inside it');
+    expect(topic.content).toContain('`.git` contents are never');
+    expect(topic.content).toContain('`_inbox/` folders are always');
+    expect(topic.content).toContain('### Federation knowledge base');
+    expect(topic.content).toContain('`federation.toml`');
     expect(topic.content).toContain('`.env*` files, `keys/` folders');
     expect(topic.content).toContain('Only `*.md` files are indexed.');
-    expect(topic.content).toContain('dated filename');
+    expect(topic.content).toContain('Date every decision: `YYYY-MM-DD-<slug>.md`');
     expect(topic.content).toContain('### Adding a folder');
     expect(topic.content).toContain("your memory kit's command");
   });
@@ -131,7 +135,7 @@ describe('agent documentation', () => {
       runbooks: { id: string; version: string; source: string; topics: { id: string }[] }[];
     };
     const engineering = index.runbooks.find((runbook) => runbook.id === 'agent-conductor/engineering-management');
-    expect(engineering).toMatchObject({ version: '1.0.0', source: 'built-in' });
+    expect(engineering).toMatchObject({ version: '1.1.0', source: 'built-in' });
     expect(engineering?.topics.map((topic) => topic.id)).toContain('tier-1');
     const catalog = JSON.parse(await documentation().read('runbooks')) as { content: string };
     expect(catalog.content).toContain('engineering-management');
