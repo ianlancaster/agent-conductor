@@ -952,10 +952,7 @@ export class Supervisor {
         : {
             federation: {
               name: this.config.federation.name,
-              exposedSessions: [...this.exposedSessions()].sort(),
-              peerCount: this.federationRegistry
-                .snapshot()
-                .filter((record) => record.name !== this.config.federation?.name).length,
+              exposed: this.config.federation.expose.includes('*') ? 'all' : [...this.exposedSessions()].sort(),
             },
           }),
     });

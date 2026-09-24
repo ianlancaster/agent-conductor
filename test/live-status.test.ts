@@ -78,7 +78,7 @@ describe('renderStatusDashboard', () => {
         status:
           'Agent Conductor Status\n' +
           'PR Shepherd Status Online\n' +
-          'Federation: reviews · exposing review-coordinator · 1 peer(s)\n\n' +
+          'Exposed as reviews | review-coordinator\n\n' +
           'Sessions:\n  coordinator - CC 🐑 · 🟢 working',
         updatedAt: new Date('2026-07-23T12:00:00Z'),
       },
@@ -90,9 +90,7 @@ describe('renderStatusDashboard', () => {
         '\u001b[1mPR Shepherd Status\u001b[22m  \u001b[32m● ONLINE\u001b[39m\n' +
         '\u001b[2mUpdated: ',
     );
-    expect(view).toContain(
-      ' · fleet: /projects/fleet\u001b[22m\nFederation: reviews · exposing review-coordinator · 1 peer(s)',
-    );
+    expect(view).toContain(' · fleet: /projects/fleet\u001b[22m\nExposed as reviews | review-coordinator');
     expect(view).toContain('\u001b[1mcoordinator\u001b[22m - CC 🐑 · 🟢 working');
   });
 

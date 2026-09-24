@@ -58,7 +58,7 @@ function statusContent(status: string | undefined): {
   for (let index = 0; index < 2; index += 1) {
     if (remaining[0]?.startsWith(PR_SHEPHERD_STATUS_PREFIX) === true) {
       shepherdStatus = remaining.shift()?.slice(PR_SHEPHERD_STATUS_PREFIX.length);
-    } else if (remaining[0]?.startsWith('Federation: ') === true) {
+    } else if (remaining[0]?.startsWith('Exposed as ') === true) {
       federation = remaining.shift();
     } else {
       break;
