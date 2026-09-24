@@ -736,6 +736,12 @@ describe('prepare — trust pre-seeding matches what Codex actually checks', () 
     return [...configText.matchAll(/\[projects\."([^"]+)"\]/g)].map((match) => match[1]!);
   }
 
+  // Where the temp directory has no symlinked prefix (Linux CI), the literal
+  // and resolved paths are the same entry, and trust writes it once.
+  function distinct(paths: string[]): string[] {
+    return [...new Set(paths)];
+  }
+
   it('trusts the literal symlinked path AND its REALPATH, not the symlink alone', async () => {
     const real = path.join(workDir, 'real-dir');
     await mkdir(real, { recursive: true });
@@ -767,8 +773,9 @@ describe('prepare — trust pre-seeding matches what Codex actually checks', () 
     const realWorktree = await realpath(worktree);
     const realMain = await realpath(main);
     const headers = await trustedHeaders(sessionConfig);
-    expect(headers).toEqual(expect.arrayContaining([worktree, realWorktree, realMain]));
-    expect(headers).toHaveLength(3);
+    const expected = distinct([worktree, realWorktree, realMain]);
+    expect(headers).toEqual(expect.arrayContaining(expected));
+    expect(headers).toHaveLength(expected.length);
   });
 
   it('trusts the literal and resolved root for a plain (non-worktree) repository', async () => {
@@ -781,7 +788,7 @@ describe('prepare — trust pre-seeding matches what Codex actually checks', () 
 
     const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
     const realRepo = await realpath(repo);
-    expect(await trustedHeaders(sessionConfig)).toEqual([repo, realRepo]);
+    expect(await trustedHeaders(sessionConfig)).toEqual(distinct([repo, realRepo]));
   });
 
   it('does not trust the parent of a separate-git-dir (or bare) common directory', async () => {
@@ -818,7 +825,7 @@ describe('prepare — trust pre-seeding matches what Codex actually checks', () 
 
     const sessionConfig = await readFile(path.join(configDir, 'codex-home', 'config.toml'), 'utf8');
     const realDir = await realpath(dir);
-    expect(await trustedHeaders(sessionConfig)).toEqual([dir, realDir]);
+    expect(await trustedHeaders(sessionConfig)).toEqual(distinct([dir, realDir]));
   });
 
   it('does not duplicate an entry already present in the shared config, but still adds the missing ones', async () => {
