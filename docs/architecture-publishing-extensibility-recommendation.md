@@ -51,8 +51,8 @@ This reflects the division recommended by both provider ecosystems:
 
 The current implementation already has the essential shape:
 
-- Claude uses `--append-system-prompt-file` for the Conductor protocol and optional per-session
-  instructions (`src/runtimes/claude-code/index.ts`).
+- Claude uses one `--append-system-prompt-file`, a combined snapshot of the optional per-session
+  instructions followed by the Conductor protocol (`src/runtimes/claude-code/index.ts`).
 - Codex writes a marker-managed `AGENTS.override.md` inside each session's isolated `CODEX_HOME`,
   leaving the repository root untouched (`src/runtimes/codex/index.ts` and
   `src/runtimes/codex/config-gen.ts`).

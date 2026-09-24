@@ -32,7 +32,9 @@ Conductor already has most of the required startup path:
 - `SessionConfig.systemPromptFile` accepts a fleet-root-relative or absolute file path.
 - `spawn_session.systemPromptFile` and `/spawn --system-prompt` expose the same setting.
 - Claude Code receives the session instruction file followed by the Conductor protocol through
-  repeated `--append-system-prompt-file` arguments.
+  repeated `--append-system-prompt-file` arguments. (Superseded 2026-09-24: Claude Code 2.1.281
+  keeps only the last occurrence of that flag, which silently dropped the session layer. Conductor
+  now writes both layers, protocol last, into one combined `system-prompt.md` and passes it once.)
 - Codex receives session instructions followed by the Conductor protocol in the conductor-managed
   section of its isolated `AGENTS.override.md`.
 - Codex already has a generated `SessionStart` hook matched to `source=compact`. It restores the

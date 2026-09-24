@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SessionConfig, SupervisorConfig } from '../../config/schema.js';
@@ -10,8 +10,7 @@ import type { SessionRuntime, IdentityEndpoints, InputState, LaunchOptions, Runt
 import {
   appendProtocolNotice,
   prepareInstructionLayers,
-  PROTOCOL_SNAPSHOT_NAME,
-  SESSION_INSTRUCTIONS_SNAPSHOT_NAME,
+  type PreparedInstructionLayers,
   type ProtocolNotice,
   writeAtomicFile,
 } from '../instructions.js';
@@ -37,6 +36,27 @@ const EVENT_MAP: Record<string, RuntimeEvent['type']> = {
   SessionEnd: 'session-end',
   SessionStart: 'session-start',
 };
+
+/**
+ * The one file passed to --append-system-prompt-file. Claude Code keeps only
+ * the last occurrence of that flag, so separate files would silently drop
+ * every layer but the protocol.
+ */
+export const LAUNCH_SYSTEM_PROMPT_NAME = 'system-prompt.md';
+
+/**
+ * Join the prepared layers in their documented order: session instructions,
+ * then the mandatory protocol last. Each layer was size-checked on its own;
+ * the combination is never truncated.
+ */
+async function writeLaunchSystemPrompt(configDir: string, layers: PreparedInstructionLayers): Promise<void> {
+  const path = join(configDir, LAUNCH_SYSTEM_PROMPT_NAME);
+  const parts = [layers.session?.content, layers.protocol?.content].filter(
+    (content): content is string => content !== undefined,
+  );
+  if (parts.length === 0) await rm(path, { force: true });
+  else await writeAtomicFile(path, parts.join('\n'), 0o600);
+}
 
 export interface ClaudeCodeRuntimeOptions {
   config: ClaudeCodeConfig;
@@ -131,11 +151,12 @@ export class ClaudeCodeRuntime implements SessionRuntime {
         : undefined;
     const protocolText =
       sourceProtocolText === undefined ? undefined : appendProtocolNotice(sourceProtocolText, this.protocolNotice);
-    await prepareInstructionLayers({
+    const layers = await prepareInstructionLayers({
       configDir: identity.configDir,
       protocolText,
       sessionSourcePath: session.systemPromptFile,
     });
+    await writeLaunchSystemPrompt(identity.configDir, layers);
     const continuityReader =
       continuityState === undefined
         ? undefined
@@ -184,16 +205,11 @@ export class ClaudeCodeRuntime implements SessionRuntime {
     }
     flags.push('--mcp-config', shellQuote(this.mcpConfigPath(identity)));
     flags.push('--settings', shellQuote(this.hooksSettingsPath(identity)));
-    // Session instructions are delegated context. Append the mandatory protocol
-    // last so its operator-authority and transport contract is the final managed layer.
-    if (session.systemPromptFile !== undefined) {
-      flags.push(
-        '--append-system-prompt-file',
-        shellQuote(join(identity.configDir, SESSION_INSTRUCTIONS_SNAPSHOT_NAME)),
-      );
-    }
-    const promptFile = this.systemPromptPath(identity);
-    if (promptFile !== undefined) {
+    // Claude Code honors only the last --append-system-prompt-file, so every
+    // managed layer goes through one combined file. A configured session layer
+    // always references it, so a launch without preparation fails visibly.
+    const promptFile = join(identity.configDir, LAUNCH_SYSTEM_PROMPT_NAME);
+    if (session.systemPromptFile !== undefined || existsSync(promptFile)) {
       flags.push('--append-system-prompt-file', shellQuote(promptFile));
     }
 
@@ -265,11 +281,6 @@ export class ClaudeCodeRuntime implements SessionRuntime {
       MCP_TIMEOUT: '60000',
       ...this.config.env,
     };
-  }
-
-  private systemPromptPath(identity: IdentityEndpoints): string | undefined {
-    const path = join(identity.configDir, PROTOCOL_SNAPSHOT_NAME);
-    return existsSync(path) ? path : undefined;
   }
 
   private mcpConfigPath(identity: IdentityEndpoints): string {
