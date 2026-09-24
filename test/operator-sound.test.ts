@@ -131,6 +131,31 @@ describe('send_to_operator sound', () => {
     store.close();
   });
 
+  it('alerts once and still propagates the error when the channel send rejects', async () => {
+    const notify = vi.fn();
+    const store = new Store(':memory:');
+    const operatorRequests = new OperatorRequests({
+      store,
+      channelSend: async () => {
+        throw new Error('channel exploded');
+      },
+      messaging: { sendToSession: async () => 'Delivered.' },
+      sound: { notify },
+    });
+    await expect(operatorRequests.send('alpha', 'heads up')).rejects.toThrow('channel exploded');
+    await expect(operatorRequests.send('alpha', 'which?', ['a', 'b'])).rejects.toThrow('channel exploded');
+    expect(notify.mock.calls).toEqual([['message'], ['choices']]);
+    store.close();
+  });
+
+  it('stays silent when options are rejected before any send attempt', async () => {
+    const notify = vi.fn();
+    const { store, operatorRequests } = requests({ notify });
+    await expect(operatorRequests.send('alpha', 'which?', [])).rejects.toThrow("'options'");
+    expect(notify).not.toHaveBeenCalled();
+    store.close();
+  });
+
   it('delivers the message even when the alert throws', async () => {
     const { store, operatorRequests } = requests({
       notify: () => {

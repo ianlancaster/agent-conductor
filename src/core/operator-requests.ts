@@ -33,8 +33,7 @@ export class OperatorRequests {
 
   async send(from: string, message: string, rawOptions?: readonly string[]): Promise<string> {
     if (rawOptions === undefined) {
-      const sent = await this.deps.channelSend({ text: messageEnvelope(from, message) });
-      this.alert('message');
+      const sent = await this.sendWithAlert({ text: messageEnvelope(from, message) }, 'message');
       return sent ? 'Sent to the operator.' : this.notDelivered();
     }
 
@@ -50,8 +49,7 @@ export class OperatorRequests {
       label,
       command: `/respond ${String(requestId)} ${String(index + 1)}`,
     }));
-    const sent = await this.deps.channelSend({ text: messageEnvelope(from, message), actions });
-    this.alert('choices');
+    const sent = await this.sendWithAlert({ text: messageEnvelope(from, message), actions }, 'choices');
     return sent ? `Request #${String(requestId)} sent to the operator.` : this.notDelivered();
   }
 
@@ -106,11 +104,16 @@ export class OperatorRequests {
     }
   }
 
-  private alert(kind: OperatorSoundKind): void {
+  /** Alert after every send attempt, including one that throws: that is when the operator most needs it. */
+  private async sendWithAlert(message: ChannelMessage, kind: OperatorSoundKind): Promise<boolean> {
     try {
-      this.deps.sound?.notify(kind);
-    } catch {
-      // The alert is a courtesy; the send result is already decided.
+      return await this.deps.channelSend(message);
+    } finally {
+      try {
+        this.deps.sound?.notify(kind);
+      } catch {
+        // The alert is a courtesy; it must not replace the send result or error.
+      }
     }
   }
 
