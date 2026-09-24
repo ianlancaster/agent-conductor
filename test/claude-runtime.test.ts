@@ -52,7 +52,7 @@ describe('buildLaunchCommand', () => {
       bypassPermissions: true,
     });
     expect(command).toContain(`cd '/tmp/alpha repo'`);
-    expect(command).toContain('export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=');
+    expect(command).toContain("export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE='40'");
     expect(command).toContain(`echo 'do the thing' | claude`);
     expect(command).toContain('--dangerously-skip-permissions');
     expect(command).toContain(`--add-dir '/tmp/shared'`);
@@ -200,6 +200,30 @@ describe('prepare', () => {
     }
     // bareUi (default) also turns spinner tips off via the same settings file.
     expect(settings.spinnerTipsEnabled).toBe(false);
+  });
+
+  it('turns off Claude Code native agent messaging by default', async () => {
+    await runtime.prepare(session, identity);
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as {
+      permissions?: { deny?: string[] };
+      crossSessionInbound?: string;
+    };
+    expect(settings.permissions?.deny).toEqual(['SendMessage', 'ListAgents']);
+    expect(settings.crossSessionInbound).toBe('refuse');
+  });
+
+  it('leaves native agent messaging alone when a fleet re-enables it', async () => {
+    const custom = new ClaudeCodeRuntime({
+      config: {
+        ...defaults.runtimes.claudeCode,
+        nativeAgentMessaging: true,
+      },
+      claudeJsonPath: join(configDir, '.claude.json'),
+    });
+    await custom.prepare(session, identity);
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as Record<string, unknown>;
+    expect(settings.permissions).toBeUndefined();
+    expect(settings.crossSessionInbound).toBeUndefined();
   });
 
   it('leaves spinner tips alone when bareUi is disabled', async () => {

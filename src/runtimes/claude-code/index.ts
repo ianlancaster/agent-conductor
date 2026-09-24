@@ -324,6 +324,15 @@ export class ClaudeCodeRuntime implements SessionRuntime {
           ]),
       { hooks: [{ type: 'command', command }] },
     ];
-    return { hooks, ...(this.config.bareUi ? { spinnerTipsEnabled: false } : {}) };
+    return {
+      hooks,
+      ...(this.config.bareUi ? { spinnerTipsEnabled: false } : {}),
+      // Conductor is the only messaging substrate. Claude Code has no environment variable for
+      // this; its documented off switch is settings: deny the send and list tools and refuse
+      // inbound peer messages (https://code.claude.com/docs/en/cross-session-messaging).
+      ...(this.config.nativeAgentMessaging
+        ? {}
+        : { permissions: { deny: ['SendMessage', 'ListAgents'] }, crossSessionInbound: 'refuse' }),
+    };
   }
 }
