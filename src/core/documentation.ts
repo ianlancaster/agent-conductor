@@ -1,4 +1,6 @@
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { FleetPaths } from '../config/paths.js';
 import { log } from '../logger.js';
 import type { RunbookRegistry } from '../runbooks/registry.js';
@@ -25,8 +27,23 @@ export const CONDUCTOR_DOC_TOPICS = [
   'event-subscribers',
   'troubleshooting',
   'work-status',
+  'fleet-knowledge',
 ] as const;
 export const OPTIONAL_CONDUCTOR_DOC_TOPICS = ['opencodex'] as const;
+
+/** Fleet-root file whose presence marks a shared fleet knowledge base. */
+export const FLEET_KNOWLEDGE_INDEX_FILE = 'knowledge-index.toml';
+
+/**
+ * The protocol line that points managed sessions at the fleet knowledge base,
+ * or undefined when the fleet has no index file. Checked on every call so the
+ * line follows the file rather than the Conductor process lifetime.
+ */
+export function fleetKnowledgeNotice(fleetDir: string): string | undefined {
+  const indexPath = join(fleetDir, FLEET_KNOWLEDGE_INDEX_FILE);
+  if (!existsSync(indexPath)) return undefined;
+  return `This fleet has a shared knowledge base: the markdown folders listed in \`${indexPath}\`, searchable with your memory tools. Put fleet-wide knowledge there rather than in your own repository. Load \`get_conductor_docs\` topic \`fleet-knowledge\` before adding a folder.`;
+}
 
 export type ConductorDocTopic = (typeof CONDUCTOR_DOC_TOPICS)[number];
 
@@ -108,6 +125,7 @@ export class ConductorDocumentation {
       sessionsDir: this.options.fleetPaths.sessionsDir,
       environmentFile: this.options.fleetPaths.environmentFile,
       runbooksDir: this.options.fleetPaths.runbooksDir,
+      knowledgeIndexFile: join(this.options.fleetDir, FLEET_KNOWLEDGE_INDEX_FILE),
       referencePath: this.options.referencePath,
     };
 

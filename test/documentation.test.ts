@@ -94,6 +94,25 @@ describe('agent documentation', () => {
     expect(topic.content).not.toContain('FLEET_ULTRA');
   });
 
+  it('always lists the fleet knowledge topic and states the index contract', async () => {
+    const index = JSON.parse(await documentation().read()) as {
+      topics: { name: string; title: string }[];
+      fleet: Record<string, string>;
+    };
+    expect(index.topics).toContainEqual({ name: 'fleet-knowledge', title: 'Fleet knowledge base' });
+    expect(index.fleet.knowledgeIndexFile).toBe('/fleets/example/knowledge-index.toml');
+
+    const topic = JSON.parse(await documentation().read('fleet-knowledge')) as { content: string };
+    expect(topic.content).toContain('include = ["knowledge"]');
+    expect(topic.content).toContain('exclude = []');
+    expect(topic.content).toContain('`.git` or `.conductor`');
+    expect(topic.content).toContain('`.env*` files, `keys/` folders');
+    expect(topic.content).toContain('Only `*.md` files are indexed.');
+    expect(topic.content).toContain('dated filename');
+    expect(topic.content).toContain('### Adding a folder');
+    expect(topic.content).toContain("your memory kit's command");
+  });
+
   it('documents static and fresh continuity layers with their privacy and failure boundaries', async () => {
     const fleetConfig = JSON.parse(await documentation().read('fleet-configuration')) as { content: string };
     expect(fleetConfig.content).toContain('continuityStateFile');

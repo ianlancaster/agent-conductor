@@ -410,6 +410,38 @@ describe('prepare', () => {
     await expect(readFile(path.join(repoDir, '.gitignore'), 'utf8')).rejects.toThrow();
   });
 
+  it('evaluates a function protocol notice on every prepare', async () => {
+    const protocolPath = path.join(workDir, 'protocol.md');
+    await writeFile(protocolPath, 'PROTOCOL LAYER');
+    let notice: string | undefined;
+    const runtime = new CodexRuntime({
+      config: SETTINGS,
+      baseDir: workDir,
+      protocolPath,
+      protocolNotice: () => notice,
+    });
+    const configured = makeSession({ repo: repoDir });
+    const reminderPath = path.join(configDir, 'protocol-reminder.mjs');
+    const context = (): string => {
+      const output = JSON.parse(execFileSync(process.execPath, [reminderPath], { encoding: 'utf8' })) as {
+        hookSpecificOutput: { additionalContext: string };
+      };
+      return output.hookSpecificOutput.additionalContext;
+    };
+
+    await runtime.prepare(configured, makeIdentity(configDir));
+    expect(context()).toContain('PROTOCOL LAYER\n');
+    expect(context()).not.toContain('FRESH NOTICE');
+
+    notice = 'FRESH NOTICE';
+    await runtime.prepare(configured, makeIdentity(configDir));
+    expect(context()).toContain('PROTOCOL LAYER\n\nFRESH NOTICE\n');
+
+    notice = undefined;
+    await runtime.prepare(configured, makeIdentity(configDir));
+    expect(context()).not.toContain('FRESH NOTICE');
+  });
+
   it('restores the prepared session snapshot after compact and refreshes it only on prepare', async () => {
     const protocolPath = path.join(workDir, 'protocol.md');
     const promptPath = path.join(workDir, 'session.md');

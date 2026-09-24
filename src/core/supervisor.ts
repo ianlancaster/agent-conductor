@@ -37,7 +37,7 @@ import { configuredRunbookRegistry, type RunbookRegistry } from '../runbooks/reg
 import { CommandRouter } from './commands.js';
 import { DeliveryQueue } from './delivery.js';
 import { InvalidRequestError } from './errors.js';
-import { ConductorDocumentation } from './documentation.js';
+import { ConductorDocumentation, fleetKnowledgeNotice } from './documentation.js';
 import { HealthMonitor } from './health.js';
 import { identityFor } from './identity.js';
 import { Lifecycle } from './lifecycle.js';
@@ -189,11 +189,19 @@ export class Supervisor {
             env: inheritedEnv,
           });
     const protocolPath = this.resolveProtocolPath();
-    const protocolNotice = this.config.runtimes.openCodex.enabled
+    const openCodexNotice = this.config.runtimes.openCodex.enabled
       ? `OpenCodex proxy harness is configured in this Conductor. Registered managed runtime names: opencodex${
           this.config.runtimes.openCodex.claudeCodeEnabled ? ', opencodex-claude' : ''
         }. Proxy readiness and model access require a live check. Call get_conductor_docs without a topic, then load the opencodex topic before use.`
       : undefined;
+    // Evaluated at every session start, so a fleet that adds its knowledge
+    // index later gets the line without restarting Conductor.
+    const protocolNotice = (): string | undefined => {
+      const notices = [openCodexNotice, fleetKnowledgeNotice(baseDir)].filter(
+        (notice): notice is string => notice !== undefined,
+      );
+      return notices.length === 0 ? undefined : notices.join('\n\n');
+    };
     this.runtimes.set(
       'claude-code',
       new ClaudeCodeRuntime({

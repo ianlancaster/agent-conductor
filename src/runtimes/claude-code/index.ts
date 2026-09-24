@@ -12,6 +12,7 @@ import {
   prepareInstructionLayers,
   PROTOCOL_SNAPSHOT_NAME,
   SESSION_INSTRUCTIONS_SNAPSHOT_NAME,
+  type ProtocolNotice,
   writeAtomicFile,
 } from '../instructions.js';
 import {
@@ -42,7 +43,7 @@ export interface ClaudeCodeRuntimeOptions {
   /** Path to the conductor protocol prompt appended to every session's system prompt. */
   protocolPath?: string;
   /** Optional fleet capability hint appended to the managed protocol. */
-  protocolNotice?: string;
+  protocolNotice?: ProtocolNotice;
   /** Override Claude's state path when embedding the runtime (primarily for isolated tests). */
   claudeJsonPath?: string;
 }
@@ -108,7 +109,7 @@ export class ClaudeCodeRuntime implements SessionRuntime {
 
   private readonly config: ClaudeCodeConfig;
   private readonly protocolPath: string | undefined;
-  private readonly protocolNotice: string | undefined;
+  private readonly protocolNotice: ProtocolNotice | undefined;
   private readonly claudeJsonPath: string;
 
   constructor(opts: ClaudeCodeRuntimeOptions) {
