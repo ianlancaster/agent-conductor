@@ -71,6 +71,13 @@ export interface SpawnOptions {
   admissionClaim?: string;
 }
 
+/** What one start attempt did. `launched` is true only when a runtime launch was issued. */
+export interface StartOutcome {
+  readonly launched: boolean;
+  /** Operator-facing reply: the confirmation, or why nothing was launched. */
+  readonly message: string;
+}
+
 export interface LifecycleDeps {
   store: Store;
   backend: TerminalBackend;
@@ -122,7 +129,7 @@ export class Lifecycle {
   private readonly panes = new Map<string, PaneRef>();
   private readonly sessions = new Map<string, string>();
   /** In-flight start per codename — serializes concurrent starts so we never open two panes for one session. */
-  private readonly starting = new Map<string, Promise<string>>();
+  private readonly starting = new Map<string, Promise<StartOutcome>>();
   private readonly processObservations = new Map<string, ProcessObservation>();
 
   constructor(private readonly deps: LifecycleDeps) {}
@@ -268,6 +275,11 @@ export class Lifecycle {
   }
 
   start(codename: string, opts: StartOptions = {}): Promise<string> {
+    return this.startWithOutcome(codename, opts).then((outcome) => outcome.message);
+  }
+
+  /** Start, reporting whether a runtime was actually launched rather than only a reply. */
+  startWithOutcome(codename: string, opts: StartOptions = {}): Promise<StartOutcome> {
     // Serialize starts for one codename: a cron fire racing an operator /start
     // (or an auto-start via sendToSession) must not both pass the liveness check
     // and open two panes for a single identity.
@@ -280,17 +292,18 @@ export class Lifecycle {
     return promise;
   }
 
-  private async startInner(codename: string, opts: StartOptions): Promise<string> {
+  private async startInner(codename: string, opts: StartOptions): Promise<StartOutcome> {
+    const notLaunched = (message: string): StartOutcome => ({ launched: false, message });
     // Launch from the session file as it is now, never from a roster the
-    // mtime watcher has not re-polled yet (a just-edited repo: must win).
+    // config watcher has not re-polled yet (a just-edited repo: must win).
+    // The refusal applies only once we know this call would launch.
     const refusal = this.deps.refreshSessionConfig(codename);
-    if (refusal !== undefined) return refusal;
     const session = this.deps.sessions().get(codename);
-    if (session === undefined) return `Unknown session: ${codename}`;
+    if (session === undefined) return notLaunched(`Unknown session: ${codename}`);
     try {
       this.deps.admission?.assertConfiguredSession(this.sessionConfigFile(codename), session);
     } catch (error) {
-      return error instanceof Error ? error.message : String(error);
+      return notLaunched(error instanceof Error ? error.message : String(error));
     }
 
     let existingPane = await this.findPane(codename);
@@ -306,28 +319,32 @@ export class Lifecycle {
         if (observation.activity.state !== 'observed') {
           // Launching a second runtime into a pane that might still host one is
           // worse than reporting that the process inspection was inconclusive.
-          return `${codename} has a pane, but its runtime status could not be determined.`;
+          return notLaunched(`${codename} has a pane, but its runtime status could not be determined.`);
         }
         if (observation.activity.active) {
           if (this.deps.states.get(codename)?.running !== true) await this.markRunning(codename, existingPane);
-          return `${codename} is already running.`;
+          return notLaunched(`${codename} is already running.`);
         }
         // Ctrl-C ended the runtime, not the pane. Close out the old run but
         // retain the pane mapping and launch the replacement into that shell.
         this.clearSession(codename, 'runtime-exit', true);
       } else {
-        return `${codename} has a pane, but its liveness could not be determined.`;
+        return notLaunched(`${codename} has a pane, but its liveness could not be determined.`);
       }
     }
 
+    if (refusal !== undefined) return notLaunched(refusal);
+
     const runtimeName = opts.runtime ?? session.runtime;
     const runtime = this.deps.runtimes.get(runtimeName);
-    if (runtime === undefined) return `No runtime registered for '${runtimeName}'.`;
+    if (runtime === undefined) return notLaunched(`No runtime registered for '${runtimeName}'.`);
     if (opts.resumeSessionId !== undefined && runtime.capabilities.targetedResume !== true) {
-      return `Runtime '${runtimeName}' does not support resuming a specific native conversation.`;
+      return notLaunched(`Runtime '${runtimeName}' does not support resuming a specific native conversation.`);
     }
     if (session.continuityStateFile !== undefined && runtime.capabilities.continuityState !== true) {
-      return `Runtime '${runtimeName}' does not support continuityStateFile across startup, resume, and compaction.`;
+      return notLaunched(
+        `Runtime '${runtimeName}' does not support continuityStateFile across startup, resume, and compaction.`,
+      );
     }
 
     // Model and effort pins for the configured runtime are not portable across
@@ -342,7 +359,9 @@ export class Lifecycle {
     const identity = this.deps.identityFor(codename);
 
     if (opts.headless === true && !this.deps.backend.capabilities.headless) {
-      return `Headless sessions need a headless-capable backend (tmux) — the ${this.deps.backend.name} backend cannot detach panes.`;
+      return notLaunched(
+        `Headless sessions need a headless-capable backend (tmux) — the ${this.deps.backend.name} backend cannot detach panes.`,
+      );
     }
 
     await runtime.prepare(launchSession, identity);
@@ -408,7 +427,7 @@ export class Lifecycle {
     this.deps.armStartConfirmation(codename);
     this.deps.onRunning?.(codename);
     log().info('lifecycle', `${codename}: ${opts.continueSession === true ? 'continued' : 'started'} in ${pane.id}`);
-    return `${codename} ${opts.continueSession === true ? 'continued' : 'started'}.`;
+    return { launched: true, message: `${codename} ${opts.continueSession === true ? 'continued' : 'started'}.` };
   }
 
   continue(codename: string, opts: Omit<StartOptions, 'continueSession'> = {}): Promise<string> {

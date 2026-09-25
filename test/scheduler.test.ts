@@ -17,6 +17,8 @@ let started: { session: string; prompt?: string }[];
 let stopped: string[];
 let delivered: { session: string; text: string }[];
 let events: FakeEventPublisher;
+let refusal: string | undefined;
+let launches: boolean;
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -32,15 +34,19 @@ beforeEach(() => {
   stopped = [];
   delivered = [];
   events = new FakeEventPublisher();
+  refusal = undefined;
+  launches = true;
   scheduler = new Scheduler({
     sessions: () => sessions,
     isActive: () => active,
     isPaused: () => paused,
     startSession: async (session, opts) => {
       started.push({ session, prompt: opts.prompt });
+      if (!launches) return { launched: false, message: 'Not starting alpha: held' };
       active = true;
-      return 'started';
+      return { launched: true, message: 'alpha started.' };
     },
+    launchRefusal: () => refusal,
     stopSession: async (session) => {
       stopped.push(session);
       active = false;
@@ -194,6 +200,39 @@ describe('Scheduler', () => {
     });
   });
 
+  it('never stops a running fresh-context target whose start would be refused', async () => {
+    active = true;
+    refusal = 'Not starting alpha: held';
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'fresh', freshContext: true }]));
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(stopped).toEqual([]);
+    expect(started).toEqual([]);
+    expect(active).toBe(true);
+    expect(events.events).toContainEqual({
+      type: 'schedule',
+      session: 'alpha',
+      label: 'schedule-1',
+      outcome: 'refused',
+    });
+    expect(events.events.map((event) => (event as { outcome?: string }).outcome)).not.toContain('fired-fresh');
+  });
+
+  it.each([false, true])(
+    'reports a woken start that did not launch as refused, not fired (freshContext=%s)',
+    async (freshContext) => {
+      launches = false;
+      sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'wake', wakeIfStopped: true, freshContext }]));
+      scheduler.rebuild();
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(started).toHaveLength(1);
+      const outcomes = events.events.map((event) => (event as { outcome?: string }).outcome);
+      expect(outcomes).toContain('refused');
+      expect(outcomes).not.toContain('fired');
+      expect(outcomes).not.toContain('fired-fresh');
+    },
+  );
+
   it('defers when the session is paused', async () => {
     sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'tick', paused: false, freshContext: false }]));
     paused = true;
@@ -220,8 +259,9 @@ describe('Scheduler', () => {
       isPaused: () => paused,
       startSession: async (session, opts) => {
         started.push({ session, prompt: opts.prompt });
-        return 'started';
+        return { launched: true, message: 'alpha started.' };
       },
+      launchRefusal: () => undefined,
       stopSession: async () => 'stopped',
       deliver: async (session, text) => {
         delivered.push({ session, text });
@@ -355,6 +395,7 @@ describe('Scheduler', () => {
       startSession: async () => {
         throw new Error('secret provider detail');
       },
+      launchRefusal: () => undefined,
       stopSession: async () => 'stopped',
       deliver: async () => undefined,
       events,

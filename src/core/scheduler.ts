@@ -3,6 +3,7 @@ import { log } from '../logger.js';
 import type { SessionConfig, ScheduleEntry } from '../config/schema.js';
 import { scheduleEnvelope, sleep } from './utils.js';
 import type { ConductorEventPublisher } from '../events/types.js';
+import type { StartOutcome } from './lifecycle.js';
 
 const FRESH_SESSION_SETTLE_MS = 3000;
 
@@ -10,7 +11,12 @@ export interface SchedulerDeps {
   sessions(): Map<string, SessionConfig>;
   isActive(session: string): boolean | Promise<boolean>;
   isPaused(session: string): boolean;
-  startSession(session: string, opts: { prompt?: string }): Promise<string>;
+  startSession(session: string, opts: { prompt?: string }): Promise<StartOutcome>;
+  /**
+   * Why a start would be refused right now (for example, a held last-good session config),
+   * checked before a fresh-context schedule stops a running session.
+   */
+  launchRefusal(session: string): string | undefined;
   stopSession(session: string): Promise<string>;
   deliver(session: string, text: string): Promise<unknown>;
   events?: ConductorEventPublisher;
@@ -104,11 +110,21 @@ export class Scheduler {
       }
       if (entry.freshContext) {
         if (active) {
+          // Never stop a running session that could not be started again.
+          const refusal = this.deps.launchRefusal(codename);
+          if (refusal !== undefined) {
+            this.refused(codename, label, refusal);
+            return;
+          }
           await this.deps.stopSession(codename);
           await sleep(FRESH_SESSION_SETTLE_MS);
         }
         if (!canRun()) return;
-        await this.deps.startSession(codename, { prompt });
+        const outcome = await this.deps.startSession(codename, { prompt });
+        if (!outcome.launched) {
+          this.refused(codename, label, outcome.message);
+          return;
+        }
         log().info('scheduler', `${codename}: '${label}' fired (fresh session)`);
         this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'fired-fresh' });
         return;
@@ -116,7 +132,11 @@ export class Scheduler {
       if (active) {
         await this.deps.deliver(codename, prompt);
       } else {
-        await this.deps.startSession(codename, { prompt });
+        const outcome = await this.deps.startSession(codename, { prompt });
+        if (!outcome.launched) {
+          this.refused(codename, label, outcome.message);
+          return;
+        }
       }
       log().info('scheduler', `${codename}: '${label}' fired`);
       this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'fired' });
@@ -124,6 +144,12 @@ export class Scheduler {
       log().error('scheduler', `${codename}: '${label}' failed: ${err instanceof Error ? err.message : String(err)}`);
       this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'failed' });
     }
+  }
+
+  /** The start did not launch, so the prompt was not delivered: say so instead of reporting a fire. */
+  private refused(codename: string, label: string, reason: string): void {
+    log().warn('scheduler', `${codename}: '${label}' refused: ${reason}`);
+    this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'refused' });
   }
 
   private deferPaused(codename: string, label: string): boolean {

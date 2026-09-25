@@ -1,13 +1,22 @@
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, type Stats } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Single mtime-poll watcher over the session-config directory.
+ * mtime alone misses a replacement that preserves it (`cp -p`, `rsync -a`, an atomic
+ * rename of a `touch -r` copy). The inode, status-change time, and size catch those.
+ */
+function fingerprint(stats: Stats): string {
+  return `${String(stats.mtimeMs)}:${String(stats.ctimeMs)}:${String(stats.ino)}:${String(stats.size)}`;
+}
+
+/**
+ * Single stat-poll watcher over the session-config directory.
  * Replaces cc-conductor's two overlapping hot-reload mechanisms: one watcher,
  * any number of subscribers (roster reload, scheduler reload).
  */
 export class ConfigWatcher {
-  private readonly mtimes = new Map<string, number>();
+  /** Per-file change fingerprint (see {@link fingerprint}). */
+  private readonly fingerprints = new Map<string, string>();
   private readonly listeners: (() => void)[] = [];
   private timer: NodeJS.Timeout | undefined;
 
@@ -35,35 +44,35 @@ export class ConfigWatcher {
   /** Poll once; notify listeners if anything changed. Exposed for tests and manual ticks. */
   checkNow(): boolean {
     const current = this.scan();
-    let changed = current.size !== this.mtimes.size;
+    let changed = current.size !== this.fingerprints.size;
     if (!changed) {
-      for (const [file, mtime] of current) {
-        if (this.mtimes.get(file) !== mtime) {
+      for (const [file, value] of current) {
+        if (this.fingerprints.get(file) !== value) {
           changed = true;
           break;
         }
       }
     }
     if (changed) {
-      this.mtimes.clear();
-      for (const [file, mtime] of current) this.mtimes.set(file, mtime);
+      this.fingerprints.clear();
+      for (const [file, value] of current) this.fingerprints.set(file, value);
       for (const listener of this.listeners) listener();
     }
     return changed;
   }
 
   private snapshot(): void {
-    for (const [file, mtime] of this.scan()) this.mtimes.set(file, mtime);
+    for (const [file, value] of this.scan()) this.fingerprints.set(file, value);
   }
 
-  private scan(): Map<string, number> {
-    const result = new Map<string, number>();
+  private scan(): Map<string, string> {
+    const result = new Map<string, string>();
     if (existsSync(this.dir)) {
       for (const entry of readdirSync(this.dir)) {
         if (!entry.endsWith('.yaml') && !entry.endsWith('.yml')) continue;
         const file = join(this.dir, entry);
         try {
-          result.set(file, statSync(file).mtimeMs);
+          result.set(file, fingerprint(statSync(file)));
         } catch {
           // File deleted between readdir and stat — treated as absent.
         }

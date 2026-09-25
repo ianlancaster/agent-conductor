@@ -1,5 +1,15 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1396,15 +1406,69 @@ describe('Supervisor construction', () => {
 
     rewriteSessionConfig('alpha', `codename: alpha\nrepo: ${newRepo}\nruntime: claude-code\nunknownKey: true\n`);
     const refusal = await supervisor.command('/start alpha');
-    expect(refusal).toContain('Not starting alpha: its session config file failed to load');
-    expect(refusal).toContain('alpha.yaml');
+    expect(refusal).toContain(
+      `Not starting alpha: its session config file (${join(baseDir, 'config', 'sessions', 'alpha.yaml')}) failed to load`,
+    );
     expect(terminal.paneFor('alpha')).toBeUndefined();
 
     rewriteSessionConfig('alpha', `codename: alpha\nrepo: ${newRepo}\nruntime: missing-runtime\n`);
-    expect(await supervisor.command('/start alpha')).toContain("selects unknown runtime 'missing-runtime'");
+    expect(await supervisor.command('/start alpha')).toContain(
+      `its session config file (${join(baseDir, 'config', 'sessions', 'alpha.yaml')}) selects unknown runtime 'missing-runtime'`,
+    );
     expect(terminal.paneFor('alpha')).toBeUndefined();
 
     rewriteSessionConfig('alpha', `codename: alpha\nrepo: ${newRepo}\nruntime: claude-code\n`);
+    expect(await supervisor.command('/start alpha')).toContain('alpha started');
+    expect(terminal.paneFor('alpha')?.cwd).toBe(newRepo);
+  });
+
+  it('answers already running for a live session even while its session file is held', async () => {
+    const port = await freePort();
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${baseDir}\nruntime: claude-code\n`,
+    });
+    const terminal = new FakeTerminalBackend();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      runtimes: [new FakeRuntime()],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+    expect(await supervisor.command('/start alpha')).toContain('alpha started');
+
+    rewriteSessionConfig('alpha', `codename: alpha\nrepo: ${baseDir}\nunknownKey: 1\n`);
+    expect(await supervisor.command('/start alpha')).toBe('alpha is already running.');
+    expect(terminal.paneFor('alpha')?.launched).toHaveLength(1);
+  });
+
+  it('starts in the new repo after a rename that keeps the old mtime', async () => {
+    const port = await freePort();
+    const oldRepo = join(baseDir, 'old-repo');
+    const newRepo = join(baseDir, 'new-repo');
+    mkdirSync(oldRepo);
+    mkdirSync(newRepo);
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${oldRepo}\nruntime: claude-code\n`,
+    });
+    const file = join(baseDir, 'config', 'sessions', 'alpha.yaml');
+    // A whole-second mtime survives utimes exactly, as `touch -r` and `cp -p` preserve it.
+    const pinned = new Date(Math.floor(Date.now() / 1000) * 1000 - 60_000);
+    utimesSync(file, pinned, pinned);
+    const terminal = new FakeTerminalBackend();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      runtimes: [new FakeRuntime()],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+
+    writeFileSync(`${file}.tmp`, `codename: alpha\nrepo: ${newRepo}\nruntime: claude-code\n`);
+    utimesSync(`${file}.tmp`, pinned, pinned);
+    renameSync(`${file}.tmp`, file);
+    expect(statSync(file).mtimeMs).toBe(pinned.getTime());
+
     expect(await supervisor.command('/start alpha')).toContain('alpha started');
     expect(terminal.paneFor('alpha')?.cwd).toBe(newRepo);
   });

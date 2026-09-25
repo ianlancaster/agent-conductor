@@ -695,7 +695,8 @@ export class Supervisor {
         return this.states.get(session)?.running === true;
       },
       isPaused: (session) => this.states.isPaused(session),
-      startSession: (session, opts) => this.lifecycle.start(session, opts),
+      startSession: (session, opts) => this.lifecycle.startWithOutcome(session, opts),
+      launchRefusal: (session) => this.refreshSessionConfig(session),
       stopSession: (session) => this.lifecycle.stop(session),
       deliver: (session, text) => this.delivery.deliverOrQueue(session, text, { pausePolicy: 'hold' }),
       events: this.eventBus,
@@ -846,7 +847,11 @@ export class Supervisor {
     if (opts.startAll === true) {
       for (const codename of this.sessions.keys()) {
         try {
-          await this.lifecycle.start(codename);
+          const outcome = await this.lifecycle.startWithOutcome(codename);
+          // Adopted survivors report "already running"; anything else that did not launch is worth a warning.
+          if (!outcome.launched && this.states.get(codename)?.running !== true) {
+            log().warn('supervisor', `${codename} not started: ${outcome.message}`);
+          }
         } catch (err) {
           log().error('supervisor', `${codename} failed to start: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -1319,6 +1324,13 @@ export class Supervisor {
     return `Not starting ${codename}: ${held}; Conductor still holds its previous registration, which may name a different repo. Fix the file (\`conductor validate\` shows the problem) and start again.`;
   }
 
+  /** The session's config file under the `<codename>.yaml` / `.yml` naming convention. */
+  private sessionConfigFileFor(codename: string): string {
+    const configDir = sessionConfigDir(this.resolvedInstance);
+    const yamlFile = join(configDir, `${codename}.yaml`);
+    return existsSync(yamlFile) ? yamlFile : join(configDir, `${codename}.yml`);
+  }
+
   private reloadSessions(teardownSession?: string): void {
     const fresh = loadSessionConfigs(this.resolvedInstance, {
       tolerant: true,
@@ -1340,7 +1352,7 @@ export class Supervisor {
         fresh.set(codename, previous);
         this.heldRegistrations.set(
           codename,
-          `its session config selects unknown runtime '${session.runtime}' (available: ${available})`,
+          `its session config file (${this.sessionConfigFileFor(codename)}) selects unknown runtime '${session.runtime}' (available: ${available})`,
         );
       }
     }
@@ -1362,13 +1374,15 @@ export class Supervisor {
       // parse this tick (an editor's atomic save the mtime poller caught
       // mid-write). Only a truly-gone file deregisters — otherwise a transient
       // parse error would wipe the session's persisted auto/tag state.
-      const presentFile = [join(configDir, `${codename}.yaml`), join(configDir, `${codename}.yml`)].find((file) =>
-        existsSync(file),
-      );
-      if (presentFile !== undefined) {
+      const fileStillPresent =
+        existsSync(join(configDir, `${codename}.yaml`)) || existsSync(join(configDir, `${codename}.yml`));
+      if (fileStillPresent) {
         log().warn('supervisor', `Config for ${codename} failed to parse — keeping last-good registration.`);
         if (kept !== undefined) fresh.set(codename, kept);
-        this.heldRegistrations.set(codename, `its session config file failed to load (${presentFile})`);
+        this.heldRegistrations.set(
+          codename,
+          `its session config file (${this.sessionConfigFileFor(codename)}) failed to load`,
+        );
       } else if (this.states.get(codename)?.running === true && codename !== teardownSession) {
         log().warn('supervisor', `Config for ${codename} removed but session is active — keeping registered.`);
         if (kept !== undefined) fresh.set(codename, kept);

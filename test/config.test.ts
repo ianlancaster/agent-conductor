@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -580,6 +580,32 @@ describe('ConfigWatcher', () => {
     expect(watcher.checkNow()).toBe(true);
 
     rmSync(join(dir, 'alpha.yaml'));
+    expect(watcher.checkNow()).toBe(true);
+    expect(watcher.checkNow()).toBe(false);
+  });
+
+  it('detects a same-size replacement that preserves the mtime', async () => {
+    const dir = join(baseDir, 'config', 'sessions');
+    const file = join(dir, 'alpha.yaml');
+    // A whole-second mtime survives utimes exactly, as `touch -r` and `cp -p` preserve it.
+    const pinned = new Date(Math.floor(Date.now() / 1000) * 1000 - 60_000);
+    writeSession('alpha', 'codename: alpha\nrepo: /tmp/a\n');
+    utimesSync(file, pinned, pinned);
+    const watcher = new ConfigWatcher(dir);
+
+    // Atomic rename of a `touch -r` copy (a new inode).
+    const tmp = join(dir, 'alpha.yaml.tmp');
+    writeFileSync(tmp, 'codename: alpha\nrepo: /tmp/b\n');
+    utimesSync(tmp, pinned, pinned);
+    renameSync(tmp, file);
+    expect(statSync(file).mtimeMs).toBe(pinned.getTime());
+    expect(watcher.checkNow()).toBe(true);
+
+    // In-place rewrite with the mtime put back (`cp -p` onto the same inode).
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    writeFileSync(file, 'codename: alpha\nrepo: /tmp/c\n');
+    utimesSync(file, pinned, pinned);
+    expect(statSync(file).mtimeMs).toBe(pinned.getTime());
     expect(watcher.checkNow()).toBe(true);
     expect(watcher.checkNow()).toBe(false);
   });

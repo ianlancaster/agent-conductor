@@ -162,10 +162,11 @@ for invalid edits and active removed sessions. Launch-setting changes such as ru
 environment, external directories, and system prompts apply on the next start or continuation;
 they do not rewrite an already-running CLI. A start or continuation re-reads changed session files
 first, so it launches in the `repo` the file names at that moment, with no need to wait for the
-roster to catch up. It refuses, naming the file, while that session's file fails to load or selects
-an unknown runtime. Otherwise it would launch from the held last-good registration. Supervisor
-settings require a restart. The restart is the operator's decision; once they approve it in
-conversation, run `conductor -C <fleetDir>
+roster to catch up. A change is noticed even when a copy or rename preserves the file's mtime. When
+a launch would be needed, it refuses, naming the file, while that session's file fails to load or
+selects an unknown runtime; a running session still answers "already running". Otherwise it would
+launch from the held last-good registration. Supervisor settings require a restart. The restart
+is the operator's decision; once they approve it in conversation, run `conductor -C <fleetDir>
 restart` yourself and report its result line.
 
 A session file has this shape:
@@ -798,6 +799,9 @@ Behavior:
 - Skipped occurrences are discarded, not queued for catch-up when the session next starts.
 - `freshContext: true` does not imply wake permission. It can refresh a running session while
   `wakeIfStopped` remains false.
+- A fire whose start would be refused, for example because the session file fails to load, is
+  recorded as `refused` and logged as a warning with the reason. A fresh-context fire checks this
+  before stopping anything, so a running session is left running.
 - Schedules targeting the same session are serialized.
 - Overlap protection prevents one cron entry from running over itself.
 - Pausing the session with `pause_session` suppresses all its schedules until resumed.
