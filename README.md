@@ -76,7 +76,9 @@ check. The console opened by `conductor start` owns its Conductor process, so `C
 stops it. Use `conductor console` only when you intentionally want an additional,
 non-owning console. If a crashed or forcibly closed owning console leaves its process behind,
 run `conductor kill` from the fleet directory; it stops only that fleet's recorded Conductor and
-leaves all session panes running.
+leaves all session panes running. `conductor restart` replaces the running Conductor from any
+shell, including an agent's, and waits until the new process is healthy. The operator decides
+when to restart; an agent can carry it out.
 
 For the full walkthrough, including what the generated files mean, continue with
 [Getting Started](docs/getting-started.md).
@@ -374,8 +376,8 @@ through the same `get_conductor_docs` catalog agents already use.
 After the first hand-driven session works, ask the onboarding assistant: “Show me the runbook
 catalog and help me configure Engineering Management Tier 1.” It should explain the selected
 workflow, gather your choices, and make only approved changes. If you want to label the resulting
-work for later evaluation, it prepares an exact operator-only `/runbook adopt` command; merely
-reading a runbook never activates it or grants authority.
+work for later evaluation, it asks for your approval and then records it with `/runbook adopt`
+through `conductor cmd`; merely reading a runbook never activates it or grants authority.
 
 Start with the built-in [Engineering Management](runbooks/agent-conductor/engineering-management/README.md)
 bundle, then see [Authoring and sharing runbooks](guides/runbooks.md) to create, validate, version,

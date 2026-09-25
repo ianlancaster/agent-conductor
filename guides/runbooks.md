@@ -126,8 +126,8 @@ An adoption with no `--session` assignments records fleet-wide scope. Assignment
 v1; superseding preserves them. To change scope or roles, end the current adoption and create a new
 one. These commands validate the exact installed version and topic plus every assigned session.
 They do not apply the runbook, mutate configuration, start sessions, or authorize future actions.
-They are operator-only, so a managed agent should prepare the exact command and ask the operator to
-run it.
+They are operator-decided: a managed agent presents the exact command, gets the operator's
+approval, then runs it with `conductor -C <fleetDir> cmd` and reports the adoption ID.
 
 Adoption facts join the same content-free event stream as session, message, workspace, stall, and
 schedule facts. Export it without depending on the private SQLite schema:

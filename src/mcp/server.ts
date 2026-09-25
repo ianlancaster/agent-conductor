@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { log } from '../logger.js';
 import type { ChannelMessage } from '../channels/types.js';
 import { InvalidRequestError } from '../core/errors.js';
-import { PACKAGE_VERSION } from '../version.js';
+import { PACKAGE_BUILD, PACKAGE_VERSION } from '../version.js';
 
 export interface McpToolDefinition {
   name: string;
@@ -127,7 +127,13 @@ export class ConductorMcpServer {
     }
 
     if (req.method === 'GET' && path === '/health') {
-      this.respondJson(res, 200, { status: 'ok', tools: [...this.tools.keys()] });
+      this.respondJson(res, 200, {
+        status: 'ok',
+        pid: process.pid,
+        version: PACKAGE_VERSION,
+        build: PACKAGE_BUILD ?? null,
+        tools: [...this.tools.keys()],
+      });
       return;
     }
 

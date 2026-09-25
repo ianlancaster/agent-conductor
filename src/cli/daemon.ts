@@ -18,11 +18,11 @@ export function systemdUnit(baseDir: string, instance?: string): string {
   return `agent-conductor-${fleetSlug(baseDir, instance)}.service`;
 }
 
-function launchdPlistPath(baseDir: string, instance?: string): string {
+export function launchdPlistPath(baseDir: string, instance?: string): string {
   return join(homedir(), 'Library', 'LaunchAgents', `${launchdLabel(baseDir, instance)}.plist`);
 }
 
-function systemdUnitPath(baseDir: string, instance?: string): string {
+export function systemdUnitPath(baseDir: string, instance?: string): string {
   return join(homedir(), '.config', 'systemd', 'user', systemdUnit(baseDir, instance));
 }
 

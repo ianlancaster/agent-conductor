@@ -44,7 +44,7 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "pnpm clean && tsc && node scripts/mark-bins-executable.mjs",
+    "build": "pnpm clean && tsc && node scripts/mark-bins-executable.mjs && node scripts/write-build-info.mjs",
     "prepack": "pnpm build",
     "dev": "tsx src/index.ts",
     "cli": "tsx src/cli/index.ts",
