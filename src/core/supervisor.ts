@@ -120,6 +120,8 @@ export class Supervisor {
   private readonly mcpServer: ConductorMcpServer;
   private readonly scheduler: Scheduler;
   private readonly watcher: ConfigWatcher;
+  /** Why a session's registration is a held last-good copy instead of its current config file. */
+  private readonly heldRegistrations = new Map<string, string>();
   private readonly shepherd: ShepherdManager;
   private readonly integrations: IntegrationManager;
   private readonly channelCandidates: ChannelAdapter[];
@@ -402,6 +404,7 @@ export class Supervisor {
       reloadSessions: (teardownSession) => {
         this.reloadSessions(teardownSession);
       },
+      refreshSessionConfig: (codename) => this.refreshSessionConfig(codename),
       supervisionReset: (session) => {
         this.health.reset(session);
         if (this.states.get(session)?.activity === 'working') this.health.markTurnActive(session);
@@ -1304,21 +1307,42 @@ export class Supervisor {
     return delivered;
   }
 
+  /**
+   * Launch-time view of one session's config: pick up any session file changed since the
+   * watcher's last poll, and refuse while the registration is a held last-good copy — its
+   * repo and settings may no longer match the file.
+   */
+  private refreshSessionConfig(codename: string): string | undefined {
+    this.watcher.checkNow();
+    const held = this.heldRegistrations.get(codename);
+    if (held === undefined) return undefined;
+    return `Not starting ${codename}: ${held}; Conductor still holds its previous registration, which may name a different repo. Fix the file (\`conductor validate\` shows the problem) and start again.`;
+  }
+
   private reloadSessions(teardownSession?: string): void {
     const fresh = loadSessionConfigs(this.resolvedInstance, {
       tolerant: true,
       defaultRuntime: this.config.defaults.runtime,
       admission: this.admission,
     });
+    this.heldRegistrations.clear();
     for (const [codename, session] of fresh) {
       if (this.runtimes.has(session.runtime)) continue;
       const previous = this.sessions.get(codename);
+      const available = [...this.runtimes.keys()].sort().join(', ');
       log().error(
         'supervisor',
-        `Session '${codename}' selects unknown runtime '${session.runtime}' — available: ${[...this.runtimes.keys()].sort().join(', ')}.`,
+        `Session '${codename}' selects unknown runtime '${session.runtime}' — available: ${available}.`,
       );
-      if (previous === undefined) fresh.delete(codename);
-      else fresh.set(codename, previous);
+      if (previous === undefined) {
+        fresh.delete(codename);
+      } else {
+        fresh.set(codename, previous);
+        this.heldRegistrations.set(
+          codename,
+          `its session config selects unknown runtime '${session.runtime}' (available: ${available})`,
+        );
+      }
     }
     for (const [codename, session] of fresh) {
       const isNew = !this.sessions.has(codename);
@@ -1338,11 +1362,13 @@ export class Supervisor {
       // parse this tick (an editor's atomic save the mtime poller caught
       // mid-write). Only a truly-gone file deregisters — otherwise a transient
       // parse error would wipe the session's persisted auto/tag state.
-      const fileStillPresent =
-        existsSync(join(configDir, `${codename}.yaml`)) || existsSync(join(configDir, `${codename}.yml`));
-      if (fileStillPresent) {
+      const presentFile = [join(configDir, `${codename}.yaml`), join(configDir, `${codename}.yml`)].find((file) =>
+        existsSync(file),
+      );
+      if (presentFile !== undefined) {
         log().warn('supervisor', `Config for ${codename} failed to parse — keeping last-good registration.`);
         if (kept !== undefined) fresh.set(codename, kept);
+        this.heldRegistrations.set(codename, `its session config file failed to load (${presentFile})`);
       } else if (this.states.get(codename)?.running === true && codename !== teardownSession) {
         log().warn('supervisor', `Config for ${codename} removed but session is active — keeping registered.`);
         if (kept !== undefined) fresh.set(codename, kept);

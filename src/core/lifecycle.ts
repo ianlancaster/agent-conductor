@@ -94,6 +94,11 @@ export interface LifecycleDeps {
   admission?: SessionAdmissionGate;
   /** Re-read session configs immediately (after spawn/teardown writes). */
   reloadSessions(teardownSession?: string): void;
+  /**
+   * Bring one session's registration up to date with its config file before a launch.
+   * Returns a refusal when the file cannot be honored (for example, it no longer parses).
+   */
+  refreshSessionConfig(codename: string): string | undefined;
   /** Reset per-run health and stall-routing tracking on lifecycle boundaries. */
   supervisionReset(session: string): void;
   /**
@@ -276,6 +281,10 @@ export class Lifecycle {
   }
 
   private async startInner(codename: string, opts: StartOptions): Promise<string> {
+    // Launch from the session file as it is now, never from a roster the
+    // mtime watcher has not re-polled yet (a just-edited repo: must win).
+    const refusal = this.deps.refreshSessionConfig(codename);
+    if (refusal !== undefined) return refusal;
     const session = this.deps.sessions().get(codename);
     if (session === undefined) return `Unknown session: ${codename}`;
     try {

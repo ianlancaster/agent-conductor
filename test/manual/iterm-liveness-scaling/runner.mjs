@@ -350,6 +350,7 @@ async function main() {
       },
       baseDir: scratch,
       sessionConfigDir: scratch,
+      refreshSessionConfig: () => undefined,
       reloadSessions: () => undefined,
       supervisionReset: () => undefined,
       armStartConfirmation: () => undefined,

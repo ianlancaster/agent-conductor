@@ -74,6 +74,7 @@ beforeEach(() => {
     },
     baseDir: '/tmp',
     sessionConfigDir: '/tmp/sessions',
+    refreshSessionConfig: () => undefined,
     reloadSessions: () => undefined,
     supervisionReset: () => undefined,
     armStartConfirmation: () => undefined,

@@ -160,8 +160,12 @@ removing a file under
 `.conductor/config/sessions/` updates the roster without restarting, subject to last-good handling
 for invalid edits and active removed sessions. Launch-setting changes such as runtime, model,
 environment, external directories, and system prompts apply on the next start or continuation;
-they do not rewrite an already-running CLI. Supervisor settings require a restart. The restart is
-the operator's decision; once they approve it in conversation, run `conductor -C <fleetDir>
+they do not rewrite an already-running CLI. A start or continuation re-reads changed session files
+first, so it launches in the `repo` the file names at that moment, with no need to wait for the
+roster to catch up. It refuses, naming the file, while that session's file fails to load or selects
+an unknown runtime. Otherwise it would launch from the held last-good registration. Supervisor
+settings require a restart. The restart is the operator's decision; once they approve it in
+conversation, run `conductor -C <fleetDir>
 restart` yourself and report its result line.
 
 A session file has this shape:
@@ -450,8 +454,15 @@ Model and effort resolution:
 
 1. Per-run lifecycle argument
 2. Session configuration
-3. Runtime default in `supervisor.yaml`
+3. Runtime default in `supervisor.yaml`: `runtimes.claudeCode.defaultModel` and `defaultEffort`, or
+   `runtimes.codex.defaultModel` and `defaultEffort`
 4. Runtime CLI default
+
+Defaults are per runtime, never fleet-wide: `defaults` has no model or effort key, so a Claude model
+can never reach a Codex launch. Spawns that omit `model` or `effort` do not copy the runtime default
+into the session file. It is resolved at each launch, so changing it applies to those sessions on
+their next start. A launch with a runtime override uses that runtime's defaults, not the session's
+pins.
 
 Model and effort strings pass through without allowlist validation so newly released and
 third-party models remain usable. `get_session_status` reports what Conductor resolved; it may show

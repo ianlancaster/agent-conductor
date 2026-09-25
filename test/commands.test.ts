@@ -102,6 +102,7 @@ beforeEach(() => {
     },
     baseDir,
     sessionConfigDir: join(baseDir, 'config', 'sessions'),
+    refreshSessionConfig: () => undefined,
     reloadSessions: () => {
       sessions = loadSessionConfigs(baseDir, { tolerant: true });
       for (const codename of sessions.keys()) states.register(codename, false);

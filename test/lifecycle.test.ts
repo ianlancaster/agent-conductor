@@ -28,6 +28,7 @@ let defaultEfforts: { 'claude-code': string | undefined; 'codex': string | undef
 let lifecycleEvents: FakeEventPublisher;
 let recoveredActivity: PaneActivityEvidence;
 let activityObserver: (session: string) => Promise<PaneActivityEvidence>;
+let refreshSessionConfig: (codename: string) => string | undefined;
 
 beforeEach(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'conductor-lc-'));
@@ -50,6 +51,7 @@ beforeEach(() => {
   lifecycleEvents = new FakeEventPublisher();
   recoveredActivity = 'idle';
   activityObserver = async () => recoveredActivity;
+  refreshSessionConfig = () => undefined;
 
   lifecycle = new Lifecycle({
     store,
@@ -79,6 +81,7 @@ beforeEach(() => {
     },
     baseDir,
     sessionConfigDir: join(baseDir, 'config', 'sessions'),
+    refreshSessionConfig: (codename) => refreshSessionConfig(codename),
     reloadSessions: () => {
       sessions = loadSessionConfigs(baseDir, { tolerant: true });
       for (const codename of sessions.keys()) states.register(codename, false);
@@ -116,6 +119,31 @@ describe('lifecycle edges', () => {
       cause: 'start',
       runtime: 'claude-code',
     });
+  });
+
+  it('refreshes the session config before resolving where to launch', async () => {
+    const moved = join(baseDir, 'repos', 'moved');
+    mkdirSync(moved, { recursive: true });
+    writeFileSync(join(baseDir, 'config', 'sessions', 'alpha.yaml'), `codename: alpha\nrepo: ${moved}\n`);
+    refreshSessionConfig = () => {
+      sessions = loadSessionConfigs(baseDir, { tolerant: true });
+      return undefined;
+    };
+
+    await lifecycle.start('alpha');
+
+    expect(runtime.prepared[0]?.session.repo).toBe(moved);
+    expect(backend.paneFor('alpha')?.cwd).toBe(moved);
+  });
+
+  it('launches nothing when the config refresh refuses', async () => {
+    refreshSessionConfig = (codename) => `Not starting ${codename}: held`;
+
+    expect(await lifecycle.start('alpha')).toBe('Not starting alpha: held');
+    expect(await lifecycle.continue('alpha')).toBe('Not starting alpha: held');
+    expect(runtime.prepared).toEqual([]);
+    expect(backend.panes.size).toBe(0);
+    expect(states.get('alpha')?.running).not.toBe(true);
   });
 
   it.each(['claude-code', 'codex'] as const)(
@@ -595,6 +623,7 @@ describe('lifecycle edges', () => {
         },
       },
       events: lifecycleEvents,
+      refreshSessionConfig: () => undefined,
       reloadSessions: () => undefined,
       supervisionReset: () => undefined,
       armStartConfirmation: () => undefined,

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -55,6 +55,17 @@ function writeConfig(supervisorYaml: string, sessions: Record<string, string>): 
   for (const [name, content] of Object.entries(sessions)) {
     writeFileSync(join(baseDir, 'config', 'sessions', `${name}.yaml`), content);
   }
+}
+
+let mtimeTick = 0;
+
+/** Rewrite a session file with a guaranteed-new mtime, independent of filesystem timestamp granularity. */
+function rewriteSessionConfig(name: string, content: string): void {
+  const file = join(baseDir, 'config', 'sessions', `${name}.yaml`);
+  writeFileSync(file, content);
+  mtimeTick += 1;
+  const when = new Date(Date.now() + mtimeTick * 10_000);
+  utimesSync(file, when, when);
 }
 
 beforeEach(() => {
@@ -930,6 +941,34 @@ describe('Supervisor construction', () => {
     expect(supervisor.statusReport('alpha')).toContain('"effort": "xhigh"');
   });
 
+  it('launches spawns with the runtime model and effort defaults unless the call pins its own', async () => {
+    const port = await freePort();
+    writeConfig(
+      `mcp:\n  port: ${String(port)}\nruntimes:\n  claudeCode:\n    defaultModel: fleet-model\n    defaultEffort: fleet-effort\n`,
+      {},
+    );
+    const terminal = new FakeTerminalBackend();
+    supervisor = new Supervisor(baseDir, { terminalBackend: terminal, includeConfiguredChannels: false, env: {} });
+    const sessionsDir = join(baseDir, 'config', 'sessions');
+
+    expect(await supervisor.command('/spawn plain')).toContain('plain started');
+    const plainLaunch = terminal.paneFor('plain')?.launched.join('\n') ?? '';
+    expect(plainLaunch).toMatch(/--model '?fleet-model'? /);
+    expect(plainLaunch).toMatch(/--effort '?fleet-effort'? /);
+    // Resolved at launch, not copied into the session file, so a later fleet default still applies.
+    expect(readFileSync(join(sessionsDir, 'plain.yaml'), 'utf8')).not.toMatch(/model|effort/);
+
+    expect(await supervisor.command('/spawn pinned -m pinned-model -e pinned-effort')).toContain('pinned started');
+    const pinnedLaunch = terminal.paneFor('pinned')?.launched.join('\n') ?? '';
+    expect(pinnedLaunch).toMatch(/--model '?pinned-model'? /);
+    expect(pinnedLaunch).toMatch(/--effort '?pinned-effort'? /);
+    expect(pinnedLaunch).not.toContain('fleet-');
+
+    // Another runtime never inherits Claude Code's defaults.
+    expect(await supervisor.command('/spawn other -r codex')).toContain('other started');
+    expect(terminal.paneFor('other')?.launched.join('\n')).not.toContain('fleet-');
+  });
+
   it('reports the configured path and current branch in detailed and fleet status', () => {
     const repo = join(baseDir, 'session-repo');
     mkdirSync(repo);
@@ -1309,6 +1348,65 @@ describe('Supervisor construction', () => {
         cause: 'teardown',
       }),
     );
+  });
+
+  it('starts a session in the working directory its config file names right now', async () => {
+    const port = await freePort();
+    const oldRepo = join(baseDir, 'old-repo');
+    const newRepo = join(baseDir, 'new-repo');
+    mkdirSync(oldRepo);
+    mkdirSync(newRepo);
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${oldRepo}\nruntime: claude-code\n`,
+    });
+    const terminal = new FakeTerminalBackend();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      runtimes: [new FakeRuntime()],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+
+    // A migration rewrites repo: and starts at once, before the watcher's next poll.
+    rewriteSessionConfig('alpha', `codename: alpha\nrepo: ${newRepo}\nruntime: claude-code\n`);
+    expect(await supervisor.command('/start alpha')).toContain('alpha started');
+
+    expect(terminal.paneFor('alpha')?.cwd).toBe(newRepo);
+    expect(supervisor.statusReport('alpha')).toContain(`"path": "${newRepo}"`);
+  });
+
+  it('refuses to start from a held last-good config and starts once the file is fixed', async () => {
+    const port = await freePort();
+    const oldRepo = join(baseDir, 'old-repo');
+    const newRepo = join(baseDir, 'new-repo');
+    mkdirSync(oldRepo);
+    mkdirSync(newRepo);
+    writeConfig(`mcp:\n  port: ${String(port)}\n`, {
+      alpha: `codename: alpha\nrepo: ${oldRepo}\nruntime: claude-code\n`,
+    });
+    const terminal = new FakeTerminalBackend();
+    supervisor = new Supervisor(baseDir, {
+      terminalBackend: terminal,
+      runtimes: [new FakeRuntime()],
+      includeConfiguredChannels: false,
+      env: {},
+    });
+    await supervisor.start();
+
+    rewriteSessionConfig('alpha', `codename: alpha\nrepo: ${newRepo}\nruntime: claude-code\nunknownKey: true\n`);
+    const refusal = await supervisor.command('/start alpha');
+    expect(refusal).toContain('Not starting alpha: its session config file failed to load');
+    expect(refusal).toContain('alpha.yaml');
+    expect(terminal.paneFor('alpha')).toBeUndefined();
+
+    rewriteSessionConfig('alpha', `codename: alpha\nrepo: ${newRepo}\nruntime: missing-runtime\n`);
+    expect(await supervisor.command('/start alpha')).toContain("selects unknown runtime 'missing-runtime'");
+    expect(terminal.paneFor('alpha')).toBeUndefined();
+
+    rewriteSessionConfig('alpha', `codename: alpha\nrepo: ${newRepo}\nruntime: claude-code\n`);
+    expect(await supervisor.command('/start alpha')).toContain('alpha started');
+    expect(terminal.paneFor('alpha')?.cwd).toBe(newRepo);
   });
 
   it('keeps fleet watch enabled as registered membership changes', async () => {

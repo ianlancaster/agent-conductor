@@ -361,6 +361,21 @@ describe('loadSupervisorConfig', () => {
     });
   });
 
+  it('keeps model and effort defaults per runtime: defaults rejects model and effort keys', () => {
+    writeFileSync(
+      join(baseDir, 'config', 'supervisor.yaml'),
+      'runtimes:\n  claudeCode:\n    defaultModel: fleet-claude\n  codex:\n    defaultModel: fleet-codex\n',
+    );
+    const config = loadSupervisorConfig(baseDir);
+    expect(config.runtimes.claudeCode.defaultModel).toBe('fleet-claude');
+    expect(config.runtimes.codex.defaultModel).toBe('fleet-codex');
+
+    for (const key of ['model', 'effort']) {
+      writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), `defaults:\n  ${key}: anything\n`);
+      expect(() => loadSupervisorConfig(baseDir)).toThrow(new RegExp(`defaults: Unrecognized key.*${key}`));
+    }
+  });
+
   it('rejects invalid values with a readable error', () => {
     writeFileSync(join(baseDir, 'config', 'supervisor.yaml'), 'mcp:\n  port: -1\n');
     expect(() => loadSupervisorConfig(baseDir)).toThrow(/mcp\.port/);
