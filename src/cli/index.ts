@@ -21,6 +21,9 @@ import { loadConfiguredRuntimeAdapters } from '../runtimes/configured.js';
 import { loadConfiguredIntegrations } from '../integrations/configured.js';
 import { subscribeFeed } from './feed.js';
 import { killFleetConductor } from './kill.js';
+import { joinCommandLine, withCmdPassthrough } from './argv.js';
+import { takeOwnerFromEnvironment, watchOwner } from './owner-watch.js';
+import { defaultRestartDependencies, restartConductor } from './restart.js';
 import { ensureFleetScaffold } from './scaffold.js';
 import { waitForConductorStart } from './startup.js';
 import { DEFAULT_STATUS_INTERVAL, parseStatusInterval, runStatusDashboard } from './live-status.js';
@@ -243,6 +246,7 @@ async function runForeground(startAll: boolean): Promise<void> {
   });
 
   setTerminalTitle(`conductor feed — ${basename(baseDir())}`);
+  const owner = takeOwnerFromEnvironment(process.env);
 
   // This is the single configured-code execution boundary. The non-foreground
   // parent performs only schema/stat preflight before spawning this process.
@@ -259,12 +263,26 @@ async function runForeground(startAll: boolean): Promise<void> {
   const supervisor = new Supervisor(baseDir(), { runtimes, integrations, instance: instanceName() });
   await supervisor.start({ startAll });
 
+  let stopping = false;
   const shutdown = async (): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
     await supervisor.stop();
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
+
+  // Launched by `conductor restart` for an operator console: stop with that console.
+  if (owner !== undefined) {
+    watchOwner({
+      ...owner,
+      onGone: () => {
+        process.stderr.write(`Operator console pid ${String(owner.pid)} closed; stopping this Conductor.\n`);
+        void shutdown();
+      },
+    });
+  }
 }
 
 program
@@ -409,10 +427,56 @@ program
   });
 
 program
+  .command('restart')
+  .description(
+    'Restart this fleet’s Conductor process, leaving session panes running; waits until the new process is healthy',
+  )
+  .action(async () => {
+    // Refuse before stopping anything: a replacement that cannot start would leave no Conductor.
+    const problems = validateConfig(baseDir(), { instance: instanceName() });
+    if (problems.length > 0) {
+      for (const problem of problems) process.stdout.write(`✗ ${problem}\n`);
+      process.stdout.write('Restart refused: fix the configuration first. Nothing was stopped.\n');
+      process.exitCode = 1;
+      return;
+    }
+    const failures = preflightFailures(await runPreflight(baseDir(), {}, instanceName()));
+    if (failures.length > 0) {
+      process.stdout.write(
+        `${formatPreflight(failures)}\nRestart refused: startup preflight failed. Nothing was stopped.\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const config = loadSupervisorConfig(resolvedInstance());
+    const dataDir = resolveFleetDataDir(baseDir(), config.paths.dataDir);
+    mkdirSync(dataDir, { recursive: true });
+    const logPath = join(dataDir, 'conductor.out.log');
+    const result = await restartConductor(
+      {
+        fleetLabel:
+          instanceName() === undefined ? basename(baseDir()) : `${basename(baseDir())}/${instanceName() ?? ''}`,
+        logPath,
+        recoveryHint: `conductor -C ${baseDir()}${instanceName() === undefined ? '' : ` --instance ${instanceName() ?? ''}`} restart`,
+      },
+      defaultRestartDependencies({
+        fleetDir: baseDir(),
+        instance: instanceName(),
+        lockPath: join(dataDir, 'conductor.lock'),
+        healthUrl: `http://${config.mcp.host}:${String(config.mcp.port)}/health`,
+        logPath,
+        launchArgs: ['-C', baseDir(), ...instanceArgs(), 'start', '--foreground'],
+      }),
+    );
+    process.stdout.write(`${result.message}\n`);
+    if (!result.ok) process.exitCode = 1;
+  });
+
+program
   .command('cmd <line...>')
-  .description('Send a single command to a running conductor')
+  .description('Send a single command to a running conductor; every token after cmd is command-language text')
   .action(async (line: string[]) => {
-    const command = line.join(' ');
+    const command = joinCommandLine(line);
     const reply = await sendCommand(command);
     process.stdout.write(`${formatTerminalReply(command, reply, process.stdout.isTTY === true)}\n`);
   });
@@ -481,7 +545,7 @@ daemon
     process.stdout.write(`${uninstallDaemon(baseDir(), instanceName())}\n`);
   });
 
-program.parseAsync().catch((err: unknown) => {
+program.parseAsync(withCmdPassthrough(process.argv.slice(2)), { from: 'user' }).catch((err: unknown) => {
   process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(1);
 });

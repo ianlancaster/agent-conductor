@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: agent-conductor/engineering-management
 name: Engineering Management Fleet
-version: 1.1.0
+version: 1.2.0
 summary: Build a lean dispatch-and-review fleet around a persistent engineering manager and stall sentinel.
 license: MIT
 repository: https://github.com/ianlancaster/agent-conductor

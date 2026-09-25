@@ -198,7 +198,9 @@ something is wrong with your iTerm2 or `claude` setup you find out cleanly.
    owning console is already gone but its core survived, run `conductor kill` from this fleet
    directory. It uses the fleet ownership lock, verifies the process before signaling it, and
    leaves session panes running. A launchd/systemd-managed Conductor is expected to restart after
-   an ordinary process signal; use `conductor daemon uninstall` to take that service down.
+   an ordinary process signal; use `conductor daemon uninstall` to take that service down. To
+   restart any Conductor, including from an agent's shell, run `conductor restart`: it keeps
+   session panes and your console, and waits until the new process is healthy.
 
    `/tell` delivers your message into the session's pane. The session replies **in its own
    pane** unless it uses `send_to_operator`; that tool sends its reply to every connected
@@ -218,8 +220,9 @@ status, the Conductor console, and the Stall Sentinel on the left.
 These shareable workflow bundles are called **runbooks**. Ask the onboarding agent to show the live
 catalog rather than relying on a remembered name. After you choose a topic, it can load the exact
 instructions, interview you for fleet-specific choices, and drive an approved setup. If you want
-the condition recorded for later event-log analysis, the agent prepares an exact `/runbook adopt`
-command for you to run; managed sessions cannot record operator approval themselves. See
+the condition recorded for later event-log analysis, the agent presents the exact coordinates and,
+once you approve, runs `/runbook adopt` through `conductor cmd` and reports the adoption ID. The
+decision stays yours; the agent only carries it out. See
 [Authoring and sharing runbooks](../guides/runbooks.md) to add or publish your own.
 
 ---

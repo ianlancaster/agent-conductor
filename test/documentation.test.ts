@@ -94,6 +94,17 @@ describe('agent documentation', () => {
     expect(topic.content).not.toContain('FLEET_ULTRA');
   });
 
+  it('routes operator decisions through agent-run commands instead of operator keystrokes', async () => {
+    const channels = JSON.parse(await documentation().read('operator-channels')) as { content: string };
+    expect(channels.content).toContain('### Carrying out operator decisions');
+    expect(channels.content).toContain('conductor -C <fleetDir> cmd /accept-status --session');
+    expect(channels.content).toContain('`conductor restart`');
+    const configuration = JSON.parse(await documentation().read('fleet-configuration')) as { content: string };
+    expect(configuration.content).toContain('run `conductor -C <fleetDir>\nrestart` yourself');
+    const runbooks = JSON.parse(await documentation().read('runbooks')) as { content: string };
+    expect(runbooks.content).not.toContain('ask the operator to approve and run');
+  });
+
   it('always lists the fleet knowledge topic and states the index contract', async () => {
     const index = JSON.parse(await documentation().read()) as {
       topics: { name: string; title: string }[];
@@ -135,7 +146,7 @@ describe('agent documentation', () => {
       runbooks: { id: string; version: string; source: string; topics: { id: string }[] }[];
     };
     const engineering = index.runbooks.find((runbook) => runbook.id === 'agent-conductor/engineering-management');
-    expect(engineering).toMatchObject({ version: '1.1.0', source: 'built-in' });
+    expect(engineering).toMatchObject({ version: '1.2.0', source: 'built-in' });
     expect(engineering?.topics.map((topic) => topic.id)).toContain('tier-1');
     const catalog = JSON.parse(await documentation().read('runbooks')) as { content: string };
     expect(catalog.content).toContain('engineering-management');

@@ -63,7 +63,8 @@ After the operator approves both briefs:
    hand-driven stall response. Only then offer auto mode or fleet watch.
 
 Bootstrap does not adopt the runbook, grant ongoing authority, or make later destructive and
-external actions pre-approved. The onboarding agent should prepare the exact operator-only adoption
-command only after the arrangement has passed its manual shakedown. If the operator declines
+external actions pre-approved. Only after the arrangement has passed its manual shakedown, the
+onboarding agent presents the exact adoption coordinates and, once the operator approves, runs
+`/runbook adopt` through `conductor -C <fleetDir> cmd`. If the operator declines
 delegated awakening, leave the panes idle and hand over the two approved briefs without partially
 answering either flow.

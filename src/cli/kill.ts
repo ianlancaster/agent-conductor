@@ -30,7 +30,7 @@ function canonicalPath(path: string): string {
   }
 }
 
-function processCommand(pid: number): string | undefined {
+export function processCommand(pid: number): string | undefined {
   try {
     return execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
       encoding: 'utf8',
@@ -41,7 +41,7 @@ function processCommand(pid: number): string | undefined {
   }
 }
 
-function processWorkingDirectory(pid: number): string | undefined {
+export function processWorkingDirectory(pid: number): string | undefined {
   if (platform() === 'linux') {
     try {
       return readlinkSync(`/proc/${String(pid)}/cwd`);
@@ -75,6 +75,11 @@ export function processMatchesFleetConductor(pid: number, fleetDir: string): boo
     return false;
   }
 
+  return commandTargetsFleet(pid, command, fleetDir);
+}
+
+/** A process targets a fleet when its cwd is the fleet or its argv names the fleet path. */
+function commandTargetsFleet(pid: number, command: string, fleetDir: string): boolean {
   const expected = canonicalPath(fleetDir);
   const cwd = processWorkingDirectory(pid);
   if (cwd !== undefined && canonicalPath(cwd) === expected) return true;
@@ -82,6 +87,40 @@ export function processMatchesFleetConductor(pid: number, fleetDir: string): boo
   // `conductor start` spawns its child with `-C <absolute fleet path>`.
   // Comparing the full resolved path, not a basename, keeps fleets distinct.
   return command.includes(resolve(fleetDir)) || command.includes(expected);
+}
+
+/** True when `pid` is an operator console (`conductor start` without `--foreground`) for this fleet. */
+export function processMatchesFleetConsole(pid: number, fleetDir: string): boolean {
+  const command = processCommand(pid);
+  if (command === undefined) return false;
+  if (!command.includes('conductor') || !/(?:^|\s)start(?:\s|$)/u.test(command) || command.includes('--foreground')) {
+    return false;
+  }
+  return commandTargetsFleet(pid, command, fleetDir);
+}
+
+function psField(pid: number, field: string): string | undefined {
+  try {
+    const value = execFileSync('ps', ['-p', String(pid), '-o', `${field}=`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return value.length > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function parentPid(pid: number): number | undefined {
+  const value = Number.parseInt(psField(pid, 'ppid') ?? '', 10);
+  return Number.isSafeInteger(value) && value > 1 ? value : undefined;
+}
+
+/** The controlling terminal device of `pid`, such as `/dev/ttys012`, or undefined. */
+export function processTty(pid: number): string | undefined {
+  const tty = psField(pid, 'tty');
+  if (tty === undefined || tty === '??' || tty === '?') return undefined;
+  return tty.startsWith('/dev/') ? tty : `/dev/${tty}`;
 }
 
 async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {

@@ -262,8 +262,10 @@ describe('cmd and health endpoints', () => {
 
   it('reports health with the tool list', async () => {
     const response = await fetch(`${BASE}/health`);
-    const payload = (await response.json()) as { status: string; tools: string[] };
+    const payload = (await response.json()) as { status: string; pid: number; version: string; tools: string[] };
     expect(payload.status).toBe('ok');
+    expect(payload.pid).toBe(process.pid);
+    expect(payload.version).toMatch(/^\d+\.\d+\.\d+/u);
     expect(payload.tools).toContain('echo_caller');
   });
 });

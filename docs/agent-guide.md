@@ -92,7 +92,9 @@ files they approve, and validate each layer before adding the next:
    operator-approved cognitive-agent panes, drive the runtime's awakening flow yourself from the
    approved briefs; do not hand repetitive questions back to the operator when the answer is
    already explicit. Pause on ambiguity, drafts, or unexpected prompts. After verification,
-   prepare the exact operator-only adoption command instead of claiming the runbook was adopted.
+   present the adoption coordinates, get the operator's approval, then run `/runbook adopt`
+   through `conductor -C <fleetDir> cmd` and report the adoption ID. Never record an adoption the
+   operator has not approved.
 7. Offer a sentinel and fleet watch. Explain that the sentinel is an ordinary session receiving
    authority-marked stalls, while fleet watch detects fleet-wide darkness. Both are optional.
 8. Offer Telegram and Slack separately. Keep credentials only in the authoritative environment file,
@@ -158,7 +160,9 @@ removing a file under
 `.conductor/config/sessions/` updates the roster without restarting, subject to last-good handling
 for invalid edits and active removed sessions. Launch-setting changes such as runtime, model,
 environment, external directories, and system prompts apply on the next start or continuation;
-they do not rewrite an already-running CLI. Supervisor settings require a restart.
+they do not rewrite an already-running CLI. Supervisor settings require a restart. The restart is
+the operator's decision; once they approve it in conversation, run `conductor -C <fleetDir>
+restart` yourself and report its result line.
 
 A session file has this shape:
 
@@ -241,8 +245,9 @@ template:
    ```
 
 2. Run `conductor -C <fleetDir> validate`.
-3. Batch it with any other pending supervisor changes and ask the operator for one restart. The
-   restart is always the operator's decision.
+3. Batch it with any other pending supervisor changes and ask the operator to approve one restart.
+   The restart is always the operator's decision. Once they approve, run
+   `conductor -C <fleetDir> restart` yourself and report the result.
 
 To use a template before that restart, clone it yourself and spawn into the clone. `spawn_session`
 accepts an existing directory through `path` and starts the session there:
@@ -266,7 +271,8 @@ Before proposing or making config changes:
 4. Consult the matching example or guide.
 5. Run `conductor -C <fleetDir> validate`.
 6. State whether the change hot-reloads or needs a deliberate restart.
-7. Never restart a live fleet merely to test a speculative edit; coordinate with the operator.
+7. Never restart a live fleet merely to test a speculative edit; coordinate with the operator. When
+   the operator approves a restart, carry it out with `conductor -C <fleetDir> restart`.
 
 ### External host-resource admission and recovery evidence
 
@@ -844,6 +850,16 @@ Other local maintenance commands remain outside the operator command router:
 - `conductor kill` stops the process named by the current fleet's ownership lock, escalating from
   graceful termination only when necessary. It leaves every managed session pane running and
   refuses to signal a live PID that does not match this fleet's Conductor process.
+- `conductor restart` replaces the fleet's Conductor process and waits until the new one owns the
+  fleet lock and reports healthy, with sessions reconciled. Session panes keep running. It refuses
+  before stopping anything when `conductor validate` or startup preflight fails. It works from any
+  non-interactive shell, including a managed session's own shell: a service-managed Conductor is
+  restarted through launchd or systemd; one owned by a `conductor start` console is replaced by a
+  detached process that keeps opening panes in that console's window and stops when that console
+  closes; any other is replaced by a detached process logging to `conductor.out.log` in the data
+  directory. If nothing was running, it starts one. It prints one line with the old and new PID,
+  build, and elapsed time, or exits non-zero with a recovery line. Running sessions keep working;
+  their Conductor tools reconnect on their next call.
 - `conductor daemon install` and `conductor daemon uninstall` manage the user-level launchd or
   systemd service.
 - `conductor statusline` configures optional runtime footers; it does not show fleet status.
@@ -852,6 +868,24 @@ Operator-only conversation and pane controls are intentionally not session MCP t
 selects the recipient for operator free text, `/respond` answers a selectable agent request, and
 `/summon` or `/banish` changes supported pane visibility without changing process lifecycle. Use
 `/help` for their current syntax and backend capability notes.
+
+### Carrying out operator decisions
+
+"Operator-only" means operator-decided, not operator-typed. Every operator command is reachable
+from a shell with `conductor -C <fleetDir> cmd <line>`; every token after `cmd` is command text, so
+options such as `--session` need no escaping. A managed agent uses it only on the operator's
+direction, or within authority the operator has explicitly delegated, and reports the result.
+For example, after the operator says so in conversation:
+
+```bash
+conductor -C <fleetDir> cmd /accept-status --session reviewer v3-L8 pr-18
+conductor -C <fleetDir> cmd /close-status v3-old "superseded by v3-L8"
+conductor -C <fleetDir> cmd /runbook adopt owner/name --version 1.2.0 --topic tier-1
+conductor -C <fleetDir> restart
+```
+
+The operator's approval is the authority; running the command is only execution. Never use this
+route to grant yourself a decision the operator has not made.
 
 Telegram is a private bot long-polling adapter. It requires one token and authorized chat ID per
 fleet. Follow `guides/telegram-adapter.md`.
@@ -1159,9 +1193,10 @@ operator command surface:
 Adoption validates the exact live catalog entry and every assigned session. It appends operational
 state plus a content-free journal event; it does not apply instructions, mutate fleet
 configuration, start sessions, or grant authority. Superseding preserves the prior role
-assignments and links the stable old adoption ID to a new one. These operations are operator-only:
-managed sessions should present the proposed coordinates and ask the operator to approve and run
-the command rather than claiming adoption themselves.
+assignments and links the stable old adoption ID to a new one. These operations are
+operator-decided: present the proposed coordinates, get the operator's approval, then run
+`/runbook adopt` through `conductor -C <fleetDir> cmd` and report the adoption ID. Never claim or
+record an adoption the operator has not approved.
 
 Omitting `--session` records fleet-wide scope. Session-role assignments are immutable in v1 and a
 supersede preserves them; end the current adoption and create a new one to change scope or roles.
@@ -1410,8 +1445,11 @@ mismatched or recycled PID, sends `SIGTERM`, and uses `SIGKILL` only if the reco
 not exit within the bounded grace period. Session panes remain running. A missing process is
 treated as already stopped and its stale lock is removed.
 
+To bring the fleet back rather than leave it stopped, use `conductor restart` instead.
+
 Do not use `kill` as a daemon lifecycle command. launchd and systemd may restart the process by
-design; use `conductor daemon uninstall` when the fleet is service-managed.
+design; use `conductor restart` to restart a service-managed fleet and `conductor daemon uninstall`
+to take it down.
 
 ### A message remains queued
 
@@ -1485,7 +1523,8 @@ Check adapter startup, credentials, authorized identity, and the adapter-specifi
 
 Run `conductor -C <fleetDir> validate`. Unknown keys are rejected. Hot reload retains last-good
 session policy when an edit is invalid. Supervisor settings require restart; do not assume every
-YAML edit is live.
+YAML edit is live. With the operator's approval, apply them with `conductor -C <fleetDir> restart`;
+it refuses, and stops nothing, while the configuration is invalid.
 
 ### A runbook or legacy runbook topic disappears
 
