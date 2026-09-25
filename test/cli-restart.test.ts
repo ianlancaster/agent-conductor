@@ -6,7 +6,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { joinCommandLine, withCmdPassthrough } from '../src/cli/argv.js';
-import { takeOwnerFromEnvironment, watchOwner } from '../src/cli/owner-watch.js';
+import {
+  clearOwnerRecord,
+  readOwnerRecord,
+  takeOwnerFromEnvironment,
+  watchOwner,
+  writeOwnerRecord,
+} from '../src/cli/owner-watch.js';
 import {
   replacementEnvironment,
   restartConductor,
@@ -216,6 +222,26 @@ describe('owner watch', () => {
     expect(takeOwnerFromEnvironment({ CONDUCTOR_OWNER_PID: 'nope' })).toBeUndefined();
   });
 
+  it('keeps the console handoff for later restarts and clears it only for its own Conductor', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conductor-owner-'));
+    const path = join(dir, 'conductor.owner.json');
+    try {
+      writeOwnerRecord(path, { conductorPid: 10, consolePid: 42, consoleStartToken: 'T', consoleTty: '/dev/ttys1' });
+      expect(readOwnerRecord(path)).toEqual({
+        conductorPid: 10,
+        consolePid: 42,
+        consoleStartToken: 'T',
+        consoleTty: '/dev/ttys1',
+      });
+      clearOwnerRecord(path, 11);
+      expect(readOwnerRecord(path)).toBeDefined();
+      clearOwnerRecord(path, 10);
+      expect(readOwnerRecord(path)).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('calls onGone once when the owner exits or its PID is reused', async () => {
     vi.useFakeTimers();
     for (const answers of [
@@ -246,9 +272,13 @@ describe('conductor CLI', () => {
     if (server !== undefined) await new Promise<void>((resolve) => server!.close(() => resolve()));
     server = undefined;
     const lock = readFleetLock(join(fleetDir, '.conductor', 'data', 'conductor.lock'));
-    if (lock !== undefined && isProcessAlive(lock.pid)) process.kill(lock.pid, 'SIGTERM');
-    if (process.env.KEEP_RESTART_FLEET === undefined) rmSync(fleetDir, { recursive: true, force: true });
-    else process.stdout.write(`kept ${fleetDir}\n`);
+    if (lock !== undefined && isProcessAlive(lock.pid)) {
+      process.kill(lock.pid, 'SIGTERM');
+      // Let the detached replacement finish shutting down before its files are removed.
+      const deadline = Date.now() + 10_000;
+      while (isProcessAlive(lock.pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    rmSync(fleetDir, { recursive: true, force: true });
   });
 
   function writeSupervisor(port: number, extra = ''): void {

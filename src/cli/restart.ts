@@ -6,7 +6,7 @@ import { isProcessAlive, processStartToken, readFleetLock } from '../core/lock.j
 import { buildIdentity } from '../version.js';
 import { launchdLabel, launchdPlistPath, systemdUnit, systemdUnitPath } from './daemon.js';
 import { killFleetConductor, parentPid, processMatchesFleetConsole, processTty } from './kill.js';
-import { OWNER_PID_ENV, OWNER_START_ENV } from './owner-watch.js';
+import { OWNER_PID_ENV, OWNER_START_ENV, readOwnerRecord } from './owner-watch.js';
 
 /** How the running Conductor was launched, which decides how it is replaced. */
 export type ConductorHost =
@@ -209,9 +209,26 @@ export async function detectConductorHost(
   fleetDir: string,
   instance: string | undefined,
   pid: number,
+  ownerRecordPath: string,
 ): Promise<ConductorHost> {
   const service = await servicePid(fleetDir, instance);
   if (service?.kind === 'service' && service.pid === pid) return service;
+  // A Conductor that an earlier restart launched for a console is detached;
+  // its recorded owner still identifies that console while it lives.
+  const record = readOwnerRecord(ownerRecordPath);
+  if (
+    record?.conductorPid === pid &&
+    isProcessAlive(record.consolePid) &&
+    (record.consoleStartToken === undefined || processStartToken(record.consolePid) === record.consoleStartToken)
+  ) {
+    return {
+      kind: 'console',
+      pid,
+      consolePid: record.consolePid,
+      ...(record.consoleTty === undefined ? {} : { consoleTty: record.consoleTty }),
+      ...(record.consoleStartToken === undefined ? {} : { consoleStartToken: record.consoleStartToken }),
+    };
+  }
   const consolePid = parentPid(pid);
   if (consolePid !== undefined && processMatchesFleetConsole(consolePid, fleetDir)) {
     const consoleTty = processTty(consolePid);
@@ -231,6 +248,7 @@ export interface DefaultRestartDependencyOptions {
   fleetDir: string;
   instance: string | undefined;
   lockPath: string;
+  ownerRecordPath: string;
   healthUrl: string;
   logPath: string;
   /** Arguments after the executable that launch `start --foreground` for this fleet. */
@@ -257,7 +275,7 @@ export function defaultRestartDependencies(options: DefaultRestartDependencyOpti
         return undefined;
       }
     },
-    detectHost: (pid) => detectConductorHost(options.fleetDir, options.instance, pid),
+    detectHost: (pid) => detectConductorHost(options.fleetDir, options.instance, pid, options.ownerRecordPath),
     restartService: async (host) => {
       if (host.manager === 'launchd') {
         await execFileText('launchctl', ['kickstart', '-k', `gui/${String(userInfo().uid)}/${host.name}`]);

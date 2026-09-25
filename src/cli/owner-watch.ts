@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 /**
  * Environment handed to a Conductor that `conductor restart` launches on behalf
@@ -66,4 +67,40 @@ export function watchOwner(options: OwnerWatchOptions): () => void {
     done = true;
     clearInterval(timer);
   };
+}
+
+/**
+ * Console ownership of a Conductor launched by `conductor restart`, kept in the
+ * data directory so a later restart still knows the console: the replacement
+ * is detached, so its parent process no longer identifies the console.
+ */
+export interface OwnerRecord {
+  conductorPid: number;
+  consolePid: number;
+  consoleStartToken?: string;
+  consoleTty?: string;
+}
+
+export function writeOwnerRecord(path: string, record: OwnerRecord): void {
+  writeFileSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+}
+
+export function readOwnerRecord(path: string): OwnerRecord | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<OwnerRecord>;
+    if (typeof parsed.conductorPid !== 'number' || typeof parsed.consolePid !== 'number') return undefined;
+    return {
+      conductorPid: parsed.conductorPid,
+      consolePid: parsed.consolePid,
+      ...(typeof parsed.consoleStartToken === 'string' ? { consoleStartToken: parsed.consoleStartToken } : {}),
+      ...(typeof parsed.consoleTty === 'string' ? { consoleTty: parsed.consoleTty } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Remove the record only while it still names this Conductor. */
+export function clearOwnerRecord(path: string, conductorPid: number): void {
+  if (readOwnerRecord(path)?.conductorPid === conductorPid) rmSync(path, { force: true });
 }

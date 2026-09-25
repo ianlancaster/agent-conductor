@@ -22,7 +22,7 @@ import { loadConfiguredIntegrations } from '../integrations/configured.js';
 import { subscribeFeed } from './feed.js';
 import { killFleetConductor } from './kill.js';
 import { joinCommandLine, withCmdPassthrough } from './argv.js';
-import { takeOwnerFromEnvironment, watchOwner } from './owner-watch.js';
+import { clearOwnerRecord, takeOwnerFromEnvironment, watchOwner, writeOwnerRecord } from './owner-watch.js';
 import { defaultRestartDependencies, restartConductor } from './restart.js';
 import { ensureFleetScaffold } from './scaffold.js';
 import { waitForConductorStart } from './startup.js';
@@ -263,11 +263,13 @@ async function runForeground(startAll: boolean): Promise<void> {
   const supervisor = new Supervisor(baseDir(), { runtimes, integrations, instance: instanceName() });
   await supervisor.start({ startAll });
 
+  const ownerRecordPath = join(resolveFleetDataDir(baseDir(), config.paths.dataDir), 'conductor.owner.json');
   let stopping = false;
   const shutdown = async (): Promise<void> => {
     if (stopping) return;
     stopping = true;
     await supervisor.stop();
+    clearOwnerRecord(ownerRecordPath, process.pid);
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown());
@@ -275,6 +277,12 @@ async function runForeground(startAll: boolean): Promise<void> {
 
   // Launched by `conductor restart` for an operator console: stop with that console.
   if (owner !== undefined) {
+    writeOwnerRecord(ownerRecordPath, {
+      conductorPid: process.pid,
+      consolePid: owner.pid,
+      ...(owner.startToken === undefined ? {} : { consoleStartToken: owner.startToken }),
+      ...(process.env.CONDUCTOR_CONSOLE_TTY === undefined ? {} : { consoleTty: process.env.CONDUCTOR_CONSOLE_TTY }),
+    });
     watchOwner({
       ...owner,
       onGone: () => {
@@ -463,6 +471,7 @@ program
         fleetDir: baseDir(),
         instance: instanceName(),
         lockPath: join(dataDir, 'conductor.lock'),
+        ownerRecordPath: join(dataDir, 'conductor.owner.json'),
         healthUrl: `http://${config.mcp.host}:${String(config.mcp.port)}/health`,
         logPath,
         launchArgs: ['-C', baseDir(), ...instanceArgs(), 'start', '--foreground'],
