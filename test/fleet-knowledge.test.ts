@@ -51,11 +51,13 @@ describe('fleet knowledge protocol notice', () => {
     expect(both).toContain(`listed in \`${join(federation, 'knowledge-index.toml')}\``);
     expect(both).toContain('`_inbox/`');
     expect(both).not.toContain('This fleet has a shared knowledge base');
+    expect(both?.startsWith('There is a Federation knowledge base')).toBe(true);
 
     writeFileSync(join(fleet, 'knowledge-index.toml'), 'include = ["knowledge"]\nexclude = []\n');
     const withFleet = fleetKnowledgeNotice(fleet);
     expect(withFleet?.indexOf('This fleet has a shared knowledge base')).toBe(0);
     expect(withFleet).toContain(federationSentence);
+    expect(withFleet).toContain('There is also a Federation knowledge base');
   });
 
   it('never treats the fleet directory itself as its Federation root', () => {

@@ -66,7 +66,7 @@ export function fleetKnowledgeNotice(fleetDir: string): string | undefined {
   const federationIndex = federationRoot === undefined ? undefined : join(federationRoot, FLEET_KNOWLEDGE_INDEX_FILE);
   if (federationIndex !== undefined && existsSync(federationIndex)) {
     sentences.push(
-      `There is also a Federation knowledge base for knowledge that holds across fleets, listed in \`${federationIndex}\` and searchable with your memory tools; propose changes to it through its \`_inbox/\` folders.`,
+      `There is ${sentences.length === 0 ? 'a' : 'also a'} Federation knowledge base for knowledge that holds across fleets, listed in \`${federationIndex}\` and searchable with your memory tools; propose changes to it through its \`_inbox/\` folders.`,
     );
   }
   return sentences.length === 0 ? undefined : sentences.join(' ');

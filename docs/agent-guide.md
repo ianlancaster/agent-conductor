@@ -1591,19 +1591,20 @@ include = ["knowledge"]
 exclude = []
 ```
 
-`include` is the complete allow-list: nothing outside a listed folder is indexed. `exclude` removes
-subfolders of an included folder. The memory service enforces these safety rules. A folder that
-breaks them is not indexed:
+`include` is the complete allow-list: nothing outside a listed folder is indexed. `exclude` entries
+are globs relative to the fleet directory that remove matching folders or files from an included
+folder. The memory service enforces these safety rules. A folder that breaks them is not indexed:
 
 - An included folder must be a directory inside the fleet directory.
-- It may be a Git repository of its own, with `.git` directly inside it; `.git` contents are never
-  indexed. Otherwise there must be no `.git` between the fleet directory and the folder or deeper
-  inside it, and no `.conductor` anywhere inside it, so an agent's or project's repository and a
-  Conductor directory are never included.
+- It may be a Git repository of its own, with `.git` directly inside it, unless that repository is
+  an agent's (the memory service refuses an agent checkout); `.git` contents are never indexed.
+  Otherwise there must be no `.git` between the fleet directory and the folder or deeper inside it.
+  A `.conductor` anywhere inside it makes the whole folder invalid, so a Conductor directory is
+  never included.
 - It must not overlap any agent's workspace, whether as that workspace, inside it, or containing
   it.
-- `.conductor/`, `.env*` files, `keys/` folders, `node_modules/`, and `_inbox/` folders are always
-  excluded, even inside an included folder.
+- `.env*` files, `keys/` folders, `node_modules/`, and `_inbox/` folders are always excluded, even
+  inside an included folder; a folder named `.env*` is excluded too.
 - Only `*.md` files are indexed. A service may also skip files that look like they contain
   secrets and report them.
 
@@ -1619,10 +1620,8 @@ breaks them is not indexed:
 - Keep fleet-wide knowledge here, not in your own repository. Keep knowledge about one codebase in
   that codebase.
 
-Memory kits may define a stricter knowledge-area standard, and fleets that use one should follow
-it. The cognitive-agent template's standard gives every document a header with `kind`, `owner`,
-`updated`, `source`, and `status`, and checks an area with `node checks/knowledge-files.mjs
-<area-path>`. Its template repository documents the full standard.
+Memory kits may define a stricter knowledge-area standard; fleets that use one should follow their
+kit's.
 
 ### Federation knowledge base
 
@@ -1630,7 +1629,8 @@ Several fleets may share a parent directory marked by `federation.toml`, called 
 that directory also holds a `knowledge-index.toml`, it has a Federation knowledge base for
 knowledge that holds across fleets. It uses the same index format and safety rules, relative to the
 Federation directory. Conductor adds one sentence about it to the protocol line when both files
-exist in the nearest directory above the fleet directory that holds `federation.toml`. Memory tools
+exist in the nearest directory above the fleet directory that holds `federation.toml`, whether or
+not the fleet has a knowledge base of its own. Memory tools
 include it in default search when the memory service has the Federation registered.
 
 ### Proposing changes through inboxes

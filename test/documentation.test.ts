@@ -116,7 +116,7 @@ describe('agent documentation', () => {
     const topic = JSON.parse(await documentation().read('fleet-knowledge')) as { content: string };
     expect(topic.content).toContain('include = ["knowledge"]');
     expect(topic.content).toContain('exclude = []');
-    expect(topic.content).toContain('no `.conductor` anywhere inside it');
+    expect(topic.content).toContain('A `.conductor` anywhere inside it makes the whole folder invalid');
     expect(topic.content).toContain('`.git` contents are never');
     expect(topic.content).toContain('`_inbox/` folders are always');
     expect(topic.content).toContain('### Federation knowledge base');
