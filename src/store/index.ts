@@ -363,6 +363,7 @@ const MIGRATIONS: SqliteMigration[] = [
   (db) => {
     // Counter-rewind repair tests model beta databases whose schema can be
     // ahead of user_version, so this append-only migration is presence-safe.
+    // Nothing writes this table any more, so its outcome CHECK deliberately lacks the later `refused`.
     db.exec(`
       CREATE TABLE IF NOT EXISTS schedule_occurrences (
         id TEXT PRIMARY KEY,

@@ -28,7 +28,11 @@ let subscriber: FakeEventSubscriber;
 
 async function setup(
   scheduleOptions = '',
-  { startAll = false, beforeStart }: { startAll?: boolean; beforeStart?: () => void } = {},
+  {
+    startAll = false,
+    beforeStart,
+    otherSessions = {},
+  }: { startAll?: boolean; beforeStart?: () => void; otherSessions?: Record<string, string> } = {},
 ): Promise<FakeTerminalBackend> {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -43,6 +47,9 @@ async function setup(
     join(baseDir, 'config', 'sessions', 'alpha.yaml'),
     `codename: alpha\nrepo: ${baseDir}\nschedules:\n  - cron: '0 9 * * *'\n    prompt: scheduled work\n${scheduleOptions}`,
   );
+  for (const [name, content] of Object.entries(otherSessions)) {
+    writeFileSync(join(baseDir, 'config', 'sessions', `${name}.yaml`), content);
+  }
   const terminal = new FakeTerminalBackend();
   subscriber = new FakeEventSubscriber();
   supervisor = new Supervisor(baseDir, {
@@ -57,12 +64,30 @@ async function setup(
   return terminal;
 }
 
-/** Leave alpha's file unloadable with a new mtime, as an agent's mid-rewrite would. */
-function breakSessionFile(): void {
-  const file = join(baseDir!, 'config', 'sessions', 'alpha.yaml');
-  writeFileSync(file, `codename: alpha\nrepo: ${baseDir!}\nunknownKey: 1\n`);
-  const later = new Date(Date.now() + 60_000);
+let edits = 0;
+
+/** Rewrite a session file with a distinctly newer mtime, before the watcher's next poll. */
+function editSessionFile(name: string, content: string): void {
+  const file = join(baseDir!, 'config', 'sessions', `${name}.yaml`);
+  writeFileSync(file, content);
+  edits += 1;
+  const later = new Date(Date.now() + edits * 60_000);
   utimesSync(file, later, later);
+}
+
+/** Leave alpha's file unloadable, as an agent's mid-rewrite would. */
+function breakSessionFile(): void {
+  editSessionFile('alpha', `codename: alpha\nrepo: ${baseDir!}\nunknownKey: 1\n`);
+}
+
+/** Fire alpha's first-armed cron tick through a fresh-context settle delay. */
+async function fireFreshTick(): Promise<void> {
+  vi.useFakeTimers();
+  const pending = ticks[0]!();
+  await vi.advanceTimersByTimeAsync(3100);
+  await pending;
+  vi.useRealTimers();
+  await eventsSettled();
 }
 
 function scheduleOutcomes(): string[] {
@@ -125,6 +150,55 @@ describe('Supervisor schedule lifecycle policy', () => {
     expect(scheduleOutcomes()).toEqual(['refused']);
     expect(warn).toHaveBeenCalledWith('scheduler', expect.stringContaining("'schedule-1' refused: Not starting alpha"));
   });
+
+  it('keeps a fresh-context fire valid across a reload caused by another session file', async () => {
+    const terminal = await setup('    freshContext: true\n', {
+      otherSessions: { beta: `codename: beta\nrepo: ${tmpdir()}\n` },
+    });
+    expect(await supervisor!.command('/start alpha')).toContain('alpha started');
+    editSessionFile('beta', `codename: beta\nrepo: ${tmpdir()}\nbypassPermissions: false\n`);
+
+    await fireFreshTick();
+
+    expect(terminal.paneFor('alpha')?.sessionActive).toBe(true);
+    expect(launchCount(terminal)).toBe(2);
+    expect(scheduleOutcomes()).toEqual(['fired-fresh']);
+  });
+
+  it('fires fresh in the new repo right after its own repo: edit', async () => {
+    const terminal = await setup('    freshContext: true\n');
+    expect(await supervisor!.command('/start alpha')).toContain('alpha started');
+    const newRepo = join(baseDir!, 'new-repo');
+    mkdirSync(newRepo);
+    editSessionFile(
+      'alpha',
+      `codename: alpha\nrepo: ${newRepo}\nschedules:\n  - cron: '0 9 * * *'\n    prompt: scheduled work\n    freshContext: true\n`,
+    );
+
+    await fireFreshTick();
+
+    expect(terminal.paneFor('alpha')?.cwd).toBe(newRepo);
+    expect(terminal.paneFor('alpha')?.launched.at(-1)).toContain('scheduled work');
+    expect(scheduleOutcomes()).toEqual(['fired-fresh']);
+  });
+
+  it.each([
+    ['removed', ''],
+    ['changed', `schedules:\n  - cron: '0 9 * * *'\n    prompt: different work\n    freshContext: true\n`],
+  ])(
+    'cancels a fire whose own schedule entry was %s by the edit, without stopping the session',
+    async (_kind, tail) => {
+      const terminal = await setup('    freshContext: true\n');
+      expect(await supervisor!.command('/start alpha')).toContain('alpha started');
+      editSessionFile('alpha', `codename: alpha\nrepo: ${baseDir!}\n${tail}`);
+
+      await fireFreshTick();
+
+      expect(terminal.paneFor('alpha')?.sessionActive).toBe(true);
+      expect(launchCount(terminal)).toBe(1);
+      expect(scheduleOutcomes()).toEqual(['skipped-cancelled']);
+    },
+  );
 
   it('reports a refused wake instead of a fire when the session file is held', async () => {
     const terminal = await setup('    wakeIfStopped: true\n');

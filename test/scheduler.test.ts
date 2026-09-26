@@ -122,7 +122,7 @@ describe('Scheduler', () => {
     expect(delivered).toEqual([]);
   });
 
-  it.each(['session stop', 'scheduler stop', 'reload'])(
+  it.each(['session stop', 'scheduler stop', 'reload that changes the entry'])(
     'cancels fresh-context restart during settle on %s',
     async (action) => {
       sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'nightly', freshContext: true }]));
@@ -132,7 +132,10 @@ describe('Scheduler', () => {
       expect(stopped).toEqual(['alpha']);
       if (action === 'session stop') scheduler.cancelSession('alpha');
       else if (action === 'scheduler stop') scheduler.stop();
-      else scheduler.rebuild();
+      else {
+        sessions.set('alpha', sessionWith([{ cron: '0 9 * * *', prompt: 'nightly, revised', freshContext: true }]));
+        scheduler.rebuild();
+      }
       await vi.advanceTimersByTimeAsync(4100);
       expect(started).toEqual([]);
       expect(delivered).toEqual([]);
@@ -144,6 +147,28 @@ describe('Scheduler', () => {
       });
     },
   );
+
+  it('completes a fresh-context restart when a reload during settle leaves its entry unchanged', async () => {
+    sessions.set('alpha', sessionWith([{ cron: EVERY_SECOND, prompt: 'nightly', freshContext: true }]));
+    active = true;
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(stopped).toEqual(['alpha']);
+    // Another session's edit, or the pre-launch refresh, reloads the same entry.
+    sessions.set('beta', sessionWith([]));
+    scheduler.rebuild();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(started).toEqual([
+      { session: 'alpha', prompt: `[Cron name="schedule-1" period="${EVERY_SECOND}"] nightly` },
+    ]);
+    expect(events.events).toContainEqual({
+      type: 'schedule',
+      session: 'alpha',
+      label: 'schedule-1',
+      outcome: 'fired-fresh',
+    });
+    expect(events.events.map((event) => (event as { outcome?: string }).outcome)).not.toContain('skipped-cancelled');
+  });
 
   it('delivers the prompt into an active session', async () => {
     sessions.set(
@@ -368,8 +393,9 @@ describe('Scheduler', () => {
       isPaused: () => false,
       startSession: async (session, opts) => {
         started.push({ session, prompt: opts.prompt });
-        return 'started';
+        return { launched: true, message: 'alpha started.' };
       },
+      launchRefusal: () => undefined,
       stopSession: async () => 'stopped',
       deliver: async (session, text) => {
         delivered.push({ session, text });

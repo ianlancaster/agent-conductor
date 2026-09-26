@@ -799,17 +799,19 @@ Behavior:
 - Skipped occurrences are discarded, not queued for catch-up when the session next starts.
 - `freshContext: true` does not imply wake permission. It can refresh a running session while
   `wakeIfStopped` remains false.
-- A fire whose start would be refused, for example because the session file fails to load, is
-  recorded as `refused` and logged as a warning with the reason. A fresh-context fire checks this
-  before stopping anything, so a running session is left running.
+- Before stopping or starting its session, a fire re-reads changed session files, so it launches
+  in the `repo` the file names now. A fire whose start would be refused, for example because the
+  session file fails to load, is recorded as `refused` and logged as a warning with the reason. A
+  fresh-context fire checks this before stopping anything, so a running session is left running.
 - Schedules targeting the same session are serialized.
 - Overlap protection prevents one cron entry from running over itself.
 - Pausing the session with `pause_session` suppresses all its schedules until resumed.
 - Schedule configuration hot-reloads with its session file.
 - An explicit stop cancels pending occurrences, including fresh-context restarts waiting in their
-  settle delay. Scheduler shutdown and reload cancel stale callbacks too. Future occurrences of an
-  explicitly self-waking schedule can still start the target; pause the session or schedule to
-  suppress those as well.
+  settle delay. Scheduler shutdown cancels them too, and so does a reload that removes, changes,
+  or pauses the occurrence's own schedule entry; a reload that leaves it unchanged, such as another
+  session's edit, does not. Future occurrences of an explicitly self-waking schedule can still
+  start the target; pause the session or schedule to suppress those as well.
 
 Agents must not create or enable self-waking schedules unless the user explicitly authorizes
 waking stopped agents. A request for recurring work alone is not permission to set

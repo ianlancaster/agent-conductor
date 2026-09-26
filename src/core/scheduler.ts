@@ -13,8 +13,9 @@ export interface SchedulerDeps {
   isPaused(session: string): boolean;
   startSession(session: string, opts: { prompt?: string }): Promise<StartOutcome>;
   /**
-   * Why a start would be refused right now (for example, a held last-good session config),
-   * checked before a fresh-context schedule stops a running session.
+   * Re-read changed session files, then say why a start would be refused right now (for
+   * example, a held last-good session config). Called before a schedule stops or launches a
+   * session; the re-read may rebuild this scheduler.
    */
   launchRefusal(session: string): string | undefined;
   stopSession(session: string): Promise<string>;
@@ -27,7 +28,13 @@ export class Scheduler {
   private jobs: Cron[] = [];
   /** Serialize all schedules targeting one session, not merely each Cron job. */
   private readonly sessionRuns = new Map<string, Promise<void>>();
-  private generation = 0;
+  /**
+   * Identity of every armed schedule entry. An occurrence stays valid while its own entry is
+   * armed, so a reload that leaves that entry unchanged (another session's edit, or the
+   * pre-launch session-file refresh) does not cancel it; removing, changing, or pausing the
+   * entry, and stopping the scheduler, still do.
+   */
+  private readonly armed = new Set<string>();
   private readonly cancellations = new Map<string, number>();
 
   constructor(private readonly deps: SchedulerDeps) {}
@@ -45,10 +52,12 @@ export class Scheduler {
           // The callback must be async (not a sync fn that voids a promise) or
           // croner's `protect` clears the moment the sync fn returns and overlap
           // protection never engages.
+          const key = JSON.stringify([codename, name, entry]);
           const job = new Cron(entry.cron, { catch: true, protect: true }, async () => {
-            await this.enqueue(codename, entry, name);
+            await this.enqueue(codename, entry, name, key);
           });
           this.jobs.push(job);
+          this.armed.add(key);
         } catch (err) {
           log().warn(
             'scheduler',
@@ -60,11 +69,9 @@ export class Scheduler {
     log().debug('scheduler', `${this.jobs.length} schedule(s) armed`);
   }
 
-  private enqueue(codename: string, entry: ScheduleEntry, name: string): Promise<void> {
-    const generation = this.generation;
+  private enqueue(codename: string, entry: ScheduleEntry, name: string, key: string): Promise<void> {
     const cancellation = this.cancellations.get(codename);
-    const isCurrent = (): boolean =>
-      generation === this.generation && cancellation === this.cancellations.get(codename);
+    const isCurrent = (): boolean => this.armed.has(key) && cancellation === this.cancellations.get(codename);
     const previous = this.sessionRuns.get(codename) ?? Promise.resolve();
     const run = previous.then(
       () => this.fire(codename, entry, name, isCurrent),
@@ -77,7 +84,7 @@ export class Scheduler {
   }
 
   stop(): void {
-    this.generation += 1;
+    this.armed.clear();
     for (const job of this.jobs) job.stop();
     this.jobs = [];
   }
@@ -108,14 +115,19 @@ export class Scheduler {
         this.deps.events?.emit({ type: 'schedule', session: codename, label, outcome: 'skipped-stopped' });
         return;
       }
+      if (entry.freshContext || !active) {
+        // About to stop and/or launch: pick up session-file edits first. The reload this
+        // may trigger can change or remove this very entry, so recheck before acting, and
+        // never stop a running session that could not be started again.
+        const refusal = this.deps.launchRefusal(codename);
+        if (!canRun()) return;
+        if (refusal !== undefined) {
+          this.refused(codename, label, refusal);
+          return;
+        }
+      }
       if (entry.freshContext) {
         if (active) {
-          // Never stop a running session that could not be started again.
-          const refusal = this.deps.launchRefusal(codename);
-          if (refusal !== undefined) {
-            this.refused(codename, label, refusal);
-            return;
-          }
           await this.deps.stopSession(codename);
           await sleep(FRESH_SESSION_SETTLE_MS);
         }
