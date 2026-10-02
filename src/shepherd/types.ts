@@ -24,6 +24,7 @@ export const SHEPHERD_EVENT_TYPES = [
   'release-attested',
   'release-revoked',
   'release-gate-blocked',
+  'hold-label-on-queued-pr',
 ] as const;
 
 export type ShepherdEventType = (typeof SHEPHERD_EVENT_TYPES)[number];
@@ -62,6 +63,28 @@ export interface CheckRun {
   state: string;
   bucket: 'pass' | 'fail' | 'pending' | 'skipping' | 'cancel';
   workflow: string;
+  kind?: 'check-run' | 'commit-status';
+  createdAt?: string;
+  updatedAt?: string;
+  targetUrl?: string;
+  sourceRun?: CheckSourceRun;
+}
+
+export interface CheckSourceRun {
+  id: string;
+  /** Actions attempt number when the provider can resolve it. */
+  attempt?: number;
+  /** Repository-scoped stable Actions workflow identity. */
+  workflowId?: string;
+  workflowPath?: string;
+  url: string;
+  event: string;
+  workflow: string;
+  app: string;
+  status: string;
+  conclusion: string | null;
+  startedAt: string;
+  completedAt: string | null;
 }
 
 export interface HeadCheckSnapshot {
@@ -128,6 +151,8 @@ export interface PullRequestDetails extends PullRequestSummary {
   state: 'OPEN' | 'CLOSED' | 'MERGED';
   headRefName: string;
   headSha: string;
+  baseRefName?: string;
+  baseSha?: string;
   mergeable: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN';
   mergeStateStatus: string;
   autoMergeRequest: { mergeMethod: string } | null;
@@ -139,6 +164,36 @@ export interface PullRequestDetails extends PullRequestSummary {
   requestedReviewers: RequestedReviewer[];
   comments: Comment[];
   commits: Commit[];
+  labels?: string[];
+  labelsExhaustive?: boolean;
+}
+
+export interface BaseContainmentSnapshot {
+  baseRefName: string;
+  baseSha: string;
+  headSha: string;
+  status: 'identical' | 'ahead' | 'behind' | 'diverged';
+  exhaustive: boolean;
+  headParents: string[];
+}
+
+export interface ProviderCommentReceipt {
+  id: string;
+  createdAt: string;
+}
+
+export interface GitHubMutationResult {
+  commentReceipt?: ProviderCommentReceipt;
+}
+
+export class GitHubMutationSuspendedError extends Error {
+  constructor(
+    readonly reason: 'hold-label' | 'hold-label-evidence-incomplete',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'GitHubMutationSuspendedError';
+  }
 }
 
 export interface MergeQueueRemoval {
@@ -224,7 +279,15 @@ export type GitHubMutation =
   | { type: 'disable-auto-merge'; pr: PullRequestRef }
   | { type: 'update-branch'; pr: PullRequestRef }
   | { type: 'sync-branch-exact-head'; pr: PullRequestRef; headSha: string }
-  | { type: 'post-pr-comment-exact-head'; pr: PullRequestRef; headSha: string; body: string; notBefore: string }
+  | {
+      type: 'post-pr-comment-exact-head';
+      pr: PullRequestRef;
+      headSha: string;
+      body: string;
+      notBefore: string;
+      /** Exact-body comment IDs observed before this action was created. */
+      priorCommentIds?: string[];
+    }
   | { type: 'post-reviewer-comment'; pr: PullRequestRef; reviewer: string; body: string };
 
 export interface GitHubProvider {
@@ -235,7 +298,8 @@ export interface GitHubProvider {
   getPullRequest(pr: PullRequestRef): Promise<PullRequestDetails>;
   getMergeAutomationState?(pr: PullRequestRef): Promise<MergeAutomationState>;
   getCheckRunsForHead?(pr: PullRequestRef, headSha: string): Promise<HeadCheckSnapshot>;
-  mutate(mutation: GitHubMutation): Promise<void>;
+  getBaseContainment?(pr: PullRequestRef, headSha: string): Promise<BaseContainmentSnapshot>;
+  mutate(mutation: GitHubMutation): Promise<GitHubMutationResult | void>;
 }
 
 export interface ShepherdEvent {

@@ -484,6 +484,13 @@ before normal queue re-entry. Repositories may additionally configure one head-b
 and one exact check-run or Commit Status context name as a post-sync full-validation proof; both
 the trigger and proof are disabled by default. That proof obligation follows later author heads from the attributable
 failed-check eviction, while an upstream queued PR's failure never authorizes the sync or proof.
+An additional disabled-by-default `automation.mergeQueuePreflight` applies that exact-head sync and
+validation contract to every Shepherd queue admission. It proves immutable target-base ancestry,
+requires a source-run-backed green proof, and can yield to an external recovery status after
+automation-attributed removal. Independently, top-level `automation.holdLabels` can suspend every
+authored or tracked merge admission in direct or merge-queue mode. Shepherd leaves durable work
+pending until unheld and never dequeues a PR merely because a hold appeared. Existing profiles
+retain their prior behavior.
 Tracked claims may instead select provider-action-ready admission, where GitHub's current Add to
 merge queue availability is authoritative and Shepherd adds no local readiness or attestation gate.
 See [PR Shepherd V2](docs/pr-shepherd.md) for its policy and delivery model.

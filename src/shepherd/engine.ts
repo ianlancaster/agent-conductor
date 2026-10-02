@@ -5,7 +5,10 @@ import { buildEvent, eventId } from './events.js';
 import { ShepherdMutationMutex } from './mutex.js';
 import { patternMatches, repositoryInScope } from './scope.js';
 import { elapsedHours } from './time.js';
+import { GitHubMutationSuspendedError } from './types.js';
 import type {
+  BaseContainmentSnapshot,
+  CheckRun,
   Comment,
   DiscoveryKind,
   EntityUpdate,
@@ -15,6 +18,7 @@ import type {
   MergeAutomationState,
   MergeQueueFailureAttribution,
   MergeQueueRemoval,
+  ProviderCommentReceipt,
   PullRequestDetails,
   PullRequestRef,
   ReleaseGateStore,
@@ -37,8 +41,60 @@ interface AuthoredState {
   receivedReviewThreads?: Record<string, ReceivedReviewThreadState>;
   mergeQueueRetry?: MergeQueueRetryState;
   syncAfterRejectHead?: SyncAfterRejectHeadState;
+  mergeQueuePreflight?: MergeQueuePreflightState;
   sources?: { authored: boolean; trackedGeneration?: number };
 }
+
+interface MergeQueuePreflightState {
+  cycleId: string;
+  configDigest: string;
+  lane: MergeQueuePreflightLane;
+  trackedGeneration?: number;
+  origin: 'initial' | 'removal';
+  removalId?: string;
+  removalCreatedAt?: string;
+  initialHeadSha: string;
+  currentHeadSha: string;
+  targetBaseRef: string;
+  targetBaseSha: string;
+  syncSlotsReserved: number;
+  syncCompleted: boolean;
+  priorCheckIds: string[];
+  priorApprovalIds: string[];
+  approvedHeadSha: string;
+  approvalCarryAllowed: boolean;
+  freshApprovalRequired: boolean;
+  validationEpoch: number;
+  automationRecovery?: MergeQueueAutomationRecoveryProof;
+  syncActionKey?: string;
+  validation?: MergeQueuePreflightValidationState;
+}
+
+type MergeQueuePreflightLane = 'authored' | 'provider-action-ready' | 'exact-head-attestation';
+
+interface MergeQueueAutomationRecoveryProof {
+  removalId: string;
+  headSha: string;
+  requiredStatus: string;
+  runId: string;
+  startedAt: string;
+}
+
+interface MergeQueuePreflightValidationState {
+  actionKey?: string;
+  triggerComment: string;
+  requiredCheck: string;
+  receipt?: ProviderCommentReceipt;
+  equivalentRunId?: string;
+}
+
+interface MergeQueuePreflightObservation {
+  containment: BaseContainmentSnapshot;
+  checks: HeadCheckSnapshot;
+}
+
+type AdmissionHoldState =
+  { status: 'clear'; labels: [] } | { status: 'held'; labels: string[] } | { status: 'incomplete'; labels: string[] };
 
 interface SyncAfterRejectHeadState {
   rejectedHeadSha: string;
@@ -178,6 +234,16 @@ interface ActionState {
   syncAfterRejectValidationTriggerComment?: string;
   syncAfterRejectValidationRequiredCheck?: string;
   syncAfterRejectValidationPriorCheckIds?: string[];
+  commentReceipt?: ProviderCommentReceipt;
+  preflightCycleId?: string;
+  preflightOrigin?: 'initial' | 'removal';
+  preflightBaseRef?: string;
+  preflightBaseSha?: string;
+  preflightSyncSlot?: number;
+  preflightConfigDigest?: string;
+  preflightLane?: MergeQueuePreflightLane;
+  preflightValidationEpoch?: number;
+  preflightProofRunId?: string;
 }
 
 type MergeQueueActionContext = Pick<
@@ -193,6 +259,15 @@ type MergeQueueActionContext = Pick<
   | 'syncAfterRejectValidationTriggerComment'
   | 'syncAfterRejectValidationRequiredCheck'
   | 'syncAfterRejectValidationPriorCheckIds'
+  | 'preflightCycleId'
+  | 'preflightOrigin'
+  | 'preflightBaseRef'
+  | 'preflightBaseSha'
+  | 'preflightSyncSlot'
+  | 'preflightConfigDigest'
+  | 'preflightLane'
+  | 'preflightValidationEpoch'
+  | 'preflightProofRunId'
 >;
 
 const MERGE_QUEUE_MAX_ATTEMPTS = 5;
@@ -200,6 +275,7 @@ const MERGE_QUEUE_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_00
 const RETRYABLE_QUEUE_REMOVAL_REASONS = new Set(['checks_timed_out', 'stack_invalidated']);
 const GITHUB_ACTIONS_ACTOR_LOGINS = new Set(['github-actions', 'github-actions[bot]']);
 const SYNC_AFTER_REJECT_RECENT_MS = 24 * 60 * 60_000;
+const MERGE_QUEUE_PREFLIGHT_MAX_SYNCS = 5;
 
 export interface PollSummary {
   discovered: number;
@@ -349,6 +425,79 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+interface CurrentProofSource {
+  runId: string;
+  startedAt: string;
+  terminal: boolean;
+  success: boolean;
+}
+
+function currentProofSource(
+  snapshot: HeadCheckSnapshot,
+  name: string,
+  kind?: CheckRun['kind'],
+): CurrentProofSource | undefined {
+  const matching = snapshot.checks.filter(
+    (check) => check.name === name && (kind === undefined || check.kind === kind),
+  );
+  if (matching.length === 0 || matching.some((check) => check.sourceRun === undefined)) return undefined;
+  if (kind === undefined && new Set(matching.map((check) => check.kind ?? 'check-run')).size !== 1) return undefined;
+  const sourceFamilies = new Set(
+    matching.map((check) => {
+      const source = check.sourceRun;
+      if (source === undefined) return '';
+      const workflowIdentity = source.workflowId ?? source.workflowPath ?? source.workflow;
+      return `${source.app}\u0000${workflowIdentity}\u0000${source.event}`;
+    }),
+  );
+  if (sourceFamilies.size !== 1) return undefined;
+  const byRun = new Map<string, { source: NonNullable<CheckRun['sourceRun']>; observations: CheckRun[] }>();
+  for (const check of matching) {
+    const source = check.sourceRun;
+    if (source === undefined || !Number.isFinite(new Date(source.startedAt).getTime())) return undefined;
+    const workflowIdentity = source.workflowId ?? source.workflowPath ?? source.workflow;
+    const key = `${source.app}\u0000${workflowIdentity}\u0000${source.event}\u0000${source.id}\u0000${String(source.attempt ?? 0)}`;
+    const existing = byRun.get(key);
+    if (existing !== undefined && existing.source.startedAt !== source.startedAt) return undefined;
+    const group = existing ?? { source, observations: [] };
+    byRun.set(key, group);
+    const observationAt = check.updatedAt ?? check.createdAt;
+    if (observationAt !== undefined) {
+      const observationTime = new Date(observationAt).getTime();
+      if (!Number.isFinite(observationTime)) return undefined;
+      if (observationTime < new Date(source.startedAt).getTime()) continue;
+    }
+    group.observations.push(check);
+  }
+  const ordered = [...byRun.entries()].sort((left, right) => {
+    const leftStart = left[1].source.startedAt;
+    const rightStart = right[1].source.startedAt;
+    return rightStart.localeCompare(leftStart) || right[0].localeCompare(left[0]);
+  });
+  const latest = ordered[0];
+  if (latest === undefined) return undefined;
+  const latestStart = latest[1].source.startedAt;
+  if (ordered[1]?.[1].source.startedAt === latestStart) return undefined;
+  const source = latest[1].source;
+  const observation = [...latest[1].observations].sort((left, right) => {
+    const leftTime = left.updatedAt ?? left.createdAt ?? '';
+    const rightTime = right.updatedAt ?? right.createdAt ?? '';
+    return rightTime.localeCompare(leftTime) || right.id.localeCompare(left.id);
+  })[0];
+  if (observation === undefined) return undefined;
+  const terminal = source.status.toUpperCase() === 'COMPLETED' && source.completedAt !== null;
+  return {
+    runId: source.attempt === undefined ? source.id : `${source.id}:attempt:${String(source.attempt)}`,
+    startedAt: source.startedAt,
+    terminal,
+    success:
+      terminal &&
+      source.conclusion?.toUpperCase() === 'SUCCESS' &&
+      observation.bucket === 'pass' &&
+      observation.state.toUpperCase() === 'SUCCESS',
+  };
+}
+
 function excerpt(body: string, limit = 240): string {
   const compact = body.replace(/\s+/g, ' ').trim();
   return compact.length <= limit ? compact : `${compact.slice(0, limit - 1)}…`;
@@ -462,16 +611,25 @@ export class ShepherdEngine {
     if (supportsReleaseGate(this.store)) {
       const recoveredAt = this.clock().toISOString();
       for (const entity of this.store.listEntities<ActionState>('action')) {
-        const queueAttemptWithoutCompensation =
-          entity.value.mutation.type === 'enqueue-provider-ready' ||
-          (entity.value.mutation.type === 'enqueue-exact-head' && entity.value.trackedGeneration === undefined);
-        if (entity.value.status === 'cancelled' && !queueAttemptWithoutCompensation) {
+        if (entity.value.status === 'cancelled' && this.queueAttemptNeedsSafetyCompensation(entity.value)) {
           this.store.ensureActionSafetyCompensation(entity.key, recoveredAt);
         }
       }
     }
     for (const entity of this.store.listEntities<ActionState>('action')) {
       if (entity.value.status !== 'pending') continue;
+      if (this.holdSensitiveAction(entity.value)) {
+        try {
+          const details = await this.github.getPullRequest(entity.value.mutation.pr);
+          if (this.admissionHoldState(details).status !== 'clear') continue;
+        } catch (error) {
+          this.store.logHealth(
+            'github-hold-evidence-failed',
+            `${entity.key}: ${error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500)}`,
+          );
+          continue;
+        }
+      }
       const safetyCompensation =
         entity.value.mutation.type === 'dequeue' || entity.value.mutation.type === 'disable-auto-merge';
       if (!safetyCompensation && !repositoryInScope(entity.value.mutation.pr.repo, this.config.github)) {
@@ -498,6 +656,8 @@ export class ShepherdEngine {
       try {
         if (entity.value.mutation.type === 'enable-auto-merge' && supportsReleaseGate(this.store)) {
           const mutated = await this.releaseMutex().runExclusive(async (lease) => {
+            const details = await this.github.getPullRequest(entity.value.mutation.pr);
+            if (this.admissionHoldState(details).status !== 'clear') return false;
             if (!this.actionStillApplicable(entity.value)) {
               this.cancelAction(entity.key, entity.value, 'ownership changed before persistent auto-merge');
               return false;
@@ -512,6 +672,8 @@ export class ShepherdEngine {
           continue;
         } else if (entity.value.mutation.type === 'enqueue-provider-ready') {
           const mutated = await this.releaseMutex().runExclusive(async (lease) => {
+            const details = await this.github.getPullRequest(entity.value.mutation.pr);
+            if (this.admissionHoldState(details).status !== 'clear') return false;
             if (!this.providerReadyActionContextStillApplicable(entity.value)) {
               this.cancelAction(entity.key, entity.value, 'tracked provider-ready ownership changed');
               return false;
@@ -537,8 +699,13 @@ export class ShepherdEngine {
           const mutated = await this.releaseMutex().runExclusive(async (lease) => {
             const details = await this.github.getPullRequest(entity.value.mutation.pr);
             const automation = await this.mergeAutomationSnapshot(details);
-            if (!this.syncAfterRejectActionStillApplicable(entity.key, entity.value, details, automation)) {
-              this.cancelAction(entity.key, entity.value, 'sync-after-reject evidence is no longer applicable');
+            const applicable =
+              entity.value.preflightCycleId === undefined
+                ? this.syncAfterRejectActionStillApplicable(entity.key, entity.value, details, automation)
+                : await this.preflightSyncActionStillApplicable(entity.key, entity.value, details, automation);
+            if (!applicable) {
+              if (this.admissionHoldState(details).status !== 'clear') return false;
+              this.cancelAction(entity.key, entity.value, 'branch-sync evidence is no longer applicable');
               return false;
             }
             lease.assertOwned();
@@ -562,18 +729,32 @@ export class ShepherdEngine {
           const mutated = await this.releaseMutex().runExclusive(async (lease) => {
             const details = await this.github.getPullRequest(mutation.pr);
             const automation = await this.mergeAutomationSnapshot(details);
-            if (!this.postSyncValidationActionStillApplicable(entity.key, entity.value, details, automation)) {
+            const applicable =
+              entity.value.preflightCycleId === undefined
+                ? this.postSyncValidationActionStillApplicable(entity.key, entity.value, details, automation)
+                : await this.preflightCommentActionStillApplicable(entity.key, entity.value, details, automation);
+            if (!applicable) {
+              if (this.admissionHoldState(details).status !== 'clear') return false;
               this.cancelAction(entity.key, entity.value, 'post-sync validation trigger is no longer applicable');
               return false;
             }
             lease.assertOwned();
-            await this.github.mutate(mutation);
+            const result = await this.github.mutate(mutation);
             lease.assertOwned();
             const current = await this.github.getPullRequest(mutation.pr);
             if (current.headSha.toLowerCase() !== mutation.headSha.toLowerCase()) {
               throw new Error('GitHub head changed while posting the post-sync validation trigger.');
             }
-            this.completeAction(entity.key, entity.value, this.clock().toISOString());
+            if (entity.value.preflightCycleId !== undefined && result?.commentReceipt === undefined) {
+              throw new Error('GitHub did not return a durable validation comment receipt.');
+            }
+            this.completeAction(
+              entity.key,
+              result?.commentReceipt === undefined
+                ? entity.value
+                : { ...entity.value, commentReceipt: result.commentReceipt },
+              this.clock().toISOString(),
+            );
             return true;
           });
           if (mutated) completed += 1;
@@ -584,17 +765,21 @@ export class ShepherdEngine {
         ) {
           const mutateExactHead = async (assertOwned: () => void): Promise<boolean> => {
             const details = await this.github.getPullRequest(entity.value.mutation.pr);
+            if (this.admissionHoldState(details).status !== 'clear') return false;
             const applicable =
-              entity.value.syncAfterRejectHeadSha !== undefined &&
-              entity.value.trackedGeneration !== undefined &&
-              supportsTrackedPullRequests(this.store) &&
-              this.store.getTrackedPullRequest(entity.value.mutation.pr)?.releaseGate === 'provider-action-ready'
-                ? await this.providerReadySyncEnqueueStillApplicable(entity.value, details)
-                : entity.value.trackedGeneration === undefined && entity.value.mutation.type === 'enqueue-exact-head'
-                  ? this.actionStillApplicable(entity.value) &&
-                    (await this.authoredQueueActionStillApplicable(entity.value, details))
-                  : await this.gatedActionStillApplicable(entity.value, details);
+              entity.value.preflightCycleId !== undefined
+                ? await this.preflightEnqueueStillApplicable(entity.value, details)
+                : entity.value.syncAfterRejectHeadSha !== undefined &&
+                    entity.value.trackedGeneration !== undefined &&
+                    supportsTrackedPullRequests(this.store) &&
+                    this.store.getTrackedPullRequest(entity.value.mutation.pr)?.releaseGate === 'provider-action-ready'
+                  ? await this.providerReadySyncEnqueueStillApplicable(entity.value, details)
+                  : entity.value.trackedGeneration === undefined && entity.value.mutation.type === 'enqueue-exact-head'
+                    ? this.actionStillApplicable(entity.value) &&
+                      (await this.authoredQueueActionStillApplicable(entity.value, details))
+                    : await this.gatedActionStillApplicable(entity.value, details);
             if (!applicable) {
+              if (entity.value.preflightCycleId !== undefined && this.preflightHeld(details)) return false;
               this.cancelAction(entity.key, entity.value, 'exact-head mutation is no longer applicable');
               return false;
             }
@@ -624,6 +809,10 @@ export class ShepherdEngine {
           completed += 1;
           continue;
         }
+        if (this.admissionMutation(entity.value.mutation)) {
+          const details = await this.github.getPullRequest(entity.value.mutation.pr);
+          if (this.admissionHoldState(details).status !== 'clear') continue;
+        }
         await this.github.mutate(entity.value.mutation);
         const completedAt = this.clock().toISOString();
         const updates: EntityUpdate[] = [
@@ -646,10 +835,44 @@ export class ShepherdEngine {
         this.store.commit(updates, []);
         completed += 1;
       } catch (error) {
+        if (error instanceof GitHubMutationSuspendedError) {
+          if (error.reason === 'hold-label-evidence-incomplete') {
+            this.store.logHealth('github-hold-evidence-failed', `${entity.key}: ${error.message.slice(0, 500)}`);
+          }
+          continue;
+        }
         const attempts = (entity.value.attempts ?? 0) + 1;
         const message = error instanceof Error ? error.message : String(error);
         this.store.logHealth('github-mutation-failed', `${entity.key}: ${message.slice(0, 500)}`);
         if (
+          entity.value.preflightCycleId !== undefined &&
+          entity.value.mutation.type === 'enqueue-exact-head' &&
+          /(?:approval|approved|review|unattributed change)/i.test(message)
+        ) {
+          const event = buildEvent(
+            this.config,
+            'release-gate-blocked',
+            entity.value.mutation.pr,
+            { headSha: entity.value.mutation.headSha, reason: 'provider-requires-fresh-approval-after-sync' },
+            {
+              reason: 'provider-requires-fresh-approval-after-sync',
+              detail: 'GitHub rejected merge-queue admission because a fresh approval is required.',
+              error: message.slice(0, 300),
+            },
+            this.clock().toISOString(),
+          );
+          this.store.commit(
+            [
+              {
+                key: entity.key,
+                kind: 'action',
+                value: { ...entity.value, status: 'failed', attempts, completedAt: this.clock().toISOString() },
+              },
+            ],
+            [event],
+            this.recipient(),
+          );
+        } else if (
           (entity.value.mutation.type === 'enqueue-exact-head' ||
             entity.value.mutation.type === 'enqueue-provider-ready' ||
             entity.value.mutation.type === 'post-pr-comment-exact-head') &&
@@ -712,10 +935,7 @@ export class ShepherdEngine {
 
   private cancelAction(key: string, action: ActionState, reason: string): void {
     const occurredAt = this.clock().toISOString();
-    const queueAttemptWithoutCompensation =
-      action.mutation.type === 'enqueue-provider-ready' ||
-      (action.mutation.type === 'enqueue-exact-head' && action.trackedGeneration === undefined);
-    if (supportsReleaseGate(this.store) && !queueAttemptWithoutCompensation) {
+    if (supportsReleaseGate(this.store) && this.queueAttemptNeedsSafetyCompensation(action)) {
       this.store.prepareActionCancellation(key, occurredAt);
     } else {
       this.store.commit(
@@ -750,6 +970,73 @@ export class ShepherdEngine {
     return this.mutationMutex;
   }
 
+  private mergeQueuePreflightConfigDigest(): string | undefined {
+    const validation = this.config.automation.syncAfterRejectValidation;
+    if (!this.config.automation.mergeQueuePreflight || validation === null) return undefined;
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          triggerComment: validation.triggerComment,
+          requiredCheck: validation.requiredCheck,
+          recovery: this.config.automation.mergeQueueAutomationRecovery,
+        }),
+      )
+      .digest('hex')
+      .slice(0, 24);
+  }
+
+  private preflightActionContractStillApplicable(action: ActionState, authored?: AuthoredState): boolean {
+    if (
+      this.config.github.mode !== 'merge-queue' ||
+      this.config.automation.autoMerge !== 'execute' ||
+      !this.config.automation.syncAfterReject ||
+      action.preflightCycleId === undefined ||
+      action.preflightConfigDigest === undefined ||
+      action.preflightLane === undefined
+    ) {
+      return false;
+    }
+    const current = authored ?? this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+    const preflight = current?.mergeQueuePreflight;
+    if (
+      preflight?.cycleId !== action.preflightCycleId ||
+      preflight.configDigest !== action.preflightConfigDigest ||
+      preflight.configDigest !== this.mergeQueuePreflightConfigDigest() ||
+      preflight.lane !== action.preflightLane ||
+      (action.preflightValidationEpoch !== undefined && preflight.validationEpoch !== action.preflightValidationEpoch)
+    ) {
+      return false;
+    }
+    if (action.preflightLane === 'authored') {
+      return this.config.features.authoredPRs.enabled && current?.sources?.authored === true;
+    }
+    if (
+      action.trackedGeneration === undefined ||
+      preflight.trackedGeneration !== action.trackedGeneration ||
+      !this.config.features.trackedPRs.enabled ||
+      this.config.features.trackedPRs.releaseGate !== action.preflightLane ||
+      !supportsTrackedPullRequests(this.store)
+    ) {
+      return false;
+    }
+    const tracked = this.store.getTrackedPullRequest(action.mutation.pr);
+    return (
+      tracked?.status === 'active' &&
+      tracked.generation === action.trackedGeneration &&
+      tracked.releaseGate === action.preflightLane
+    );
+  }
+
+  private queueAttemptNeedsSafetyCompensation(action: ActionState): boolean {
+    if (action.preflightCycleId !== undefined) {
+      return action.mutation.type === 'enqueue-exact-head' && action.preflightLane === 'exact-head-attestation';
+    }
+    return !(
+      action.mutation.type === 'enqueue-provider-ready' ||
+      (action.mutation.type === 'enqueue-exact-head' && action.trackedGeneration === undefined)
+    );
+  }
+
   private actionStillApplicable(action: ActionState): boolean {
     if (action.mutation.type === 'dequeue' || action.mutation.type === 'disable-auto-merge') {
       return supportsReleaseGate(this.store);
@@ -759,6 +1046,15 @@ export class ShepherdEngine {
     }
     if (action.mutation.type === 'sync-branch-exact-head') {
       const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+      if (action.preflightCycleId !== undefined) {
+        return (
+          this.preflightActionContractStillApplicable(action, authored) &&
+          authored?.details.state === 'OPEN' &&
+          authored.details.headSha.toLowerCase() === action.mutation.headSha.toLowerCase() &&
+          authored.mergeQueuePreflight?.cycleId === action.preflightCycleId &&
+          authored.mergeQueuePreflight.syncActionKey !== undefined
+        );
+      }
       return (
         authored !== undefined &&
         this.syncAfterRejectOwnershipStillApplicable(action, authored) &&
@@ -769,6 +1065,15 @@ export class ShepherdEngine {
     }
     if (action.mutation.type === 'post-pr-comment-exact-head') {
       const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+      if (action.preflightCycleId !== undefined) {
+        return (
+          this.preflightActionContractStillApplicable(action, authored) &&
+          authored?.details.state === 'OPEN' &&
+          authored.details.headSha.toLowerCase() === action.mutation.headSha.toLowerCase() &&
+          authored.mergeQueuePreflight?.cycleId === action.preflightCycleId &&
+          authored.mergeQueuePreflight.validation?.actionKey === action.syncAfterRejectValidationActionKey
+        );
+      }
       return (
         authored?.details.state === 'OPEN' &&
         authored.details.headSha.toLowerCase() === action.mutation.headSha.toLowerCase() &&
@@ -776,6 +1081,16 @@ export class ShepherdEngine {
         action.syncAfterRejectValidationActionKey !== undefined
       );
     }
+    if (action.mutation.type === 'enqueue-exact-head' && action.preflightCycleId !== undefined) {
+      const authored = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+      return (
+        this.preflightActionContractStillApplicable(action, authored) &&
+        authored?.details.state === 'OPEN' &&
+        authored.details.headSha.toLowerCase() === action.mutation.headSha.toLowerCase() &&
+        authored.mergeQueuePreflight?.cycleId === action.preflightCycleId
+      );
+    }
+    if (action.mutation.type === 'enqueue-exact-head' && this.config.automation.mergeQueuePreflight) return false;
     if (
       action.mutation.type === 'enqueue-exact-head' &&
       action.syncAfterRejectHeadSha !== undefined &&
@@ -858,6 +1173,180 @@ export class ShepherdEngine {
     return tracked?.status === 'active' && tracked.generation === action.trackedGeneration;
   }
 
+  private async preflightSyncActionStillApplicable(
+    key: string,
+    action: ActionState,
+    details: PullRequestDetails,
+    automation: MergeAutomationState | undefined,
+  ): Promise<boolean> {
+    const authoredState = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+    if (
+      !this.preflightActionContractStillApplicable(action, authoredState) ||
+      action.mutation.type !== 'sync-branch-exact-head' ||
+      action.preflightCycleId === undefined ||
+      action.preflightBaseSha === undefined ||
+      details.state !== 'OPEN' ||
+      details.mergeable !== 'MERGEABLE' ||
+      details.headSha.toLowerCase() !== action.mutation.headSha.toLowerCase() ||
+      automation?.queued !== false ||
+      automation.headSha.toLowerCase() !== details.headSha.toLowerCase() ||
+      this.preflightHeld(details)
+    ) {
+      return false;
+    }
+    const preflight = authoredState?.mergeQueuePreflight;
+    if (preflight?.cycleId !== action.preflightCycleId || preflight.syncActionKey !== key) return false;
+    const observation = await this.mergeQueuePreflightSnapshot(details);
+    if (
+      observation?.containment.baseSha.toLowerCase() !== action.preflightBaseSha.toLowerCase() ||
+      (['identical', 'ahead'].includes(observation.containment.status) && action.preflightOrigin !== 'removal') ||
+      !this.preflightRecoveryReady(preflight, automation, observation.checks)
+    ) {
+      return false;
+    }
+    const tracked = supportsTrackedPullRequests(this.store)
+      ? this.store.getTrackedPullRequest(action.mutation.pr)
+      : undefined;
+    return this.preflightLaneReady(
+      details,
+      details.reviews,
+      tracked?.status === 'active' ? tracked : undefined,
+      authoredState?.sources?.authored !== false,
+      automation,
+      preflight,
+      false,
+    );
+  }
+
+  private async preflightCommentActionStillApplicable(
+    key: string,
+    action: ActionState,
+    details: PullRequestDetails,
+    automation: MergeAutomationState | undefined,
+  ): Promise<boolean> {
+    const authoredState = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+    if (
+      !this.preflightActionContractStillApplicable(action, authoredState) ||
+      action.mutation.type !== 'post-pr-comment-exact-head' ||
+      action.preflightCycleId === undefined ||
+      details.state !== 'OPEN' ||
+      details.mergeable !== 'MERGEABLE' ||
+      details.headSha.toLowerCase() !== action.mutation.headSha.toLowerCase() ||
+      automation?.queued !== false ||
+      automation.headSha.toLowerCase() !== details.headSha.toLowerCase() ||
+      this.preflightHeld(details)
+    ) {
+      return false;
+    }
+    const preflight = authoredState?.mergeQueuePreflight;
+    if (
+      preflight?.cycleId !== action.preflightCycleId ||
+      preflight.validation?.actionKey !== key ||
+      preflight.currentHeadSha.toLowerCase() !== details.headSha.toLowerCase()
+    ) {
+      return false;
+    }
+    const observation = await this.mergeQueuePreflightSnapshot(details);
+    return (
+      observation !== undefined &&
+      ['identical', 'ahead'].includes(observation.containment.status) &&
+      observation.containment.baseSha.toLowerCase() === preflight.targetBaseSha.toLowerCase() &&
+      this.preflightRecoveryReady(preflight, automation, observation.checks)
+    );
+  }
+
+  private async preflightEnqueueStillApplicable(action: ActionState, details: PullRequestDetails): Promise<boolean> {
+    const authoredState = this.store.getEntity<AuthoredState>(prKey('authored', action.mutation.pr))?.value;
+    if (
+      !this.preflightActionContractStillApplicable(action, authoredState) ||
+      action.mutation.type !== 'enqueue-exact-head' ||
+      action.preflightCycleId === undefined ||
+      details.state !== 'OPEN' ||
+      details.headSha.toLowerCase() !== action.mutation.headSha.toLowerCase() ||
+      this.preflightHeld(details)
+    ) {
+      return false;
+    }
+    const preflight = authoredState?.mergeQueuePreflight;
+    if (
+      preflight?.cycleId !== action.preflightCycleId ||
+      preflight.currentHeadSha.toLowerCase() !== details.headSha.toLowerCase() ||
+      preflight.validation?.equivalentRunId === undefined
+    ) {
+      return false;
+    }
+    const automation = await this.mergeAutomationSnapshot(details);
+    const observation = await this.mergeQueuePreflightSnapshot(details);
+    if (
+      automation === undefined ||
+      observation === undefined ||
+      automation.queued ||
+      automation.enqueueAvailable !== true ||
+      observation.containment.baseRefName !== preflight.targetBaseRef ||
+      observation.containment.baseSha.toLowerCase() !== preflight.targetBaseSha.toLowerCase() ||
+      !['identical', 'ahead'].includes(observation.containment.status) ||
+      !this.preflightRecoveryReady(preflight, automation, observation.checks)
+    ) {
+      return false;
+    }
+    const validation = preflight.validation;
+    const proof = currentProofSource(observation.checks, validation.requiredCheck);
+    if (
+      proof === undefined ||
+      !proof.terminal ||
+      !proof.success ||
+      proof.runId !== validation.equivalentRunId ||
+      proof.runId !== action.preflightProofRunId ||
+      (validation.receipt !== undefined && proof.startedAt < validation.receipt.createdAt)
+    ) {
+      return false;
+    }
+    const tracked = supportsTrackedPullRequests(this.store)
+      ? this.store.getTrackedPullRequest(action.mutation.pr)
+      : undefined;
+    return this.preflightLaneReady(
+      details,
+      details.reviews,
+      tracked?.status === 'active' ? tracked : undefined,
+      authoredState?.sources?.authored !== false,
+      automation,
+      preflight,
+      true,
+    );
+  }
+
+  private preflightRecoveryReady(
+    preflight: MergeQueuePreflightState,
+    automation: MergeAutomationState,
+    checks: HeadCheckSnapshot,
+  ): boolean {
+    if (preflight.origin !== 'removal') return true;
+    const removal = automation.latestQueueRemoval;
+    if (removal === undefined || removal.id !== preflight.removalId) return false;
+    const automatedManual =
+      normalizedQueueRemovalReason(removal.reason) === 'manual' &&
+      GITHUB_ACTIONS_ACTOR_LOGINS.has(removal.actor?.login.trim().toLowerCase() ?? '');
+    if (!automatedManual) return true;
+    const recovery = this.config.automation.mergeQueueAutomationRecovery;
+    if (recovery === null) return false;
+    const proof = preflight.automationRecovery;
+    const durableProofMatches =
+      proof?.removalId === removal.id &&
+      proof.headSha.toLowerCase() === preflight.initialHeadSha.toLowerCase() &&
+      proof.requiredStatus === recovery.requiredStatus &&
+      proof.startedAt >= removal.createdAt;
+    if (!durableProofMatches || proof === undefined) return false;
+    if (automation.headSha.toLowerCase() !== preflight.initialHeadSha.toLowerCase()) return true;
+    const current = currentProofSource(checks, recovery.requiredStatus, 'commit-status');
+    return (
+      current !== undefined &&
+      current.terminal &&
+      current.success &&
+      current.runId === proof.runId &&
+      current.startedAt === proof.startedAt
+    );
+  }
+
   private syncAfterRejectActionFenceMatches(action: ActionState): boolean {
     if (
       action.mutation.type !== 'sync-branch-exact-head' ||
@@ -881,6 +1370,7 @@ export class ShepherdEngine {
       action.mutation.type !== 'sync-branch-exact-head' ||
       action.syncAfterRejectRemovalId === undefined ||
       details.state !== 'OPEN' ||
+      this.admissionHoldState(details).status !== 'clear' ||
       details.headSha.toLowerCase() !== action.mutation.headSha.toLowerCase() ||
       automation === undefined ||
       automation.queued ||
@@ -939,6 +1429,7 @@ export class ShepherdEngine {
       action.mutation.body !== action.syncAfterRejectValidationTriggerComment ||
       !Number.isFinite(new Date(action.mutation.notBefore).getTime()) ||
       details.state !== 'OPEN' ||
+      this.admissionHoldState(details).status !== 'clear' ||
       details.headSha.toLowerCase() !== action.mutation.headSha.toLowerCase() ||
       automation?.queued !== false ||
       automation?.headSha.toLowerCase() !== action.mutation.headSha.toLowerCase()
@@ -964,6 +1455,7 @@ export class ShepherdEngine {
   private providerReadyActionContextStillApplicable(action: ActionState): boolean {
     if (
       action.mutation.type !== 'enqueue-provider-ready' ||
+      this.config.automation.mergeQueuePreflight ||
       action.trackedGeneration === undefined ||
       !this.config.features.trackedPRs.enabled ||
       this.config.features.trackedPRs.releaseGate !== 'provider-action-ready' ||
@@ -1277,6 +1769,7 @@ export class ShepherdEngine {
             tracked?.releaseGate !== 'provider-action-ready',
           );
           const postSyncChecks = await this.postSyncValidationSnapshot(details, previous, mergeAutomation);
+          const mergeQueuePreflight = await this.mergeQueuePreflightSnapshot(details);
           const baseline = isBaseline || (previous === undefined && tracked?.baselinePending === true);
           const { state, events, actions, nudges } = this.evaluateAuthored(
             details,
@@ -1286,6 +1779,7 @@ export class ShepherdEngine {
             authoredKeys.has(key),
             mergeAutomation,
             postSyncChecks,
+            mergeQueuePreflight,
           );
           if (tracked !== undefined) {
             const result = this.trackedStore().commitTrackedObservation(
@@ -1309,6 +1803,7 @@ export class ShepherdEngine {
                 true,
                 mergeAutomation,
                 postSyncChecks,
+                mergeQueuePreflight,
               );
               const fallbackResult = this.trackedStore().commitAuthoredObservationAfterTrackedRelease(
                 details,
@@ -1373,6 +1868,7 @@ export class ShepherdEngine {
     const configured =
       this.config.automation.syncAfterReject &&
       this.config.automation.autoMerge === 'execute' &&
+      !this.config.automation.mergeQueuePreflight &&
       this.config.automation.syncAfterRejectValidation !== null;
     const existing = previous?.syncAfterRejectHead;
     const previousFence = previous?.mergeQueueRetry?.fence;
@@ -1409,6 +1905,39 @@ export class ShepherdEngine {
     return snapshot;
   }
 
+  private async mergeQueuePreflightSnapshot(
+    details: PullRequestDetails,
+  ): Promise<MergeQueuePreflightObservation | undefined> {
+    if (!this.config.automation.mergeQueuePreflight || this.config.github.mode !== 'merge-queue') return undefined;
+    if (this.github.getBaseContainment === undefined || this.github.getCheckRunsForHead === undefined) {
+      throw new Error('The GitHub provider does not support configured merge-queue preflight evidence.');
+    }
+    if (
+      this.config.automation.holdLabels.length > 0 &&
+      (details.labels === undefined || details.labelsExhaustive !== true)
+    ) {
+      throw new Error(`GitHub returned incomplete labels for ${details.repo}#${String(details.number)}.`);
+    }
+    const [containment, checks] = await Promise.all([
+      this.github.getBaseContainment(details, details.headSha),
+      this.github.getCheckRunsForHead(details, details.headSha),
+    ]);
+    if (
+      !containment.exhaustive ||
+      containment.headSha.toLowerCase() !== details.headSha.toLowerCase() ||
+      containment.baseRefName !== details.baseRefName ||
+      containment.baseSha.toLowerCase() !== details.baseSha?.toLowerCase()
+    ) {
+      throw new Error(
+        `GitHub returned mismatched base-containment evidence for ${details.repo}#${String(details.number)}.`,
+      );
+    }
+    if (!checks.exhaustive || checks.headSha.toLowerCase() !== details.headSha.toLowerCase()) {
+      throw new Error(`GitHub returned incomplete exact-head checks for ${details.repo}#${String(details.number)}.`);
+    }
+    return { containment, checks };
+  }
+
   private evaluateAuthored(
     details: PullRequestDetails,
     previous: AuthoredState | undefined,
@@ -1417,6 +1946,7 @@ export class ShepherdEngine {
     authored = true,
     mergeAutomation?: MergeAutomationState,
     postSyncChecks?: HeadCheckSnapshot,
+    mergeQueuePreflightObservation?: MergeQueuePreflightObservation,
   ): { state: AuthoredState; events: ShepherdEvent[]; actions: EntityUpdate[]; nudges: EntityUpdate[] } {
     const now = this.clock();
     const events: ShepherdEvent[] = [];
@@ -1431,7 +1961,10 @@ export class ShepherdEngine {
     let conflictCycle = previous?.conflictCycle ?? 0;
     let readyForReviewCycle = previous?.readyForReviewCycle ?? 0;
     let mergeQueueRetry = previous?.mergeQueueRetry?.headSha === details.headSha ? previous.mergeQueueRetry : undefined;
-    const validationConfig = this.config.automation.syncAfterRejectValidation;
+    let mergeQueuePreflight = previous?.mergeQueuePreflight;
+    const validationConfig = this.config.automation.mergeQueuePreflight
+      ? null
+      : this.config.automation.syncAfterRejectValidation;
     const previousSyncState = previous?.syncAfterRejectHead;
     let syncAfterRejectHead =
       previousSyncState?.currentHeadSha.toLowerCase() === details.headSha.toLowerCase() &&
@@ -1490,6 +2023,7 @@ export class ShepherdEngine {
     }
     if (
       !baseline &&
+      this.admissionHoldState(details).status === 'clear' &&
       mayStartPostSyncValidation &&
       syncAfterRejectHead !== undefined &&
       syncAfterRejectHead.validation === undefined &&
@@ -1536,6 +2070,10 @@ export class ShepherdEngine {
               headSha: details.headSha,
               body: validationConfig.triggerComment,
               notBefore: now.toISOString(),
+              priorCommentIds: details.comments
+                .filter((comment) => comment.body === validationConfig.triggerComment)
+                .map((comment) => comment.id)
+                .sort(),
             },
             expectedHeadSha: details.headSha,
             syncAfterRejectActionKey: syncAfterRejectHead.actionKey,
@@ -1724,7 +2262,51 @@ export class ShepherdEngine {
         trackedClaim?.status === 'active' &&
         trackedClaim.generation === trackedGeneration &&
         trackedClaim.releaseGate === 'provider-action-ready';
-      if (providerReadyClaim) {
+      const hold = this.admissionHoldState(details);
+      if (hold.status !== 'clear') {
+        const queuedHold = hold.status === 'held' && mergeAutomation?.queued === true;
+        const reason = hold.status === 'held' ? 'hold-label' : 'hold-label-evidence-incomplete';
+        events.push(
+          buildEvent(
+            this.config,
+            queuedHold ? 'hold-label-on-queued-pr' : 'release-gate-blocked',
+            pr,
+            { headSha: details.headSha, reason, labels: hold.labels },
+            {
+              reason,
+              label: hold.labels[0],
+              holdLabels: hold.labels,
+              detail: queuedHold
+                ? 'A configured hold label is present on a queued pull request; Shepherd will not dequeue it.'
+                : hold.status === 'incomplete'
+                  ? 'Configured hold labels cannot be evaluated because label evidence is incomplete.'
+                  : 'A configured hold label is blocking merge admission.',
+              title: details.title,
+              url: details.url,
+            },
+            now.toISOString(),
+          ),
+        );
+      } else if (this.config.automation.mergeQueuePreflight && this.config.github.mode === 'merge-queue') {
+        if (mergeAutomation === undefined || mergeQueuePreflightObservation === undefined) {
+          throw new Error('Merge-queue preflight evidence was not observed.');
+        }
+        const result = this.addMergeQueuePreflightDecision(
+          pr,
+          details,
+          reviews,
+          trackedClaim,
+          authored,
+          mergeAutomation,
+          mergeQueuePreflightObservation,
+          previous?.mergeQueueRetry,
+          mergeQueuePreflight,
+          events,
+          actions,
+        );
+        mergeQueueRetry = result.retry;
+        mergeQueuePreflight = result.preflight;
+      } else if (providerReadyClaim) {
         if (mergeAutomation === undefined) {
           throw new Error('The GitHub provider cannot observe Add to merge queue availability.');
         }
@@ -1981,6 +2563,7 @@ export class ShepherdEngine {
         receivedReviewThreads: receivedReviewFeedback.threads,
         ...(mergeQueueRetry === undefined ? {} : { mergeQueueRetry }),
         ...(syncAfterRejectHead === undefined ? {} : { syncAfterRejectHead }),
+        ...(mergeQueuePreflight === undefined ? {} : { mergeQueuePreflight }),
         sources: { authored, ...(trackedGeneration === undefined ? {} : { trackedGeneration }) },
       },
       events:
@@ -2430,6 +3013,674 @@ export class ShepherdEngine {
     }
   }
 
+  private addMergeQueuePreflightDecision(
+    pr: PullRequestRef,
+    details: PullRequestDetails,
+    reviews: Review[],
+    trackedClaim: TrackedPullRequest | undefined,
+    authored: boolean,
+    automation: MergeAutomationState,
+    observation: MergeQueuePreflightObservation,
+    previousRetry: MergeQueueRetryState | undefined,
+    previousPreflight: MergeQueuePreflightState | undefined,
+    events: ShepherdEvent[],
+    actions: EntityUpdate[],
+  ): { retry: MergeQueueRetryState | undefined; preflight: MergeQueuePreflightState | undefined } {
+    const validationConfig = this.config.automation.syncAfterRejectValidation;
+    if (validationConfig === null) throw new Error('Merge-queue preflight validation is not configured.');
+    const trackedGeneration = trackedClaim?.generation;
+    const providerReady = trackedClaim?.releaseGate === 'provider-action-ready';
+    const attested = trackedClaim?.releaseGate === 'exact-head-attestation';
+    const lane: MergeQueuePreflightLane = providerReady
+      ? 'provider-action-ready'
+      : attested
+        ? 'exact-head-attestation'
+        : 'authored';
+    const configDigest = this.mergeQueuePreflightConfigDigest();
+    if (configDigest === undefined) throw new Error('Merge-queue preflight configuration is incomplete.');
+    const mode =
+      trackedClaim !== undefined && !authored && !providerReady && !attested
+        ? 'notify'
+        : this.config.automation.autoMerge;
+    const baseScope = providerReady
+      ? `provider-action-ready:${String(trackedGeneration)}`
+      : attested
+        ? `exact-head-attestation:${String(trackedGeneration)}`
+        : 'authored';
+    const queueScope = `${baseScope}:merge-queue-preflight:${configDigest}:${details.headSha.toLowerCase()}`;
+    let retry =
+      previousRetry?.headSha.toLowerCase() === details.headSha.toLowerCase()
+        ? previousRetry
+        : this.recoverMergeQueueRetry(pr, details.headSha, queueScope);
+    const existingFence = retry?.fence ?? this.recoverMergeQueueFence(pr, details.headSha);
+
+    if (automation.queued) {
+      return {
+        retry: {
+          headSha: details.headSha,
+          scope: queueScope,
+          attempts: retry?.attempts ?? 0,
+          ...(retry?.lastActionKey === undefined ? {} : { lastActionKey: retry.lastActionKey }),
+          observedQueued: true,
+          exhausted: retry?.exhausted ?? false,
+          ...(existingFence === undefined ? {} : { fence: existingFence }),
+        },
+        preflight: undefined,
+      };
+    }
+    if (existingFence !== undefined) {
+      return {
+        retry: {
+          headSha: details.headSha,
+          scope: queueScope,
+          attempts: retry?.attempts ?? 0,
+          ...(retry?.lastActionKey === undefined ? {} : { lastActionKey: retry.lastActionKey }),
+          observedQueued: false,
+          exhausted: true,
+          fence: existingFence,
+        },
+        preflight: undefined,
+      };
+    }
+
+    const priorAction =
+      retry?.lastActionKey === undefined ? undefined : this.store.getEntity<ActionState>(retry.lastActionKey);
+    const priorCompletedAt = priorAction?.value.completedAt ?? priorAction?.updatedAt;
+    const removal = automation.latestQueueRemoval;
+    const removalAfterAttempt =
+      removal !== undefined &&
+      (retry?.observedQueued === true ||
+        (priorAction?.value.status === 'completed' &&
+          priorCompletedAt !== undefined &&
+          removal.createdAt >= priorCompletedAt))
+        ? removal
+        : undefined;
+    const continuingRemoval =
+      previousPreflight?.origin === 'removal' && previousPreflight.removalId === removal?.id ? removal : undefined;
+    const activeRemoval = removalAfterAttempt ?? continuingRemoval;
+
+    if (retry?.observedQueued === true && activeRemoval === undefined) {
+      const fence: MergeQueueFence = {
+        repo: pr.repo,
+        prNumber: pr.number,
+        headSha: details.headSha,
+        ...(trackedGeneration === undefined ? {} : { trackedGeneration }),
+        removalId: `${queueScope}:observed-queue-disappeared`,
+        removalReason: 'queue-entry-absent-after-observation',
+        classification: 'provider-evidence-ambiguous',
+        createdAt: this.clock().toISOString(),
+      };
+      actions.push({
+        key: `${prKey('merge-queue-fence', pr)}:${details.headSha.toLowerCase()}`,
+        kind: 'merge-queue-fence',
+        value: fence,
+      });
+      return { retry: { ...retry, observedQueued: false, exhausted: true, fence }, preflight: undefined };
+    }
+
+    const origin: MergeQueuePreflightState['origin'] = activeRemoval === undefined ? 'initial' : 'removal';
+    let automationRecovery = previousPreflight?.automationRecovery;
+    if (activeRemoval !== undefined) {
+      const disposition = mergeQueueRetryDisposition(activeRemoval);
+      const attributedFailure =
+        normalizedQueueRemovalReason(activeRemoval.reason) === 'failed_checks' &&
+        syncAfterRejectAttributionReason(activeRemoval) === undefined;
+      const automatedManual =
+        normalizedQueueRemovalReason(activeRemoval.reason) === 'manual' &&
+        GITHUB_ACTIONS_ACTOR_LOGINS.has(activeRemoval.actor?.login.trim().toLowerCase() ?? '');
+      const recoverable = disposition.retryable || attributedFailure;
+      events.push(
+        buildEvent(
+          this.config,
+          'merge-queue-evicted',
+          pr,
+          { headSha: details.headSha, removalId: activeRemoval.id, attempt: retry?.attempts ?? 0 },
+          {
+            reason: activeRemoval.reason ?? 'unknown',
+            removedAt: activeRemoval.createdAt,
+            attempts: retry?.attempts ?? 0,
+            retryExhausted: !recoverable,
+            retryEligibility: disposition.classification,
+            providerInitiator: { actor: activeRemoval.actor ?? null, enqueuer: activeRemoval.enqueuer ?? null },
+            syncAfterReject: recoverable ? 'merge-queue-preflight' : 'fenced',
+            ...(activeRemoval.evidence === undefined ? {} : { providerEvidence: activeRemoval.evidence }),
+            title: details.title,
+            url: details.url,
+          },
+          activeRemoval.createdAt,
+        ),
+      );
+      if (!recoverable) {
+        const fence: MergeQueueFence = {
+          repo: pr.repo,
+          prNumber: pr.number,
+          headSha: details.headSha,
+          ...(trackedGeneration === undefined ? {} : { trackedGeneration }),
+          removalId: activeRemoval.id,
+          removalReason: activeRemoval.reason ?? 'unknown',
+          classification: disposition.fenceClassification,
+          createdAt: activeRemoval.createdAt,
+        };
+        actions.push({
+          key: `${prKey('merge-queue-fence', pr)}:${details.headSha.toLowerCase()}`,
+          kind: 'merge-queue-fence',
+          value: fence,
+        });
+        return {
+          retry: {
+            headSha: details.headSha,
+            scope: queueScope,
+            attempts: retry?.attempts ?? 0,
+            ...(retry?.lastActionKey === undefined ? {} : { lastActionKey: retry.lastActionKey }),
+            observedQueued: false,
+            exhausted: true,
+            fence,
+          },
+          preflight: undefined,
+        };
+      }
+      if (automatedManual) {
+        const recovery = this.config.automation.mergeQueueAutomationRecovery;
+        if (recovery === null) return { retry, preflight: previousPreflight };
+        const originalHeadSha = previousPreflight?.initialHeadSha ?? details.headSha;
+        const onOriginalHead = details.headSha.toLowerCase() === originalHeadSha.toLowerCase();
+        const retained =
+          automationRecovery?.removalId === activeRemoval.id &&
+          automationRecovery.requiredStatus === recovery.requiredStatus &&
+          automationRecovery.headSha.toLowerCase() === originalHeadSha.toLowerCase();
+        if (!retained && !onOriginalHead) return { retry, preflight: previousPreflight };
+        if (onOriginalHead) {
+          const source = currentProofSource(observation.checks, recovery.requiredStatus, 'commit-status');
+          if (
+            source === undefined ||
+            source.startedAt < activeRemoval.createdAt ||
+            !source.terminal ||
+            !source.success
+          ) {
+            if (previousPreflight?.automationRecovery === undefined) {
+              return { retry, preflight: previousPreflight };
+            }
+            const { automationRecovery: _staleRecovery, ...withoutStaleRecovery } = previousPreflight;
+            return { retry, preflight: withoutStaleRecovery };
+          }
+          automationRecovery = {
+            removalId: activeRemoval.id,
+            headSha: originalHeadSha,
+            requiredStatus: recovery.requiredStatus,
+            runId: source.runId,
+            startedAt: source.startedAt,
+          };
+        }
+      }
+    }
+
+    if (this.preflightHeld(details)) return { retry, preflight: previousPreflight };
+    if (details.state !== 'OPEN' || details.mergeable !== 'MERGEABLE') {
+      return { retry, preflight: previousPreflight };
+    }
+
+    const latestApprovals = reviews.filter((review) => review.state === 'APPROVED');
+    const removalId = activeRemoval?.id;
+    const initialCycleHead =
+      activeRemoval === undefined && previousPreflight?.origin === 'initial'
+        ? previousPreflight.initialHeadSha
+        : details.headSha;
+    const expectedCycleId = createHash('sha256')
+      .update(
+        [
+          pr.repo.toLowerCase(),
+          String(pr.number),
+          origin,
+          removalId ?? initialCycleHead.toLowerCase(),
+          baseScope,
+          configDigest,
+        ].join('\u0000'),
+      )
+      .digest('hex')
+      .slice(0, 24);
+    let preflight =
+      previousPreflight?.cycleId === expectedCycleId
+        ? { ...previousPreflight }
+        : ({
+            cycleId: expectedCycleId,
+            configDigest,
+            lane,
+            ...(trackedGeneration === undefined ? {} : { trackedGeneration }),
+            origin,
+            ...(activeRemoval === undefined
+              ? {}
+              : { removalId: activeRemoval.id, removalCreatedAt: activeRemoval.createdAt }),
+            initialHeadSha: details.headSha,
+            currentHeadSha: details.headSha,
+            targetBaseRef: observation.containment.baseRefName,
+            targetBaseSha: observation.containment.baseSha,
+            syncSlotsReserved: 0,
+            syncCompleted: false,
+            priorCheckIds: details.checks.map((check) => check.id).sort(),
+            priorApprovalIds: latestApprovals.map((review) => review.id).sort(),
+            approvedHeadSha: details.headSha,
+            approvalCarryAllowed: false,
+            freshApprovalRequired: false,
+            validationEpoch: 0,
+            ...(automationRecovery === undefined ? {} : { automationRecovery }),
+          } satisfies MergeQueuePreflightState);
+    if (automationRecovery !== undefined && preflight.automationRecovery?.runId !== automationRecovery.runId) {
+      preflight = { ...preflight, automationRecovery };
+    }
+
+    if (preflight.currentHeadSha.toLowerCase() !== details.headSha.toLowerCase()) {
+      const syncAction =
+        preflight.syncActionKey === undefined
+          ? undefined
+          : this.store.getEntity<ActionState>(preflight.syncActionKey)?.value;
+      const syncMutation = syncAction?.mutation.type === 'sync-branch-exact-head' ? syncAction.mutation : undefined;
+      const shepherdSync =
+        syncAction?.status === 'completed' &&
+        syncMutation !== undefined &&
+        syncAction.syncAfterRejectResultHeadSha?.toLowerCase() === details.headSha.toLowerCase() &&
+        syncAction.preflightBaseSha !== undefined &&
+        observation.containment.headParents.length === 2 &&
+        observation.containment.headParents.some(
+          (parent) => parent.toLowerCase() === syncMutation.headSha.toLowerCase(),
+        ) &&
+        observation.containment.headParents.some(
+          (parent) => parent.toLowerCase() === syncAction.preflightBaseSha?.toLowerCase(),
+        );
+      preflight = {
+        ...preflight,
+        currentHeadSha: details.headSha,
+        targetBaseRef: observation.containment.baseRefName,
+        targetBaseSha: observation.containment.baseSha,
+        approvalCarryAllowed: shepherdSync,
+        freshApprovalRequired: !shepherdSync,
+        syncCompleted: preflight.syncCompleted || shepherdSync,
+        validationEpoch: preflight.validationEpoch + 1,
+        syncActionKey: undefined,
+        validation: undefined,
+        ...(shepherdSync ? {} : { approvedHeadSha: details.headSha }),
+      };
+    }
+    if (
+      preflight.targetBaseRef !== observation.containment.baseRefName ||
+      preflight.targetBaseSha.toLowerCase() !== observation.containment.baseSha.toLowerCase()
+    ) {
+      preflight = {
+        ...preflight,
+        targetBaseRef: observation.containment.baseRefName,
+        targetBaseSha: observation.containment.baseSha,
+        validationEpoch: preflight.validationEpoch + 1,
+        syncActionKey: undefined,
+        validation: undefined,
+      };
+    }
+    if (
+      preflight.validation !== undefined &&
+      preflight.validation.actionKey === undefined &&
+      preflight.validation.receipt === undefined
+    ) {
+      const equivalent = currentProofSource(observation.checks, preflight.validation.requiredCheck);
+      preflight = {
+        ...preflight,
+        validation: {
+          ...preflight.validation,
+          ...(equivalent?.terminal === true && equivalent.success
+            ? { equivalentRunId: equivalent.runId }
+            : { equivalentRunId: undefined }),
+        },
+      };
+    }
+
+    const priorEnqueueIsCurrent =
+      priorAction?.value.mutation.type === 'enqueue-exact-head' &&
+      priorAction.value.preflightCycleId === preflight.cycleId &&
+      priorAction.value.preflightConfigDigest === preflight.configDigest &&
+      priorAction.value.preflightLane === preflight.lane &&
+      priorAction.value.preflightValidationEpoch === preflight.validationEpoch &&
+      priorAction.value.preflightBaseSha?.toLowerCase() === preflight.targetBaseSha.toLowerCase() &&
+      priorAction.value.mutation.headSha.toLowerCase() === details.headSha.toLowerCase() &&
+      priorAction.value.preflightProofRunId === preflight.validation?.equivalentRunId;
+    if (priorAction?.value.status === 'pending' && priorEnqueueIsCurrent) {
+      return { retry, preflight };
+    }
+    if (priorAction?.value.status === 'failed') {
+      return { retry: retry === undefined ? undefined : { ...retry, exhausted: true }, preflight };
+    }
+    if (preflight.syncActionKey !== undefined) {
+      const syncAction = this.store.getEntity<ActionState>(preflight.syncActionKey)?.value;
+      if (syncAction?.status === 'pending') return { retry, preflight };
+      if (syncAction?.status === 'failed') return { retry, preflight };
+      preflight = {
+        ...preflight,
+        syncActionKey: undefined,
+        syncCompleted: syncAction?.status === 'completed',
+        validationEpoch: syncAction?.status === 'cancelled' ? preflight.validationEpoch + 1 : preflight.validationEpoch,
+      };
+    }
+
+    const laneReadyBeforeSync = this.preflightLaneReady(
+      details,
+      reviews,
+      trackedClaim,
+      authored,
+      automation,
+      preflight,
+      false,
+    );
+    const containsBase = ['identical', 'ahead'].includes(observation.containment.status);
+    const needsSync = !containsBase || (preflight.origin === 'removal' && !preflight.syncCompleted);
+    if (needsSync) {
+      if (!laneReadyBeforeSync || mode !== 'execute' || preflight.syncActionKey !== undefined) {
+        return { retry, preflight };
+      }
+      if (preflight.syncSlotsReserved >= MERGE_QUEUE_PREFLIGHT_MAX_SYNCS) {
+        events.push(
+          buildEvent(
+            this.config,
+            'branch-update-failed',
+            pr,
+            { cycleId: preflight.cycleId, reason: 'merge-queue-preflight-sync-limit' },
+            { attempts: preflight.syncSlotsReserved, error: 'merge-queue preflight sync limit reached' },
+            this.clock().toISOString(),
+          ),
+        );
+        return { retry, preflight };
+      }
+      const slot = preflight.syncSlotsReserved + 1;
+      const actionKey = `${prKey('action:merge-queue-preflight-sync', pr)}:${preflight.cycleId}:${String(slot)}`;
+      events.push(
+        buildEvent(
+          this.config,
+          'branch-update-decision',
+          pr,
+          { cycleId: preflight.cycleId, headSha: details.headSha, baseSha: observation.containment.baseSha, slot },
+          { mode: 'execute', reason: 'merge-queue-preflight', title: details.title, url: details.url },
+          this.clock().toISOString(),
+        ),
+      );
+      if (this.store.getEntity<ActionState>(actionKey) === undefined) {
+        actions.push({
+          key: actionKey,
+          kind: 'action',
+          value: {
+            status: 'pending',
+            mutation: { type: 'sync-branch-exact-head', pr, headSha: details.headSha },
+            expectedHeadSha: details.headSha,
+            preflightCycleId: preflight.cycleId,
+            preflightOrigin: preflight.origin,
+            preflightBaseRef: observation.containment.baseRefName,
+            preflightBaseSha: observation.containment.baseSha,
+            preflightSyncSlot: slot,
+            preflightConfigDigest: preflight.configDigest,
+            preflightLane: preflight.lane,
+            preflightValidationEpoch: preflight.validationEpoch,
+            ...(trackedGeneration === undefined ? {} : { trackedGeneration }),
+          } satisfies ActionState,
+        });
+      }
+      return {
+        retry,
+        preflight: {
+          ...preflight,
+          syncSlotsReserved: slot,
+          syncCompleted: false,
+          syncActionKey: actionKey,
+          validation: undefined,
+          priorCheckIds: details.checks.map((check) => check.id).sort(),
+          priorApprovalIds: latestApprovals.map((review) => review.id).sort(),
+          approvedHeadSha: details.headSha,
+        },
+      };
+    }
+
+    let validation = preflight.validation;
+    const mustTrigger = preflight.origin === 'removal' || preflight.syncSlotsReserved > 0;
+    if (validation === undefined && !mustTrigger) {
+      const equivalent = currentProofSource(observation.checks, validationConfig.requiredCheck);
+      if (equivalent?.terminal && equivalent.success) {
+        validation = {
+          triggerComment: validationConfig.triggerComment,
+          requiredCheck: validationConfig.requiredCheck,
+          equivalentRunId: equivalent.runId,
+        };
+      }
+    }
+    if (validation === undefined) {
+      const identity = createHash('sha256')
+        .update(
+          [
+            preflight.cycleId,
+            preflight.configDigest,
+            String(preflight.validationEpoch),
+            details.headSha.toLowerCase(),
+            validationConfig.triggerComment,
+          ].join('\u0000'),
+        )
+        .digest('hex')
+        .slice(0, 24);
+      const actionKey = `${prKey('action:merge-queue-preflight-validation', pr)}:${identity}`;
+      validation = {
+        actionKey,
+        triggerComment: validationConfig.triggerComment,
+        requiredCheck: validationConfig.requiredCheck,
+      };
+      if (mode === 'execute' && this.store.getEntity<ActionState>(actionKey) === undefined) {
+        actions.push({
+          key: actionKey,
+          kind: 'action',
+          value: {
+            status: 'pending',
+            mutation: {
+              type: 'post-pr-comment-exact-head',
+              pr,
+              headSha: details.headSha,
+              body: validationConfig.triggerComment,
+              notBefore: new Date(Math.floor(this.clock().getTime() / 1_000) * 1_000).toISOString(),
+              priorCommentIds: details.comments
+                .filter((comment) => comment.body === validationConfig.triggerComment)
+                .map((comment) => comment.id)
+                .sort(),
+            },
+            expectedHeadSha: details.headSha,
+            preflightCycleId: preflight.cycleId,
+            preflightOrigin: preflight.origin,
+            preflightBaseRef: observation.containment.baseRefName,
+            preflightBaseSha: observation.containment.baseSha,
+            preflightConfigDigest: preflight.configDigest,
+            preflightLane: preflight.lane,
+            preflightValidationEpoch: preflight.validationEpoch,
+            syncAfterRejectValidationActionKey: actionKey,
+            ...(trackedGeneration === undefined ? {} : { trackedGeneration }),
+          } satisfies ActionState,
+        });
+      }
+      return { retry, preflight: { ...preflight, validation } };
+    }
+
+    if (validation.receipt === undefined && validation.actionKey !== undefined) {
+      const validationAction = this.store.getEntity<ActionState>(validation.actionKey)?.value;
+      if (validationAction?.status === 'cancelled') {
+        return {
+          retry,
+          preflight: { ...preflight, validation: undefined, validationEpoch: preflight.validationEpoch + 1 },
+        };
+      }
+      if (validationAction?.status !== 'completed' || validationAction.commentReceipt === undefined) {
+        return { retry, preflight: { ...preflight, validation } };
+      }
+      validation = { ...validation, receipt: validationAction.commentReceipt };
+    }
+    if (validation.receipt !== undefined) {
+      const proof = currentProofSource(observation.checks, validation.requiredCheck);
+      if (proof === undefined || proof.startedAt < validation.receipt.createdAt || !proof.terminal || !proof.success) {
+        return { retry, preflight: { ...preflight, validation } };
+      }
+      validation = { ...validation, equivalentRunId: proof.runId };
+    }
+    if (validation.equivalentRunId === undefined) {
+      return { retry, preflight: { ...preflight, validation } };
+    }
+
+    preflight = { ...preflight, validation };
+    if (!this.preflightLaneReady(details, reviews, trackedClaim, authored, automation, preflight, true)) {
+      if (automation.enqueueAvailable !== true && mode === 'execute') {
+        events.push(
+          buildEvent(
+            this.config,
+            'release-gate-blocked',
+            pr,
+            {
+              headSha: details.headSha,
+              cycleId: preflight.cycleId,
+              reason: 'provider-action-unavailable-after-preflight',
+            },
+            {
+              reason: 'provider-action-unavailable-after-preflight',
+              detail: 'GitHub does not expose merge-queue admission after preflight; a fresh approval may be required.',
+              title: details.title,
+              url: details.url,
+            },
+            this.clock().toISOString(),
+          ),
+        );
+      }
+      return { retry, preflight };
+    }
+
+    const actionContext: MergeQueueActionContext = {
+      preflightCycleId: preflight.cycleId,
+      preflightOrigin: preflight.origin,
+      preflightBaseRef: preflight.targetBaseRef,
+      preflightBaseSha: preflight.targetBaseSha,
+      preflightConfigDigest: preflight.configDigest,
+      preflightLane: preflight.lane,
+      preflightValidationEpoch: preflight.validationEpoch,
+      preflightProofRunId: validation.equivalentRunId,
+      ...(providerReady && trackedGeneration !== undefined ? { trackedGeneration } : {}),
+    };
+    const identityContext: Record<string, unknown> = providerReady
+      ? { releaseGate: 'provider-action-ready', trackedGeneration }
+      : attested && trackedGeneration !== undefined
+        ? { releaseGate: 'exact-head-attestation' }
+        : {};
+    if (attested && trackedGeneration !== undefined && supportsReleaseGate(this.store)) {
+      const attestation = this.store.getReleaseAttestation(details, trackedGeneration, details.headSha);
+      if (attestation?.status !== 'active') return { retry, preflight };
+      identityContext.attestationId = attestation.idempotencyKey;
+      actionContext.trackedGeneration = trackedGeneration;
+      actionContext.attestationHeadSha = details.headSha;
+      actionContext.attestationId = attestation.idempotencyKey;
+    }
+    const nextAttempt = (retry?.attempts ?? 0) + 1;
+    if (nextAttempt > MERGE_QUEUE_MAX_ATTEMPTS) {
+      return {
+        retry:
+          retry === undefined
+            ? {
+                headSha: details.headSha,
+                scope: queueScope,
+                attempts: MERGE_QUEUE_MAX_ATTEMPTS,
+                observedQueued: false,
+                exhausted: true,
+              }
+            : { ...retry, exhausted: true },
+        preflight,
+      };
+    }
+    retry = this.scheduleMergeQueueAttempt(
+      mode,
+      pr,
+      details,
+      queueScope,
+      nextAttempt,
+      undefined,
+      identityContext,
+      actionContext,
+      events,
+      actions,
+    );
+    return { retry, preflight };
+  }
+
+  private admissionMutation(mutation: GitHubMutation): boolean {
+    return ['enable-auto-merge', 'merge-exact-head', 'enqueue-exact-head', 'enqueue-provider-ready'].includes(
+      mutation.type,
+    );
+  }
+
+  private holdSensitiveAction(action: ActionState): boolean {
+    if (this.config.automation.holdLabels.length === 0) return false;
+    return (
+      this.admissionMutation(action.mutation) ||
+      action.preflightCycleId !== undefined ||
+      action.syncAfterRejectRemovalId !== undefined ||
+      action.syncAfterRejectActionKey !== undefined
+    );
+  }
+
+  private admissionHoldState(details: PullRequestDetails): AdmissionHoldState {
+    const configured = this.config.automation.holdLabels.map((label) => label.toLowerCase()).sort();
+    if (configured.length === 0) return { status: 'clear', labels: [] };
+    if (details.labels === undefined || details.labelsExhaustive !== true) {
+      return { status: 'incomplete', labels: configured };
+    }
+    const observed = new Set(details.labels.map((label) => label.toLowerCase()));
+    const matched = configured.filter((label) => observed.has(label));
+    return matched.length === 0 ? { status: 'clear', labels: [] } : { status: 'held', labels: matched };
+  }
+
+  private preflightHeld(details: PullRequestDetails): boolean {
+    return this.admissionHoldState(details).status !== 'clear';
+  }
+
+  private preflightLaneReady(
+    details: PullRequestDetails,
+    reviews: Review[],
+    trackedClaim: TrackedPullRequest | undefined,
+    authored: boolean,
+    automation: MergeAutomationState,
+    preflight: MergeQueuePreflightState,
+    final: boolean,
+  ): boolean {
+    if (details.state !== 'OPEN' || details.mergeable !== 'MERGEABLE' || this.preflightHeld(details)) return false;
+    if (automation.queued || automation.headSha.toLowerCase() !== details.headSha.toLowerCase()) return false;
+    if (trackedClaim?.releaseGate === 'provider-action-ready') {
+      return automation.enqueueAvailable === true;
+    }
+    if (!authored && trackedClaim?.releaseGate !== 'exact-head-attestation') return false;
+    const latest = latestReviews(reviews);
+    if (latest.some((review) => review.state === 'CHANGES_REQUESTED')) return false;
+    const approvals = latest.filter((review) => {
+      if (review.state !== 'APPROVED') return false;
+      if (preflight.approvalCarryAllowed) {
+        return (
+          preflight.priorApprovalIds.includes(review.id) ||
+          review.commitSha?.toLowerCase() === details.headSha.toLowerCase()
+        );
+      }
+      if (!preflight.freshApprovalRequired) return true;
+      return (
+        review.commitSha?.toLowerCase() === details.headSha.toLowerCase() &&
+        !preflight.priorApprovalIds.includes(review.id)
+      );
+    });
+    const priorChecks =
+      final && preflight.syncSlotsReserved > 0 && this.config.checks.required.length > 0
+        ? preflight.priorCheckIds
+        : undefined;
+    if (!this.checksReady(details, priorChecks)) {
+      return false;
+    }
+    if (approvals.length < this.config.reviews.requiredApprovals) return false;
+    if (trackedClaim?.releaseGate === 'exact-head-attestation') {
+      if (!supportsReleaseGate(this.store)) return false;
+      return (
+        this.store.getReleaseGateStatus(details, trackedClaim.generation, details.headSha) === 'applicable' &&
+        this.store.getReleaseAttestation(details, trackedClaim.generation, details.headSha)?.status === 'active'
+      );
+    }
+    return final ? automation.enqueueAvailable === true : true;
+  }
+
   private addMergeQueueDecision(
     mode: 'off' | 'notify' | 'execute',
     pr: PullRequestRef,
@@ -2758,11 +4009,13 @@ export class ShepherdEngine {
           status: 'pending',
           mutation:
             identityContext.releaseGate === 'provider-action-ready' &&
-            actionContext.syncAfterRejectHeadSha === undefined
+            actionContext.syncAfterRejectHeadSha === undefined &&
+            actionContext.preflightCycleId === undefined
               ? { type: 'enqueue-provider-ready', pr }
               : { type: 'enqueue-exact-head', pr, headSha: details.headSha },
           ...(identityContext.releaseGate === 'provider-action-ready' &&
-          actionContext.syncAfterRejectHeadSha === undefined
+          actionContext.syncAfterRejectHeadSha === undefined &&
+          actionContext.preflightCycleId === undefined
             ? { queueObservationHeadSha: details.headSha }
             : { expectedHeadSha: details.headSha }),
           enqueueAttempt: attempt,

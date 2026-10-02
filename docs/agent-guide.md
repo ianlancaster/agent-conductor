@@ -1035,7 +1035,8 @@ and profiles are deployment policy and must not enter the reusable product.
 
 In direct mode, a mergeable PR behind its base is updated before prior checks or approvals count as
 merge-ready. With branch updates off, Shepherd emits `branch-behind` and withholds readiness. In
-merge-queue mode a merely-behind ready PR is queued without an unnecessary update. Ordinary and
+merge-queue mode a merely-behind ready PR is queued without an unnecessary update unless the
+profile explicitly enables `automation.mergeQueuePreflight`. Ordinary and
 exact-head-attested queue submission uses an exact-head precondition; provider-action-ready claims
 intentionally leave head acceptance to GitHub. Shepherd observes current queue membership and
 GitHub's latest removal reason on every owned-PR poll; a same-head eviction emits
@@ -1078,6 +1079,27 @@ non-attributable, voluntary, transient, ambiguous, or upstream-failure removals 
 fails closed on trigger errors, incomplete or mismatched provider evidence, and head/configuration
 races. Leave it `null` for sync-only behavior; this general primitive contains no repository
 command or workflow-name policy.
+
+For fleets that require merge-main plus an exact-head proof before every Shepherd enqueue, enable
+`automation.mergeQueuePreflight` only after configuring `syncAfterReject` and
+`syncAfterRejectValidation`. The disabled default preserves existing profiles. The preflight uses
+immutable base/head ancestry instead of `mergeStateStatus`, caps one preparation cycle at five
+reserved sync actions, and requires source-run provenance plus the provider timestamp of the
+trigger comment. An already-current first-admission head may reuse its latest terminal-green proof;
+every sync or eject requires a new run. A provider-owned eject workflow can be represented with
+`mergeQueueAutomationRecovery.requiredStatus`; Shepherd waits for the status's referenced run to
+finish, yields to bot re-enqueue, and suspends while a top-level `automation.holdLabels` match is
+present. Human or ambiguous
+removals remain fenced. Shepherd carries approval only when the resulting head is proven to be the
+exact two-parent merge of the previously approved head and the observed target-base SHA; other head
+movement needs fresh approval, and exact-head-attested lanes still need a new attestation.
+
+Top-level `automation.holdLabels` is independent of the preflight. A case-insensitive match pauses
+authored and tracked admission in both GitHub modes, including durable actions already pending and
+queue-recovery preparation. Removing the label resumes the same head and budgets. Shepherd emits a
+deduplicated blocked fact, or `hold-label-on-queued-pr` when the PR is already queued; it does not
+dequeue solely for a hold. Configured holds fail closed unless the provider supplies exhaustive
+label facts.
 
 While the managed companion has a fresh healthy heartbeat, fleet `/status` adds
 `PR Shepherd Status Online` directly below the Conductor heading and marks the configured

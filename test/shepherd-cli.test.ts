@@ -47,6 +47,9 @@ describe('PR Shepherd CLI profile discovery', () => {
       const path = join(dir, '.conductor', 'config', 'pr-shepherd.yaml');
       const scaffold = readFileSync(path, 'utf8');
       expect(scaffold).toContain('agent-conductor-pr-shepherd-scaffold: identity-required');
+      expect(scaffold).toContain('mergeQueuePreflight: false');
+      expect(scaffold).toContain('holdLabels: []');
+      expect(scaffold).toContain('mergeQueueAutomationRecovery: null');
       expect(run(['-C', dir, 'init'])).toContain('already exists');
       expect(readFileSync(path, 'utf8')).toBe(scaffold);
       expect(run(['-C', dir, 'validate'])).toContain('Valid V2 profile for @CHANGE_ME');

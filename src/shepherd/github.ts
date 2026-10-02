@@ -2,13 +2,17 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ShepherdConfig } from './config.js';
 import { repositoryInScope } from './scope.js';
+import { GitHubMutationSuspendedError } from './types.js';
 import type {
+  BaseContainmentSnapshot,
   CheckRun,
+  CheckSourceRun,
   Comment,
   Commit,
   DiscoveryKind,
   DiscoveryResult,
   GitHubMutation,
+  GitHubMutationResult,
   GitHubProvider,
   HeadCheckSnapshot,
   MergeAutomationState,
@@ -105,6 +109,8 @@ interface RawView {
   state: string;
   headRefName: string;
   headRefOid: string;
+  baseRefName: string;
+  baseRefOid: string;
   mergeable: PullRequestDetails['mergeable'];
   mergeStateStatus: string;
   autoMergeRequest: { mergeMethod: string } | null;
@@ -142,6 +148,35 @@ interface RawCommitStatus {
   node_id: string;
   state: string;
   context: string;
+  created_at?: string;
+  updated_at?: string;
+  target_url?: string | null;
+  sha?: string;
+}
+
+interface RawActionsRun {
+  id: number;
+  run_attempt?: number;
+  workflow_id?: number;
+  path?: string;
+  html_url: string;
+  event: string;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  created_at: string;
+  run_started_at: string | null;
+  updated_at: string;
+}
+
+interface RawCompare {
+  status: string;
+  base_commit: { sha: string };
+}
+
+interface RawGitCommit {
+  sha: string;
+  parents: { sha: string }[];
 }
 
 interface RawCombinedStatusPage {
@@ -218,6 +253,8 @@ interface RawCheckSuiteEvidence {
       status: string;
       conclusion: string | null;
       permalink: string;
+      startedAt?: string | null;
+      completedAt?: string | null;
       summary: string | null;
       text: string | null;
       steps: {
@@ -416,6 +453,7 @@ query PullRequestMutationState($owner: String!, $name: String!, $number: Int!) {
     pullRequest(number: $number) {
       id
       headRefOid
+      isMergeQueueEnabled
       autoMergeRequest { enabledAt }
       mergeQueueEntry { id }
       timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
@@ -479,6 +517,8 @@ query CommitCheckEvidence($owner: String!, $name: String!, $oid: GitObjectID!, $
                 status
                 conclusion
                 permalink
+                startedAt
+                completedAt
                 summary
                 text
                 steps(first: ${String(GRAPHQL_PAGE_SIZE)}) {
@@ -631,6 +671,8 @@ export class GhGitHubProvider implements GitHubProvider {
       'state',
       'headRefName',
       'headRefOid',
+      'baseRefName',
+      'baseRefOid',
       'mergeable',
       'mergeStateStatus',
       'autoMergeRequest',
@@ -639,13 +681,16 @@ export class GhGitHubProvider implements GitHubProvider {
       'reviews',
       'commits',
     ].join(',');
-    const [viewRaw, checksRaw, commentsRaw, reviewThreads, requestedReviewers] = await Promise.all([
+    const [viewRaw, checksRaw, commentsRaw, labelsRaw, reviewThreads, requestedReviewers] = await Promise.all([
       this.gh(['pr', 'view', String(pr.number), '-R', pr.repo, '--json', fields]),
       this.gh(
         ['pr', 'checks', String(pr.number), '-R', pr.repo, '--json', 'name,state,bucket,workflow,link'],
         [0, 1, 8],
       ),
       this.gh(['api', `repos/${pr.repo}/issues/${String(pr.number)}/comments`, '--paginate', '--slurp']),
+      this.config.automation.holdLabels.length > 0
+        ? this.gh(['api', `repos/${pr.repo}/issues/${String(pr.number)}/labels`, '--paginate', '--slurp'])
+        : Promise.resolve('[]'),
       this.reviewThreads(pr),
       this.requestedReviewers(pr),
     ]);
@@ -653,6 +698,7 @@ export class GhGitHubProvider implements GitHubProvider {
     const rawChecks = this.json<RawCheck[]>(checksRaw || '[]', `${pr.repo}#${String(pr.number)} checks`);
     const commentPages = this.json<RawComment[][]>(commentsRaw || '[]', `${pr.repo}#${String(pr.number)} comments`);
     const rawComments = commentPages.flat();
+    const labelPages = this.json<{ name: string }[][]>(labelsRaw || '[]', `${pr.repo}#${String(pr.number)} labels`);
     const checks = rawChecks
       .filter((check) => !this.config.checks.ignored.includes(check.name))
       .map((check) => ({ ...check, id: check.link ?? `${check.workflow}:${check.name}` }));
@@ -691,6 +737,8 @@ export class GhGitHubProvider implements GitHubProvider {
       state: view.state === 'MERGED' ? 'MERGED' : view.state === 'CLOSED' ? 'CLOSED' : 'OPEN',
       headRefName: view.headRefName,
       headSha: view.headRefOid,
+      baseRefName: view.baseRefName,
+      baseSha: view.baseRefOid,
       mergeable: view.mergeable,
       mergeStateStatus: view.mergeStateStatus,
       autoMergeRequest: view.autoMergeRequest,
@@ -702,12 +750,17 @@ export class GhGitHubProvider implements GitHubProvider {
       requestedReviewers,
       comments,
       commits,
+      ...(this.config.automation.holdLabels.length > 0
+        ? { labels: labelPages.flat().map((label) => label.name), labelsExhaustive: true }
+        : {}),
     };
   }
 
   async getMergeAutomationState(pr: PullRequestRef): Promise<MergeAutomationState> {
-    const providerReady = this.config.features.trackedPRs.releaseGate === 'provider-action-ready';
-    const state = await this.pullRequestMutationState(pr, providerReady);
+    const state = await this.pullRequestMutationState(
+      pr,
+      this.config.features.trackedPRs.releaseGate === 'provider-action-ready',
+    );
     const rawRemoval = state.timelineItems?.nodes[0];
     const latestQueueRemoval =
       rawRemoval === undefined ? undefined : await this.mergeQueueRemoval(pr, state.headRefOid, rawRemoval);
@@ -715,12 +768,8 @@ export class GhGitHubProvider implements GitHubProvider {
       headSha: state.headRefOid,
       autoMergeEnabled: state.autoMergeRequest !== null,
       queued: state.mergeQueueEntry !== null,
-      ...(providerReady
-        ? {
-            enqueueAvailable:
-              state.isMergeQueueEnabled === true && state.mergeQueueEntry === null && state.autoMergeRequest === null,
-          }
-        : {}),
+      enqueueAvailable:
+        state.isMergeQueueEnabled === true && state.mergeQueueEntry === null && state.autoMergeRequest === null,
       ...(state.mergeQueueEntry === null ? {} : { queueEntryId: state.mergeQueueEntry.id }),
       ...(latestQueueRemoval === undefined ? {} : { latestQueueRemoval }),
     };
@@ -729,23 +778,75 @@ export class GhGitHubProvider implements GitHubProvider {
   async getCheckRunsForHead(pr: PullRequestRef, headSha: string): Promise<HeadCheckSnapshot> {
     const [evidence, statuses] = await Promise.all([
       this.commitCheckEvidence(pr.repo, headSha),
-      this.commitStatusEvidence(pr.repo, headSha),
+      this.config.automation.mergeQueuePreflight
+        ? this.commitStatusHistory(pr.repo, headSha)
+        : this.commitStatusEvidence(pr.repo, headSha),
     ]);
+    const checks: (CheckRun & { sourceRunId?: number })[] = [
+      ...evidence.suites.flatMap((suite) =>
+        suite.checkRuns.nodes.map((run) => ({
+          id: run.id,
+          name: run.name,
+          state: run.conclusion ?? run.status,
+          bucket: checkRunBucket(run.status, run.conclusion),
+          workflow: suite.workflowRun?.event ?? '',
+          kind: 'check-run' as const,
+          ...(run.permalink === '' ? {} : { targetUrl: run.permalink }),
+          ...(run.startedAt === undefined || run.startedAt === null ? {} : { createdAt: run.startedAt }),
+          ...(run.completedAt === undefined || run.completedAt === null ? {} : { updatedAt: run.completedAt }),
+          ...(suite.workflowRun?.databaseId === null || suite.workflowRun?.databaseId === undefined
+            ? {}
+            : { sourceRunId: suite.workflowRun.databaseId }),
+        })),
+      ),
+      ...statuses.checks.map((check) => ({ ...check })),
+    ];
+    const enriched = this.config.automation.mergeQueuePreflight
+      ? await this.attachSourceRuns(pr.repo, checks)
+      : checks.map(({ sourceRunId: _sourceRunId, ...check }) => check);
     return {
       headSha: evidence.sha,
       exhaustive: !evidence.checkRunsTruncated && statuses.exhaustive,
-      checks: [
-        ...evidence.suites.flatMap((suite) =>
-          suite.checkRuns.nodes.map((run) => ({
-            id: run.id,
-            name: run.name,
-            state: run.conclusion ?? run.status,
-            bucket: checkRunBucket(run.status, run.conclusion),
-            workflow: suite.workflowRun?.event ?? '',
-          })),
-        ),
-        ...statuses.checks,
-      ],
+      checks: enriched,
+    };
+  }
+
+  async getBaseContainment(pr: PullRequestRef, headSha: string): Promise<BaseContainmentSnapshot> {
+    const viewRaw = await this.gh([
+      'pr',
+      'view',
+      String(pr.number),
+      '-R',
+      pr.repo,
+      '--json',
+      'baseRefName,baseRefOid,headRefOid',
+    ]);
+    const view = this.json<{ baseRefName: string; baseRefOid: string; headRefOid: string }>(
+      viewRaw,
+      `${pr.repo}#${String(pr.number)} base containment identity`,
+    );
+    if (view.headRefOid.toLowerCase() !== headSha.toLowerCase()) {
+      throw new Error(`GitHub head changed while proving base containment for ${pr.repo}#${String(pr.number)}.`);
+    }
+    const [compareRaw, commitRaw] = await Promise.all([
+      this.gh(['api', `repos/${pr.repo}/compare/${view.baseRefOid}...${headSha}`]),
+      this.gh(['api', `repos/${pr.repo}/git/commits/${headSha}`]),
+    ]);
+    const compare = this.json<RawCompare>(compareRaw, `${pr.repo}@${headSha} base comparison`);
+    const commit = this.json<RawGitCommit>(commitRaw, `${pr.repo}@${headSha} commit parents`);
+    const status = compare.status.toLowerCase();
+    if (!['identical', 'ahead', 'behind', 'diverged'].includes(status)) {
+      throw new Error(`GitHub returned unknown compare status ${compare.status} for ${pr.repo}@${headSha}.`);
+    }
+    return {
+      baseRefName: view.baseRefName,
+      baseSha: view.baseRefOid,
+      headSha: view.headRefOid,
+      status: status as BaseContainmentSnapshot['status'],
+      exhaustive:
+        compare.base_commit.sha.toLowerCase() === view.baseRefOid.toLowerCase() &&
+        commit.sha.toLowerCase() === headSha.toLowerCase(),
+      headParents: commit.parents.map((parent) => parent.sha),
     };
   }
 
@@ -994,8 +1095,111 @@ export class GhGitHubProvider implements GitHubProvider {
     return { checks: [...checks.values()], exhaustive };
   }
 
-  async mutate(mutation: GitHubMutation): Promise<void> {
+  private async commitStatusHistory(repo: string, sha: string): Promise<{ checks: CheckRun[]; exhaustive: boolean }> {
+    const raw = await this.gh([
+      'api',
+      '-X',
+      'GET',
+      `repos/${repo}/commits/${sha}/statuses`,
+      '-f',
+      `per_page=${String(GRAPHQL_PAGE_SIZE)}`,
+      '--paginate',
+      '--slurp',
+    ]);
+    const pages = this.json<RawCommitStatus[][]>(raw || '[]', `${repo}@${sha} commit status history`);
+    const checks = new Map<string, CheckRun>();
+    let exhaustive = pages.length > 0;
+    for (const status of pages.flat()) {
+      if (status.sha !== undefined && status.sha.toLowerCase() !== sha.toLowerCase()) {
+        throw new Error(
+          `GitHub returned commit status history for ${status.sha}, expected exact head ${sha} for ${repo}.`,
+        );
+      }
+      const normalized = commitStatusCheck(status, repo, sha);
+      const existing = checks.get(normalized.id);
+      if (existing !== undefined) {
+        exhaustive &&=
+          existing.name === normalized.name &&
+          existing.state === normalized.state &&
+          existing.createdAt === normalized.createdAt &&
+          existing.targetUrl === normalized.targetUrl;
+      } else {
+        checks.set(normalized.id, normalized);
+      }
+    }
+    return {
+      checks: [...checks.values()].sort((left, right) => left.id.localeCompare(right.id)),
+      exhaustive,
+    };
+  }
+
+  private async attachSourceRuns(repo: string, checks: (CheckRun & { sourceRunId?: number })[]): Promise<CheckRun[]> {
+    const sourceRunNames = new Set(
+      [
+        this.config.automation.syncAfterRejectValidation?.requiredCheck,
+        this.config.automation.mergeQueueAutomationRecovery?.requiredStatus,
+      ].filter((name): name is string => name !== undefined),
+    );
+    const references = new Map<string, ActionsRunReference>();
+    for (const check of checks) {
+      if (!sourceRunNames.has(check.name)) continue;
+      const reference =
+        check.sourceRunId === undefined ? actionsRunReference(repo, check.targetUrl) : { runId: check.sourceRunId };
+      if (reference !== undefined) references.set(actionsRunReferenceKey(reference), reference);
+    }
+    const referenceList = [...references.values()];
+    if (referenceList.length > 100) {
+      throw new Error(`GitHub returned too many distinct Actions proof sources for ${repo}.`);
+    }
+    const runs = new Map<string, CheckSourceRun>();
+    for (let offset = 0; offset < referenceList.length; offset += 8) {
+      await Promise.all(
+        referenceList.slice(offset, offset + 8).map(async (reference) => {
+          const suffix =
+            reference.attempt === undefined
+              ? `repos/${repo}/actions/runs/${String(reference.runId)}`
+              : `repos/${repo}/actions/runs/${String(reference.runId)}/attempts/${String(reference.attempt)}`;
+          const raw = await this.gh(['api', suffix]);
+          const run = this.json<RawActionsRun>(raw, `${repo} Actions run ${String(reference.runId)}`);
+          if (run.id !== reference.runId)
+            throw new Error(`GitHub returned Actions run ${String(run.id)}, expected ${String(reference.runId)}.`);
+          if (reference.attempt !== undefined && run.run_attempt !== reference.attempt) {
+            throw new Error(
+              `GitHub returned Actions attempt ${String(run.run_attempt)}, expected ${String(reference.attempt)} for run ${String(reference.runId)}.`,
+            );
+          }
+          const attempt = reference.attempt ?? run.run_attempt;
+          runs.set(actionsRunReferenceKey(reference), {
+            id: String(run.id),
+            ...(attempt === undefined ? {} : { attempt }),
+            ...(run.workflow_id === undefined ? {} : { workflowId: String(run.workflow_id) }),
+            ...(run.path === undefined || run.path === '' ? {} : { workflowPath: run.path }),
+            url: run.html_url,
+            event: run.event,
+            workflow: run.name,
+            app: 'github-actions',
+            status: run.status.toUpperCase(),
+            conclusion: run.conclusion?.toUpperCase() ?? null,
+            startedAt: run.run_started_at ?? run.created_at,
+            completedAt: run.status.toLowerCase() === 'completed' ? run.updated_at : null,
+          });
+        }),
+      );
+    }
+    return checks.map(({ sourceRunId, ...check }) => {
+      if (!sourceRunNames.has(check.name)) return check;
+      const reference = sourceRunId === undefined ? actionsRunReference(repo, check.targetUrl) : { runId: sourceRunId };
+      const run = reference === undefined ? undefined : runs.get(actionsRunReferenceKey(reference));
+      return {
+        ...check,
+        ...(run === undefined ? {} : { sourceRun: run }),
+      };
+    });
+  }
+
+  async mutate(mutation: GitHubMutation): Promise<GitHubMutationResult | void> {
     if (mutation.type === 'enable-auto-merge') {
+      await this.assertAdmissionNotHeld(mutation.pr);
       await this.gh([
         'pr',
         'merge',
@@ -1022,6 +1226,7 @@ export class GhGitHubProvider implements GitHubProvider {
         );
       }
       if (mutation.type === 'merge-exact-head') {
+        await this.assertAdmissionNotHeld(mutation.pr);
         await this.graphql(MERGE_EXACT_HEAD_MUTATION, {
           pullRequestId: state.id,
           expectedHeadOid: mutation.headSha,
@@ -1029,6 +1234,7 @@ export class GhGitHubProvider implements GitHubProvider {
         });
       } else if (mutation.type === 'enqueue-exact-head') {
         if (state.mergeQueueEntry !== null) return;
+        await this.assertAdmissionNotHeld(mutation.pr);
         await this.graphql(ENQUEUE_EXACT_HEAD_MUTATION, {
           pullRequestId: state.id,
           expectedHeadOid: mutation.headSha,
@@ -1040,6 +1246,7 @@ export class GhGitHubProvider implements GitHubProvider {
             `GitHub does not currently expose Add to merge queue for ${mutation.pr.repo}#${String(mutation.pr.number)}.`,
           );
         }
+        await this.assertAdmissionNotHeld(mutation.pr);
         await this.graphql(ENQUEUE_PROVIDER_READY_MUTATION, { pullRequestId: state.id });
       }
       return;
@@ -1070,6 +1277,7 @@ export class GhGitHubProvider implements GitHubProvider {
       if (state.mergeQueueEntry !== null) {
         throw new Error(`GitHub pull request ${mutation.pr.repo}#${String(mutation.pr.number)} is already queued.`);
       }
+      await this.assertAdmissionNotHeld(mutation.pr);
       await this.graphql(SYNC_BRANCH_EXACT_HEAD_MUTATION, {
         pullRequestId: state.id,
         expectedHeadOid: mutation.headSha,
@@ -1096,22 +1304,44 @@ export class GhGitHubProvider implements GitHubProvider {
         commentsRaw || '[]',
         `${mutation.pr.repo}#${String(mutation.pr.number)} comments`,
       ).flat();
-      if (
-        comments.some(
+      const notBeforeSecond = Math.floor(new Date(mutation.notBefore).getTime() / 1_000) * 1_000;
+      const priorCommentIds = new Set(mutation.priorCommentIds ?? []);
+      const existing = comments
+        .filter(
           (comment) =>
             comment.body === mutation.body &&
-            new Date(comment.created_at).getTime() >= new Date(mutation.notBefore).getTime(),
+            !priorCommentIds.has(String(comment.id)) &&
+            new Date(comment.created_at).getTime() >= notBeforeSecond,
         )
-      )
-        return;
+        .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id - right.id)[0];
+      if (existing !== undefined) {
+        return { commentReceipt: { id: String(existing.id), createdAt: existing.created_at } };
+      }
       const current = await this.pullRequestMutationState(mutation.pr);
       if (current.headRefOid.toLowerCase() !== mutation.headSha.toLowerCase() || current.mergeQueueEntry !== null) {
         throw new Error(
           `GitHub head or queue state changed before the conditional PR comment for ${mutation.pr.repo}#${String(mutation.pr.number)}.`,
         );
       }
-      await this.gh(['pr', 'comment', String(mutation.pr.number), '-R', mutation.pr.repo, '--body', mutation.body]);
-      return;
+      await this.assertAdmissionNotHeld(mutation.pr);
+      const createdRaw = await this.gh([
+        'api',
+        `repos/${mutation.pr.repo}/issues/${String(mutation.pr.number)}/comments`,
+        '-X',
+        'POST',
+        '-f',
+        `body=${mutation.body}`,
+      ]);
+      const created = this.json<RawComment>(
+        createdRaw,
+        `${mutation.pr.repo}#${String(mutation.pr.number)} created comment`,
+      );
+      if (created.body !== mutation.body || !Number.isFinite(new Date(created.created_at).getTime())) {
+        throw new Error(
+          `GitHub returned an invalid validation comment receipt for ${mutation.pr.repo}#${String(mutation.pr.number)}.`,
+        );
+      }
+      return { commentReceipt: { id: String(created.id), createdAt: created.created_at } };
     }
     const commentsRaw = await this.gh([
       'api',
@@ -1125,6 +1355,51 @@ export class GhGitHubProvider implements GitHubProvider {
     ).flat();
     if (comments.some((comment) => comment.body === mutation.body)) return;
     await this.gh(['pr', 'comment', String(mutation.pr.number), '-R', mutation.pr.repo, '--body', mutation.body]);
+  }
+
+  private async assertAdmissionNotHeld(pr: PullRequestRef): Promise<void> {
+    const configured = this.config.automation.holdLabels;
+    if (configured.length === 0) return;
+    let labels: string[];
+    try {
+      const raw = await this.gh([
+        'api',
+        `repos/${pr.repo}/issues/${String(pr.number)}/labels`,
+        '--paginate',
+        '--slurp',
+      ]);
+      const parsed = this.json<unknown>(raw || '[]', `${pr.repo}#${String(pr.number)} labels`);
+      if (
+        !Array.isArray(parsed) ||
+        !parsed.every(
+          (page) =>
+            Array.isArray(page) &&
+            page.every(
+              (label) =>
+                typeof label === 'object' && label !== null && typeof (label as { name?: unknown }).name === 'string',
+            ),
+        )
+      ) {
+        throw new Error('GitHub returned malformed paginated label evidence.');
+      }
+      labels = (parsed as unknown[][]).flatMap((page) =>
+        page.map((label: unknown) => (label as { name: string }).name.trim().toLowerCase()),
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new GitHubMutationSuspendedError(
+        'hold-label-evidence-incomplete',
+        `Could not verify hold labels for ${pr.repo}#${String(pr.number)}: ${detail}`,
+      );
+    }
+    const observed = new Set(labels);
+    const matched = configured.filter((label) => observed.has(label.toLowerCase()));
+    if (matched.length > 0) {
+      throw new GitHubMutationSuspendedError(
+        'hold-label',
+        `GitHub pull request ${pr.repo}#${String(pr.number)} is held by configured label(s): ${matched.join(', ')}.`,
+      );
+    }
   }
 
   private async search(query: string): Promise<DiscoveryResult<PullRequestSummary>> {
@@ -1439,7 +1714,46 @@ function commitStatusCheck(status: RawCommitStatus, repo: string, sha: string): 
     state,
     bucket: commitStatusBucket(state),
     workflow: '',
+    kind: 'commit-status',
+    ...(status.created_at === undefined ? {} : { createdAt: status.created_at }),
+    ...(status.updated_at === undefined ? {} : { updatedAt: status.updated_at }),
+    ...(status.target_url === undefined || status.target_url === null || status.target_url === ''
+      ? {}
+      : { targetUrl: status.target_url }),
   };
+}
+
+interface ActionsRunReference {
+  runId: number;
+  attempt?: number;
+}
+
+function actionsRunReferenceKey(reference: ActionsRunReference): string {
+  return `${String(reference.runId)}:${String(reference.attempt ?? 0)}`;
+}
+
+function actionsRunReference(repo: string, targetUrl: string | undefined): ActionsRunReference | undefined {
+  if (targetUrl === undefined) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(targetUrl);
+  } catch {
+    return undefined;
+  }
+  if (parsed.hostname.toLowerCase() !== 'github.com') return undefined;
+  const escapedRepo = repo
+    .split('/')
+    .map((part) => part.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('/');
+  const match = new RegExp(`^/${escapedRepo}/actions/runs/(\\d+)(?:/attempts/(\\d+))?(?:/|$)`, 'i').exec(
+    parsed.pathname,
+  );
+  if (match?.[1] === undefined) return undefined;
+  const value = Number(match[1]);
+  if (!Number.isSafeInteger(value) || value <= 0) return undefined;
+  const attempt = match[2] === undefined ? undefined : Number(match[2]);
+  if (attempt !== undefined && (!Number.isSafeInteger(attempt) || attempt <= 0)) return undefined;
+  return { runId: value, ...(attempt === undefined ? {} : { attempt }) };
 }
 
 function commitStatusBucket(state: string): CheckRun['bucket'] {
