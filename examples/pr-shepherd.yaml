@@ -45,9 +45,15 @@ features:
   staleThresholdHours: 4
 automation:
   autoMerge: notify
+  # Case-insensitive admission holds across direct and merge-queue modes.
+  holdLabels: []
   syncAfterReject: false
   # Optional after a Shepherd sync: { triggerComment: /validate, requiredCheck: full-validation }
   syncAfterRejectValidation: null
+  # Merge-queue-only opt-in. Requires syncAfterReject plus the validation contract above.
+  mergeQueuePreflight: false
+  # Optional external queue-recovery handoff: { requiredStatus: queue-reproof }
+  mergeQueueAutomationRecovery: null
   branchUpdate: notify
   reviewerComment: notify
 delivery:

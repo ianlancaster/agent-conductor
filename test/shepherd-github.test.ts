@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseShepherdConfig } from '../src/shepherd/config.js';
 import { AsyncProcessExecutor, GhGitHubProvider, type ProcessExecutor } from '../src/shepherd/github.js';
+import { GitHubMutationSuspendedError } from '../src/shepherd/types.js';
 
 const REAL_SUBPROCESS_TEST_TIMEOUT_MS = 30_000;
 
@@ -45,7 +46,15 @@ function commitCheckResponse(sha: string, suites: unknown[], options: { hasNextP
 
 function combinedStatusResponse(
   sha: string,
-  statuses: { id: number; node_id: string; state: string; context: string }[][],
+  statuses: {
+    id: number;
+    node_id: string;
+    state: string;
+    context: string;
+    created_at?: string;
+    updated_at?: string;
+    target_url?: string;
+  }[][],
   totalCount = statuses.flat().length,
 ): string {
   return JSON.stringify(statuses.map((page) => ({ sha, total_count: totalCount, statuses: page })));
@@ -319,6 +328,73 @@ describe('async gh provider', () => {
     expect(accepted).toContainEqual([0, 1, 8]);
     expect(accepted.filter((value) => value !== undefined)).toHaveLength(1);
   });
+
+  it.each(['direct', 'merge-queue'] as const)(
+    'loads exhaustive hold labels in %s mode without merge-queue preflight',
+    async (mode) => {
+      const calls: string[][] = [];
+      const executor: ProcessExecutor = {
+        run: async (_file, args) => {
+          calls.push([...args]);
+          const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+          if (query.includes('query ReviewThreads')) {
+            return JSON.stringify({
+              data: {
+                repository: {
+                  pullRequest: { reviewThreads: { nodes: [], pageInfo: pageInfo() } },
+                },
+              },
+            });
+          }
+          if (query.includes('query ReviewRequests')) {
+            return JSON.stringify({
+              data: {
+                repository: {
+                  pullRequest: { reviewRequests: { nodes: [], pageInfo: pageInfo() } },
+                },
+              },
+            });
+          }
+          if (args[0] === 'pr' && args[1] === 'view') {
+            return JSON.stringify({
+              number: 7,
+              title: 'PR',
+              url: 'https://github.com/acme/api/pull/7',
+              isDraft: false,
+              updatedAt: '2026-07-20T00:00:00Z',
+              state: 'OPEN',
+              headRefName: 'feature/api',
+              headRefOid: 'abc',
+              baseRefName: 'main',
+              baseRefOid: 'base',
+              mergeable: 'MERGEABLE',
+              mergeStateStatus: 'CLEAN',
+              autoMergeRequest: null,
+              mergedAt: null,
+              closedAt: null,
+              reviews: [],
+              commits: [],
+            });
+          }
+          if (args.includes('repos/acme/api/issues/7/labels')) {
+            return JSON.stringify([[{ name: 'Queue-Held' }]]);
+          }
+          return args.includes('checks') ? '[]' : '[[]]';
+        },
+      };
+      const config = parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        github: { mode },
+        automation: { holdLabels: ['queue-held'] },
+      });
+
+      const details = await new GhGitHubProvider(config, executor).getPullRequest({ repo: 'acme/api', number: 7 });
+
+      expect(details).toMatchObject({ labels: ['Queue-Held'], labelsExhaustive: true });
+      expect(calls.filter((args) => args.includes('repos/acme/api/issues/7/labels'))).toHaveLength(1);
+    },
+  );
 
   it('exhaustively paginates review threads, replies, and requested reviewers', async () => {
     const calls: string[][] = [];
@@ -955,6 +1031,139 @@ describe('async gh provider', () => {
     expect(mutations[1]?.find((arg) => arg.startsWith('query='))).toContain('enqueuePullRequest');
   });
 
+  it.each([
+    { type: 'enable-auto-merge', pr: { repo: 'acme/api', number: 7 }, mergeMethod: 'squash' } as const,
+    {
+      type: 'merge-exact-head',
+      pr: { repo: 'acme/api', number: 7 },
+      headSha: 'a'.repeat(40),
+      mergeMethod: 'squash',
+    } as const,
+    { type: 'enqueue-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha: 'a'.repeat(40) } as const,
+    { type: 'enqueue-provider-ready', pr: { repo: 'acme/api', number: 7 } } as const,
+    { type: 'sync-branch-exact-head', pr: { repo: 'acme/api', number: 7 }, headSha: 'a'.repeat(40) } as const,
+    {
+      type: 'post-pr-comment-exact-head',
+      pr: { repo: 'acme/api', number: 7 },
+      headSha: 'a'.repeat(40),
+      body: '/test',
+      notBefore: '2026-07-20T10:00:00Z',
+    } as const,
+  ])('rechecks hold labels immediately before $type provider mutations', async (mutation) => {
+    const calls: string[][] = [];
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query PullRequestMutationState') || query.includes('query ProviderReadyMutationState')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  id: 'PR_node',
+                  headRefOid: 'a'.repeat(40),
+                  isMergeQueueEnabled: true,
+                  autoMergeRequest: null,
+                  mergeQueueEntry: null,
+                },
+              },
+            },
+          });
+        }
+        if (args.includes('repos/acme/api/issues/7/comments')) return JSON.stringify([[]]);
+        if (args.includes('repos/acme/api/issues/7/labels')) {
+          return JSON.stringify([[{ name: 'queue-held' }]]);
+        }
+        return JSON.stringify({ data: {} });
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        github: { mode: 'merge-queue' },
+        features: { trackedPRs: { releaseGate: 'provider-action-ready' } },
+        automation: { holdLabels: ['queue-held'] },
+      }),
+      executor,
+    );
+
+    const error = await provider.mutate(mutation).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GitHubMutationSuspendedError);
+    expect(error).toMatchObject({ reason: 'hold-label' });
+    expect((error as Error).message).toMatch(/held by configured label/);
+    expect(
+      calls.some((args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        return query.includes('mutation') || args.includes('POST') || (args[0] === 'pr' && args[1] === 'merge');
+      }),
+    ).toBe(false);
+  });
+
+  it('suspends a provider mutation when final hold-label evidence is unavailable', async () => {
+    const calls: string[][] = [];
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        if (args.includes('repos/acme/api/issues/7/labels')) throw new Error('labels unavailable');
+        return '';
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        automation: { holdLabels: ['queue-held'] },
+      }),
+      executor,
+    );
+
+    const error = await provider
+      .mutate({
+        type: 'enable-auto-merge',
+        pr: { repo: 'acme/api', number: 7 },
+        mergeMethod: 'squash',
+      })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GitHubMutationSuspendedError);
+    expect(error).toMatchObject({
+      reason: 'hold-label-evidence-incomplete',
+    });
+    expect((error as Error).message).toMatch(/labels unavailable/);
+    expect(calls.some((args) => args[0] === 'pr' && args[1] === 'merge')).toBe(false);
+  });
+
+  it('suspends a provider mutation when final hold-label evidence has the wrong shape', async () => {
+    const calls: string[][] = [];
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        if (args.includes('repos/acme/api/issues/7/labels')) return JSON.stringify([[{}]]);
+        return '';
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        automation: { holdLabels: ['queue-held'] },
+      }),
+      executor,
+    );
+
+    const error = await provider
+      .mutate({
+        type: 'enable-auto-merge',
+        pr: { repo: 'acme/api', number: 7 },
+        mergeMethod: 'squash',
+      })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GitHubMutationSuspendedError);
+    expect(error).toMatchObject({ reason: 'hold-label-evidence-incomplete' });
+    expect((error as Error).message).toMatch(/malformed paginated label evidence/);
+    expect(calls.some((args) => args[0] === 'pr' && args[1] === 'merge')).toBe(false);
+  });
+
   it('uses GitHub native branch sync with an exact-head precondition', async () => {
     const calls: string[][] = [];
     const headSha = 'a'.repeat(40);
@@ -1074,6 +1283,8 @@ describe('async gh provider', () => {
           state: 'SUCCESS',
           bucket: 'pass',
           workflow: 'pull_request',
+          kind: 'check-run',
+          targetUrl: 'https://check',
         },
         {
           id: 'check-2',
@@ -1081,6 +1292,8 @@ describe('async gh provider', () => {
           state: 'IN_PROGRESS',
           bucket: 'pending',
           workflow: 'pull_request',
+          kind: 'check-run',
+          targetUrl: 'https://check-2',
         },
         {
           id: 'status:status-1',
@@ -1088,6 +1301,7 @@ describe('async gh provider', () => {
           state: 'SUCCESS',
           bucket: 'pass',
           workflow: '',
+          kind: 'commit-status',
         },
         {
           id: 'status:status-2',
@@ -1095,6 +1309,7 @@ describe('async gh provider', () => {
           state: 'PENDING',
           bucket: 'pending',
           workflow: '',
+          kind: 'commit-status',
         },
         {
           id: 'status:status-3',
@@ -1102,6 +1317,7 @@ describe('async gh provider', () => {
           state: 'FAILURE',
           bucket: 'fail',
           workflow: '',
+          kind: 'commit-status',
         },
         {
           id: 'status:status-4',
@@ -1109,6 +1325,7 @@ describe('async gh provider', () => {
           state: 'ERROR',
           bucket: 'fail',
           workflow: '',
+          kind: 'commit-status',
         },
       ],
     });
@@ -1140,8 +1357,15 @@ describe('async gh provider', () => {
       headSha,
       exhaustive: true,
       checks: [
-        { id: 'status:status-a', name: 'alpha', state: 'PENDING', bucket: 'pending', workflow: '' },
-        { id: 'status:status-b', name: 'zeta', state: 'SUCCESS', bucket: 'pass', workflow: '' },
+        {
+          id: 'status:status-a',
+          name: 'alpha',
+          state: 'PENDING',
+          bucket: 'pending',
+          workflow: '',
+          kind: 'commit-status',
+        },
+        { id: 'status:status-b', name: 'zeta', state: 'SUCCESS', bucket: 'pass', workflow: '', kind: 'commit-status' },
       ],
     };
     await expect(provider.getCheckRunsForHead({ repo: 'acme/api', number: 7 }, headSha)).resolves.toEqual(expected);
@@ -1151,7 +1375,9 @@ describe('async gh provider', () => {
     await expect(provider.getCheckRunsForHead({ repo: 'acme/api', number: 7 }, headSha)).resolves.toEqual({
       headSha,
       exhaustive: false,
-      checks: [{ id: 'status:status-b', name: 'zeta', state: 'SUCCESS', bucket: 'pass', workflow: '' }],
+      checks: [
+        { id: 'status:status-b', name: 'zeta', state: 'SUCCESS', bucket: 'pass', workflow: '', kind: 'commit-status' },
+      ],
     });
   });
 
@@ -1174,6 +1400,309 @@ describe('async gh provider', () => {
     );
   });
 
+  it('proves immutable base containment and exposes the exact head parents', async () => {
+    const baseSha = 'b'.repeat(40);
+    const headSha = 'a'.repeat(40);
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        if (args[0] === 'pr' && args[1] === 'view') {
+          return JSON.stringify({ baseRefName: 'main', baseRefOid: baseSha, headRefOid: headSha });
+        }
+        if (args.includes(`repos/acme/api/compare/${baseSha}...${headSha}`)) {
+          return JSON.stringify({ status: 'ahead', base_commit: { sha: baseSha } });
+        }
+        if (args.includes(`repos/acme/api/git/commits/${headSha}`)) {
+          return JSON.stringify({ sha: headSha, parents: [{ sha: 'old-head' }, { sha: baseSha }] });
+        }
+        throw new Error(`unexpected call: ${args.join(' ')}`);
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+
+    await expect(provider.getBaseContainment({ repo: 'acme/api', number: 7 }, headSha)).resolves.toEqual({
+      baseRefName: 'main',
+      baseSha,
+      headSha,
+      status: 'ahead',
+      exhaustive: true,
+      headParents: ['old-head', baseSha],
+    });
+  });
+
+  it('resolves configured proof observations to their Actions source-run lifecycle', async () => {
+    const headSha = 'a'.repeat(40);
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query CommitCheckEvidence')) return commitCheckResponse(headSha, []);
+        if (args.includes(`repos/acme/api/commits/${headSha}/statuses`)) {
+          return JSON.stringify([
+            [
+              {
+                id: 1,
+                node_id: 'status-proof',
+                state: 'success',
+                context: 'full-ci-on-demand',
+                created_at: '2026-07-20T10:05:00Z',
+                updated_at: '2026-07-20T10:05:00Z',
+                target_url: 'https://github.com/acme/api/actions/runs/123',
+                sha: headSha,
+              },
+            ],
+          ]);
+        }
+        if (args.includes('repos/acme/api/actions/runs/123')) {
+          return JSON.stringify({
+            id: 123,
+            html_url: 'https://github.com/acme/api/actions/runs/123',
+            event: 'workflow_dispatch',
+            name: 'CI',
+            status: 'completed',
+            conclusion: 'success',
+            created_at: '2026-07-20T10:01:00Z',
+            run_started_at: '2026-07-20T10:02:00Z',
+            updated_at: '2026-07-20T10:05:00Z',
+          });
+        }
+        throw new Error(`unexpected call: ${args.join(' ')}`);
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        github: { mode: 'merge-queue' },
+        automation: {
+          syncAfterReject: true,
+          syncAfterRejectValidation: { triggerComment: '/test', requiredCheck: 'full-ci-on-demand' },
+          mergeQueuePreflight: true,
+        },
+      }),
+      executor,
+    );
+
+    await expect(provider.getCheckRunsForHead({ repo: 'acme/api', number: 7 }, headSha)).resolves.toMatchObject({
+      headSha,
+      exhaustive: true,
+      checks: [
+        {
+          kind: 'commit-status',
+          sourceRun: {
+            id: '123',
+            event: 'workflow_dispatch',
+            status: 'COMPLETED',
+            conclusion: 'SUCCESS',
+            startedAt: '2026-07-20T10:02:00Z',
+            completedAt: '2026-07-20T10:05:00Z',
+          },
+        },
+      ],
+    });
+  });
+
+  it('keeps status observations and Actions rerun attempts distinct', async () => {
+    const headSha = 'a'.repeat(40);
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query CommitCheckEvidence')) return commitCheckResponse(headSha, []);
+        if (args.includes(`repos/acme/api/commits/${headSha}/statuses`)) {
+          return JSON.stringify([
+            [
+              {
+                id: 41,
+                node_id: 'status-attempt-1',
+                state: 'success',
+                context: 'full-ci-on-demand',
+                created_at: '2026-07-20T09:00:00Z',
+                updated_at: '2026-07-20T09:05:00Z',
+                target_url: 'https://github.com/acme/api/actions/runs/123/attempts/1',
+                sha: headSha,
+              },
+              {
+                id: 42,
+                node_id: 'status-attempt-2',
+                state: 'pending',
+                context: 'full-ci-on-demand',
+                created_at: '2026-07-20T10:01:00Z',
+                updated_at: '2026-07-20T10:01:00Z',
+                target_url: 'https://github.com/acme/api/actions/runs/123/attempts/2',
+                sha: headSha,
+              },
+            ],
+          ]);
+        }
+        const attempt = args.includes('repos/acme/api/actions/runs/123/attempts/1') ? 1 : 2;
+        if (args.includes(`repos/acme/api/actions/runs/123/attempts/${String(attempt)}`)) {
+          return JSON.stringify({
+            id: 123,
+            run_attempt: attempt,
+            workflow_id: 11,
+            path: '.github/workflows/ci.yml',
+            html_url: `https://github.com/acme/api/actions/runs/123/attempts/${String(attempt)}`,
+            event: 'workflow_dispatch',
+            name: 'CI',
+            status: attempt === 1 ? 'completed' : 'in_progress',
+            conclusion: attempt === 1 ? 'success' : null,
+            created_at: attempt === 1 ? '2026-07-20T08:59:00Z' : '2026-07-20T10:00:00Z',
+            run_started_at: attempt === 1 ? '2026-07-20T09:00:00Z' : '2026-07-20T10:01:00Z',
+            updated_at: attempt === 1 ? '2026-07-20T09:05:00Z' : '2026-07-20T10:01:00Z',
+          });
+        }
+        throw new Error(`unexpected call: ${args.join(' ')}`);
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        github: { mode: 'merge-queue' },
+        automation: {
+          syncAfterReject: true,
+          syncAfterRejectValidation: { triggerComment: '/test', requiredCheck: 'full-ci-on-demand' },
+          mergeQueuePreflight: true,
+        },
+      }),
+      executor,
+    );
+
+    const snapshot = await provider.getCheckRunsForHead({ repo: 'acme/api', number: 7 }, headSha);
+    expect(snapshot.checks).toMatchObject([
+      {
+        id: 'status:status-attempt-1',
+        sourceRun: { id: '123', attempt: 1, workflowId: '11', workflowPath: '.github/workflows/ci.yml' },
+      },
+      {
+        id: 'status:status-attempt-2',
+        sourceRun: { id: '123', attempt: 2, workflowId: '11', workflowPath: '.github/workflows/ci.yml' },
+      },
+    ]);
+  });
+
+  it('rejects an explicit Actions attempt response for a different attempt', async () => {
+    const headSha = 'a'.repeat(40);
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query CommitCheckEvidence')) return commitCheckResponse(headSha, []);
+        if (args.includes(`repos/acme/api/commits/${headSha}/statuses`)) {
+          return JSON.stringify([
+            [
+              {
+                id: 61,
+                node_id: 'attempt-mismatch',
+                state: 'success',
+                context: 'full-ci-on-demand',
+                created_at: '2026-07-20T10:01:00Z',
+                updated_at: '2026-07-20T10:05:00Z',
+                target_url: 'https://github.com/acme/api/actions/runs/123/attempts/2',
+                sha: headSha,
+              },
+            ],
+          ]);
+        }
+        if (args.includes('repos/acme/api/actions/runs/123/attempts/2')) {
+          return JSON.stringify({
+            id: 123,
+            run_attempt: 1,
+            workflow_id: 11,
+            html_url: 'https://github.com/acme/api/actions/runs/123/attempts/1',
+            event: 'workflow_dispatch',
+            name: 'CI',
+            status: 'completed',
+            conclusion: 'success',
+            created_at: '2026-07-20T10:00:00Z',
+            run_started_at: '2026-07-20T10:01:00Z',
+            updated_at: '2026-07-20T10:05:00Z',
+          });
+        }
+        throw new Error(`unexpected call: ${args.join(' ')}`);
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        github: { mode: 'merge-queue' },
+        automation: {
+          syncAfterReject: true,
+          syncAfterRejectValidation: { triggerComment: '/test', requiredCheck: 'full-ci-on-demand' },
+          mergeQueuePreflight: true,
+        },
+      }),
+      executor,
+    );
+
+    await expect(provider.getCheckRunsForHead({ repo: 'acme/api', number: 7 }, headSha)).rejects.toThrow('expected 2');
+  });
+
+  it('does not relabel an old ordinary run status as a fresh rerun observation', async () => {
+    const headSha = 'a'.repeat(40);
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query CommitCheckEvidence')) return commitCheckResponse(headSha, []);
+        if (args.includes(`repos/acme/api/commits/${headSha}/statuses`)) {
+          return JSON.stringify([
+            [
+              {
+                id: 51,
+                node_id: 'old-status',
+                state: 'success',
+                context: 'full-ci-on-demand',
+                created_at: '2026-07-20T09:00:00Z',
+                updated_at: '2026-07-20T09:05:00Z',
+                target_url: 'https://github.com/acme/api/actions/runs/123',
+                sha: headSha,
+              },
+            ],
+          ]);
+        }
+        if (args.includes('repos/acme/api/actions/runs/123')) {
+          return JSON.stringify({
+            id: 123,
+            run_attempt: 2,
+            html_url: 'https://github.com/acme/api/actions/runs/123',
+            event: 'workflow_dispatch',
+            name: 'CI',
+            status: 'completed',
+            conclusion: 'success',
+            created_at: '2026-07-20T10:00:00Z',
+            run_started_at: '2026-07-20T10:01:00Z',
+            updated_at: '2026-07-20T10:05:00Z',
+          });
+        }
+        throw new Error(`unexpected call: ${args.join(' ')}`);
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        github: { mode: 'merge-queue' },
+        automation: {
+          syncAfterReject: true,
+          syncAfterRejectValidation: { triggerComment: '/test', requiredCheck: 'full-ci-on-demand' },
+          mergeQueuePreflight: true,
+        },
+      }),
+      executor,
+    );
+
+    await expect(provider.getCheckRunsForHead({ repo: 'acme/api', number: 7 }, headSha)).resolves.toMatchObject({
+      checks: [
+        {
+          id: 'status:old-status',
+          updatedAt: '2026-07-20T09:05:00Z',
+          sourceRun: { attempt: 2, startedAt: '2026-07-20T10:01:00Z' },
+        },
+      ],
+    });
+  });
+
   it('posts an idempotent exact-head PR comment only after two safe state reads', async () => {
     const calls: string[][] = [];
     const headSha = 'a'.repeat(40);
@@ -1190,6 +1719,14 @@ describe('async gh provider', () => {
                 pullRequest: { id: 'PR_node', headRefOid: headSha, autoMergeRequest: null, mergeQueueEntry: null },
               },
             },
+          });
+        }
+        if (args.includes(`repos/acme/api/issues/7/comments`) && args.includes('POST')) {
+          return JSON.stringify({
+            id: 1,
+            user: { login: 'octocat' },
+            body,
+            created_at: '2026-07-20T10:00:01Z',
           });
         }
         if (args.includes(`repos/acme/api/issues/7/comments`)) {
@@ -1217,27 +1754,82 @@ describe('async gh provider', () => {
       executor,
     );
 
-    await provider.mutate({
-      type: 'post-pr-comment-exact-head',
-      pr: { repo: 'acme/api', number: 7 },
-      headSha,
-      body,
-      notBefore: '2026-07-20T10:00:00Z',
-    });
-    await provider.mutate({
-      type: 'post-pr-comment-exact-head',
-      pr: { repo: 'acme/api', number: 7 },
-      headSha,
-      body,
-      notBefore: '2026-07-20T10:00:00Z',
-    });
+    await expect(
+      provider.mutate({
+        type: 'post-pr-comment-exact-head',
+        pr: { repo: 'acme/api', number: 7 },
+        headSha,
+        body,
+        notBefore: '2026-07-20T10:00:00Z',
+      }),
+    ).resolves.toEqual({ commentReceipt: { id: '1', createdAt: '2026-07-20T10:00:01Z' } });
+    await expect(
+      provider.mutate({
+        type: 'post-pr-comment-exact-head',
+        pr: { repo: 'acme/api', number: 7 },
+        headSha,
+        body,
+        notBefore: '2026-07-20T10:00:00Z',
+      }),
+    ).resolves.toEqual({ commentReceipt: { id: '1', createdAt: '2026-07-20T10:00:01Z' } });
 
     expect(
       calls.filter((args) => (args.find((arg) => arg.startsWith('query=')) ?? '').includes('MutationState')),
     ).toHaveLength(3);
-    expect(calls.filter((args) => args[0] === 'pr' && args[1] === 'comment')).toEqual([
-      expect.arrayContaining(['--body', body]),
-    ]);
+    expect(calls.filter((args) => args.includes('POST') && args.includes(`body=${body}`))).toHaveLength(1);
+  });
+
+  it('recovers a lost same-second comment response without posting twice', async () => {
+    const calls: string[][] = [];
+    const headSha = 'a'.repeat(40);
+    const body = '/validate';
+    let remoteCreated = false;
+    const executor: ProcessExecutor = {
+      run: async (_file, args) => {
+        calls.push([...args]);
+        const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+        if (query.includes('query PullRequestMutationState')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: { id: 'PR_node', headRefOid: headSha, autoMergeRequest: null, mergeQueueEntry: null },
+              },
+            },
+          });
+        }
+        if (args.includes(`repos/acme/api/issues/7/comments`) && args.includes('POST')) {
+          remoteCreated = true;
+          throw new Error('response lost after create');
+        }
+        if (args.includes(`repos/acme/api/issues/7/comments`)) {
+          const old = { id: 7, user: { login: 'octocat' }, body, created_at: '2026-07-20T10:00:00Z' };
+          return JSON.stringify(
+            remoteCreated
+              ? [[old, { id: 9, user: { login: 'octocat' }, body, created_at: '2026-07-20T10:00:00Z' }]]
+              : [[old]],
+          );
+        }
+        return '';
+      },
+    };
+    const provider = new GhGitHubProvider(
+      parseShepherdConfig({ version: 2, profile: { githubUser: 'octocat' } }),
+      executor,
+    );
+    const mutation = {
+      type: 'post-pr-comment-exact-head' as const,
+      pr: { repo: 'acme/api', number: 7 },
+      headSha,
+      body,
+      notBefore: '2026-07-20T10:00:00.900Z',
+      priorCommentIds: ['7'],
+    };
+
+    await expect(provider.mutate(mutation)).rejects.toThrow('response lost');
+    await expect(provider.mutate(mutation)).resolves.toEqual({
+      commentReceipt: { id: '9', createdAt: '2026-07-20T10:00:00Z' },
+    });
+    expect(calls.filter((args) => args.includes('POST'))).toHaveLength(1);
   });
 
   it('rejects mismatched commit evidence and a changed head before a validation comment', async () => {

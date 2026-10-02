@@ -43,8 +43,11 @@ installing the command does not enable it.
      bootstrap: baseline-only
    automation:
      autoMerge: notify
+     holdLabels: []
      syncAfterReject: false
      syncAfterRejectValidation: null
+     mergeQueuePreflight: false
+     mergeQueueAutomationRecovery: null
      branchUpdate: notify
      reviewerComment: notify
    delivery:
@@ -121,7 +124,7 @@ Configuration is strict, versioned YAML: unknown keys and unknown guidance event
 | `github.defaultRepo`                       | Optional profile metadata for a primary repository; default `null`.                                                                    |
 | `github.includeOwners` / `includeRepos`    | Optional owner and repository allowlists. Empty lists allow all repositories.                                                          |
 | `github.excludeOwners` / `excludeRepos`    | Owner and repository denylists applied after includes.                                                                                 |
-| `github.mode`                              | `direct` or `merge-queue`; default `direct`. Direct updates behind PRs first; queue mode avoids merely-behind updates.                 |
+| `github.mode`                              | `direct` or `merge-queue`; default `direct`. Direct updates behind PRs first; queue mode uses its configured admission policy.         |
 | `github.mergeMethod`                       | `squash`, `merge`, or `rebase`; default `squash`.                                                                                      |
 | `checks.required`                          | If non-empty, only these check names determine readiness.                                                                              |
 | `checks.ignored`                           | Check names removed before evaluation.                                                                                                 |
@@ -140,8 +143,11 @@ Configuration is strict, versioned YAML: unknown keys and unknown guidance event
 | `features.reviewerNudge`                   | Optional reviewer-comment/escalation workflow, including threshold, weekday handling, timezone, and repeat cap; disabled by default.   |
 | `features.staleThresholdHours`             | Authored-PR staleness interval; default `4`. Set `0` for immediate first-cycle staleness.                                              |
 | `automation.autoMerge`                     | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
+| `automation.holdLabels`                    | Case-insensitive labels that suspend every merge admission; default `[]`. Missing/incomplete label evidence fails closed when set.     |
 | `automation.syncAfterReject`               | Conditionally sync one recent, unchanged, conclusively attributed rejected queue head before retry; default `false`.                   |
 | `automation.syncAfterRejectValidation`     | Optional `{ triggerComment, requiredCheck }` exact-head validation gate after an eligible failed-check eviction; default `null`.       |
+| `automation.mergeQueuePreflight`           | Reuse exact-head sync and validation before every Shepherd queue admission; default `false`.                                           |
+| `automation.mergeQueueAutomationRecovery`  | Optional `{ requiredStatus }` provider-recovery handoff contract; default `null`.                                                      |
 | `automation.branchUpdate`                  | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
 | `automation.reviewerComment`               | `off`, `notify`, or `execute`; default `notify`.                                                                                       |
 | `delivery.type`                            | `stdout` or `conductor`; default `stdout`.                                                                                             |
@@ -272,6 +278,7 @@ optional repository-neutral contract:
 ```yaml
 automation:
   autoMerge: execute
+  holdLabels: [queue-held]
   syncAfterReject: true
   syncAfterRejectValidation:
     triggerComment: /validate
@@ -304,6 +311,71 @@ An injected provider using `syncAfterRejectValidation` must additionally expose
 `post-pr-comment-exact-head` with head and queue rechecks plus idempotent exact-body handling. The
 built-in GitHub provider supplies these capabilities. Existing boolean-only profiles and entity
 databases need no migration; `null` preserves the original sync-only behavior.
+
+### Admission hold labels
+
+`automation.holdLabels` is a general, case-insensitive merge condition. When an open authored or
+tracked PR carries any configured label, Shepherd creates no enqueue, auto-merge-enable, or direct
+merge action. The same fence applies to preflight and queue-recovery preparation. A durable pending
+action is suspended rather than cancelled, so removing the label makes the unchanged head eligible
+on the next poll without resetting mutation, enqueue, or sync caps.
+
+Shepherd emits one `release-gate-blocked` fact per head and matched label state with reason
+`hold-label`. If the PR is already queued, Shepherd deliberately does not dequeue it and instead
+emits `hold-label-on-queued-pr` for coordinator action. When hold labels are configured, missing or
+non-exhaustive provider label facts fail closed with reason `hold-label-evidence-incomplete`.
+Omitting the key preserves existing admission behavior.
+
+### Pre-enqueue merge-queue proof
+
+Set `automation.mergeQueuePreflight: true` only with `github.mode: merge-queue`,
+`automation.syncAfterReject: true`, and a non-null `syncAfterRejectValidation` contract. The option
+is disabled by default. When enabled, every queue submission Shepherd creates—including initial
+authored admission, tracked `provider-action-ready` admission, and eligible removal recovery—uses
+an exact-head enqueue only after two proofs:
+
+1. GitHub's immutable target-base SHA is `identical` to or an ancestor of the exact PR head; and
+2. the configured validation source run for that exact head is terminal and successful.
+
+An already-current head on first admission may reuse its latest terminal-green exact-head proof.
+Any Shepherd sync or queue removal requires a new trigger comment and a source run that started no
+earlier than the provider-created comment receipt. Result publication time is not freshness: an
+older run finishing later cannot supersede a newer pending run. Missing source identity, timestamps,
+pagination, labels, base ancestry, comment receipt, or ambiguous duplicate sources fail closed.
+
+When the head does not contain the current target base, Shepherd reserves and executes one
+`sync-branch-exact-head` action at a time. A cycle is capped at five reserved sync actions, including
+no-op and crash-ambiguous calls, so a rapidly moving base cannot loop forever. The sync's exact old
+head, exact base SHA, and resulting two-parent merge commit allow approvals from the approved old
+head to carry forward. Any other head change requires a fresh exact-head approval. A tracked
+`exact-head-attestation` lane always requires a fresh attestation for the post-sync head.
+
+GitHub enqueue accepts an expected head OID but no expected base OID. Shepherd therefore repeats
+the immutable ancestry comparison immediately before enqueue under its mutation mutex, while
+documenting that residual provider race rather than claiming atomic base fencing.
+
+For an automation-attributed `manual` removal, configure an external handoff only when the
+repository publishes a unique Commit Status whose target URL identifies the recovery Actions run:
+
+```yaml
+automation:
+  autoMerge: execute
+  holdLabels: [queue-held]
+  syncAfterReject: true
+  syncAfterRejectValidation:
+    triggerComment: /validate
+    requiredCheck: full-validation
+  mergeQueuePreflight: true
+  mergeQueueAutomationRecovery:
+    requiredStatus: queue-reproof
+```
+
+Shepherd waits until that referenced source run itself is terminal, then re-reads queue membership,
+the exact head, and exhaustive labels. A bot-owned queue entry wins; a configured top-level hold
+label suspends pending work without consuming another attempt; missing or non-green recovery evidence
+remains fenced. Human, other, missing-actor, and ambiguous removals keep their existing fences.
+Profiles that omit or disable `mergeQueuePreflight` keep the legacy bounded same-head retry behavior.
+With preflight enabled and automation recovery omitted, automated `manual` removals remain fenced.
 
 Existing version 2 profiles and databases need no migration: the omitted setting resolves to
 `false`, and recovery metadata uses the existing schema-free entity store. Add the explicit setting
@@ -417,6 +489,11 @@ eviction observation, code-failure fencing, bounded transient resubmission, rest
 provider-side already-queued idempotency reuse the normal merge-queue machinery. Add to merge queue
 availability remains the initial admission boundary; the fence is consulted only after an enqueue
 has been observed and then removed.
+
+When `automation.mergeQueuePreflight` is enabled, provider action availability remains this lane's
+release authority but is conjunctive with current-base containment and exact-head validation. The
+resulting mutation uses `expectedHeadOid`; Shepherd does not add authored-style approval policy to
+this lane.
 
 For `releaseGate: none`, profile-authored PRs still use Shepherd's existing readiness calculation
 and exact-head enqueue; tracked-only execution remains notify-only. The post-enqueue fence applies

@@ -6,6 +6,15 @@ import { SHEPHERD_EVENT_TYPES } from './types.js';
 
 const strictObject = <T extends z.ZodRawShape>(shape: T): z.ZodObject<T, 'strict'> => z.object(shape).strict();
 const automationMode = z.enum(['off', 'notify', 'execute']);
+const normalizedLabels = z.array(z.string().trim().min(1)).transform((labels) => {
+  const seen = new Set<string>();
+  return labels.filter((label) => {
+    const normalized = label.toLowerCase();
+    if (seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
+});
 const regularExpression = z
   .string()
   .min(1)
@@ -109,10 +118,17 @@ const configSchema = strictObject({
   }).default({}),
   automation: strictObject({
     autoMerge: automationMode.default('notify'),
+    holdLabels: normalizedLabels.default([]),
     syncAfterReject: z.boolean().default(false),
     syncAfterRejectValidation: strictObject({
       triggerComment: z.string().trim().min(1),
       requiredCheck: z.string().trim().min(1),
+    })
+      .nullable()
+      .default(null),
+    mergeQueuePreflight: z.boolean().default(false),
+    mergeQueueAutomationRecovery: strictObject({
+      requiredStatus: z.string().trim().min(1),
     })
       .nullable()
       .default(null),
@@ -190,6 +206,16 @@ export function parseShepherdConfig(input: unknown, overrides: ConfigOverrides =
   const parsed = configSchema.parse(applyOverrides(input, overrides));
   if (parsed.features.trackedPRs.releaseGate === 'provider-action-ready' && parsed.github.mode !== 'merge-queue') {
     throw new Error('trackedPRs.releaseGate: provider-action-ready requires github.mode: merge-queue.');
+  }
+  if (parsed.automation.mergeQueuePreflight) {
+    if (parsed.github.mode !== 'merge-queue') {
+      throw new Error('automation.mergeQueuePreflight requires github.mode: merge-queue.');
+    }
+    if (!parsed.automation.syncAfterReject || parsed.automation.syncAfterRejectValidation === null) {
+      throw new Error(
+        'automation.mergeQueuePreflight requires syncAfterReject: true and a syncAfterRejectValidation contract.',
+      );
+    }
   }
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: parsed.features.reviewerNudge.timezone }).format(new Date());

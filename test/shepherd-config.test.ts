@@ -21,6 +21,9 @@ describe('PR Shepherd V2 configuration', () => {
       autoMerge: 'notify',
       syncAfterReject: false,
       syncAfterRejectValidation: null,
+      holdLabels: [],
+      mergeQueuePreflight: false,
+      mergeQueueAutomationRecovery: null,
       branchUpdate: 'notify',
       reviewerComment: 'notify',
     });
@@ -33,6 +36,7 @@ describe('PR Shepherd V2 configuration', () => {
       version: 2,
       profile: { githubUser: 'octocat' },
       automation: {
+        holdLabels: [' queue-held ', 'QUEUE-HELD'],
         syncAfterReject: true,
         syncAfterRejectValidation: { triggerComment: ' /validate ', requiredCheck: ' full-validation ' },
       },
@@ -42,6 +46,55 @@ describe('PR Shepherd V2 configuration', () => {
       triggerComment: '/validate',
       requiredCheck: 'full-validation',
     });
+    expect(config.automation.holdLabels).toEqual(['queue-held']);
+  });
+
+  it('keeps merge-queue preflight explicit and validates its dependencies and recovery contract', () => {
+    const resolved = parseShepherdConfig({
+      version: 2,
+      profile: { githubUser: 'octocat' },
+      github: { mode: 'merge-queue' },
+      automation: {
+        holdLabels: [' queue-held ', 'QUEUE-HELD'],
+        syncAfterReject: true,
+        syncAfterRejectValidation: { triggerComment: '/test', requiredCheck: 'full-ci-on-demand' },
+        mergeQueuePreflight: true,
+        mergeQueueAutomationRecovery: {
+          requiredStatus: ' merge-queue-reproof ',
+        },
+      },
+    });
+    expect(resolved.automation).toMatchObject({
+      mergeQueuePreflight: true,
+      holdLabels: ['queue-held'],
+      mergeQueueAutomationRecovery: {
+        requiredStatus: 'merge-queue-reproof',
+      },
+    });
+    expect(() =>
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        automation: {
+          mergeQueueAutomationRecovery: { requiredStatus: 'merge-queue-reproof', holdLabels: ['queue-held'] },
+        },
+      }),
+    ).toThrow(/unrecognized key/i);
+    expect(() =>
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        automation: { mergeQueuePreflight: true },
+      }),
+    ).toThrow(/requires github.mode: merge-queue/);
+    expect(() =>
+      parseShepherdConfig({
+        version: 2,
+        profile: { githubUser: 'octocat' },
+        github: { mode: 'merge-queue' },
+        automation: { mergeQueuePreflight: true },
+      }),
+    ).toThrow(/requires syncAfterReject/);
   });
 
   it('keeps the exact-head gate inert by default and validates generic tracked selectors', () => {

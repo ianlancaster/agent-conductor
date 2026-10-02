@@ -31,8 +31,11 @@ features:
   staleThresholdHours: 4
 automation:
   autoMerge: notify
+  holdLabels: []
   syncAfterReject: false
   syncAfterRejectValidation: null
+  mergeQueuePreflight: false
+  mergeQueueAutomationRecovery: null
   branchUpdate: notify
   reviewerComment: notify
 delivery: { type: stdout }
